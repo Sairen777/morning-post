@@ -6,9 +6,13 @@
     "dev": "bun run --watch src/index.ts"
   },
   "dependencies": {
-    "elysia": "latest"
+    "elysia": "latest",
+    "input": "^1.0.1",
+    "qrcode-terminal": "^0.12.0",
+    "telegram": "^2.26.22"
   },
   "devDependencies": {
+    "@types/qrcode-terminal": "^0.12.2",
     "bun-types": "latest"
   },
   "module": "src/index.js"
