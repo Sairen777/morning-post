@@ -1,0 +1,4 @@
+- [] telegram
+- [] substack
+- [] rss
+- [] reddit selected subreddits (post summarize only?)
