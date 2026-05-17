@@ -438,5 +438,10 @@
       "integrity": "sha512-MvQa//+KcZCUkBTIC9blM+CU9J2GzuTytsOUwf2lidtvkx/6gnEp1QvJv34t9vdjhFmha/mUiNDbN0D0mJWdug==",
       "deprecated": true
     }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@hono/hono@*"
+    ]
   }
 }
