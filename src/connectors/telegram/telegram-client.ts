@@ -1,11 +1,11 @@
-import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import input from "input";
-import qrcode from "qrcode-terminal";
+import { TelegramClient } from "npm:telegram@^2.26.22";
+import { StringSession } from "npm:telegram@^2.26.22/sessions/index.js";
+import input from "npm:input@^1.0.1";
+import qrcode from "npm:qrcode-terminal@^0.12.0";
 
-const API_ID = Number(process.env.TELEGRAM_API_ID);
-const API_HASH = process.env.TELEGRAM_API_HASH || "";
-const SESSION_STRING = process.env.TELEGRAM_SESSION || "";
+const API_ID = Number(Deno.env.get("TELEGRAM_API_ID"));
+const API_HASH = Deno.env.get("TELEGRAM_API_HASH") ?? "";
+const SESSION_STRING = Deno.env.get("TELEGRAM_SESSION") ?? "";
 
 export async function createTelegramClient(): Promise<TelegramClient> {
   const session = new StringSession(SESSION_STRING);

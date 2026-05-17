@@ -1,12 +1,12 @@
-import { Elysia } from "elysia";
-import { createTelegramClient } from "./connectors/telegram/telegram-client";
-import { TelegramConnector } from "./connectors/telegram/telegram-connector";
+import { Hono } from "@hono/hono";
+import { createTelegramClient } from "./connectors/telegram/telegram-client.ts";
+import { TelegramConnector } from "./connectors/telegram/telegram-connector.ts";
 
-const app = new Elysia().get("/", () => "Hello Elysia").listen(3000);
+const app = new Hono();
+app.get("/", (c) => c.text("Hello Hono"));
 
-console.log(
-  `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`,
-);
+Deno.serve({ port: 3000 }, app.fetch);
+console.log("Hono is running at http://localhost:3000");
 
 try {
   const threeDaysAgo = new Date();

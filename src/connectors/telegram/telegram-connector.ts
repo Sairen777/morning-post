@@ -1,7 +1,7 @@
-import { TelegramClient } from "telegram";
-import { Api } from "telegram";
-import type { IConnector, IConnectorNormalizedData } from "../connector.types";
-import type { ChannelInfo, ChannelMessage } from "./telegram-connector.types";
+import { TelegramClient } from "npm:telegram@^2.26.22";
+import { Api } from "npm:telegram@^2.26.22";
+import type { IConnector, IConnectorNormalizedData } from "../connector.types.ts";
+import type { ChannelInfo, ChannelMessage } from "./telegram-connector.types.ts";
 
 type TelegramRawData = Record<string, ChannelMessage[]>;
 
