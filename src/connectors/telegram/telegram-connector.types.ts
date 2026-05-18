@@ -4,11 +4,12 @@ export interface ChannelInfo {
   username: string | null;
 }
 
+import type { IMedia } from "../connector.types.ts";
+
 export interface ChannelMessage {
   id: number;
   date: Date;
   text: string;
   views: number | null;
-  // TODO: change later
-  media?: any;
+  media?: IMedia;
 }

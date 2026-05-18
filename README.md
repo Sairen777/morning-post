@@ -11,7 +11,10 @@
    TELEGRAM_API_HASH=your_api_hash
    ```
 
-The app authenticates via QR code on first run and prints a session string so you don't have to log in again. Run the app `deno task dev`.
+## Get Telegram Session String
+
+The app authenticates via QR code on first run and prints a session string so
+you don't have to log in again. Run the app `deno task dev`.
 
 1. Leave `TELEGRAM_SESSION` empty in your `.env` file
 2. Run `deno task dev`
@@ -22,4 +25,7 @@ The app authenticates via QR code on first run and prints a session string so yo
    TELEGRAM_SESSION=your_session_string
    ```
 
-After this, the app will reuse the session without prompting again.
+## What the Telegram Connector Ignores
+
+- **Polls** — messages whose only content is a poll (no text, no photo) are skipped
+- **Stickers, reactions, and other media-only messages** — anything with no text and no photo/video/document/webpage is skipped

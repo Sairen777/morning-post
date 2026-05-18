@@ -25,5 +25,9 @@ interface IComment {
   media?: IMedia;
 }
 
-// TODO: add proepr media types later
-type IMedia = Record<string, any>;
+export type IMedia =
+  | { type: "photo"; localPath: string }
+  | { type: "album"; localPaths: string[] }
+  | { type: "video" }
+  | { type: "document"; mimeType: string }
+  | { type: "webpage"; url: string };

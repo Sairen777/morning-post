@@ -3,8 +3,8 @@
     "@hono/hono": "jsr:@hono/hono"
   },
   "tasks": {
-    "dev": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-sys --allow-ffi src/index.ts",
-    "start": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-sys --allow-ffi src/index.ts"
+    "dev": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
+    "start": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts"
   },
   "nodeModulesDir": "auto",
   "compilerOptions": {
@@ -13,7 +13,7 @@
     "skipLibCheck": true
   },
   "allowScripts": {
-    "allow": [],
+    "allow": ["npm:sharp"],
     "deny": [
       "npm:bufferutil@4.1.0",
       "npm:core-js@2.6.12",

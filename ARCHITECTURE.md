@@ -2,7 +2,9 @@
 
 ## Overview
 
-A tool that fetches content from multiple sources, normalizes it, and summarizes it based on configurable rules. Starts as a CLI utility, designed as an API from day one.
+A tool that fetches content from multiple sources, normalizes it, and summarizes
+it based on configurable rules. Starts as a CLI utility, designed as an API from
+day one.
 
 ---
 
@@ -10,34 +12,36 @@ A tool that fetches content from multiple sources, normalizes it, and summarizes
 
 ### 1. Connectors
 
-Each connector wraps a single external service (Telegram, RSS, Twitter, etc.) and is responsible for two things only: **fetching** and **normalizing**.
+Each connector wraps a single external service (Telegram, RSS, Twitter, etc.)
+and is responsible for two things only: **fetching** and **normalizing**.
 
 Every connector implements the same interface:
 
 ```ts
 interface Connector {
-  id: string           // e.g. "telegram", "rss"
-  label: string
-  fetch(params: FetchParams): Promise<NormalizedItem[]>
+  id: string; // e.g. "telegram", "rss"
+  label: string;
+  fetch(params: FetchParams): Promise<NormalizedItem[]>;
 }
 
 interface FetchParams {
-  from: Date
-  to: Date
-  sourceId: string     // channel ID, feed URL, twitter handle, etc.
+  from: Date;
+  to: Date;
+  sourceId: string; // channel ID, feed URL, twitter handle, etc.
 }
 
 interface NormalizedItem {
-  connectorId: string
-  sourceId: string
-  date: Date
-  title: string | null
-  text: string
-  url: string | null
+  connectorId: string;
+  sourceId: string;
+  date: Date;
+  title: string | null;
+  text: string;
+  url: string | null;
 }
 ```
 
-Connector config (API keys, URLs) is provided at instantiation time, not hardcoded.
+Connector config (API keys, URLs) is provided at instantiation time, not
+hardcoded.
 
 ### 2. Summarizer
 
@@ -45,28 +49,31 @@ Accepts an array of `NormalizedItem[]` and a **ruleset**, returns a summary.
 
 ```ts
 interface SummaryRuleset {
-  language?: string          // e.g. "English", "Ukrainian"
-  focus?: string             // e.g. "tech news only", "ignore sports"
-  format?: string            // e.g. "bullet points", "short paragraphs"
-  maxLength?: number         // in tokens or chars
+  language?: string; // e.g. "English", "Ukrainian"
+  focus?: string; // e.g. "tech news only", "ignore sports"
+  format?: string; // e.g. "bullet points", "short paragraphs"
+  maxLength?: number; // in tokens or chars
 }
 
 interface SummarizerService {
-  summarize(items: NormalizedItem[], rules: SummaryRuleset): Promise<string>
+  summarize(items: NormalizedItem[], rules: SummaryRuleset): Promise<string>;
 }
 ```
 
-The summarizer is also a swappable interface — different LLM backends can implement it.
+The summarizer is also a swappable interface — different LLM backends can
+implement it.
 
-### 3. Presenter *(planned)*
+### 3. Presenter _(planned)_
 
-Takes the summarizer output and formats/delivers it — email, markdown file, Telegram message, etc. Not in scope yet.
+Takes the summarizer output and formats/delivers it — email, markdown file,
+Telegram message, etc. Not in scope yet.
 
 ---
 
 ## API Design
 
-Even as a CLI tool, all logic goes through the same service interfaces so the API layer is just a thin wrapper later.
+Even as a CLI tool, all logic goes through the same service interfaces so the
+API layer is just a thin wrapper later.
 
 ```
 POST /run
@@ -80,6 +87,13 @@ POST /connectors/test
   body: ConnectorConfig
   returns: sample NormalizedItem[] or error
 ```
+
+---
+
+## Things to Consider
+
+- **Media dir concurrency**: the `media/` directory is shared and deleted after each run. When this becomes an API with concurrent `/run` requests, each request needs its own isolated temp dir (e.g. `media/<requestId>/`) and TTL-based cleanup instead of manual deletion at the end.
+- **Vision model requirement**: multimodal summarization requires a vision-capable model. When switching to hosted APIs (OpenRouter, etc.), confirm the selected model supports image input.
 
 ---
 
