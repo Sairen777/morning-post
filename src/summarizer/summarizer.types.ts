@@ -15,6 +15,14 @@ export interface SummaryRuleset {
   maxLength?: number;
 }
 
+// Note: sourceUrl refers to the primary/first post when a bullet covers multiple posts.
+export interface SummaryPoint {
+  text: string;
+  sourceUrl: string | null;
+  channel?: string;
+  date?: string;
+}
+
 export interface SummarizerService {
-  summarize(items: NormalizedItem[], rules: SummaryRuleset): Promise<string>;
+  summarize(items: NormalizedItem[], rules: SummaryRuleset): Promise<SummaryPoint[]>;
 }

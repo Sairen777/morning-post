@@ -16,7 +16,8 @@ type TelegramRawData = Record<string, ChannelMessage[]>;
 function extractNonPhotoMedia(media: Api.TypeMessageMedia): IMedia | undefined {
   if (media instanceof Api.MessageMediaWebPage) {
     const page = media.webpage;
-    if (page instanceof Api.WebPage && page.url) return { type: "webpage", url: page.url };
+    if (page instanceof Api.WebPage && page.url)
+      return { type: "webpage", url: page.url };
     return undefined;
   }
   if (media instanceof Api.MessageMediaDocument) {
@@ -30,7 +31,8 @@ function extractNonPhotoMedia(media: Api.TypeMessageMedia): IMedia | undefined {
   return undefined;
 }
 
-const DEFAULT_EXCLUDED_CHANNELS = ["Telegram", "/b/ Свидетели сингулярности"];
+// const DEFAULT_EXCLUDED_CHANNELS = ["Telegram", "/b/ Свидетели сингулярности"];
+const DEFAULT_EXCLUDED_CHANNELS = ["Telegram", "Сиолошная"];
 
 export class TelegramConnector implements IConnector<TelegramRawData> {
   constructor(
@@ -53,8 +55,14 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
 
       const title = dialog.title ?? entity.id.toString();
       if (this.excludedChannels.includes(title)) continue;
-      const channelUsername = entity instanceof Api.Channel ? (entity.username ?? null) : null;
-      const messages = await this.getMessages(entity, from, to, channelUsername);
+      const channelUsername =
+        entity instanceof Api.Channel ? (entity.username ?? null) : null;
+      const messages = await this.getMessages(
+        entity,
+        from,
+        to,
+        channelUsername,
+      );
 
       if (messages.length > 0) {
         result[title] = messages;
@@ -105,7 +113,10 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     to: Date,
     channelUsername: string | null = null,
   ): Promise<ChannelMessage[]> {
-    type RawMsg = ChannelMessage & { groupedId: string | null; replyToMsgId: number | null };
+    type RawMsg = ChannelMessage & {
+      groupedId: string | null;
+      replyToMsgId: number | null;
+    };
     const raw: RawMsg[] = [];
     const albumGroups = new Map<string, RawMsg[]>();
 
@@ -130,9 +141,21 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
       if (!message.message.trim() && !media) continue;
 
       const groupedId = message.groupedId?.toString() ?? null;
-      const replyToMsgId = (message.replyTo as Api.MessageReplyHeader)?.replyToMsgId ?? null;
-      const url = channelUsername ? `https://t.me/${channelUsername}/${message.id}` : undefined;
-      const msg: RawMsg = { id: message.id, date, text: message.message, views: message.views ?? null, url, media, groupedId, replyToMsgId };
+      const replyToMsgId =
+        (message.replyTo as Api.MessageReplyHeader)?.replyToMsgId ?? null;
+      const url = channelUsername
+        ? `https://t.me/${channelUsername}/${message.id}`
+        : undefined;
+      const msg: RawMsg = {
+        id: message.id,
+        date,
+        text: message.message,
+        views: message.views ?? null,
+        url,
+        media,
+        groupedId,
+        replyToMsgId,
+      };
       raw.push(msg);
 
       if (groupedId) {
@@ -143,11 +166,19 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     }
 
     // Batch-fetch all quoted messages in one API call
-    const quotedIds = [...new Set(raw.map((m) => m.replyToMsgId).filter((id): id is number => id !== null))];
+    const quotedIds = [
+      ...new Set(
+        raw
+          .map((m) => m.replyToMsgId)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
     const quotedTextMap = new Map<number, string>();
     if (quotedIds.length > 0) {
       try {
-        const fetched = await this.client.getMessages(entity, { ids: quotedIds });
+        const fetched = await this.client.getMessages(entity, {
+          ids: quotedIds,
+        });
         for (const m of fetched) {
           if (m instanceof Api.Message && m.message) {
             quotedTextMap.set(m.id, m.message);
@@ -158,7 +189,10 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
       }
     }
 
-    const prependQuote = (text: string, replyToMsgId: number | null): string => {
+    const prependQuote = (
+      text: string,
+      replyToMsgId: number | null,
+    ): string => {
       const quote = replyToMsgId ? quotedTextMap.get(replyToMsgId) : undefined;
       if (!quote) return text;
       return `[QUOTED_MESSAGE]${quote}[/QUOTED_MESSAGE]\n\n${text}`;
@@ -178,17 +212,27 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
 
       const group = albumGroups.get(msg.groupedId)!;
       const textMsg = group.find((m) => m.text.trim());
-      const text = prependQuote(textMsg?.text ?? "", textMsg?.replyToMsgId ?? null);
+      const text = prependQuote(
+        textMsg?.text ?? "",
+        textMsg?.replyToMsgId ?? null,
+      );
       const photos = group
         .filter((m) => m.media?.type === "photo")
-        .map((m) => (m.media as { type: "photo"; localPath: string }).localPath);
+        .map(
+          (m) => (m.media as { type: "photo"; localPath: string }).localPath,
+        );
 
       result.push({
         id: msg.id,
         date: msg.date,
         text,
         views: msg.views,
-        media: photos.length > 1 ? { type: "album", localPaths: photos } : photos.length === 1 ? { type: "photo", localPath: photos[0] } : group.find((m) => m.media)?.media,
+        media:
+          photos.length > 1
+            ? { type: "album", localPaths: photos }
+            : photos.length === 1
+              ? { type: "photo", localPath: photos[0] }
+              : group.find((m) => m.media)?.media,
       });
     }
 
@@ -196,7 +240,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
   }
 
   private async downloadPhoto(message: Api.Message): Promise<IMedia> {
-    const buffer = await this.client.downloadMedia(message, {}) as Buffer;
+    const buffer = (await this.client.downloadMedia(message, {})) as Buffer;
     const resized = await sharp(buffer)
       .resize(512, 512, { fit: "inside" })
       .jpeg({ quality: 75 })

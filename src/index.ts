@@ -31,7 +31,7 @@ function toNormalizedItems(data: IConnectorNormalizedData): NormalizedItem[] {
 
 try {
   const threeDaysAgo = new Date();
-  threeDaysAgo.setDate(new Date().getDate() - 5);
+  threeDaysAgo.setDate(new Date().getDate() - 2);
 
   const tgClient = await createTelegramClient();
   const telegramConnector = new TelegramConnector(tgClient);
@@ -55,8 +55,18 @@ try {
     `Summarization took ${((performance.now() - t0) / 1000).toFixed(1)}s`,
   );
 
+  await Deno.writeTextFile("summary.json", JSON.stringify(summary, null, 2));
+
   console.log("\n=== Summary ===\n");
-  console.log(summary);
+  for (const point of summary) {
+    console.log(`• ${point.text}`);
+    if (point.channel || point.sourceUrl) {
+      const meta = [point.channel, point.date, point.sourceUrl]
+        .filter(Boolean)
+        .join(" · ");
+      console.log(`  ${meta}`);
+    }
+  }
 
   await Deno.remove("media", { recursive: true });
 } catch (error) {
