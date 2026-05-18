@@ -14,6 +14,7 @@ export interface IConnectorNormalizedEntityData {
   timestamp: string;
   text: string;
   author: string;
+  url?: string;
   media?: IMedia;
   comments?: Array<IComment>;
 }

@@ -45,3 +45,5 @@ node_modules/
 
 # artifacts
 items.json
+content.json
+media

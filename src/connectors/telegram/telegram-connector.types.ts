@@ -11,5 +11,6 @@ export interface ChannelMessage {
   date: Date;
   text: string;
   views: number | null;
+  url?: string;
   media?: IMedia;
 }

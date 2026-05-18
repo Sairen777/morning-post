@@ -53,7 +53,8 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
 
       const title = dialog.title ?? entity.id.toString();
       if (this.excludedChannels.includes(title)) continue;
-      const messages = await this.getMessages(entity, from, to, title);
+      const channelUsername = entity instanceof Api.Channel ? (entity.username ?? null) : null;
+      const messages = await this.getMessages(entity, from, to, channelUsername);
 
       if (messages.length > 0) {
         result[title] = messages;
@@ -75,6 +76,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
         timestamp: msg.date.toISOString(),
         text: msg.text,
         author: channelName,
+        ...(msg.url && { url: msg.url }),
         ...(msg.media && { media: msg.media }),
       }));
     }
@@ -101,7 +103,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     entity: Parameters<TelegramClient["iterMessages"]>[0],
     from: Date,
     to: Date,
-    label: string = "",
+    channelUsername: string | null = null,
   ): Promise<ChannelMessage[]> {
     type RawMsg = ChannelMessage & { groupedId: string | null; replyToMsgId: number | null };
     const raw: RawMsg[] = [];
@@ -129,7 +131,8 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
 
       const groupedId = message.groupedId?.toString() ?? null;
       const replyToMsgId = (message.replyTo as Api.MessageReplyHeader)?.replyToMsgId ?? null;
-      const msg: RawMsg = { id: message.id, date, text: message.message, views: message.views ?? null, media, groupedId, replyToMsgId };
+      const url = channelUsername ? `https://t.me/${channelUsername}/${message.id}` : undefined;
+      const msg: RawMsg = { id: message.id, date, text: message.message, views: message.views ?? null, url, media, groupedId, replyToMsgId };
       raw.push(msg);
 
       if (groupedId) {

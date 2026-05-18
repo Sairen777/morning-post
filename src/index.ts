@@ -21,7 +21,7 @@ function toNormalizedItems(data: IConnectorNormalizedData): NormalizedItem[] {
         date: new Date(msg.timestamp),
         title: null,
         text: msg.text,
-        url: null,
+        url: msg.url ?? null,
         media: msg.media,
       });
     }
