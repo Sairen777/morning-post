@@ -16,6 +16,7 @@ export interface IConnectorNormalizedEntityData {
   author: string;
   url?: string;
   media?: IMedia;
+  isGroup?: boolean;
   comments?: Array<IComment>;
 }
 

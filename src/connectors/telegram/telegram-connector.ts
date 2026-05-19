@@ -11,7 +11,10 @@ import type {
   ChannelMessage,
 } from "./telegram-connector.types.ts";
 
-type TelegramRawData = Record<string, ChannelMessage[]>;
+type TelegramRawData = Record<
+  string,
+  { isGroup: boolean; messages: ChannelMessage[] }
+>;
 
 function extractNonPhotoMedia(media: Api.TypeMessageMedia): IMedia | undefined {
   if (media instanceof Api.MessageMediaWebPage) {
@@ -31,8 +34,19 @@ function extractNonPhotoMedia(media: Api.TypeMessageMedia): IMedia | undefined {
   return undefined;
 }
 
+function resolveAuthor(sender: Api.TypeEntity | undefined): string | null {
+  if (!sender) return null;
+  if (sender instanceof Api.User) {
+    return sender.username
+      ? `@${sender.username}`
+      : [sender.firstName, sender.lastName].filter(Boolean).join(" ") || null;
+  }
+  if (sender instanceof Api.Channel) return sender.title ?? null;
+  return null;
+}
+
 // const DEFAULT_EXCLUDED_CHANNELS = ["Telegram", "/b/ Свидетели сингулярности"];
-const DEFAULT_EXCLUDED_CHANNELS = ["Telegram", "Сиолошная"];
+const DEFAULT_EXCLUDED_CHANNELS = ["Telegram"];
 
 export class TelegramConnector implements IConnector<TelegramRawData> {
   constructor(
@@ -55,17 +69,23 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
 
       const title = dialog.title ?? entity.id.toString();
       if (this.excludedChannels.includes(title)) continue;
+
+      const isGroup =
+        (entity instanceof Api.Channel && entity.megagroup === true) ||
+        entity instanceof Api.Chat;
       const channelUsername =
         entity instanceof Api.Channel ? (entity.username ?? null) : null;
+
       const messages = await this.getMessages(
         entity,
         from,
         to,
         channelUsername,
+        isGroup,
       );
 
       if (messages.length > 0) {
-        result[title] = messages;
+        result[title] = { isGroup, messages };
       }
     }
 
@@ -79,11 +99,13 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     const raw = await this.getRawData(from, to);
     const result: IConnectorNormalizedData = {};
 
-    for (const [channelName, messages] of Object.entries(raw)) {
+    for (const [channelName, { isGroup, messages }] of Object.entries(raw)) {
       result[channelName] = messages.map((msg) => ({
         timestamp: msg.date.toISOString(),
         text: msg.text,
-        author: channelName,
+        // for groups: use the actual message sender; for channels: use the channel name
+        author: msg.author ?? channelName,
+        isGroup,
         ...(msg.url && { url: msg.url }),
         ...(msg.media && { media: msg.media }),
       }));
@@ -112,6 +134,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     from: Date,
     to: Date,
     channelUsername: string | null = null,
+    isGroup: boolean = false,
   ): Promise<ChannelMessage[]> {
     type RawMsg = ChannelMessage & {
       groupedId: string | null;
@@ -133,13 +156,17 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
 
       let media: IMedia | undefined;
       if (message.media instanceof Api.MessageMediaPhoto) {
-        media = await this.downloadPhoto(message);
+        // skip photo download for groups — images are usually memes and waste tokens
+        if (!isGroup) media = await this.downloadPhoto(message);
       } else if (message.media) {
         media = extractNonPhotoMedia(message.media);
       }
 
       if (!message.message.trim() && !media) continue;
 
+      const author = isGroup
+        ? resolveAuthor(message.sender as Api.TypeEntity | undefined)
+        : null;
       const groupedId = message.groupedId?.toString() ?? null;
       const replyToMsgId =
         (message.replyTo as Api.MessageReplyHeader)?.replyToMsgId ?? null;
@@ -151,6 +178,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
         date,
         text: message.message,
         views: message.views ?? null,
+        author,
         url,
         media,
         groupedId,
@@ -227,6 +255,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
         date: msg.date,
         text,
         views: msg.views,
+        author: msg.author,
         media:
           photos.length > 1
             ? { type: "album", localPaths: photos }

@@ -29,3 +29,26 @@ you don't have to log in again. Run the app `deno task dev`.
 
 - **Polls** — messages whose only content is a poll (no text, no photo) are skipped
 - **Stickers, reactions, and other media-only messages** — anything with no text and no photo/video/document/webpage is skipped
+
+## Non-obvious Gotchas
+
+**Groups vs channels detection**
+Supergroups are technically `Api.Channel` in GramJS with a `megagroup: true` flag — checking `instanceof Api.Channel` alone does not distinguish them from broadcast channels. Basic groups are `Api.Chat`.
+
+**Photos are not downloaded for groups**
+Group chat photos are usually memes and would waste vision tokens. Photo download only runs for broadcast channels; group messages silently drop photo media.
+
+**Pure emoji messages are filtered before summarization**
+Messages with no letter characters (`👍`, `😂🔥`) are dropped. Short word replies like "yes" or "no" pass through since they contain letters.
+
+**Quote fetching is best-effort**
+Quoted/replied-to messages are batch-fetched after iteration and prepended as `[QUOTED_MESSAGE]...[/QUOTED_MESSAGE]`. If the fetch fails (e.g. deleted message, permission error), the main message is still kept — the quote is just omitted silently.
+
+**Album grouping**
+Photos sent as an album share the same `groupedId`. They are merged into a single item with `type: "album"` — only one of the album messages typically carries the caption text.
+
+**Context overflow for large group chats**
+All group messages are sent in a single summarizer request. Threads with 300+ messages may overflow the model's context window. See the comment in `openai-compatible-summarizer.ts` for options (hard cap, time-window cap, chunked summarization).
+
+**Anonymous admins posting as the channel**
+In supergroups, admins can post anonymously — their `message.sender` is the group's linked channel rather than a `User`. These show up with the channel title as the author name.

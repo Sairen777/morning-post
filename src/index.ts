@@ -3,7 +3,10 @@ import { createTelegramClient } from "./connectors/telegram/telegram-client.ts";
 import { TelegramConnector } from "./connectors/telegram/telegram-connector.ts";
 import type { IConnectorNormalizedData } from "./connectors/connector.types.ts";
 import { OpenAICompatibleSummarizerService } from "./summarizer/openai-compatible-summarizer.ts";
-import type { NormalizedItem } from "./summarizer/summarizer.types.ts";
+import type {
+  NormalizedItem,
+  SummaryPoint,
+} from "./summarizer/summarizer.types.ts";
 
 const app = new Hono();
 app.get("/", (c) => c.text("Hello Hono"));
@@ -21,12 +24,26 @@ function toNormalizedItems(data: IConnectorNormalizedData): NormalizedItem[] {
         date: new Date(msg.timestamp),
         title: null,
         text: msg.text,
+        author: msg.author,
         url: msg.url ?? null,
         media: msg.media,
+        isGroup: msg.isGroup ?? false,
       });
     }
   }
   return items;
+}
+
+function printSummary(summary: SummaryPoint[]): void {
+  for (const point of summary) {
+    console.log(`• ${point.text}`);
+    if (point.channel || point.sourceUrl) {
+      const meta = [point.channel, point.date, point.sourceUrl]
+        .filter(Boolean)
+        .join(" · ");
+      console.log(`  ${meta}`);
+    }
+  }
 }
 
 try {
@@ -41,34 +58,48 @@ try {
   );
   const items = toNormalizedItems(normalized);
 
-  console.log(`Fetched ${items.length} messages. Summarizing...`);
+  const channelItems = items.filter((i) => !i.isGroup);
+  const groupItems = items.filter((i) => i.isGroup);
 
-  await Deno.writeTextFile("items.json", JSON.stringify(items, null, 2));
-
-  const summarizer = new OpenAICompatibleSummarizerService();
-  const t0 = performance.now();
-  const summary = await summarizer.summarize(items, {
-    language: "English",
-    format: "bullet points",
-  });
   console.log(
-    `Summarization took ${((performance.now() - t0) / 1000).toFixed(1)}s`,
+    `Fetched ${items.length} messages (${channelItems.length} channel, ${groupItems.length} group). Summarizing...`,
   );
 
-  await Deno.writeTextFile("summary.json", JSON.stringify(summary, null, 2));
+  const summarizer = new OpenAICompatibleSummarizerService();
 
-  console.log("\n=== Summary ===\n");
-  for (const point of summary) {
-    console.log(`• ${point.text}`);
-    if (point.channel || point.sourceUrl) {
-      const meta = [point.channel, point.date, point.sourceUrl]
-        .filter(Boolean)
-        .join(" · ");
-      console.log(`  ${meta}`);
-    }
+  if (channelItems.length > 0) {
+    const t0 = performance.now();
+    const summary = await summarizer.summarize(channelItems, {
+      format: "bullet points",
+    });
+    console.log(
+      `Channel summarization took ${((performance.now() - t0) / 1000).toFixed(1)}s`,
+    );
+    await Deno.writeTextFile(
+      "channel_summary.json",
+      JSON.stringify(summary, null, 2),
+    );
+    console.log("\n=== Channel Summary ===\n");
+    printSummary(summary);
   }
 
-  await Deno.remove("media", { recursive: true });
+  if (groupItems.length > 0) {
+    const t0 = performance.now();
+    const groupSummary = await summarizer.summarize(groupItems, {
+      mode: "discussion",
+    });
+    console.log(
+      `Group summarization took ${((performance.now() - t0) / 1000).toFixed(1)}s`,
+    );
+    await Deno.writeTextFile(
+      "group_summary.json",
+      JSON.stringify(groupSummary, null, 2),
+    );
+    console.log("\n=== Group Summary ===\n");
+    printSummary(groupSummary);
+  }
+
+  // await Deno.remove("media", { recursive: true });
 } catch (error) {
   console.error(error);
 }
