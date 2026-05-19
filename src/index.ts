@@ -1,12 +1,9 @@
 import { Hono } from "@hono/hono";
 import { createTelegramClient } from "./connectors/telegram/telegram-client.ts";
 import { TelegramConnector } from "./connectors/telegram/telegram-connector.ts";
-import type { IConnectorNormalizedData } from "./connectors/connector.types.ts";
 import { OpenAICompatibleSummarizerService } from "./summarizer/openai-compatible-summarizer.ts";
-import type {
-  NormalizedItem,
-  SummaryPoint,
-} from "./summarizer/summarizer.types.ts";
+import type { NormalizedItem, SummaryPoint } from "./summarizer/summarizer.types.ts";
+import type { IConnectorNormalizedEntityData } from "./connectors/connector.types.ts";
 
 const app = new Hono();
 app.get("/", (c) => c.text("Hello Hono"));
@@ -14,27 +11,25 @@ app.get("/", (c) => c.text("Hello Hono"));
 Deno.serve({ port: 3000 }, app.fetch);
 console.log("Hono is running at http://localhost:3000");
 
-function toNormalizedItems(data: IConnectorNormalizedData): NormalizedItem[] {
-  const items: NormalizedItem[] = [];
-  for (const [channelName, messages] of Object.entries(data)) {
-    for (const msg of messages) {
-      items.push({
-        connectorId: "telegram",
-        sourceId: channelName,
-        date: new Date(msg.timestamp),
-        title: null,
-        text: msg.text,
-        author: msg.author,
-        url: msg.url ?? null,
-        media: msg.media,
-        isGroup: msg.isGroup ?? false,
-      });
-    }
-  }
-  return items;
+function toNormalizedItems(
+  entityName: string,
+  messages: IConnectorNormalizedEntityData[],
+): NormalizedItem[] {
+  return messages.map((msg) => ({
+    connectorId: "telegram",
+    sourceId: entityName,
+    date: new Date(msg.timestamp),
+    title: null,
+    text: msg.text,
+    author: msg.author,
+    url: msg.url ?? null,
+    media: msg.media,
+    isGroup: msg.isGroup ?? false,
+  }));
 }
 
-function printSummary(summary: SummaryPoint[]): void {
+function printSummary(entityName: string, summary: SummaryPoint[]): void {
+  console.log(`\n=== ${entityName} ===\n`);
   for (const point of summary) {
     console.log(`• ${point.text}`);
     if (point.channel || point.sourceUrl) {
@@ -47,56 +42,43 @@ function printSummary(summary: SummaryPoint[]): void {
 }
 
 try {
-  const threeDaysAgo = new Date();
-  threeDaysAgo.setDate(new Date().getDate() - 2);
+  const from = new Date();
+  from.setDate(from.getDate() - 2);
 
   const tgClient = await createTelegramClient();
   const telegramConnector = new TelegramConnector(tgClient);
-  const normalized = await telegramConnector.getNormalizedData(
-    threeDaysAgo,
-    new Date(),
-  );
-  const items = toNormalizedItems(normalized);
+  const normalized = await telegramConnector.getNormalizedData(from, new Date());
 
-  const channelItems = items.filter((i) => !i.isGroup);
-  const groupItems = items.filter((i) => i.isGroup);
-
+  const entities = Object.entries(normalized);
+  const totalMessages = entities.reduce((sum, [, msgs]) => sum + msgs.length, 0);
   console.log(
-    `Fetched ${items.length} messages (${channelItems.length} channel, ${groupItems.length} group). Summarizing...`,
+    `Fetched ${totalMessages} messages across ${entities.length} entities. Summarizing...`,
   );
 
   const summarizer = new OpenAICompatibleSummarizerService();
 
-  if (channelItems.length > 0) {
-    const t0 = performance.now();
-    const summary = await summarizer.summarize(channelItems, {
-      format: "bullet points",
-    });
-    console.log(
-      `Channel summarization took ${((performance.now() - t0) / 1000).toFixed(1)}s`,
-    );
-    await Deno.writeTextFile(
-      "channel_summary.json",
-      JSON.stringify(summary, null, 2),
-    );
-    console.log("\n=== Channel Summary ===\n");
-    printSummary(summary);
-  }
+  // One LLM request per entity — keeps context focused and avoids topic bleed between channels.
+  // Promise.all parallelizes for hosted APIs; a local LLM will serialize requests on its end.
+  const results = await Promise.all(
+    entities.map(async ([entityName, messages]) => {
+      const items = toNormalizedItems(entityName, messages);
+      const isGroup = messages[0]?.isGroup ?? false;
+      const t0 = performance.now();
+      const summary = await summarizer.summarize(items, {
+        mode: isGroup ? "discussion" : undefined,
+        format: isGroup ? undefined : "bullet points",
+      });
+      console.log(
+        `${entityName}: ${((performance.now() - t0) / 1000).toFixed(1)}s (${summary.length} points)`,
+      );
+      return { entityName, isGroup, summary };
+    }),
+  );
 
-  if (groupItems.length > 0) {
-    const t0 = performance.now();
-    const groupSummary = await summarizer.summarize(groupItems, {
-      mode: "discussion",
-    });
-    console.log(
-      `Group summarization took ${((performance.now() - t0) / 1000).toFixed(1)}s`,
-    );
-    await Deno.writeTextFile(
-      "group_summary.json",
-      JSON.stringify(groupSummary, null, 2),
-    );
-    console.log("\n=== Group Summary ===\n");
-    printSummary(groupSummary);
+  await Deno.writeTextFile("summary.json", JSON.stringify(results, null, 2));
+
+  for (const { entityName, summary } of results) {
+    printSummary(entityName, summary);
   }
 
   // await Deno.remove("media", { recursive: true });
