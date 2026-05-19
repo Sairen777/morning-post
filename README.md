@@ -1,5 +1,13 @@
 # Morning Post App
 
+## Setup
+
+```sh
+git config core.hooksPath .githooks
+```
+
+This activates the pre-push hook that runs tests before every push.
+
 ## Get Telegram Credentials
 
 1. Open [https://my.telegram.org/apps](https://my.telegram.org/apps)

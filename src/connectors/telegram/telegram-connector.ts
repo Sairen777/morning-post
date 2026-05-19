@@ -10,6 +10,8 @@ import type {
   ChannelInfo,
   ChannelMessage,
 } from "./telegram-connector.types.ts";
+import { mergeAlbums, type RawMsg } from "./message-utils.ts";
+export { mergeAlbums, prependQuote, type RawMsg } from "./message-utils.ts";
 
 type TelegramRawData = Record<
   string,
@@ -34,7 +36,7 @@ function extractNonPhotoMedia(media: Api.TypeMessageMedia): IMedia | undefined {
   return undefined;
 }
 
-function resolveAuthor(sender: Api.TypeEntity | undefined): string | null {
+function resolveAuthor(sender?: Api.TypeEntityLike): string | null {
   if (!sender) return null;
   if (sender instanceof Api.User) {
     return sender.username
@@ -136,10 +138,6 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     channelUsername: string | null = null,
     isGroup: boolean = false,
   ): Promise<ChannelMessage[]> {
-    type RawMsg = ChannelMessage & {
-      groupedId: string | null;
-      replyToMsgId: number | null;
-    };
     const raw: RawMsg[] = [];
     const albumGroups = new Map<string, RawMsg[]>();
 
@@ -165,7 +163,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
       if (!message.message.trim() && !media) continue;
 
       const author = isGroup
-        ? resolveAuthor(message.sender as Api.TypeEntity | undefined)
+        ? resolveAuthor(message.sender as Api.TypeEntityLike | undefined)
         : null;
       const groupedId = message.groupedId?.toString() ?? null;
       const replyToMsgId =
@@ -217,59 +215,11 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
       }
     }
 
-    const prependQuote = (
-      text: string,
-      replyToMsgId: number | null,
-    ): string => {
-      const quote = replyToMsgId ? quotedTextMap.get(replyToMsgId) : undefined;
-      if (!quote) return text;
-      return `[QUOTED_MESSAGE]${quote}[/QUOTED_MESSAGE]\n\n${text}`;
-    };
-
-    // Merge album groups while preserving original message order
-    const emitted = new Set<string>();
-    const result: ChannelMessage[] = [];
-
-    for (const msg of raw) {
-      if (!msg.groupedId) {
-        result.push({ ...msg, text: prependQuote(msg.text, msg.replyToMsgId) });
-        continue;
-      }
-      if (emitted.has(msg.groupedId)) continue;
-      emitted.add(msg.groupedId);
-
-      const group = albumGroups.get(msg.groupedId)!;
-      const textMsg = group.find((m) => m.text.trim());
-      const text = prependQuote(
-        textMsg?.text ?? "",
-        textMsg?.replyToMsgId ?? null,
-      );
-      const photos = group
-        .filter((m) => m.media?.type === "photo")
-        .map(
-          (m) => (m.media as { type: "photo"; localPath: string }).localPath,
-        );
-
-      result.push({
-        id: msg.id,
-        date: msg.date,
-        text,
-        views: msg.views,
-        author: msg.author,
-        media:
-          photos.length > 1
-            ? { type: "album", localPaths: photos }
-            : photos.length === 1
-              ? { type: "photo", localPath: photos[0] }
-              : group.find((m) => m.media)?.media,
-      });
-    }
-
-    return result;
+    return mergeAlbums(raw, albumGroups, quotedTextMap);
   }
 
   private async downloadPhoto(message: Api.Message): Promise<IMedia> {
-    const buffer = (await this.client.downloadMedia(message, {})) as Buffer;
+    const buffer = (await this.client.downloadMedia(message, {})) as Uint8Array;
     const resized = await sharp(buffer)
       .resize(512, 512, { fit: "inside" })
       .jpeg({ quality: 75 })

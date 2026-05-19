@@ -4,7 +4,9 @@
   },
   "tasks": {
     "dev": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
-    "start": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts"
+    "start": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
+    "test": "deno test --allow-read --allow-write --allow-net --allow-env tests/",
+    "capture-fixtures": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi scripts/capture-fixtures.ts"
   },
   "nodeModulesDir": "auto",
   "compilerOptions": {

@@ -44,6 +44,5 @@ package-lock.json
 node_modules/
 
 # artifacts
-items.json
-content.json
-media
+.debug_logs/
+media/

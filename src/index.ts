@@ -75,7 +75,9 @@ try {
     }),
   );
 
-  await Deno.writeTextFile("summary.json", JSON.stringify(results, null, 2));
+  await Deno.mkdir(".debug_logs", { recursive: true });
+  await Deno.writeTextFile(".debug_logs/normalized.json", JSON.stringify(normalized, null, 2));
+  await Deno.writeTextFile(".debug_logs/summary.json", JSON.stringify(results, null, 2));
 
   for (const { entityName, summary } of results) {
     printSummary(entityName, summary);

@@ -28,8 +28,9 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     const systemPrompt = this.buildSystemPrompt(rules);
     const { parts, indexedItems } = await this.buildContentParts(items, rules);
 
+    await Deno.mkdir(".debug_logs", { recursive: true });
     await Deno.writeTextFile(
-      `contentForSummarizer${rules.mode === "discussion" ? "-discussion" : ""}.json`,
+      `.debug_logs/contentForSummarizer${rules.mode === "discussion" ? "-discussion" : ""}.json`,
       typeof parts === "string" ? parts : JSON.stringify(parts, null, 2),
     );
 
