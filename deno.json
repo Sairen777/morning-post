@@ -1,6 +1,7 @@
 {
   "imports": {
-    "@hono/hono": "jsr:@hono/hono"
+    "@hono/hono": "jsr:@hono/hono",
+    "jsonrepair": "npm:jsonrepair"
   },
   "tasks": {
     "dev": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",

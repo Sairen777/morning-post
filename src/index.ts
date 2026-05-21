@@ -2,7 +2,10 @@ import { Hono } from "@hono/hono";
 import { createTelegramClient } from "./connectors/telegram/telegram-client.ts";
 import { TelegramConnector } from "./connectors/telegram/telegram-connector.ts";
 import { OpenAICompatibleSummarizerService } from "./summarizer/openai-compatible-summarizer.ts";
-import type { NormalizedItem, SummaryPoint } from "./summarizer/summarizer.types.ts";
+import type {
+  NormalizedItem,
+  SummaryPoint,
+} from "./summarizer/summarizer.types.ts";
 import type { IConnectorNormalizedEntityData } from "./connectors/connector.types.ts";
 
 const app = new Hono();
@@ -43,14 +46,18 @@ function printSummary(entityName: string, summary: SummaryPoint[]): void {
 
 try {
   const from = new Date();
-  from.setDate(from.getDate() - 2);
-
+  from.setDate(from.getDate() - 7);
+  const to = new Date();
+  to.setDate(to.getDate() - 5);
   const tgClient = await createTelegramClient();
   const telegramConnector = new TelegramConnector(tgClient);
-  const normalized = await telegramConnector.getNormalizedData(from, new Date());
+  const normalized = await telegramConnector.getNormalizedData(from, to);
 
   const entities = Object.entries(normalized);
-  const totalMessages = entities.reduce((sum, [, msgs]) => sum + msgs.length, 0);
+  const totalMessages = entities.reduce(
+    (sum, [, msgs]) => sum + msgs.length,
+    0,
+  );
   console.log(
     `Fetched ${totalMessages} messages across ${entities.length} entities. Summarizing...`,
   );
@@ -76,8 +83,14 @@ try {
   );
 
   await Deno.mkdir(".debug_logs", { recursive: true });
-  await Deno.writeTextFile(".debug_logs/normalized.json", JSON.stringify(normalized, null, 2));
-  await Deno.writeTextFile(".debug_logs/summary.json", JSON.stringify(results, null, 2));
+  await Deno.writeTextFile(
+    ".debug_logs/normalized.json",
+    JSON.stringify(normalized, null, 2),
+  );
+  await Deno.writeTextFile(
+    ".debug_logs/summary.json",
+    JSON.stringify(results, null, 2),
+  );
 
   for (const { entityName, summary } of results) {
     printSummary(entityName, summary);

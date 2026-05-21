@@ -1,3 +1,4 @@
+import { jsonrepair } from "jsonrepair";
 import type {
   NormalizedItem,
   SummaryPoint,
@@ -17,7 +18,8 @@ function isEmojiOnly(text: string): boolean {
 
 export class OpenAICompatibleSummarizerService implements SummarizerService {
   constructor(
-    private model: string = "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive",
+    // private model: string = "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive",
+    private model: string = "gemma-4-e4b-uncensored-hauhaucs-aggressive",
     private baseUrl: string = "http://localhost:1234",
   ) {}
 
@@ -44,6 +46,25 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
           { role: "system", content: systemPrompt },
           { role: "user", content: parts },
         ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "summary_points",
+            strict: true,
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  t: { type: "string" },
+                  i: { type: "integer" },
+                },
+                required: ["t", "i"],
+                additionalProperties: false,
+              },
+            },
+          },
+        },
       }),
     });
 
@@ -94,7 +115,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
   private async buildContentParts(
     items: NormalizedItem[],
     rules: SummaryRuleset,
-  ): Promise<{ parts: ContentPart[] | string; indexedItems: NormalizedItem[] }> {
+  ): Promise<{
+    parts: ContentPart[] | string;
+    indexedItems: NormalizedItem[];
+  }> {
     const parts: ContentPart[] = [];
     const indexedItems: NormalizedItem[] = [];
     const isDiscussion = rules.mode === "discussion";
@@ -155,11 +179,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     raw: string,
     indexedItems: NormalizedItem[],
   ): SummaryPoint[] {
-    // Strip markdown code fences if the model wrapped the JSON
-    const json = raw
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/, "")
-      .trim();
+    // Strip <think>...</think> reasoning tokens (Qwen3, DeepSeek-R1, etc.) first,
+    // then let jsonrepair handle malformed JSON, fences, and other LLM quirks.
+    const stripped = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    const json = jsonrepair(stripped);
 
     const parsed = JSON.parse(json) as Array<{ t: string; i: number }>;
 

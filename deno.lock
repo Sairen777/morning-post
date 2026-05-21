@@ -6,6 +6,7 @@
     "jsr:@std/internal@^1.0.12": "1.0.13",
     "npm:input@1.0.1": "1.0.1",
     "npm:input@^1.0.1": "1.0.1",
+    "npm:jsonrepair@*": "3.14.0",
     "npm:qrcode-terminal@0.12": "0.12.0",
     "npm:sharp@0.33": "0.33.5",
     "npm:telegram@2.26.22": "2.26.22",
@@ -418,6 +419,10 @@
     "is-typedarray@1.0.0": {
       "integrity": "sha512-cyA56iCMHAh5CdzjJIa4aohJyeO1YbwLi3Jc35MmRU6poroFjIGZzUzupGiRPOjgHg9TLu43xbpwXk523fMxKA=="
     },
+    "jsonrepair@3.14.0": {
+      "integrity": "sha512-tWPGKMZf/8UPim+fcW2EfcQ/d/7aKUrP6IECz9G3Tu6Q5dX0orSleqJ9z6sSw7qrQkjF8/Edo4DvsWBZ8H+HNg==",
+      "bin": true
+    },
     "lodash@4.18.1": {
       "integrity": "sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q=="
     },
@@ -649,7 +654,8 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@hono/hono@*"
+      "jsr:@hono/hono@*",
+      "npm:jsonrepair@*"
     ]
   }
 }
