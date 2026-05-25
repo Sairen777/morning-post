@@ -1,10 +1,14 @@
 {
   "imports": {
     "@hono/hono": "jsr:@hono/hono",
-    "jsonrepair": "npm:jsonrepair"
+    // TODO: set latest version from npm without ^
+    "jsonrepair": "npm:jsonrepair",
+    "telegram": "npm:telegram@2.26.22",
+    "sharp": "npm:sharp@0.33"
   },
   "tasks": {
-    "dev": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
+    "dev:cli": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
+    "dev:api": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
     "start": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
     "test": "deno test --allow-read --allow-write --allow-net --allow-env tests/",
     "capture-fixtures": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi scripts/capture-fixtures.ts"
@@ -16,8 +20,8 @@
     "skipLibCheck": true
   },
   "allowScripts": {
-    "allow": ["npm:sharp"],
-    "deny": [
+    "allow": [
+      "npm:sharp@0.33",
       "npm:bufferutil@4.1.0",
       "npm:core-js@2.6.12",
       "npm:es5-ext@0.10.64",

@@ -1,11 +1,12 @@
+import type { IMedia } from "../connector.types.ts";
+
 export interface ChannelInfo {
   id: string;
   title: string;
   username: string | null;
 }
 
-import type { IMedia } from "../connector.types.ts";
-
+// TODO: can't we just take it from telegram package? It should be defined there
 export interface ChannelMessage {
   id: number;
   date: Date;
@@ -14,4 +15,11 @@ export interface ChannelMessage {
   author: string | null;
   url?: string;
   media?: IMedia;
+  groupedId?: string;
+  replyToMsgId?: number;
 }
+
+export type TelegramConnectorRawData = Record<
+  string,
+  { isGroup: boolean; messages: ChannelMessage[] }
+>;

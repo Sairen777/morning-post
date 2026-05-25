@@ -1,84 +1,68 @@
-import { TelegramClient } from "npm:telegram@^2.26.22";
-import { Api } from "npm:telegram@^2.26.22";
-import sharp from "npm:sharp@^0.33";
+import { Api, TelegramClient } from "telegram";
+import sharp from "sharp";
 import type {
   IConnector,
   IConnectorNormalizedData,
   IMedia,
 } from "../connector.types.ts";
+
 import type {
   ChannelInfo,
   ChannelMessage,
+  TelegramConnectorRawData,
 } from "./telegram-connector.types.ts";
-import { mergeAlbums, type RawMsg } from "./message-utils.ts";
+import { CONNECTORS_MEDIA_DIR } from "../../constants.ts";
+import { DEFAULT_EXCLUDED_CHANNELS } from "./constants.ts";
+
 export { mergeAlbums, prependQuote, type RawMsg } from "./message-utils.ts";
 
-type TelegramRawData = Record<
-  string,
-  { isGroup: boolean; messages: ChannelMessage[] }
->;
+export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
+  private excludedChannels = [...DEFAULT_EXCLUDED_CHANNELS];
 
-function extractNonPhotoMedia(media: Api.TypeMessageMedia): IMedia | undefined {
-  if (media instanceof Api.MessageMediaWebPage) {
-    const page = media.webpage;
-    if (page instanceof Api.WebPage && page.url)
-      return { type: "webpage", url: page.url };
-    return undefined;
-  }
-  if (media instanceof Api.MessageMediaDocument) {
-    const doc = media.document;
-    if (doc instanceof Api.Document) {
-      const mime = doc.mimeType;
-      if (mime.startsWith("video/")) return { type: "video" };
-      return { type: "document", mimeType: mime };
-    }
-  }
-  return undefined;
-}
-
-function resolveAuthor(sender?: Api.TypeEntityLike): string | null {
-  if (!sender) return null;
-  if (sender instanceof Api.User) {
-    return sender.username
-      ? `@${sender.username}`
-      : [sender.firstName, sender.lastName].filter(Boolean).join(" ") || null;
-  }
-  if (sender instanceof Api.Channel) return sender.title ?? null;
-  return null;
-}
-
-// const DEFAULT_EXCLUDED_CHANNELS = ["Telegram", "/b/ Свидетели сингулярности"];
-const DEFAULT_EXCLUDED_CHANNELS = ["Telegram"];
-
-export class TelegramConnector implements IConnector<TelegramRawData> {
-  constructor(
-    private client: TelegramClient,
-    private excludedChannels: string[] = DEFAULT_EXCLUDED_CHANNELS,
-    private mediaDir: string = "media",
-  ) {
-    Deno.mkdir(mediaDir, { recursive: true });
+  constructor(private client: TelegramClient) {
+    // TODO: probably should move all such initializations on a higher level?
+    // Do not bother with it for now
+    Deno.mkdir(CONNECTORS_MEDIA_DIR.Telegram, { recursive: true });
   }
 
-  public async getRawData(from: Date, to: Date): Promise<TelegramRawData> {
-    const result: TelegramRawData = {};
+  public async getRawData(
+    from: Date,
+    to: Date,
+  ): Promise<TelegramConnectorRawData> {
+    const result: TelegramConnectorRawData = {};
     const fromUnix = Math.floor(from.getTime() / 1000);
 
+    // TODO: can use offsetDate param to only get dialogues where last message date > from ?
     for await (const dialog of this.client.iterDialogs({})) {
-      if ((dialog.message?.date ?? 0) < fromUnix) continue;
+      if (!dialog.message) {
+        continue;
+      }
 
+      // TODO: if offset date is possible then this line is redundant
+      if (dialog.message.date < fromUnix) {
+        continue;
+      }
+
+      // entity is either a channel or a group
       const entity = dialog.entity;
-      if (!entity) continue;
+      if (!entity) {
+        continue;
+      }
 
-      const title = dialog.title ?? entity.id.toString();
-      if (this.excludedChannels.includes(title)) continue;
+      const entityTitle = dialog.title || entity.id.toString();
 
+      if (this.excludedChannels.includes(entityTitle)) {
+        continue;
+      }
+
+      // TODO: isnt instanceof checks are wacky? Telegram may change types and stuff. Why not use actual properties like megagrouo
       const isGroup =
         (entity instanceof Api.Channel && entity.megagroup === true) ||
         entity instanceof Api.Chat;
       const channelUsername =
         entity instanceof Api.Channel ? (entity.username ?? null) : null;
 
-      const messages = await this.getMessages(
+      const messages = await this.getMessagesFromEntity(
         entity,
         from,
         to,
@@ -87,7 +71,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
       );
 
       if (messages.length > 0) {
-        result[title] = { isGroup, messages };
+        result[entityTitle] = { isGroup, messages };
       }
     }
 
@@ -98,6 +82,11 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     from: Date,
     to: Date,
   ): Promise<IConnectorNormalizedData> {
+    // TODO: this should be caches somehow, if we call getRawData twice with the same from and to params
+    // with some small time interval, second call shoudl return already calculated data instantly
+    // dont fix it now if it would be better done with proper backend architecture with db and stuff
+    // or maybe we can write it to some in memory cache, but how well would it hehave if we have thousands of
+    // parallel requests?
     const raw = await this.getRawData(from, to);
     const result: IConnectorNormalizedData = {};
 
@@ -116,7 +105,7 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     return result;
   }
 
-  public async getChannels(): Promise<ChannelInfo[]> {
+  private async getChannels(): Promise<ChannelInfo[]> {
     const dialogs = await this.client.getDialogs({});
 
     return dialogs
@@ -131,47 +120,64 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
       });
   }
 
-  private async getMessages(
+  // TODO: method is too big, move logic of downloading media to processMedia method (create it)
+  // there also should be something like processQuitedMessages method
+  // basically this method doing a lot of different things under hood, very hard to read
+  private async getMessagesFromEntity(
     entity: Parameters<TelegramClient["iterMessages"]>[0],
     from: Date,
     to: Date,
     channelUsername: string | null = null,
     isGroup: boolean = false,
   ): Promise<ChannelMessage[]> {
-    const raw: RawMsg[] = [];
-    const albumGroups = new Map<string, RawMsg[]>();
+    const rawMessages = [];
+    // TODO: add proper type
+    const albumGroups = new Map<string, any[]>();
 
     for await (const message of this.client.iterMessages(entity, {
       offsetDate: Math.floor(to.getTime() / 1000) + 1,
       reverse: false,
     })) {
-      if (!(message instanceof Api.Message)) continue;
+      // TODO: what else can it be? I dont get it
+      if (!(message instanceof Api.Message)) {
+        continue;
+      }
 
       const date = new Date(message.date * 1000);
 
-      if (date > to) continue;
-      if (date < from) break;
+      // TODO: doesnt offset date solves it?
+      if (date > to) {
+        continue;
+      }
+
+      // TODO: why break here and continue in the previous case?
+      if (date < from) {
+        break;
+      }
 
       let media: IMedia | undefined;
       if (message.media instanceof Api.MessageMediaPhoto) {
         // skip photo download for groups — images are usually memes and waste tokens
-        if (!isGroup) media = await this.downloadPhoto(message);
+        if (!isGroup) {
+          media = await this.downloadPhoto(message);
+        }
       } else if (message.media) {
-        media = extractNonPhotoMedia(message.media);
+        media = this.extractNonPhotoMedia(message.media);
       }
 
-      if (!message.message.trim() && !media) continue;
+      if (!message.message.trim() && !media) {
+        continue;
+      }
 
-      const author = isGroup
-        ? resolveAuthor(message.sender as Api.TypeEntityLike | undefined)
-        : null;
-      const groupedId = message.groupedId?.toString() ?? null;
-      const replyToMsgId =
-        (message.replyTo as Api.MessageReplyHeader)?.replyToMsgId ?? null;
+      const author = isGroup ? this.resolveAuthor(message.sender) : null;
+      // in case message has multiple media files they all will have same groupedId
+      const groupedId = message.groupedId?.toString();
+      const replyToMsgId = (message.replyTo as Api.MessageReplyHeader)
+        ?.replyToMsgId;
       const url = channelUsername
         ? `https://t.me/${channelUsername}/${message.id}`
         : undefined;
-      const msg: RawMsg = {
+      const msg: ChannelMessage = {
         id: message.id,
         date,
         text: message.message,
@@ -182,8 +188,10 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
         groupedId,
         replyToMsgId,
       };
-      raw.push(msg);
 
+      rawMessages.push(msg);
+
+      // TODO; add comments here on wtf happening and why
       if (groupedId) {
         const group = albumGroups.get(groupedId) ?? [];
         group.push(msg);
@@ -194,11 +202,11 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
     // Batch-fetch all quoted messages in one API call
     const quotedIds = [
       ...new Set(
-        raw
-          .map((m) => m.replyToMsgId)
-          .filter((id): id is number => id !== null),
+        rawMessages.map((m) => m.replyToMsgId).filter((id) => id !== null),
       ),
     ];
+
+    // TODO: wtf happening here
     const quotedTextMap = new Map<number, string>();
     if (quotedIds.length > 0) {
       try {
@@ -215,17 +223,67 @@ export class TelegramConnector implements IConnector<TelegramRawData> {
       }
     }
 
-    return mergeAlbums(raw, albumGroups, quotedTextMap);
+    // TODO: method of detching messages returns some "mergeAlbums" method, doesnt make sense logically
+    return mergeAlbums(rawMessages, albumGroups, quotedTextMap);
   }
 
   private async downloadPhoto(message: Api.Message): Promise<IMedia> {
     const buffer = (await this.client.downloadMedia(message, {})) as Uint8Array;
     const resized = await sharp(buffer)
+      // TODO: won't it resize different aspect ratios to square?
       .resize(512, 512, { fit: "inside" })
       .jpeg({ quality: 75 })
       .toBuffer();
-    const localPath = `${this.mediaDir}/${message.id}.jpg`;
+    const localPath = `${CONNECTORS_MEDIA_DIR.Telegram}/${message.id}.jpg`;
     await Deno.writeFile(localPath, resized);
     return { type: "photo", localPath };
+  }
+
+  private resolveAuthor(sender?: Api.TypeEntityLike): string | null {
+    if (!sender) {
+      return null;
+    }
+
+    if (sender instanceof Api.User) {
+      return sender.username
+        ? `@${sender.username}`
+        : [sender.firstName, sender.lastName].filter(Boolean).join(" ") || null;
+    }
+
+    if (sender instanceof Api.Channel) {
+      return sender.title ?? null;
+    }
+
+    return null;
+  }
+
+  private extractNonPhotoMedia(
+    media: Api.TypeMessageMedia,
+  ): IMedia | undefined {
+    if (media instanceof Api.MessageMediaWebPage) {
+      const page = media.webpage;
+
+      if (page instanceof Api.WebPage && page.url) {
+        return { type: "webpage", url: page.url };
+      }
+
+      return undefined;
+    }
+
+    if (media instanceof Api.MessageMediaDocument) {
+      const doc = media.document;
+
+      if (doc instanceof Api.Document) {
+        const mime = doc.mimeType;
+
+        if (mime.startsWith("video/")) {
+          return { type: "video" };
+        }
+
+        return { type: "document", mimeType: mime };
+      }
+    }
+
+    return undefined;
   }
 }

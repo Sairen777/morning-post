@@ -10,16 +10,25 @@ type TextPart = { type: "text"; text: string };
 type ImagePart = { type: "image_url"; image_url: { url: string } };
 type ContentPart = TextPart | ImagePart;
 
+// TODO: put it to utils
 // Messages with no letter characters (pure emoji / punctuation / stickers) add noise in group chats.
 // "yes" and "no" pass this filter; "👍" and "😂🔥" do not.
 function isEmojiOnly(text: string): boolean {
   return !/\p{L}/u.test(text.trim());
 }
 
-export class OpenAICompatibleSummarizerService implements SummarizerService {
+// TODO: we need to refactor this
+// First there will be class AbstractSummarizer with common logic that applies to all items we summarie
+// and then this class will be extended by specifici summarizers like TelegramSummarizer
+// that will pass specific data like prompt etc
+export class OpenAICompatibleSummarizerService<
+  T,
+> implements SummarizerService<T> {
   constructor(
+    // TODO: should be an env variable
     // private model: string = "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive",
     private model: string = "gemma-4-e4b-uncensored-hauhaucs-aggressive",
+    // TODO: should be an env variable
     private baseUrl: string = "http://localhost:1234",
   ) {}
 
