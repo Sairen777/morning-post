@@ -1,3 +1,4 @@
+import type { Media } from "../connector.types.ts";
 import type { ChannelMessage } from "./telegram-connector.types.ts";
 
 export function prependQuote(
@@ -10,53 +11,66 @@ export function prependQuote(
   return `[QUOTED_MESSAGE]${quote}[/QUOTED_MESSAGE]\n\n${text}`;
 }
 
-// TODO: insanely hard logic, simplify it, preferably using telegram api parameters
+// Telegram delivers album posts (multiple photos shared together) as N separate
+// messages sharing the same `groupedId`. Fold each group into one message so the
+// summarizer sees one item per post.
 export function mergeAlbums(
   raw: ChannelMessage[],
-  albumGroups: Map<string, ChannelMessage[]>,
   quotedTextMap: Map<number, string>,
 ): ChannelMessage[] {
+  const albumGroups = groupByAlbum(raw);
   const emitted = new Set<string>();
-  const result: ChannelMessage[] = [];
 
-  for (const message of raw) {
+  return raw.flatMap((message) => {
     if (!message.groupedId) {
-      result.push({
+      return [{
         ...message,
         text: prependQuote(message.text, message.replyToMessageId, quotedTextMap),
-      });
-      continue;
+      }];
     }
-    if (emitted.has(message.groupedId)) continue;
+    if (emitted.has(message.groupedId)) return [];
     emitted.add(message.groupedId);
+    return [foldAlbumGroup(albumGroups.get(message.groupedId)!, quotedTextMap)];
+  });
+}
 
-    const group = albumGroups.get(message.groupedId)!;
-    const messageWithText = group.find((m) => m.text.trim());
-    const text = prependQuote(
-      messageWithText?.text ?? "",
-      messageWithText?.replyToMessageId ?? null,
+function groupByAlbum(messages: ChannelMessage[]): Map<string, ChannelMessage[]> {
+  const grouped = messages.filter(
+    (m): m is ChannelMessage & { groupedId: string } => m.groupedId !== null,
+  );
+  return Map.groupBy(grouped, (m) => m.groupedId);
+}
+
+function foldAlbumGroup(
+  group: ChannelMessage[],
+  quotedTextMap: Map<number, string>,
+): ChannelMessage {
+  const first = group[0];
+  const captionSource = group.find((m) => m.text.trim());
+  return {
+    id: first.id,
+    date: first.date,
+    text: prependQuote(
+      captionSource?.text ?? "",
+      captionSource?.replyToMessageId ?? null,
       quotedTextMap,
-    );
-    const photos = group
-      .filter((m) => m.media?.type === "photo")
-      .map((m) => (m.media as { type: "photo"; localPath: string }).localPath);
+    ),
+    views: first.views,
+    author: first.author,
+    groupedId: null,
+    replyToMessageId: null,
+    media: foldAlbumMedia(group),
+  };
+}
 
-    result.push({
-      id: message.id,
-      date: message.date,
-      text,
-      views: message.views,
-      author: message.author,
-      groupedId: null,
-      replyToMessageId: null,
-      media:
-        photos.length > 1
-          ? { type: "album", localPaths: photos }
-          : photos.length === 1
-            ? { type: "photo", localPath: photos[0] }
-            : group.find((m) => m.media)?.media,
-    });
+function foldAlbumMedia(group: ChannelMessage[]): Media | undefined {
+  const photoPaths = group
+    .filter((m) => m.media?.type === "photo")
+    .map((m) => (m.media as { type: "photo"; localPath: string }).localPath);
+
+  if (photoPaths.length > 1) return { type: "album", localPaths: photoPaths };
+  if (photoPaths.length === 1) {
+    return { type: "photo", localPath: photoPaths[0] };
   }
-
-  return result;
+  return group.find((m) => m.media)?.media;
 }

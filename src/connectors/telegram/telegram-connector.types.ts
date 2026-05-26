@@ -1,12 +1,5 @@
 import type { Media } from "../connector.types.ts";
 
-export interface ChannelInfo {
-  id: string;
-  title: string;
-  username: string | null;
-}
-
-// TODO: can't we just take it from telegram package? It should be defined there
 export interface ChannelMessage {
   id: number;
   date: Date;
