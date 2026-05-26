@@ -47,3 +47,4 @@ node_modules/
 # artifacts
 .debug_logs/
 media/
+telegram_media/

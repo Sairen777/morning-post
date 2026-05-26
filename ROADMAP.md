@@ -59,13 +59,17 @@ ChannelSummary Entity:
 - summary: string
 - date: string
 
-Telegram summarizing channels: parse channel theme via llm -> save `tg_channel_id: theme` to database
+Telegram summarizing channels: parse channel theme via llm -> save
+`tg_channel_id: theme` to database
 
-Substack summarizing articles: parse article content via llm -> save `substack_article_id: theme` to database
+Substack summarizing articles: parse article content via llm -> save
+`substack_article_id: theme` to database
 
 HN summarizer:
 
-Youtube summarizer: filter out videos without words (music covers etc) -> get video transcript -> parse video content via llm -> save `youtube_video_id: theme` to database
+Youtube summarizer: filter out videos without words (music covers etc) -> get
+video transcript -> parse video content via llm -> save
+`youtube_video_id: theme` to database
 
 twitter summarizer:
 
@@ -73,4 +77,5 @@ reddit summarizer:
 
 ### how to parse content theme
 
-throw content to llm and ask it to classify the theme (e.g. "tell be what this article is about, reply with one word either technology or...")
+throw content to llm and ask it to classify the theme (e.g. "tell be what this
+article is about, reply with one word either technology or...")

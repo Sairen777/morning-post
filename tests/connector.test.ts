@@ -30,7 +30,10 @@ Deno.test("prependQuote — null replyToMessageId returns text unchanged", () =>
 Deno.test("prependQuote — matching quote is prepended with tokens", () => {
   const map = new Map([[42, "original post"]]);
   const result = prependQuote("my reply", 42, map);
-  assertEquals(result, "[QUOTED_MESSAGE]original post[/QUOTED_MESSAGE]\n\nmy reply");
+  assertEquals(
+    result,
+    "[QUOTED_MESSAGE]original post[/QUOTED_MESSAGE]\n\nmy reply",
+  );
 });
 
 // --- mergeAlbums ---
@@ -46,7 +49,10 @@ Deno.test("mergeAlbums — quote is prepended for non-album message", () => {
   const message: ChannelMessage = { ...baseMessage(), replyToMessageId: 99 };
   const quotedTextMap = new Map([[99, "the original"]]);
   const result = mergeAlbums([message], quotedTextMap);
-  assertEquals(result[0].text, "[QUOTED_MESSAGE]the original[/QUOTED_MESSAGE]\n\nhello");
+  assertEquals(
+    result[0].text,
+    "[QUOTED_MESSAGE]the original[/QUOTED_MESSAGE]\n\nhello",
+  );
 });
 
 Deno.test("mergeAlbums — album group is merged into one item", () => {
@@ -69,7 +75,10 @@ Deno.test("mergeAlbums — album group is merged into one item", () => {
 
   assertEquals(result.length, 1);
   assertEquals(result[0].text, "caption");
-  assertEquals(result[0].media, { type: "album", localPaths: ["media/1.jpg", "media/2.jpg"] });
+  assertEquals(result[0].media, {
+    type: "album",
+    localPaths: ["media/1.jpg", "media/2.jpg"],
+  });
 });
 
 Deno.test("mergeAlbums — album with single photo uses photo type not album", () => {
@@ -88,8 +97,16 @@ Deno.test("mergeAlbums — album with single photo uses photo type not album", (
 
 Deno.test("mergeAlbums — each groupedId only emitted once", () => {
   const groupId = "g3";
-  const message1: ChannelMessage = { ...baseMessage(), id: 4, groupedId: groupId };
-  const message2: ChannelMessage = { ...baseMessage(), id: 5, groupedId: groupId };
+  const message1: ChannelMessage = {
+    ...baseMessage(),
+    id: 4,
+    groupedId: groupId,
+  };
+  const message2: ChannelMessage = {
+    ...baseMessage(),
+    id: 5,
+    groupedId: groupId,
+  };
   const result = mergeAlbums([message1, message2], new Map());
 
   assertEquals(result.length, 1);

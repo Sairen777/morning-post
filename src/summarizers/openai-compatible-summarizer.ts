@@ -1,33 +1,34 @@
 import { jsonrepair } from "jsonrepair";
 import type { NormalizedItem } from "../connectors/connector.types.ts";
 import type {
+  ContentPart,
+  ImagePart,
   SummarizerService,
   SummaryPoint,
   SummaryRuleset,
+  TextPart,
 } from "./summarizer.types.ts";
+import { isEmojiOnly } from "../utils/text.ts";
 
-type TextPart = { type: "text"; text: string };
-type ImagePart = { type: "image_url"; image_url: { url: string } };
-type ContentPart = TextPart | ImagePart;
+const DEFAULTS = Deno.env.get("LOCAL_API") === "true"
+  ? {
+    model: "gemma-4-e4b-uncensored-hauhaucs-aggressive",
+    // LM Studio
+    baseUrl: "http://localhost:1234/v1",
+    apiKey: undefined as string | undefined,
+  }
+  : {
+    model: "gemini-2.5-flash-lite",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    apiKey: Deno.env.get("GEMINI_API_KEY"),
+  };
 
-// TODO: put it to utils
-// Messages with no letter characters (pure emoji / punctuation / stickers) add noise in group chats.
-// "yes" and "no" pass this filter; "👍" and "😂🔥" do not.
-function isEmojiOnly(text: string): boolean {
-  return !/\p{L}/u.test(text.trim());
-}
-
-// TODO: we need to refactor this
-// First there will be class AbstractSummarizer with common logic that applies to all items we summarie
-// and then this class will be extended by specifici summarizers like TelegramSummarizer
-// that will pass specific data like prompt etc
 export class OpenAICompatibleSummarizerService implements SummarizerService {
   constructor(
-    // TODO: should be an env variable
-    // private model: string = "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive",
-    private model: string = "gemma-4-e4b-uncensored-hauhaucs-aggressive",
-    // TODO: should be an env variable
-    private baseUrl: string = "http://localhost:1234",
+    private model: string = Deno.env.get("SUMMARIZER_MODEL") ?? DEFAULTS.model,
+    private baseUrl: string = Deno.env.get("SUMMARIZER_BASE_URL") ??
+      DEFAULTS.baseUrl,
+    private apiKey: string | undefined = DEFAULTS.apiKey,
   ) {}
 
   public async summarize(
@@ -38,13 +39,18 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
 
     await Deno.mkdir(".debug_logs", { recursive: true });
     await Deno.writeTextFile(
-      `.debug_logs/contentForSummarizer${rules.showAuthors ? "-discussion" : ""}.json`,
+      `.debug_logs/contentForSummarizer${
+        rules.showAuthors ? "-discussion" : ""
+      }.json`,
       typeof parts === "string" ? parts : JSON.stringify(parts, null, 2),
     );
 
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey && { Authorization: `Bearer ${this.apiKey}` }),
+      },
       body: JSON.stringify({
         model: this.model,
         stream: false,
@@ -52,25 +58,6 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
           { role: "system", content: rules.systemPrompt },
           { role: "user", content: parts },
         ],
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "summary_points",
-            strict: true,
-            schema: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  t: { type: "string" },
-                  i: { type: "integer" },
-                },
-                required: ["t", "i"],
-                additionalProperties: false,
-              },
-            },
-          },
-        },
       }),
     });
 
@@ -109,8 +96,8 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     // Association between text and images is positional: the model treats all
     // consecutive image_url parts following a text part as belonging to that text.
     for (const item of items) {
-      const hasPhoto =
-        item.media?.type === "photo" || item.media?.type === "album";
+      const hasPhoto = item.media?.type === "photo" ||
+        item.media?.type === "album";
       if (!item.text.trim() && !hasPhoto) continue;
       if (isEmojiOnly(item.text) && !hasPhoto) continue;
 

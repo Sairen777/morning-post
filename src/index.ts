@@ -55,7 +55,9 @@ try {
       const t0 = performance.now();
       const summary = await summarizer.summarize(items, rules);
       console.log(
-        `${entityName}: ${((performance.now() - t0) / 1000).toFixed(1)}s (${summary.length} points)`,
+        `${entityName}: ${
+          ((performance.now() - t0) / 1000).toFixed(1)
+        }s (${summary.length} points)`,
       );
       return { entityName, isGroup, summary };
     }),

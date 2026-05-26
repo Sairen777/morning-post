@@ -1,16 +1,12 @@
 import { Api, TelegramClient } from "telegram";
 import sharp from "sharp";
-import type {
-  Connector,
-  Media,
-  NormalizedData,
-} from "../connector.types.ts";
+import type { Connector, Media, NormalizedData } from "../connector.types.ts";
 
 import type {
   ChannelMessage,
   TelegramConnectorRawData,
 } from "./telegram-connector.types.ts";
-import { CONNECTORS_MEDIA_DIR, ConnectorId } from "../../constants.ts";
+import { ConnectorId, CONNECTORS_MEDIA_DIR } from "../../constants.ts";
 import { DEFAULT_EXCLUDED_CHANNELS } from "./constants.ts";
 import { mergeAlbums } from "./message-utils.ts";
 
@@ -46,8 +42,9 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
       const isGroup =
         (entity instanceof Api.Channel && entity.megagroup === true) ||
         entity instanceof Api.Chat;
-      const channelUsername =
-        entity instanceof Api.Channel ? (entity.username ?? null) : null;
+      const channelUsername = entity instanceof Api.Channel
+        ? (entity.username ?? null)
+        : null;
 
       const messages = await this.getMessagesFromEntity(
         entity,
@@ -101,7 +98,9 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   ): Promise<ChannelMessage[]> {
     const collected: ChannelMessage[] = [];
 
-    for await (const apiMessage of this.iterateMessagesInRange(entity, from, to)) {
+    for await (
+      const apiMessage of this.iterateMessagesInRange(entity, from, to)
+    ) {
       const message = await this.toChannelMessage(
         apiMessage,
         channelUsername,
@@ -122,10 +121,12 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     from: number,
     to: number,
   ): AsyncGenerator<Api.Message> {
-    for await (const message of this.client.iterMessages(entity, {
-      offsetDate: Math.floor(to / 1000) + 1,
-      reverse: false,
-    })) {
+    for await (
+      const message of this.client.iterMessages(entity, {
+        offsetDate: Math.floor(to / 1000) + 1,
+        reverse: false,
+      })
+    ) {
       // iterMessages may also yield MessageService (joins/pins/calls) or
       // MessageEmpty (deleted/error) — only Api.Message carries what we need.
       if (!(message instanceof Api.Message)) continue;

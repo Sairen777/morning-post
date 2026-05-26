@@ -6,7 +6,9 @@ export function prependQuote(
   replyToMessageId: number | null,
   quotedTextMap: Map<number, string>,
 ): string {
-  const quote = replyToMessageId ? quotedTextMap.get(replyToMessageId) : undefined;
+  const quote = replyToMessageId
+    ? quotedTextMap.get(replyToMessageId)
+    : undefined;
   if (!quote) return text;
   return `[QUOTED_MESSAGE]${quote}[/QUOTED_MESSAGE]\n\n${text}`;
 }
@@ -25,7 +27,11 @@ export function mergeAlbums(
     if (!message.groupedId) {
       return [{
         ...message,
-        text: prependQuote(message.text, message.replyToMessageId, quotedTextMap),
+        text: prependQuote(
+          message.text,
+          message.replyToMessageId,
+          quotedTextMap,
+        ),
       }];
     }
     if (emitted.has(message.groupedId)) return [];
@@ -34,7 +40,9 @@ export function mergeAlbums(
   });
 }
 
-function groupByAlbum(messages: ChannelMessage[]): Map<string, ChannelMessage[]> {
+function groupByAlbum(
+  messages: ChannelMessage[],
+): Map<string, ChannelMessage[]> {
   const grouped = messages.filter(
     (m): m is ChannelMessage & { groupedId: string } => m.groupedId !== null,
   );

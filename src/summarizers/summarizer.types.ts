@@ -20,3 +20,9 @@ export interface SummarizerService {
     rules: SummaryRuleset,
   ): Promise<SummaryPoint[]>;
 }
+
+export type TextPart = { type: "text"; text: string };
+
+export type ImagePart = { type: "image_url"; image_url: { url: string } };
+
+export type ContentPart = TextPart | ImagePart;

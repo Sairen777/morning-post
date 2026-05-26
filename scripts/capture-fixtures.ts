@@ -12,7 +12,9 @@ const from = new Date();
 from.setDate(from.getDate() - 2);
 const to = new Date();
 
-console.log(`Fetching Telegram data from ${from.toISOString()} to ${to.toISOString()}...`);
+console.log(
+  `Fetching Telegram data from ${from.toISOString()} to ${to.toISOString()}...`,
+);
 
 const client = await createTelegramClient();
 const connector = new TelegramConnector(client);
@@ -26,7 +28,12 @@ await Deno.writeTextFile(
 );
 
 const entityCount = Object.keys(normalized).length;
-const msgCount = Object.values(normalized).reduce((s, msgs) => s + msgs.length, 0);
-console.log(`Saved ${msgCount} messages from ${entityCount} entities to tests/fixtures/normalized-data.json`);
+const msgCount = Object.values(normalized).reduce(
+  (s, msgs) => s + msgs.length,
+  0,
+);
+console.log(
+  `Saved ${msgCount} messages from ${entityCount} entities to tests/fixtures/normalized-data.json`,
+);
 
 await client.disconnect();
