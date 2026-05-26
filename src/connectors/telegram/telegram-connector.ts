@@ -1,5 +1,4 @@
 import { Api, TelegramClient } from "telegram";
-import sharp from "sharp";
 import type { Connector, Media, NormalizedData } from "../connector.types.ts";
 
 import type {
@@ -8,7 +7,6 @@ import type {
 } from "./telegram-connector.types.ts";
 import { ConnectorId, CONNECTORS_MEDIA_DIR } from "../../constants.ts";
 import { DEFAULT_EXCLUDED_CHANNELS } from "./constants.ts";
-import { mergeAlbums } from "./message-utils.ts";
 
 type IterableEntity = Parameters<TelegramClient["iterMessages"]>[0];
 
@@ -211,6 +209,10 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   private async downloadPhoto(message: Api.Message): Promise<Media> {
     await this.ensureMediaDir();
     const buffer = (await this.client.downloadMedia(message, {})) as Uint8Array;
+    // Lazy-import sharp: heavy native dep that wants --allow-sys/--allow-ffi.
+    // Keeping it out of the module top means tests can import the connector
+    // without the native binding having to load.
+    const { default: sharp } = await import("sharp");
     // `fit: "inside"` scales to fit within 512x512 while preserving aspect ratio
     // (no crop, no squash).
     const resized = await sharp(buffer)
@@ -261,4 +263,91 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     }
     return undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Album / quote folding — Telegram-internal helpers, file-private. Telegram
+// delivers album posts (multiple photos shared together) as N separate
+// messages sharing the same `groupedId`. We fold each group into one message
+// so the summarizer sees one item per post, and inline replied-to text into
+// the message body so the LLM has the conversation context.
+// ---------------------------------------------------------------------------
+
+function prependQuote(
+  text: string,
+  replyToMessageId: number | null,
+  quotedTextMap: Map<number, string>,
+): string {
+  const quote = replyToMessageId
+    ? quotedTextMap.get(replyToMessageId)
+    : undefined;
+  if (!quote) return text;
+  return `[QUOTED_MESSAGE]${quote}[/QUOTED_MESSAGE]\n\n${text}`;
+}
+
+function mergeAlbums(
+  raw: ChannelMessage[],
+  quotedTextMap: Map<number, string>,
+): ChannelMessage[] {
+  const albumGroups = groupByAlbum(raw);
+  const emitted = new Set<string>();
+
+  return raw.flatMap((message) => {
+    if (!message.groupedId) {
+      return [{
+        ...message,
+        text: prependQuote(
+          message.text,
+          message.replyToMessageId,
+          quotedTextMap,
+        ),
+      }];
+    }
+    if (emitted.has(message.groupedId)) return [];
+    emitted.add(message.groupedId);
+    return [foldAlbumGroup(albumGroups.get(message.groupedId)!, quotedTextMap)];
+  });
+}
+
+function groupByAlbum(
+  messages: ChannelMessage[],
+): Map<string, ChannelMessage[]> {
+  const grouped = messages.filter(
+    (m): m is ChannelMessage & { groupedId: string } => m.groupedId !== null,
+  );
+  return Map.groupBy(grouped, (m) => m.groupedId);
+}
+
+function foldAlbumGroup(
+  group: ChannelMessage[],
+  quotedTextMap: Map<number, string>,
+): ChannelMessage {
+  const first = group[0];
+  const captionSource = group.find((m) => m.text.trim());
+  return {
+    id: first.id,
+    date: first.date,
+    text: prependQuote(
+      captionSource?.text ?? "",
+      captionSource?.replyToMessageId ?? null,
+      quotedTextMap,
+    ),
+    views: first.views,
+    author: first.author,
+    groupedId: null,
+    replyToMessageId: null,
+    media: foldAlbumMedia(group),
+  };
+}
+
+function foldAlbumMedia(group: ChannelMessage[]): Media | undefined {
+  const photoPaths = group
+    .filter((m) => m.media?.type === "photo")
+    .map((m) => (m.media as { type: "photo"; localPath: string }).localPath);
+
+  if (photoPaths.length > 1) return { type: "album", localPaths: photoPaths };
+  if (photoPaths.length === 1) {
+    return { type: "photo", localPath: photoPaths[0] };
+  }
+  return group.find((m) => m.media)?.media;
 }
