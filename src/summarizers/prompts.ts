@@ -1,3 +1,4 @@
+import type { NormalizedItem } from "../connectors/connector.types.ts";
 import type { SummaryRuleset } from "./summarizer.types.ts";
 
 export interface PromptOptions {
@@ -50,4 +51,12 @@ export function buildDiscussionPrompt(
     showAuthors: true,
     includeMedia: false,
   };
+}
+
+// Routes items to the appropriate ruleset. Today: group chats → discussion,
+// everything else → news. Future routing dimensions (interest, language, etc.)
+// land here, not in the pipeline or summarizer.
+export function selectRuleset(items: NormalizedItem[]): SummaryRuleset {
+  const isGroup = items[0]?.meta?.isGroup === true;
+  return isGroup ? buildDiscussionPrompt() : buildNewsPrompt();
 }

@@ -40,6 +40,12 @@ provided at instantiation time via env vars.
 service API. Caching for repeat calls in a short window is a DB-layer concern
 (see `ROADMAP.md`).
 
+**`getRawData` stays on the interface deliberately.** No external caller uses
+it today — only the connector's own `getNormalizedData` consumes it. It
+remains public as a structural contract: every connector must separate
+fetching from normalization. Removing it would let a future connector tangle
+I/O with shape conversion. The redundancy is intentional.
+
 `getNormalizedData(from, to)` transforms raw data into
 `Record<sourceId, NormalizedItem[]>`, downloading and linking attachments along
 the way. Each `NormalizedItem` carries:

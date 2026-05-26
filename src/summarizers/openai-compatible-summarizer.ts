@@ -37,14 +37,6 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
   ): Promise<SummaryPoint[]> {
     const { parts, indexedItems } = await this.buildContentParts(items, rules);
 
-    await Deno.mkdir(".debug_logs", { recursive: true });
-    await Deno.writeTextFile(
-      `.debug_logs/contentForSummarizer${
-        rules.showAuthors ? "-discussion" : ""
-      }.json`,
-      typeof parts === "string" ? parts : JSON.stringify(parts, null, 2),
-    );
-
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
