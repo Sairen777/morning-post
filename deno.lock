@@ -655,7 +655,9 @@
   "workspace": {
     "dependencies": [
       "jsr:@hono/hono@*",
-      "npm:jsonrepair@*"
+      "npm:jsonrepair@*",
+      "npm:sharp@0.33",
+      "npm:telegram@2.26.22"
     ]
   }
 }
