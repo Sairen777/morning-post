@@ -1,9 +1,9 @@
 import { Api, TelegramClient } from "telegram";
 import sharp from "sharp";
 import type {
-  IConnector,
-  IConnectorNormalizedData,
-  IMedia,
+  Connector,
+  Media,
+  NormalizedData,
 } from "../connector.types.ts";
 
 import type {
@@ -11,11 +11,11 @@ import type {
   ChannelMessage,
   TelegramConnectorRawData,
 } from "./telegram-connector.types.ts";
-import { CONNECTORS_MEDIA_DIR } from "../../constants.ts";
+import { CONNECTORS_MEDIA_DIR, ConnectorId } from "../../constants.ts";
 import { DEFAULT_EXCLUDED_CHANNELS } from "./constants.ts";
 import { mergeAlbums } from "./message-utils.ts";
 
-export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
+export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   private excludedChannels = [...DEFAULT_EXCLUDED_CHANNELS];
 
   constructor(private client: TelegramClient) {
@@ -25,11 +25,11 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
   }
 
   public async getRawData(
-    from: Date,
-    to: Date,
+    from: number,
+    to: number,
   ): Promise<TelegramConnectorRawData> {
     const result: TelegramConnectorRawData = {};
-    const fromUnix = Math.floor(from.getTime() / 1000);
+    const fromUnix = Math.floor(from / 1000);
 
     // TODO: can use offsetDate param to only get dialogues where last message date > from ?
     for await (const dialog of this.client.iterDialogs({})) {
@@ -78,26 +78,29 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
   }
 
   public async getNormalizedData(
-    from: Date,
-    to: Date,
-  ): Promise<IConnectorNormalizedData> {
+    from: number,
+    to: number,
+  ): Promise<NormalizedData> {
     // TODO: this should be caches somehow, if we call getRawData twice with the same from and to params
     // with some small time interval, second call shoudl return already calculated data instantly
     // dont fix it now if it would be better done with proper backend architecture with db and stuff
     // or maybe we can write it to some in memory cache, but how well would it hehave if we have thousands of
     // parallel requests?
     const raw = await this.getRawData(from, to);
-    const result: IConnectorNormalizedData = {};
+    const result: NormalizedData = {};
 
     for (const [channelName, { isGroup, messages }] of Object.entries(raw)) {
-      result[channelName] = messages.map((msg) => ({
-        timestamp: msg.date.toISOString(),
-        text: msg.text,
+      result[channelName] = messages.map((message) => ({
+        connectorId: ConnectorId.Telegram,
+        sourceId: channelName,
+        date: message.date.getTime(),
+        title: null,
+        text: message.text,
         // for groups: use the actual message sender; for channels: use the channel name
-        author: msg.author ?? channelName,
-        isGroup,
-        ...(msg.url && { url: msg.url }),
-        ...(msg.media && { media: msg.media }),
+        author: message.author ?? channelName,
+        url: message.url ?? null,
+        media: message.media,
+        meta: { isGroup },
       }));
     }
 
@@ -124,8 +127,8 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
   // basically this method doing a lot of different things under hood, very hard to read
   private async getMessagesFromEntity(
     entity: Parameters<TelegramClient["iterMessages"]>[0],
-    from: Date,
-    to: Date,
+    from: number,
+    to: number,
     channelUsername: string | null = null,
     isGroup: boolean = false,
   ): Promise<ChannelMessage[]> {
@@ -134,7 +137,7 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
     const albumGroups = new Map<string, any[]>();
 
     for await (const message of this.client.iterMessages(entity, {
-      offsetDate: Math.floor(to.getTime() / 1000) + 1,
+      offsetDate: Math.floor(to / 1000) + 1,
       reverse: false,
     })) {
       // TODO: what else can it be? I dont get it
@@ -143,18 +146,19 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
       }
 
       const date = new Date(message.date * 1000);
+      const messageMs = date.getTime();
 
       // TODO: doesnt offset date solves it?
-      if (date > to) {
+      if (messageMs > to) {
         continue;
       }
 
       // TODO: why break here and continue in the previous case?
-      if (date < from) {
+      if (messageMs < from) {
         break;
       }
 
-      let media: IMedia | undefined;
+      let media: Media | undefined;
       if (message.media instanceof Api.MessageMediaPhoto) {
         // skip photo download for groups — images are usually memes and waste tokens
         if (!isGroup) {
@@ -228,7 +232,7 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
     return mergeAlbums(rawMessages, albumGroups, quotedTextMap);
   }
 
-  private async downloadPhoto(message: Api.Message): Promise<IMedia> {
+  private async downloadPhoto(message: Api.Message): Promise<Media> {
     const buffer = (await this.client.downloadMedia(message, {})) as Uint8Array;
     const resized = await sharp(buffer)
       // TODO: won't it resize different aspect ratios to square?
@@ -260,7 +264,7 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
 
   private extractNonPhotoMedia(
     media: Api.TypeMessageMedia,
-  ): IMedia | undefined {
+  ): Media | undefined {
     if (media instanceof Api.MessageMediaWebPage) {
       const page = media.webpage;
 

@@ -1,13 +1,19 @@
 import { assertEquals, assertStringIncludes } from "jsr:@std/assert";
 import { OpenAICompatibleSummarizerService } from "../src/summarizers/openai-compatible-summarizer.ts";
-import type { NormalizedItem } from "../src/summarizers/summarizer.types.ts";
+import {
+  buildDiscussionPrompt,
+  buildNewsPrompt,
+} from "../src/summarizers/prompts.ts";
+import type { NormalizedItem } from "../src/connectors/connector.types.ts";
+import { ConnectorId } from "../src/constants.ts";
 
 const item = (overrides: Partial<NormalizedItem> = {}): NormalizedItem => ({
-  connectorId: "telegram",
+  connectorId: ConnectorId.Telegram,
   sourceId: "TestChannel",
-  date: new Date("2026-01-01T10:00:00Z"),
+  date: new Date("2026-01-01T10:00:00Z").getTime(),
   title: null,
   text: "Some news post",
+  author: null,
   url: "https://t.me/test/1",
   ...overrides,
 });
@@ -51,10 +57,28 @@ function captureFetch(responseBody: unknown): {
   };
 }
 
-// --- system prompt ---
+// --- prompt builders ---
+
+Deno.test("buildNewsPrompt — contains t/i field instruction", () => {
+  const { systemPrompt } = buildNewsPrompt();
+  assertStringIncludes(systemPrompt, '"t"');
+  assertStringIncludes(systemPrompt, '"i"');
+});
+
+Deno.test("buildDiscussionPrompt — contains discussion instruction", () => {
+  const { systemPrompt } = buildDiscussionPrompt();
+  assertStringIncludes(systemPrompt, "discussion summarizer");
+});
+
+Deno.test("buildNewsPrompt — explicit language overrides default", () => {
+  const { systemPrompt } = buildNewsPrompt({ language: "Ukrainian" });
+  assertStringIncludes(systemPrompt, "Ukrainian");
+});
+
+// --- summarizer wiring ---
 
 Deno.test(
-  "buildSystemPrompt news mode — contains t/i field instruction",
+  "summarize — sends configured system prompt to model",
   async () => {
     const { captured, restore } = captureFetch({
       choices: [{ message: { content: '[{"t":"x","i":0}]' } }],
@@ -63,49 +87,8 @@ Deno.test(
       "test-model",
       "http://localhost",
     );
-    await svc.summarize([item()], {});
+    await svc.summarize([item()], buildNewsPrompt());
     assertStringIncludes(captured.body!.messages[0].content as string, '"t"');
-    assertStringIncludes(captured.body!.messages[0].content as string, '"i"');
-    restore();
-  },
-);
-
-Deno.test(
-  "buildSystemPrompt discussion mode — contains discussion instruction",
-  async () => {
-    const { captured, restore } = captureFetch({
-      choices: [{ message: { content: '[{"t":"x","i":0}]' } }],
-    });
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "http://localhost",
-    );
-    await svc.summarize([item({ isGroup: true, author: "@user" })], {
-      mode: "discussion",
-    });
-    assertStringIncludes(
-      captured.body!.messages[0].content as string,
-      "discussion summarizer",
-    );
-    restore();
-  },
-);
-
-Deno.test(
-  "buildSystemPrompt — explicit language overrides default",
-  async () => {
-    const { captured, restore } = captureFetch({
-      choices: [{ message: { content: '[{"t":"x","i":0}]' } }],
-    });
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "http://localhost",
-    );
-    await svc.summarize([item()], { language: "Ukrainian" });
-    assertStringIncludes(
-      captured.body!.messages[0].content as string,
-      "Ukrainian",
-    );
     restore();
   },
 );
@@ -122,18 +105,17 @@ Deno.test("buildContentParts — emoji-only item is filtered out", async () => {
   );
   await svc.summarize(
     [item({ text: "👍🔥😂" }), item({ text: "Real news" })],
-    {},
+    buildNewsPrompt(),
   );
-  const parts = captured.body!.messages[1].content as Array<{ text: string }>;
-  // Only the real news item should be present, indexed as [0]
-  const texts = parts.map((p) => p.text).join("\n");
-  assertStringIncludes(texts, "[0]");
-  assertEquals(texts.includes("[1]"), false);
+  // News prompt with no media collapses to a plain string.
+  const content = captured.body!.messages[1].content as string;
+  assertStringIncludes(content, "[0]");
+  assertEquals(content.includes("[1]"), false);
   restore();
 });
 
 Deno.test(
-  "buildContentParts — discussion mode sends plain string not array",
+  "buildContentParts — discussion preset sends plain string and shows authors",
   async () => {
     const { captured, restore } = captureFetch({
       choices: [{ message: { content: "[]" } }],
@@ -143,8 +125,8 @@ Deno.test(
       "http://localhost",
     );
     await svc.summarize(
-      [item({ text: "hello", isGroup: true, author: "@alice" })],
-      { mode: "discussion" },
+      [item({ text: "hello", author: "@alice", meta: { isGroup: true } })],
+      buildDiscussionPrompt(),
     );
     assertEquals(typeof captured.body!.messages[1].content, "string");
     assertStringIncludes(
@@ -165,7 +147,7 @@ Deno.test("parsePoints — attaches metadata from indexedItems", async () => {
     "test-model",
     "http://localhost",
   );
-  const results = await svc.summarize([item()], {});
+  const results = await svc.summarize([item()], buildNewsPrompt());
   assertEquals(results[0].text, "summary bullet");
   assertEquals(results[0].sourceUrl, "https://t.me/test/1");
   assertEquals(results[0].channel, "TestChannel");
@@ -184,7 +166,7 @@ Deno.test(
       "test-model",
       "http://localhost",
     );
-    const results = await svc.summarize([item()], {});
+    const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "fenced");
     restore();
   },
@@ -200,7 +182,7 @@ Deno.test(
       "test-model",
       "http://localhost",
     );
-    const results = await svc.summarize([item()], {});
+    const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "orphan");
     assertEquals(results[0].sourceUrl, null);
     restore();

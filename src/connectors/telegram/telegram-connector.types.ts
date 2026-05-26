@@ -1,4 +1,4 @@
-import type { IMedia } from "../connector.types.ts";
+import type { Media } from "../connector.types.ts";
 
 export interface ChannelInfo {
   id: string;
@@ -14,7 +14,7 @@ export interface ChannelMessage {
   views: number | null;
   author: string | null;
   url?: string;
-  media?: IMedia;
+  media?: Media;
   groupedId: string | null;
   replyToMessageId: number | null;
 }

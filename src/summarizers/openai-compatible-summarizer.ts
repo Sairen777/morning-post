@@ -1,9 +1,9 @@
 import { jsonrepair } from "jsonrepair";
+import type { NormalizedItem } from "../connectors/connector.types.ts";
 import type {
-  NormalizedItem,
+  SummarizerService,
   SummaryPoint,
   SummaryRuleset,
-  SummarizerService,
 } from "./summarizer.types.ts";
 
 type TextPart = { type: "text"; text: string };
@@ -34,12 +34,11 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     items: NormalizedItem[],
     rules: SummaryRuleset,
   ): Promise<SummaryPoint[]> {
-    const systemPrompt = this.buildSystemPrompt(rules);
     const { parts, indexedItems } = await this.buildContentParts(items, rules);
 
     await Deno.mkdir(".debug_logs", { recursive: true });
     await Deno.writeTextFile(
-      `.debug_logs/contentForSummarizer${rules.mode === "discussion" ? "-discussion" : ""}.json`,
+      `.debug_logs/contentForSummarizer${rules.showAuthors ? "-discussion" : ""}.json`,
       typeof parts === "string" ? parts : JSON.stringify(parts, null, 2),
     );
 
@@ -50,7 +49,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         model: this.model,
         stream: false,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: rules.systemPrompt },
           { role: "user", content: parts },
         ],
         response_format: {
@@ -86,39 +85,6 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     return this.parsePoints(raw, indexedItems);
   }
 
-  private buildSystemPrompt(rules: SummaryRuleset): string {
-    const indexInstruction = `Each message starts with [N] where N is its index number. Return a JSON array only — no markdown, no extra text. Each element must have exactly two fields: "t" (the summary bullet as a plain string) and "i" (the integer N of the primary source message). If a bullet covers multiple posts, use the index of the first/primary one.`;
-
-    let parts: string[];
-
-    if (rules.mode === "discussion") {
-      parts = [
-        "You are a discussion summarizer analyzing a group chat.",
-        "Messages may contain a [QUOTED_MESSAGE]...[/QUOTED_MESSAGE] block — this is the message being replied to. Use it for context but do not summarize it separately.",
-        "Each message starts with [N] on the first line followed by the author name, then the message text.",
-        indexInstruction,
-        "Identify the main topics discussed. For each topic, describe what positions were expressed and by whom (mention author names when relevant), and any conclusions the group reached.",
-      ];
-    } else {
-      parts = [
-        "You are a concise news summarizer.",
-        "Messages may contain a [QUOTED_MESSAGE]...[/QUOTED_MESSAGE] block — this is the post being replied to or quoted, providing context for the main message. Use it to better understand the main message but do not summarize the quote separately.",
-        indexInstruction,
-      ];
-    }
-
-    parts.push(
-      rules.language
-        ? `Write all "t" values in ${rules.language}.`
-        : `Write all "t" values in the same language as the source messages.`,
-    );
-    if (rules.focus) parts.push(`Focus on: ${rules.focus}.`);
-    if (rules.maxLength)
-      parts.push(`Keep each bullet under ${rules.maxLength} characters.`);
-
-    return parts.join(" ");
-  }
-
   private async buildContentParts(
     items: NormalizedItem[],
     rules: SummaryRuleset,
@@ -126,9 +92,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     parts: ContentPart[] | string;
     indexedItems: NormalizedItem[];
   }> {
+    const showAuthors = rules.showAuthors ?? false;
+    const includeMedia = rules.includeMedia ?? true;
     const parts: ContentPart[] = [];
     const indexedItems: NormalizedItem[] = [];
-    const isDiscussion = rules.mode === "discussion";
 
     // WARNING: for large group chats (300+ messages) this sends all messages in a single
     // request and may overflow the model's context window. Options if that becomes a problem:
@@ -141,11 +108,6 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     // the content array — base64 cannot be embedded inside a text part.
     // Association between text and images is positional: the model treats all
     // consecutive image_url parts following a text part as belonging to that text.
-    // Structure per item:
-    //   { type: "text",      text: "[N]\nCaption..." }
-    //   { type: "image_url", image_url: { url: "data:image/jpeg;base64,..." } }  <- photo 1
-    //   { type: "image_url", image_url: { url: "data:image/jpeg;base64,..." } }  <- photo 2 (album)
-    //   ...next item...
     for (const item of items) {
       const hasPhoto =
         item.media?.type === "photo" || item.media?.type === "album";
@@ -155,13 +117,12 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       const i = indexedItems.length;
       indexedItems.push(item);
 
-      const header = isDiscussion
+      const header = showAuthors
         ? `[${i}] ${item.author ?? "Unknown"}`
         : `[${i}]`;
       parts.push({ type: "text", text: `${header}\n${item.text}` });
 
-      // skip images in discussion mode — group chat photos are usually memes
-      if (!isDiscussion) {
+      if (includeMedia) {
         if (item.media?.type === "photo") {
           parts.push(await this.imagePartFromPath(item.media.localPath));
         } else if (item.media?.type === "album") {
@@ -172,9 +133,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       }
     }
 
-    // discussion mode has no images — collapse to a plain string to avoid
-    // the {"type":"text","text":...} wrapper overhead on every message
-    if (isDiscussion) {
+    // No images? collapse to a plain string to avoid the {"type":"text","text":...}
+    // wrapper overhead on every message.
+    const hasAnyImage = parts.some((p) => p.type === "image_url");
+    if (!hasAnyImage) {
       const text = parts.map((p) => (p as TextPart).text).join("\n\n");
       return { parts: text, indexedItems };
     }
@@ -200,7 +162,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         sourceUrl: item?.url ?? null,
         ...(item && {
           channel: item.sourceId,
-          date: item.date.toLocaleString("en-GB", {
+          date: new Date(item.date).toLocaleString("en-GB", {
             day: "numeric",
             month: "short",
             year: "numeric",

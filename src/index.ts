@@ -2,34 +2,17 @@ import { Hono } from "@hono/hono";
 import { createTelegramClient } from "./connectors/telegram/telegram-client.ts";
 import { TelegramConnector } from "./connectors/telegram/telegram-connector.ts";
 import { OpenAICompatibleSummarizerService } from "./summarizers/openai-compatible-summarizer.ts";
-import type {
-  NormalizedItem,
-  SummaryPoint,
-} from "./summarizers/summarizer.types.ts";
-import type { IConnectorNormalizedEntityData } from "./connectors/connector.types.ts";
+import {
+  buildDiscussionPrompt,
+  buildNewsPrompt,
+} from "./summarizers/prompts.ts";
+import type { SummaryPoint } from "./summarizers/summarizer.types.ts";
 
 const app = new Hono();
 app.get("/", (c) => c.text("Hello Hono"));
 
 Deno.serve({ port: 3000 }, app.fetch);
 console.log("Hono is running at http://localhost:3000");
-
-function toNormalizedItems(
-  entityName: string,
-  messages: IConnectorNormalizedEntityData[],
-): NormalizedItem[] {
-  return messages.map((msg) => ({
-    connectorId: "telegram",
-    sourceId: entityName,
-    date: new Date(msg.timestamp),
-    title: null,
-    text: msg.text,
-    author: msg.author,
-    url: msg.url ?? null,
-    media: msg.media,
-    isGroup: msg.isGroup ?? false,
-  }));
-}
 
 function printSummary(entityName: string, summary: SummaryPoint[]): void {
   console.log(`\n=== ${entityName} ===\n`);
@@ -45,17 +28,16 @@ function printSummary(entityName: string, summary: SummaryPoint[]): void {
 }
 
 try {
-  const from = new Date();
-  from.setDate(from.getDate() - 7);
-  const to = new Date();
-  to.setDate(to.getDate() - 5);
+  const now = Date.now();
+  const from = now - 7 * 24 * 60 * 60 * 1000;
+  const to = now - 5 * 24 * 60 * 60 * 1000;
   const tgClient = await createTelegramClient();
   const telegramConnector = new TelegramConnector(tgClient);
   const normalized = await telegramConnector.getNormalizedData(from, to);
 
   const entities = Object.entries(normalized);
   const totalMessages = entities.reduce(
-    (sum, [, msgs]) => sum + msgs.length,
+    (sum, [, items]) => sum + items.length,
     0,
   );
   console.log(
@@ -67,14 +49,11 @@ try {
   // One LLM request per entity — keeps context focused and avoids topic bleed between channels.
   // Promise.all parallelizes for hosted APIs; a local LLM will serialize requests on its end.
   const results = await Promise.all(
-    entities.map(async ([entityName, messages]) => {
-      const items = toNormalizedItems(entityName, messages);
-      const isGroup = messages[0]?.isGroup ?? false;
+    entities.map(async ([entityName, items]) => {
+      const isGroup = items[0]?.meta?.isGroup === true;
+      const rules = isGroup ? buildDiscussionPrompt() : buildNewsPrompt();
       const t0 = performance.now();
-      const summary = await summarizer.summarize(items, {
-        mode: isGroup ? "discussion" : undefined,
-        format: isGroup ? undefined : "bullet points",
-      });
+      const summary = await summarizer.summarize(items, rules);
       console.log(
         `${entityName}: ${((performance.now() - t0) / 1000).toFixed(1)}s (${summary.length} points)`,
       );

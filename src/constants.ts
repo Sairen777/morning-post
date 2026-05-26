@@ -1,4 +1,4 @@
-export enum Connector {
+export enum ConnectorId {
   Telegram = "Telegram",
   Substack = "Substack",
   YouTube = "YouTube",
@@ -7,12 +7,11 @@ export enum Connector {
   RSS = "RSS",
 }
 
-// TODO: ensure unique values on type level if possible?
-export const CONNECTORS_MEDIA_DIR: Record<Connector, string> = {
-  [Connector.Telegram]: "telegram_media",
-  [Connector.Substack]: "substack_media",
-  [Connector.YouTube]: "youtube_media",
-  [Connector.Reddit]: "reddit_media",
-  [Connector.X]: "x_media",
-  [Connector.RSS]: "rss_media",
+export const CONNECTORS_MEDIA_DIR: Record<ConnectorId, string> = {
+  [ConnectorId.Telegram]: "telegram_media",
+  [ConnectorId.Substack]: "substack_media",
+  [ConnectorId.YouTube]: "youtube_media",
+  [ConnectorId.Reddit]: "reddit_media",
+  [ConnectorId.X]: "x_media",
+  [ConnectorId.RSS]: "rss_media",
 };
