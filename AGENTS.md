@@ -1,17 +1,20 @@
-1. Do not make too large methods, they should follow a single responsibility
-   principle. If method doing different things make sure to move logic to
-   different methods. Example
+# Code style
+
+## Method size — single responsibility
+
+Methods should follow a single responsibility principle. If a method does
+different things, move logic into separate methods.
 
 BAD:
 
 ```js
 const processEverything = async () => {
-  const messagses = await api.getMessages();
+  const messages = await api.getMessages();
 
-  messages.filter(msg => {...// big logic here a lot of LOC })
+  messages.filter(message => {...// big logic here a lot of LOC });
 
-  messages.forEach(msg => { fs.writeFileSync(message.attachments); // also lots of LOC });
-}
+  messages.forEach(message => { fs.writeFileSync(message.attachments); // also lots of LOC });
+};
 ```
 
 GOOD:
@@ -19,10 +22,48 @@ GOOD:
 ```js
 const processEverything = async () => {
   let messages = await api.getMessages();
-  messages = this.filterMessages();
-
+  messages = this.filterMessages(messages);
   this.downloadMessagesMedia(messages);
 };
 ```
 
-2. Avoid short names for common words, like `msg` instead of `message`.
+## Naming
+
+- **No abbreviations.** Use the full word.
+  - Bad: `Msg`, `msg`, `replyToMsgId`, `baseMsg`, `textMsg`
+  - Good: `Message`, `message`, `replyToMessageId`, `baseMessage`,
+    `messageWithText`
+  - Single-letter callback params like `m => m.id` are fine — they're
+    scope-local placeholders, not abbreviations.
+- **No `I`-prefix on interfaces.** Plain PascalCase: `Connector`, not
+  `IConnector`; `NormalizedItem`, not `INormalizedItem`.
+- **Enum vs interface clash**: when an enum and an interface would share a
+  name, suffix the enum. Example: `ConnectorId` enum + `Connector` interface.
+
+## Types
+
+- All public method boundaries use **epoch milliseconds** (`number`) for
+  timestamps, not `Date`. Internal-only types can keep `Date` if convenient,
+  but anything crossing a layer is `number`.
+- Connector-specific fields go on a `meta: Record<string, unknown>` slot on
+  `NormalizedItem`, not as top-level fields. Keeps the cross-layer item type
+  connector-agnostic.
+
+## Configuration
+
+- Backend config (model name, base URL, API key, capability flags) reads from
+  env vars with hardcoded fallbacks. Precedence: constructor arg → env var →
+  default. Keeps call sites flexible and tests injectable.
+- All system-prompt text lives in `src/summarizers/prompts.ts`. Don't inline
+  prompts in the summarizer class or the orchestrator. Each prompt builder
+  returns a full `SummaryRuleset` (prompt text + matching capability hints).
+
+## Comments
+
+- Default to no comments. Add one only when the *why* is non-obvious: a hidden
+  constraint, a subtle invariant, a workaround. Don't restate what the code
+  does — well-named identifiers cover that.
+- When a comment explains *why* a guard exists (e.g. "defensive — shouldn't
+  happen but the upstream API sometimes…"), keep it. When you'd otherwise
+  write "TODO: do this later", either do it now or leave it with a clear
+  scope and pointer (e.g. "belongs with the DB layer, see ROADMAP.md").
