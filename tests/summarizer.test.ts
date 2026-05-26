@@ -1,8 +1,8 @@
 import { assertEquals, assertStringIncludes } from "jsr:@std/assert";
 import { OpenAICompatibleSummarizerService } from "../src/summarizers/openai-compatible-summarizer.ts";
-import type { INormalizedItem } from "../src/summarizers/summarizer.types.ts";
+import type { NormalizedItem } from "../src/summarizers/summarizer.types.ts";
 
-const item = (overrides: Partial<INormalizedItem> = {}): INormalizedItem => ({
+const item = (overrides: Partial<NormalizedItem> = {}): NormalizedItem => ({
   connectorId: "telegram",
   sourceId: "TestChannel",
   date: new Date("2026-01-01T10:00:00Z"),

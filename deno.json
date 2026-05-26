@@ -1,8 +1,7 @@
 {
   "imports": {
     "@hono/hono": "jsr:@hono/hono",
-    // TODO: set latest version from npm without ^
-    "jsonrepair": "npm:jsonrepair",
+    "jsonrepair": "npm:jsonrepair@3.14.0",
     "telegram": "npm:telegram@2.26.22",
     "sharp": "npm:sharp@0.33"
   },
@@ -12,6 +11,11 @@
     "start": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
     "test": "deno test --allow-read --allow-write --allow-net --allow-env tests/",
     "capture-fixtures": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi scripts/capture-fixtures.ts"
+  },
+  "lint": {
+    "rules": {
+      "include": ["curly"]
+    }
   },
   "nodeModulesDir": "auto",
   "compilerOptions": {

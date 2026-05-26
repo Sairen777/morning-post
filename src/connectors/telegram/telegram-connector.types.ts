@@ -15,8 +15,8 @@ export interface ChannelMessage {
   author: string | null;
   url?: string;
   media?: IMedia;
-  groupedId?: string;
-  replyToMsgId?: number;
+  groupedId: string | null;
+  replyToMessageId: number | null;
 }
 
 export type TelegramConnectorRawData = Record<

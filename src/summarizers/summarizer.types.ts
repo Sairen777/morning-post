@@ -1,4 +1,6 @@
-export interface INormalizedItem {
+import type { IMedia } from "../connectors/connector.types.ts";
+
+export interface NormalizedItem {
   // TODO: use enum Connector
   connectorId: string;
   sourceId: string;
@@ -8,12 +10,12 @@ export interface INormalizedItem {
   author?: string | null;
   url: string | null;
   // TODO: if media is a common type then it should be declared on a higher level
-  media?: import("../connectors/connector.types.ts").IMedia;
+  media?: IMedia;
   // TODO: abstract item to summarize shouldnt have telegram specified items like this
   isGroup?: boolean;
 }
 
-export interface ISummaryRuleset {
+export interface SummaryRuleset {
   language?: string;
   focus?: string;
   format?: string;
@@ -23,17 +25,16 @@ export interface ISummaryRuleset {
 }
 
 // Note: sourceUrl refers to the primary/first post when a bullet covers multiple posts.
-export interface ISummaryPoint<T> {
+export interface SummaryPoint {
   text: string;
   sourceUrl: string | null;
-  date: string;
-  // TODO: metadata is connector-specific data, like channel for telegram
-  metadata: T;
+  channel?: string;
+  date?: string;
 }
 
-export interface ISummarizer<T> {
+export interface SummarizerService {
   summarize(
-    items: INormalizedItem[],
-    rules: ISummaryRuleset,
-  ): Promise<ISummaryPoint<T>[]>;
+    items: NormalizedItem[],
+    rules: SummaryRuleset,
+  ): Promise<SummaryPoint[]>;
 }

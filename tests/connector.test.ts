@@ -2,17 +2,17 @@ import { assertEquals } from "jsr:@std/assert";
 import {
   mergeAlbums,
   prependQuote,
-  type RawMsg,
 } from "../src/connectors/telegram/message-utils.ts";
+import type { ChannelMessage } from "../src/connectors/telegram/telegram-connector.types.ts";
 
-const baseMsg = (): RawMsg => ({
+const baseMessage = (): ChannelMessage => ({
   id: 1,
   date: new Date("2026-01-01T10:00:00Z"),
   text: "hello",
   views: null,
   author: null,
   groupedId: null,
-  replyToMsgId: null,
+  replyToMessageId: null,
 });
 
 // --- prependQuote ---
@@ -22,7 +22,7 @@ Deno.test("prependQuote — no matching quote returns text unchanged", () => {
   assertEquals(prependQuote("hello", 42, map), "hello");
 });
 
-Deno.test("prependQuote — null replyToMsgId returns text unchanged", () => {
+Deno.test("prependQuote — null replyToMessageId returns text unchanged", () => {
   const map = new Map([[42, "quoted"]]);
   assertEquals(prependQuote("hello", null, map), "hello");
 });
@@ -36,30 +36,30 @@ Deno.test("prependQuote — matching quote is prepended with tokens", () => {
 // --- mergeAlbums ---
 
 Deno.test("mergeAlbums — single message with no groupedId passes through", () => {
-  const msg = baseMsg();
-  const result = mergeAlbums([msg], new Map(), new Map());
+  const message = baseMessage();
+  const result = mergeAlbums([message], new Map(), new Map());
   assertEquals(result.length, 1);
   assertEquals(result[0].text, "hello");
 });
 
 Deno.test("mergeAlbums — quote is prepended for non-album message", () => {
-  const msg: RawMsg = { ...baseMsg(), replyToMsgId: 99 };
+  const message: ChannelMessage = { ...baseMessage(), replyToMessageId: 99 };
   const quotedTextMap = new Map([[99, "the original"]]);
-  const result = mergeAlbums([msg], new Map(), quotedTextMap);
+  const result = mergeAlbums([message], new Map(), quotedTextMap);
   assertEquals(result[0].text, "[QUOTED_MESSAGE]the original[/QUOTED_MESSAGE]\n\nhello");
 });
 
 Deno.test("mergeAlbums — album group is merged into one item", () => {
   const groupId = "g1";
-  const photo1: RawMsg = {
-    ...baseMsg(),
+  const photo1: ChannelMessage = {
+    ...baseMessage(),
     id: 1,
     text: "caption",
     groupedId: groupId,
     media: { type: "photo", localPath: "media/1.jpg" },
   };
-  const photo2: RawMsg = {
-    ...baseMsg(),
+  const photo2: ChannelMessage = {
+    ...baseMessage(),
     id: 2,
     text: "",
     groupedId: groupId,
@@ -75,8 +75,8 @@ Deno.test("mergeAlbums — album group is merged into one item", () => {
 
 Deno.test("mergeAlbums — album with single photo uses photo type not album", () => {
   const groupId = "g2";
-  const photo: RawMsg = {
-    ...baseMsg(),
+  const photo: ChannelMessage = {
+    ...baseMessage(),
     id: 3,
     text: "solo",
     groupedId: groupId,
@@ -90,10 +90,10 @@ Deno.test("mergeAlbums — album with single photo uses photo type not album", (
 
 Deno.test("mergeAlbums — each groupedId only emitted once", () => {
   const groupId = "g3";
-  const msg1: RawMsg = { ...baseMsg(), id: 4, groupedId: groupId };
-  const msg2: RawMsg = { ...baseMsg(), id: 5, groupedId: groupId };
-  const albumGroups = new Map([[groupId, [msg1, msg2]]]);
-  const result = mergeAlbums([msg1, msg2], albumGroups, new Map());
+  const message1: ChannelMessage = { ...baseMessage(), id: 4, groupedId: groupId };
+  const message2: ChannelMessage = { ...baseMessage(), id: 5, groupedId: groupId };
+  const albumGroups = new Map([[groupId, [message1, message2]]]);
+  const result = mergeAlbums([message1, message2], albumGroups, new Map());
 
   assertEquals(result.length, 1);
 });

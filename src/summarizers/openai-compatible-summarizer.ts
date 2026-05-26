@@ -21,9 +21,7 @@ function isEmojiOnly(text: string): boolean {
 // First there will be class AbstractSummarizer with common logic that applies to all items we summarie
 // and then this class will be extended by specifici summarizers like TelegramSummarizer
 // that will pass specific data like prompt etc
-export class OpenAICompatibleSummarizerService<
-  T,
-> implements SummarizerService<T> {
+export class OpenAICompatibleSummarizerService implements SummarizerService {
   constructor(
     // TODO: should be an env variable
     // private model: string = "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive",

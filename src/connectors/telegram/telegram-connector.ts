@@ -13,8 +13,7 @@ import type {
 } from "./telegram-connector.types.ts";
 import { CONNECTORS_MEDIA_DIR } from "../../constants.ts";
 import { DEFAULT_EXCLUDED_CHANNELS } from "./constants.ts";
-
-export { mergeAlbums, prependQuote, type RawMsg } from "./message-utils.ts";
+import { mergeAlbums } from "./message-utils.ts";
 
 export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
   private excludedChannels = [...DEFAULT_EXCLUDED_CHANNELS];
@@ -171,13 +170,13 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
 
       const author = isGroup ? this.resolveAuthor(message.sender) : null;
       // in case message has multiple media files they all will have same groupedId
-      const groupedId = message.groupedId?.toString();
-      const replyToMsgId = (message.replyTo as Api.MessageReplyHeader)
-        ?.replyToMsgId;
+      const groupedId = message.groupedId?.toString() ?? null;
+      const replyToMessageId = (message.replyTo as Api.MessageReplyHeader)
+        ?.replyToMsgId ?? null;
       const url = channelUsername
         ? `https://t.me/${channelUsername}/${message.id}`
         : undefined;
-      const msg: ChannelMessage = {
+      const channelMessage: ChannelMessage = {
         id: message.id,
         date,
         text: message.message,
@@ -186,15 +185,15 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
         url,
         media,
         groupedId,
-        replyToMsgId,
+        replyToMessageId,
       };
 
-      rawMessages.push(msg);
+      rawMessages.push(channelMessage);
 
       // TODO; add comments here on wtf happening and why
       if (groupedId) {
         const group = albumGroups.get(groupedId) ?? [];
-        group.push(msg);
+        group.push(channelMessage);
         albumGroups.set(groupedId, group);
       }
     }
@@ -202,7 +201,9 @@ export class TelegramConnector implements IConnector<TelegramConnectorRawData> {
     // Batch-fetch all quoted messages in one API call
     const quotedIds = [
       ...new Set(
-        rawMessages.map((m) => m.replyToMsgId).filter((id) => id !== null),
+        rawMessages
+          .map((m) => m.replyToMessageId)
+          .filter((id): id is number => id != null),
       ),
     ];
 

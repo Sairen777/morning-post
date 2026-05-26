@@ -1,46 +1,40 @@
 import type { ChannelMessage } from "./telegram-connector.types.ts";
 
-// TODO: why can't we put those two field to ChannelMessage?
-export type RawMsg = ChannelMessage & {
-  groupedId: string | null;
-  replyToMsgId: number | null;
-};
-
 export function prependQuote(
   text: string,
-  replyToMsgId: number | null,
+  replyToMessageId: number | null,
   quotedTextMap: Map<number, string>,
 ): string {
-  const quote = replyToMsgId ? quotedTextMap.get(replyToMsgId) : undefined;
+  const quote = replyToMessageId ? quotedTextMap.get(replyToMessageId) : undefined;
   if (!quote) return text;
   return `[QUOTED_MESSAGE]${quote}[/QUOTED_MESSAGE]\n\n${text}`;
 }
 
 // TODO: insanely hard logic, simplify it, preferably using telegram api parameters
 export function mergeAlbums(
-  raw: RawMsg[],
-  albumGroups: Map<string, RawMsg[]>,
+  raw: ChannelMessage[],
+  albumGroups: Map<string, ChannelMessage[]>,
   quotedTextMap: Map<number, string>,
 ): ChannelMessage[] {
   const emitted = new Set<string>();
   const result: ChannelMessage[] = [];
 
-  for (const msg of raw) {
-    if (!msg.groupedId) {
+  for (const message of raw) {
+    if (!message.groupedId) {
       result.push({
-        ...msg,
-        text: prependQuote(msg.text, msg.replyToMsgId, quotedTextMap),
+        ...message,
+        text: prependQuote(message.text, message.replyToMessageId, quotedTextMap),
       });
       continue;
     }
-    if (emitted.has(msg.groupedId)) continue;
-    emitted.add(msg.groupedId);
+    if (emitted.has(message.groupedId)) continue;
+    emitted.add(message.groupedId);
 
-    const group = albumGroups.get(msg.groupedId)!;
-    const textMsg = group.find((m) => m.text.trim());
+    const group = albumGroups.get(message.groupedId)!;
+    const messageWithText = group.find((m) => m.text.trim());
     const text = prependQuote(
-      textMsg?.text ?? "",
-      textMsg?.replyToMsgId ?? null,
+      messageWithText?.text ?? "",
+      messageWithText?.replyToMessageId ?? null,
       quotedTextMap,
     );
     const photos = group
@@ -48,11 +42,13 @@ export function mergeAlbums(
       .map((m) => (m.media as { type: "photo"; localPath: string }).localPath);
 
     result.push({
-      id: msg.id,
-      date: msg.date,
+      id: message.id,
+      date: message.date,
       text,
-      views: msg.views,
-      author: msg.author,
+      views: message.views,
+      author: message.author,
+      groupedId: null,
+      replyToMessageId: null,
       media:
         photos.length > 1
           ? { type: "album", localPaths: photos }

@@ -1,11 +1,11 @@
 import { Hono } from "@hono/hono";
 import { createTelegramClient } from "./connectors/telegram/telegram-client.ts";
 import { TelegramConnector } from "./connectors/telegram/telegram-connector.ts";
-import { OpenAICompatibleSummarizerService } from "./summarizer/openai-compatible-summarizer.ts";
+import { OpenAICompatibleSummarizerService } from "./summarizers/openai-compatible-summarizer.ts";
 import type {
   NormalizedItem,
   SummaryPoint,
-} from "./summarizer/summarizer.types.ts";
+} from "./summarizers/summarizer.types.ts";
 import type { IConnectorNormalizedEntityData } from "./connectors/connector.types.ts";
 
 const app = new Hono();

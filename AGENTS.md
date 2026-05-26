@@ -1,4 +1,4 @@
-Do not make too large methods, they should follow a single responsibility principle. If method doing different things make sure to move logic to different methods. Example
+1. Do not make too large methods, they should follow a single responsibility principle. If method doing different things make sure to move logic to different methods. Example
 
 BAD:
 
@@ -22,3 +22,5 @@ const processEverything = async () => {
   this.downloadMessagesMedia(messages);
 };
 ```
+
+2. Avoid short names for common words, like `msg` instead of `message`.
