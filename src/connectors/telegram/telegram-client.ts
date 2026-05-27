@@ -17,23 +17,22 @@ export async function createTelegramClient(): Promise<TelegramClient> {
 
   if (!(await client.isUserAuthorized())) {
     console.log("Logging in via QR code...");
-    await client.signInUserWithQrCode(
-      { apiId: API_ID, apiHash: API_HASH },
-      {
-        qrCode: async (code) => {
-          const url = `tg://login?token=${code.token.toString("base64url")}`;
-          console.log(
-            "\nScan with Telegram: Settings → Devices → Link Desktop Device\n",
-          );
-          qrcode.generate(url, { small: true });
-        },
-        password: async () => await input.text("Enter your 2FA password: "),
-        onError: async (err) => {
-          console.error("QR login error:", err);
-          return true;
-        },
+    await client.signInUserWithQrCode({ apiId: API_ID, apiHash: API_HASH }, {
+      qrCode: (code) => {
+        const url = `tg://login?token=${code.token.toString("base64url")}`;
+        console.log(
+          "\nScan with Telegram: Settings → Devices → Link Desktop Device\n",
+        );
+        qrcode.generate(url, { small: true });
+
+        return Promise.resolve();
       },
-    );
+      password: async () => await input.text("Enter your 2FA password: "),
+      onError: (err) => {
+        console.error("QR login error:", err);
+        return Promise.resolve(true);
+      },
+    });
   }
 
   console.log("Telegram session string (save this to TELEGRAM_SESSION):");
