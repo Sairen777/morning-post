@@ -66,7 +66,7 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   ): Promise<NormalizedData> {
     // TODO: caching for repeat calls in a short window belongs with the DB layer
     // (see ROADMAP) — once persistence is in place, hit cache before refetching.
-    const raw = await this.getRawData(from, to);
+    const rawData = await this.getRawData(from, to);
     const result: NormalizedData = {};
 
     for (
