@@ -69,7 +69,9 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     const raw = await this.getRawData(from, to);
     const result: NormalizedData = {};
 
-    for (const [channelName, { isGroup, messages }] of Object.entries(raw)) {
+    for (
+      const [channelName, { isGroup, messages }] of Object.entries(rawData)
+    ) {
       result[channelName] = messages.map((message) => ({
         connectorId: ConnectorId.Telegram,
         sourceId: channelName,
