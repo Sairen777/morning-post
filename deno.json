@@ -1,9 +1,11 @@
 {
   "imports": {
     "@hono/hono": "jsr:@hono/hono",
+    "input": "npm:input@1.0.1",
+    "qrcode-terminal": "npm:qrcode-terminal@0.12.0",
     "jsonrepair": "npm:jsonrepair@3.14.0",
     "telegram": "npm:telegram@2.26.22",
-    "sharp": "npm:sharp@0.33"
+    "sharp": "npm:sharp@0.33.5"
   },
   "tasks": {
     "dev:cli": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/index.ts",
@@ -25,7 +27,7 @@
   },
   "allowScripts": {
     "allow": [
-      "npm:sharp@0.33",
+      "npm:sharp@0.33.5",
       "npm:bufferutil@4.1.0",
       "npm:core-js@2.6.12",
       "npm:es5-ext@0.10.64",

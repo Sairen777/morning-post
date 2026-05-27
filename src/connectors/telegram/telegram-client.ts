@@ -1,7 +1,7 @@
-import { TelegramClient } from "npm:telegram@^2.26.22";
-import { StringSession } from "npm:telegram@^2.26.22/sessions/index.js";
-import input from "npm:input@^1.0.1";
-import qrcode from "npm:qrcode-terminal@^0.12.0";
+import { TelegramClient } from "telegram";
+import { StringSession } from "telegram/sessions/index.js";
+import input from "input";
+import qrcode from "qrcode-terminal";
 
 const API_ID = Number(Deno.env.get("TELEGRAM_API_ID"));
 const API_HASH = Deno.env.get("TELEGRAM_API_HASH") ?? "";
