@@ -51,7 +51,8 @@ conversion. The redundancy is intentional.
 the way. Each `NormalizedItem` carries:
 
 - `connectorId: ConnectorId` (enum, e.g. `ConnectorId.Telegram`)
-- `sourceId: string` (matches the map key)
+- `sourceId: string` (the feed's external id; matches the map key — see the
+  naming note below)
 - `date: number` (epoch ms)
 - `title`, `text`, `author`, `url`
 - optional `media: Media`
@@ -60,6 +61,18 @@ the way. Each `NormalizedItem` carries:
 **Connector-specific data goes in `meta`, not as top-level fields.** Telegram
 puts `{ isGroup }` there; other connectors add what they need. Keeps the
 cross-layer type connector-agnostic.
+
+**Naming — the map key is a Feed external id, not a Source.** The `Record<…>`
+key (and `NormalizedItem.sourceId`) is the feed's **external id** — the
+connector's native id for that channel/dialogue/subreddit/URL. It is unique only
+**within its source** (`UNIQUE(Feed.sourceId, externalId)`): the same channel
+subscribed by two users, or two different connectors, can repeat an external id.
+The map is therefore source-scoped — a connector instance is bound to one
+`Source`, so its keys are unique within a single result, but resolving a key to
+a persistent `Feed` needs the `(sourceId, externalId)` pair or the surrogate
+`Feed.id`. Never merge results from different sources into one flat map keyed by
+external id. The field will be renamed `feedExternalId` (and `SourceSummary` →
+`FeedSummary`) before persistence integration to make this explicit.
 
 ### 2. Summarizer
 
@@ -108,6 +121,110 @@ Takes the summarizer output and formats/delivers it:
 
 Readable date formatting happens here.
 
+### 4. Persistence layer _(planned)_
+
+Multi-user storage for accounts, subscriptions, cached items, and generated
+summaries. No ORM/DB is chosen yet; the field-level model lives in `ROADMAP.md`
+→ Entities. The conceptual shape:
+
+- **User** owns one **InterestProfile** (1:1), many **UserTag** links into the
+  curated **Tag** vocabulary, and many **Source** rows (one per connector,
+  holding that connector's credentials).
+- A **Source** has many **Feed** rows — the individual subscriptions (channel,
+  dialogue, subreddit, RSS URL). A **Feed** has many **FeedTag** links (its
+  classified themes), cached **Item** rows, and immutable **Summary** rows.
+- A **Digest** is the user-facing morning post for a period; its ordered
+  **DigestSection** rows reference the **Summary** rows it aggregates. A **Run**
+  records each job execution for audit.
+
+The persistence model mirrors the runtime's connector-agnostic stance: one
+generic `Source`/`Feed`/`Summary` triad instead of per-connector tables.
+Connector-specific fields live in `Source.credentials` and `Feed.config` — the
+persistence twin of `NormalizedItem.meta`.
+
+All cross-layer timestamps are epoch ms (`number`); periods are explicit
+`periodStartMs`/`periodEndMs` ranges, never a day string.
+
+**Deletion is non-destructive to history.** A feed is soft-deleted
+(`Feed.deletedAt`); `Summary` rows are never deleted or rewritten. Each summary
+snapshots `feedNameSnapshot` at generation time so digests still render after a
+feed is renamed upstream or removed.
+
+#### Scheduling, caching & lifecycle invariants
+
+- **Fetch-window cursor.** Each `Feed` records `lastFetchedPeriodEndMs`. The
+  scheduler computes the next window as `from = lastFetchedPeriodEndMs + 1,
+  to = now`; a brand-new feed falls back to a fixed lookback. The
+  `UNIQUE(Item.feedId, externalId)` constraint makes overlapping windows safe.
+- **Item upsert.** `Item` writes are `ON CONFLICT (feedId, externalId) DO
+  UPDATE payload, fetchedAt` — re-fetching an edited message refreshes the
+  cache rather than failing or silently skipping.
+- **`DigestSection.feedId` is intentionally denormalized** from
+  `Summary.feedId` (read-path convenience: sections-by-feed without a join).
+  Do not normalize it away.
+- **Digest scope (v1).** One `Digest` per `(user, period)`. Multiple named
+  digests per user (a `Digest.label`/`kind`) are deferred — additive later, no
+  schema break.
+- **`Run.digestId` semantics.** Null while a run executes, set on completion;
+  null after failure means no digest was produced; non-digest runs (e.g.
+  re-classification jobs) stay null permanently.
+
+#### JSON columns
+
+Use `jsonb`, never `json` (binary, indexable). Validate every JSON column's
+shape at the app boundary (Zod/Valibot) on read and write — the DB does not
+enforce it. Reserve JSON for polymorphic or read-whole blobs; normalize anything
+you filter, join, sort, or aggregate on.
+
+| Column                       | Storage    | Why                                                       |
+| ---------------------------- | ---------- | --------------------------------------------------------- |
+| `Source.credentials`         | jsonb      | per-connector shape, never joined on                      |
+| `Feed.config`                | jsonb      | per-connector feed settings; forward-looking, often `{}` in v1 |
+| `Item.payload`               | jsonb      | cached `NormalizedItem`, read whole                       |
+| `Summary.points`             | jsonb      | `SummaryPoint[]`, rendered whole                          |
+| `InterestProfile.rawAnswers` | jsonb      | free-form questionnaire, read whole                       |
+| `DigestSection`              | relational | queried/reordered/joined — a table, not a `sections` blob |
+| `FeedTag.inferred`           | column     | boolean filtered on                                       |
+
+#### Prompt layering
+
+The summarizer stays domain-agnostic; the caller composes the system prompt in
+one place by explicit layering, in order:
+
+```
+[base role from prompts.ts]
+[InterestProfile.generatedPrompt]   # user interests
+[Feed.customPrompt?]                # feed-specific override
+[kind-specific instructions]        # news vs discussion vs …
+```
+
+The composed string is hashed into `Summary.rulesetHash` — the cache key for a
+(feed, period) summary. Editing any layer changes the hash and invalidates only
+the affected summaries. A feed's custom prompt is layered, not assigned an
+abstract "priority": LLMs honor position and structure, not declared precedence.
+
+The `kind`-specific layer is chosen from `Feed.kind` **passed by the caller** —
+`selectRuleset(items, kind)` — not inferred from item contents. (Today
+`selectRuleset(items)` reads `meta.isGroup`; it gains an explicit `kind`
+parameter once feeds are DB-backed, keeping `NormalizedItem` connector-agnostic.)
+
+**`generatedPrompt` regeneration contract.** `generatedPrompt` MUST be
+regenerated whenever `rawAnswers` or any of the user's `UserTag` rows change.
+The regenerate action writes `generatedPrompt`, bumps `promptVersion`, and sets
+`generatedAt` atomically — so the layer-2 input never goes stale against the
+raw answers it derives from.
+
+#### Tags
+
+Tags are a curated, seeded controlled vocabulary — the interest checkboxes. A
+`slug` is deterministic (lowercase-with-dashes) with a UNIQUE constraint.
+Checkbox selections write `UserTag`; the free-form textarea is stored in
+`InterestProfile.rawAnswers` and never mints tags. Feed theme classification has
+the LLM pick slug(s) from this same vocabulary, writing
+`FeedTag(inferred=true, inferredAt)`, refreshed on a schedule by TTL on
+`inferredAt` plus a manual "re-classify now" action. Theme tags boost relevant
+prompt fragments rather than hard-gating the general prompt.
+
 ---
 
 ## Things to Consider
@@ -123,3 +240,19 @@ Readable date formatting happens here.
   vision-capable model. If swapping to a text-only backend (e.g.
   `deepseek-chat`), either flip `includeMedia: false` in the relevant prompt
   builders or have the summarizer strip media before dispatch.
+- **Tag canonicalization at scale**: the controlled vocabulary is the v1 answer
+  for dedup (no "f1" vs "formula one" because users pick from a fixed list). If
+  free-text tags are ever allowed, add LLM-mediated canonicalization (map a
+  phrase onto existing tags, passing the current vocabulary as context) and,
+  once the vocabulary outgrows a prompt (~200+ tags), embedding similarity
+  search (e.g. `pgvector`) plus an admin "merge tags" tool. Defer until needed.
+- **Connector feed-filtering**: today `getNormalizedData(from, to)` fetches every
+  dialog. Multi-user makes that wasteful — each user only wants their
+  subscriptions. The interface should evolve to accept the user's subscribed
+  feed external ids (constructor arg or per-call) so a fetch is scoped to one
+  user's feeds. Belongs with the persistence-integration phase.
+- **Per-user / per-feed model override**: `User.defaultModel` and an optional
+  `Source`/`Feed.preferredModel` would let a user route, say, private channels
+  through a local model while everything else uses the hosted backend. Optional;
+  layer onto the existing summarizer backend precedence (constructor arg → env →
+  default).
