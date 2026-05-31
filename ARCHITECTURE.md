@@ -1,3 +1,4 @@
+<!-- Model: Claude Opus 4.5 -->
 # Morning Post — Architecture
 
 ## Overview
@@ -127,28 +128,85 @@ Multi-user storage for accounts, subscriptions, cached items, and generated
 summaries. No ORM/DB is chosen yet; the field-level model lives in `ROADMAP.md`
 → Entities. The conceptual shape:
 
-- **User** owns one **InterestProfile** (1:1), many **UserTag** links into the
-  curated **Tag** vocabulary, and many **Source** rows (one per connector,
-  holding that connector's credentials).
+- **User** directly owns its summarization `systemPrompt` (one editable field —
+  no separate profile or tag entities) and many **Source** rows (one per
+  connector, holding that connector's credentials, with a `position` that sets
+  the primary digest order).
 - A **Source** has many **Feed** rows — the individual subscriptions (channel,
-  dialogue, subreddit, RSS URL). A **Feed** has many **FeedTag** links (its
-  classified themes), cached **Item** rows, and immutable **Summary** rows.
-- A **Digest** is the user-facing morning post for a period; its ordered
-  **DigestSection** rows reference the **Summary** rows it aggregates. A **Run**
-  records each job execution for audit.
+  dialogue, subreddit, RSS URL), each with an optional within-source `position`.
+  A **Feed** has cached **Item** rows and immutable **Summary** rows.
+- A **Digest** is the user-facing morning post for a period. Its sections are
+  **derived, not stored**: the period's **Summary** rows for the user's
+  non-deleted feeds, ordered by `(Source.position, then Feed.position or name)`.
 
 The persistence model mirrors the runtime's connector-agnostic stance: one
 generic `Source`/`Feed`/`Summary` triad instead of per-connector tables.
-Connector-specific fields live in `Source.credentials` and `Feed.config` — the
-persistence twin of `NormalizedItem.meta`.
+Connector-specific fields live in `Source.credentials` — the persistence twin of
+`NormalizedItem.meta`, and the system's most sensitive asset (see Credentials &amp;
+secrets below).
 
 All cross-layer timestamps are epoch ms (`number`); periods are explicit
 `periodStartMs`/`periodEndMs` ranges, never a day string.
+
+**Timestamp conventions.** Mutable rows (`User`, `Source`, `Feed`, `Digest`)
+carry `createdAt` + `updatedAt`. Immutable rows carry a single semantic creation
+timestamp and no `updatedAt`: `Summary.generatedAt` — a summary is never
+rewritten, so an `updatedAt` would only echo it and contradict immutability. The
+`Item` cache uses `fetchedAt` as its last-write timestamp (bumped on upsert);
+`date` is the content's own timestamp, not a row timestamp.
 
 **Deletion is non-destructive to history.** A feed is soft-deleted
 (`Feed.deletedAt`); `Summary` rows are never deleted or rewritten. Each summary
 snapshots `feedNameSnapshot` at generation time so digests still render after a
 feed is renamed upstream or removed.
+
+#### Credentials &amp; secrets
+
+`Source.credentials` is the highest-severity asset in the system. A Telegram
+session string is an **unrevokable, unscoped, full-account bearer token** — only
+the user can terminate it (Telegram → Devices); there is no server-side scope or
+revoke. Plaintext storage means one DB leak = full takeover of every connected
+account.
+
+**No zero-knowledge option here.** Morning Post runs scheduled digests while the
+user is offline, so the server must decrypt and use a credential without the user
+present. That rules out client-side / end-to-end custody (the desktop-app
+OS-keychain model): a service that acts on your behalf at 6am must hold the
+decryption capability at 6am — user-/password-derived keys can't be present then
+without caching them server-side, which restores server custody. **Per-user data
+keys therefore limit blast radius and enable per-user revocation/rotation; they
+do not make the server unable to read.** The achievable goal is not "even we
+can't read it" but: a DB/backup leak alone does not expose secrets, access can be
+revoked instantly, and we hold the least-powerful credential each connector
+allows — the trusted-custodian posture of any SaaS that holds your OAuth tokens.
+
+- **Encrypt at the application layer** with authenticated encryption (AES-256-GCM
+  or libsodium secretbox). The key lives **outside the DB** — env var or secrets
+  manager, never a column or the repo. This defends the realistic leak vectors
+  (stolen backups/snapshots, logical dumps, read-only SQLi); it does **not**
+  defend a full-host compromise that also yields the key. State that boundary
+  honestly rather than implying "encrypted = safe".
+- **Reduce capability at the source.** Prefer the least-powerful credential a
+  connector offers (OAuth scopes, bot tokens, public/RSS access). Telegram is the
+  dangerous case precisely because a bot cannot read a user's full feed, so the
+  session is required — which is why it earns the strongest custody.
+- **Never log credentials** (keep them out of `.debug_logs`), encrypt backups,
+  and make "disconnect" delete the row. For Telegram, prompt the user to revoke
+  the session in Telegram → Devices, since deleting your copy cannot revoke a
+  copy an attacker already exfiltrated.
+- **This deploy — multi-user on a VPS.** App, DB, and backups share one box, so
+  a key sitting on that box barely raises the bar: a rooted VPS reads decrypted
+  secrets regardless. The moves that matter: (1) **envelope encryption with
+  per-user data keys** so one user's leak is not everyone's; (2) hold the
+  **master key off the box** — a managed KMS or external secrets service (cloud
+  KMS, Vault, Infisical/Doppler, or SOPS+age injected at runtime), never on the
+  VPS disk or in DB backups. That removes the key from the backup/snapshot blast
+  radius and gives a **revocation kill-switch**: revoke the master key and every
+  stored credential is instantly dead. Also encrypt backups with a separate key
+  and keep the DB off the public network behind a least-privilege user. Honest
+  residual: a KMS limits offline/backup exposure and enables revocation, but
+  cannot stop a currently-rooted box from using the key in-process. (The
+  OS-keychain option applies only to a single-user local build — not this one.)
 
 #### Scheduling, caching & lifecycle invariants
 
@@ -159,15 +217,10 @@ feed is renamed upstream or removed.
 - **Item upsert.** `Item` writes are `ON CONFLICT (feedId, externalId) DO
   UPDATE payload, fetchedAt` — re-fetching an edited message refreshes the
   cache rather than failing or silently skipping.
-- **`DigestSection.feedId` is intentionally denormalized** from
-  `Summary.feedId` (read-path convenience: sections-by-feed without a join).
-  Do not normalize it away.
-- **Digest scope (v1).** One `Digest` per `(user, period)`. Multiple named
-  digests per user (a `Digest.label`/`kind`) are deferred — additive later, no
-  schema break.
-- **`Run.digestId` semantics.** Null while a run executes, set on completion;
-  null after failure means no digest was produced; non-digest runs (e.g.
-  re-classification jobs) stay null permanently.
+- **Digest scope (v1).** One `Digest` per `(user, period)`. Its sections are
+  derived from the period's `Summary` rows ordered by `Source.position` (then
+  `Feed.position` or name) — nothing is stored per section. Multiple named
+  digests per user are deferred — additive later, no schema break.
 
 #### JSON columns
 
@@ -176,15 +229,11 @@ shape at the app boundary (Zod/Valibot) on read and write — the DB does not
 enforce it. Reserve JSON for polymorphic or read-whole blobs; normalize anything
 you filter, join, sort, or aggregate on.
 
-| Column                       | Storage    | Why                                                       |
-| ---------------------------- | ---------- | --------------------------------------------------------- |
-| `Source.credentials`         | jsonb      | per-connector shape, never joined on                      |
-| `Feed.config`                | jsonb      | per-connector feed settings; forward-looking, often `{}` in v1 |
-| `Item.payload`               | jsonb      | cached `NormalizedItem`, read whole                       |
-| `Summary.points`             | jsonb      | `SummaryPoint[]`, rendered whole                          |
-| `InterestProfile.rawAnswers` | jsonb      | free-form questionnaire, read whole                       |
-| `DigestSection`              | relational | queried/reordered/joined — a table, not a `sections` blob |
-| `FeedTag.inferred`           | column     | boolean filtered on                                       |
+| Column               | Storage | Why                                  |
+| -------------------- | ------- | ------------------------------------ |
+| `Source.credentials` | jsonb (enc) | account secrets as ciphertext; key outside the DB — see Credentials &amp; secrets |
+| `Item.payload`       | jsonb   | cached `NormalizedItem`, read whole  |
+| `Summary.points`     | jsonb   | `SummaryPoint[]`, rendered whole     |
 
 #### Prompt layering
 
@@ -193,37 +242,19 @@ one place by explicit layering, in order:
 
 ```
 [base role from prompts.ts]
-[InterestProfile.generatedPrompt]   # user interests
-[Feed.customPrompt?]                # feed-specific override
-[kind-specific instructions]        # news vs discussion vs …
+[User.systemPrompt]            # the user's interests / taste (one editable field)
+[Feed.customPrompt?]           # feed-specific override
+[kind-specific instructions]   # news vs discussion vs …
 ```
 
-The composed string is hashed into `Summary.rulesetHash` — the cache key for a
-(feed, period) summary. Editing any layer changes the hash and invalidates only
-the affected summaries. A feed's custom prompt is layered, not assigned an
-abstract "priority": LLMs honor position and structure, not declared precedence.
+The string is composed fresh per run — there is no stored hash or cache key. A
+feed's custom prompt is layered, not assigned an abstract "priority": LLMs honor
+position and structure, not declared precedence.
 
 The `kind`-specific layer is chosen from `Feed.kind` **passed by the caller** —
 `selectRuleset(items, kind)` — not inferred from item contents. (Today
 `selectRuleset(items)` reads `meta.isGroup`; it gains an explicit `kind`
 parameter once feeds are DB-backed, keeping `NormalizedItem` connector-agnostic.)
-
-**`generatedPrompt` regeneration contract.** `generatedPrompt` MUST be
-regenerated whenever `rawAnswers` or any of the user's `UserTag` rows change.
-The regenerate action writes `generatedPrompt`, bumps `promptVersion`, and sets
-`generatedAt` atomically — so the layer-2 input never goes stale against the
-raw answers it derives from.
-
-#### Tags
-
-Tags are a curated, seeded controlled vocabulary — the interest checkboxes. A
-`slug` is deterministic (lowercase-with-dashes) with a UNIQUE constraint.
-Checkbox selections write `UserTag`; the free-form textarea is stored in
-`InterestProfile.rawAnswers` and never mints tags. Feed theme classification has
-the LLM pick slug(s) from this same vocabulary, writing
-`FeedTag(inferred=true, inferredAt)`, refreshed on a schedule by TTL on
-`inferredAt` plus a manual "re-classify now" action. Theme tags boost relevant
-prompt fragments rather than hard-gating the general prompt.
 
 ---
 
@@ -240,12 +271,13 @@ prompt fragments rather than hard-gating the general prompt.
   vision-capable model. If swapping to a text-only backend (e.g.
   `deepseek-chat`), either flip `includeMedia: false` in the relevant prompt
   builders or have the summarizer strip media before dispatch.
-- **Tag canonicalization at scale**: the controlled vocabulary is the v1 answer
-  for dedup (no "f1" vs "formula one" because users pick from a fixed list). If
-  free-text tags are ever allowed, add LLM-mediated canonicalization (map a
-  phrase onto existing tags, passing the current vocabulary as context) and,
-  once the vocabulary outgrows a prompt (~200+ tags), embedding similarity
-  search (e.g. `pgvector`) plus an admin "merge tags" tool. Defer until needed.
+- **Automatic feed theme classification** (LLM-inferred themes + prompt-fragment
+  boosting — what the old Tag/FeedTag system did) is deferred. Per-feed steering
+  is `Feed.customPrompt` for now; revisit automatic theming once you have many
+  feeds to organize.
+- **`Run` (job audit)**: a table recording each job execution (start/finish,
+  status, error) is deferred — console/file logs suffice until there is a real
+  scheduler with failure history worth mining. Re-add additively later.
 - **Connector feed-filtering**: today `getNormalizedData(from, to)` fetches every
   dialog. Multi-user makes that wasteful — each user only wants their
   subscriptions. The interface should evolve to accept the user's subscribed
