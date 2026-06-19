@@ -1,4 +1,5 @@
-import { bigint, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { bigint, check, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import type { SummaryPoint } from "../../summarizers/summarizer.types.ts";
 import { feeds } from "./feed.ts";
 
@@ -17,6 +18,7 @@ export const summaries = pgTable(
   },
   (table) => [
     unique("summaries_feed_id_period_unique").on(table.feedId, table.periodStartMs, table.periodEndMs),
+    check("summaries_period_order_check", sql`${table.periodStartMs} <= ${table.periodEndMs}`),
   ],
 );
 

@@ -1,4 +1,5 @@
-import { bigint, boolean, integer, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { bigint, boolean, check, integer, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import type { EncryptedBlob } from "../../crypto/credential-cipher.ts";
 import { users } from "./user.ts";
 
@@ -24,6 +25,7 @@ export const sources = pgTable(
   },
   (table) => [
     unique("sources_user_id_connector_id_unique").on(table.userId, table.connectorId),
+    check("sources_credentials_disabled_check", sql`${table.credentials} is not null or ${table.enabled} = false`),
   ],
 );
 

@@ -255,3 +255,19 @@ Deno.test("getDecryptedCredentials fails when blob was encrypted for a different
     );
   });
 });
+
+Deno.test("source check constraint rejects enabled source with null credentials", async () => {
+  await withTestDb(async (database) => {
+    const cipher = generateCipher();
+    const user = await createUser(database, userInput("source-check@example.com"));
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedTelegramCredentials(cipher, user.id),
+    });
+
+    await assertRejects(
+      () => database.update(sources).set({ credentials: null, enabled: true }).where(eq(sources.id, source.id)),
+    );
+  });
+});

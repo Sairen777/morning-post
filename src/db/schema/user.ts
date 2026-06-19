@@ -1,4 +1,4 @@
-import { bigint, pgTable, text, uuid } from "drizzle-orm/pg-core";
+import { bigint, index, pgTable, text, uuid } from "drizzle-orm/pg-core";
 
 /**
  * Domain entity: a person who owns sources, feeds, and digests.
@@ -16,7 +16,9 @@ export const users = pgTable("users", {
   defaultModel: text("default_model"),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+}, (table) => [
+  index("users_created_at_id_idx").on(table.createdAt, table.id),
+]);
 
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;

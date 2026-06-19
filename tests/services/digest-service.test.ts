@@ -7,6 +7,7 @@ import { withTestDb } from "../../src/db/testing.ts";
 import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
 import { createOrReviveFeed, softDeleteFeed, updateFeed, type PublicFeed } from "../../src/repositories/feed-repository.ts";
 import { upsertItems } from "../../src/repositories/item-repository.ts";
+import { upsertSummaryForPeriod } from "../../src/repositories/summary-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
 import { assembleDigestForPeriod, buildDigestViewById, renderDigestMarkdown } from "../../src/services/digest-service.ts";
@@ -217,5 +218,72 @@ Deno.test("renderDigestMarkdown includes ordered source groups and removed marke
     assertEquals(markdown.includes("## Telegram"), true);
     assertEquals(markdown.includes("### Markdown Feed (removed)"), true);
     assertEquals(markdown.includes("- markdown bullet"), true);
+  });
+});
+
+Deno.test("assembleDigestForPeriod batches cached summaries and only summarizes missing feeds", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("digest-service-batch@example.com"));
+    const telegramSourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const feedA = await createFeedForSource(database, user.id, telegramSourceId, 1, "channel:1", "Feed A");
+    const feedB = await createFeedForSource(database, user.id, telegramSourceId, 2, "channel:2", "Feed B");
+
+    await upsertSummaryForPeriod(database, {
+      feedId: feedA.id,
+      periodStartMs,
+      periodEndMs,
+      points: [{ text: "cached point", sourceUrl: null }],
+      feedNameSnapshot: feedA.name,
+    });
+    await upsertItems(database, feedB.id, [normalizedItem(feedB.externalId, "1", "fresh")], 1);
+
+    const fakeSummarizer = new FakeSummarizer([[{ text: "fresh point", sourceUrl: null }]]);
+
+    const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: fakeSummarizer,
+      now: () => 100,
+    });
+
+    assertEquals(fakeSummarizer.calls.length, 1);
+    assertEquals(view.sections.length, 2);
+
+    const sectionA = view.sections.find((section) => section.feedId === feedA.id)!;
+    const sectionB = view.sections.find((section) => section.feedId === feedB.id)!;
+
+    assertEquals(sectionA.points, [{ text: "cached point", sourceUrl: null }]);
+    assertEquals(sectionB.points, [{ text: "fresh point", sourceUrl: null }]);
+  });
+});
+
+Deno.test("assembleDigestForPeriod keeps source groups contiguous when positions tie", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("digest-service-contiguous@example.com"));
+    const sourceAId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const sourceBId = await createSourceForUser(database, user.id, ConnectorId.RSS, 1);
+
+    const feedA1 = await createFeedForSource(database, user.id, sourceAId, 1, "channel:a1", "Alpha");
+    const feedA2 = await createFeedForSource(database, user.id, sourceAId, 2, "channel:a2", "Beta");
+    const feedB1 = await createFeedForSource(database, user.id, sourceBId, 1, "rss:b1", "Gamma");
+    const feedB2 = await createFeedForSource(database, user.id, sourceBId, 2, "rss:b2", "Delta");
+
+    await upsertItems(database, feedA1.id, [normalizedItem(feedA1.externalId, "1", "alpha")], 1);
+    await upsertItems(database, feedA2.id, [normalizedItem(feedA2.externalId, "1", "beta")], 1);
+    await upsertItems(database, feedB1.id, [normalizedItem(feedB1.externalId, "1", "gamma")], 1);
+    await upsertItems(database, feedB2.id, [normalizedItem(feedB2.externalId, "1", "delta")], 1);
+
+    const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([[], [], [], []]),
+    });
+
+    assertEquals(view.groups.length, 2);
+
+    const seenSourceIds = new Set(view.groups.map((g) => g.sourceId));
+    assertEquals(seenSourceIds.size, 2);
+
+    for (const group of view.groups) {
+      for (const section of group.sections) {
+        assertEquals(section.sourceId, group.sourceId);
+      }
+    }
   });
 });

@@ -159,3 +159,19 @@ Deno.test("summary repository rejects invalid stored points at the boundary", as
     await assertRejects(() => Promise.resolve().then(() => summaryPointSchema.parse({ broken: true })), z.ZodError);
   });
 });
+
+Deno.test("summary check constraint rejects reversed period order", async () => {
+  await withTestDb(async (database) => {
+    const { feed } = await createFeed(database, "summary-check-period@example.com");
+
+    await assertRejects(
+      () => upsertSummaryForPeriod(database, {
+        feedId: feed.id,
+        periodStartMs: periodEndMs,
+        periodEndMs: periodStartMs,
+        points: [],
+        feedNameSnapshot: feed.name,
+      }),
+    );
+  });
+});

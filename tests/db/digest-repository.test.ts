@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -12,6 +12,7 @@ import {
   upsertDigestForPeriod,
 } from "../../src/repositories/digest-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
+import { digests } from "../../src/db/schema/digest.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
 
 function userInput(email: string): CreateUserInput {
@@ -97,5 +98,35 @@ Deno.test("digest repository lists and finds digests only for the owner", async 
 
     assertEquals(await findDigestById(database, firstDigest.id, secondUser.id), null);
     assertEquals((await findDigestForUserPeriod(database, secondUser.id, periodStartMs, periodEndMs))?.status, "failed");
+  });
+});
+
+Deno.test("digest check constraint rejects invalid status at database level", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUserWithSource(database, "digest-check-status@example.com");
+
+    await assertRejects(
+      () => upsertDigestForPeriod(database, {
+        userId: user.id,
+        periodStartMs,
+        periodEndMs,
+        status: "unknown" as typeof digests.$inferSelect["status"],
+      }),
+    );
+  });
+});
+
+Deno.test("digest check constraint rejects reversed period order", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUserWithSource(database, "digest-check-period@example.com");
+
+    await assertRejects(
+      () => upsertDigestForPeriod(database, {
+        userId: user.id,
+        periodStartMs: periodEndMs,
+        periodEndMs: periodStartMs,
+        status: "pending",
+      }),
+    );
   });
 });

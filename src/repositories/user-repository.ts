@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, gt, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { users } from "../db/schema/user.ts";
@@ -127,6 +127,39 @@ export async function listUsers(database: Database): Promise<User[]> {
     .select()
     .from(users)
     .orderBy(asc(users.createdAt));
+  return rows.map(parseUser);
+}
+
+export interface ListUsersPageOptions {
+  afterCreatedAt?: number;
+  afterId?: string;
+  limit: number;
+}
+
+export async function listUsersPage(
+  database: Database,
+  options: ListUsersPageOptions,
+): Promise<User[]> {
+  const pageLimit = Math.max(1, Math.floor(options.limit));
+  const hasCursor = options.afterCreatedAt !== undefined && options.afterId !== undefined;
+  if (!hasCursor) {
+    const rows = await database
+      .select()
+      .from(users)
+      .orderBy(asc(users.createdAt), asc(users.id))
+      .limit(pageLimit);
+    return rows.map(parseUser);
+  }
+
+  const rows = await database
+    .select()
+    .from(users)
+    .where(or(
+      gt(users.createdAt, options.afterCreatedAt!),
+      and(eq(users.createdAt, options.afterCreatedAt!), gt(users.id, options.afterId!)),
+    ))
+    .orderBy(asc(users.createdAt), asc(users.id))
+    .limit(pageLimit);
   return rows.map(parseUser);
 }
 

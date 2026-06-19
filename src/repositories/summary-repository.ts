@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { feeds } from "../db/schema/feed.ts";
@@ -99,6 +99,26 @@ export async function findSummaryForFeedPeriod(
   return rows[0] ? parsePublicSummary(rows[0]) : null;
 }
 
+export async function listSummariesForFeedPeriods(
+  database: Database,
+  feedIds: string[],
+  periodStartMs: number,
+  periodEndMs: number,
+): Promise<PublicSummary[]> {
+  if (feedIds.length === 0) {
+    return [];
+  }
+
+  const rows = await database
+    .select()
+    .from(summaries)
+    .where(and(
+      inArray(summaries.feedId, feedIds),
+      eq(summaries.periodStartMs, periodStartMs),
+      eq(summaries.periodEndMs, periodEndMs),
+    ));
+  return rows.map(parsePublicSummary);
+}
 export async function listSummariesForUserPeriod(
   database: Database,
   userId: string,
@@ -130,7 +150,14 @@ export async function listSummariesForUserPeriod(
       eq(summaries.periodStartMs, periodStartMs),
       eq(summaries.periodEndMs, periodEndMs),
     ))
-    .orderBy(asc(sources.position), asc(feeds.position), asc(summaries.feedNameSnapshot));
+    .orderBy(
+      asc(sources.position),
+      asc(sources.createdAt),
+      asc(sources.id),
+      asc(feeds.position),
+      asc(feeds.name),
+      asc(summaries.feedNameSnapshot),
+    );
   return rows.map(parseUserPeriodSummary);
 }
 

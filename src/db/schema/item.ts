@@ -1,4 +1,4 @@
-import { bigint, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { bigint, index, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import type { NormalizedItem } from "../../connectors/connector.types.ts";
 import { feeds } from "./feed.ts";
 
@@ -16,6 +16,7 @@ export const items = pgTable(
   },
   (table) => [
     unique("items_feed_id_external_id_unique").on(table.feedId, table.externalId),
+    index("items_feed_date_external_id_idx").on(table.feedId, table.date, table.externalId),
   ],
 );
 

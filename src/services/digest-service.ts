@@ -6,8 +6,9 @@ import {
   type PublicDigest,
   upsertDigestForPeriod,
 } from "../repositories/digest-repository.ts";
-import { listSummariesForUserPeriod, type UserPeriodSummary } from "../repositories/summary-repository.ts";
-import { getOrSummarizeFeedPeriod, type SummarizeFeedPeriodDependencies } from "./summarization-service.ts";
+import { listSummariesForFeedPeriods, listSummariesForUserPeriod, type UserPeriodSummary } from "../repositories/summary-repository.ts";
+import { findUserById } from "../repositories/user-repository.ts";
+import { summarizeOwnedFeedPeriod, type SummarizeFeedPeriodDependencies } from "./summarization-service.ts";
 import type { Database } from "../db/client.ts";
 import { NotFoundError } from "../server/errors.ts";
 
@@ -106,6 +107,11 @@ export async function assembleDigestForPeriod(
   periodEndMs: number,
   dependencies: AssembleDigestDependencies = {},
 ): Promise<DigestView> {
+  const user = await findUserById(database, userId);
+  if (!user) {
+    throw new NotFoundError("user not found");
+  }
+
   let digest = await upsertDigestForPeriod(database, {
     userId,
     periodStartMs,
@@ -114,15 +120,21 @@ export async function assembleDigestForPeriod(
   });
 
   const feeds = activeFeeds(await listFeedsForUser(database, userId), dependencies.feedIds);
+
+  const summariesByFeedId = new Map(
+    (await listSummariesForFeedPeriods(database, feeds.map((feed) => feed.id), periodStartMs, periodEndMs))
+      .map((summary) => [summary.feedId, summary] as const),
+  );
+
   let hadFailure = false;
   for (const feed of feeds) {
+    if (summariesByFeedId.has(feed.id)) {
+      continue;
+    }
     try {
-      await getOrSummarizeFeedPeriod(
+      await summarizeOwnedFeedPeriod(
         database,
-        userId,
-        feed.id,
-        periodStartMs,
-        periodEndMs,
+        { user, feed, periodStartMs, periodEndMs },
         dependencies,
       );
     } catch {
@@ -151,7 +163,7 @@ function formatDigestMoment(value: number): string {
 
 export function renderDigestMarkdown(view: DigestView): string {
   const lines = [
-    `# Digest ${formatDigestMoment(view.digest.periodStartMs)} → ${formatDigestMoment(view.digest.periodEndMs)}`,
+    `# Digest ${formatDigestMoment(view.digest.periodStartMs)} \u2192 ${formatDigestMoment(view.digest.periodEndMs)}`,
     `Status: ${view.digest.status}`,
     "",
   ];

@@ -1,4 +1,4 @@
-import { bigint, pgTable, text, uuid } from "drizzle-orm/pg-core";
+import { bigint, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { users } from "./user.ts";
 
 /**
@@ -19,7 +19,9 @@ export const sessions = pgTable("sessions", {
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
   expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
   lastSeenAt: bigint("last_seen_at", { mode: "number" }),
-});
+}, (table) => [
+  uniqueIndex("sessions_token_hash_unique").on(table.tokenHash),
+]);
 
 export type SessionRow = typeof sessions.$inferSelect;
 export type NewSessionRow = typeof sessions.$inferInsert;

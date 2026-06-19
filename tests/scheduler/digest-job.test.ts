@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
-import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
+import { createUser, type CreateUserInput, type User } from "../../src/repositories/user-repository.ts";
 import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
 import { clearDigestJobStateForTesting, computeDigestPeriod, DEFAULT_DIGEST_CRON, runDigestTick, scheduleDigestJob } from "../../src/scheduler/digest-job.ts";
 import type { Scheduler } from "../../src/scheduler/scheduler.ts";
@@ -120,5 +120,37 @@ Deno.test("scheduleDigestJob registers the default cron and handler", async () =
     await createUser(database, userInput("scheduler-scheduled@example.com"));
     await scheduler.jobs[0].handler();
     assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("runDigestTick pages users and respects bounded concurrency", async () => {
+  clearDigestJobStateForTesting();
+  await withTestDb(async (database: Database) => {
+    const users: User[] = [];
+    for (let i = 0; i < 5; i++) {
+      users.push(await createUser(database, userInput(`scheduler-page-${i}@example.com`)));
+    }
+
+    const calledUserIds = new Set<string>();
+    let inFlight = 0;
+    let maximumInFlight = 0;
+
+    const fakeRunForUser = async (_database: Database, userId: string, _period: { startMs: number; endMs: number }) => {
+      calledUserIds.add(userId);
+      inFlight++;
+      maximumInFlight = Math.max(maximumInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return {
+        digest: { id: "fake", userId, periodStartMs: 1, periodEndMs: 2, status: "complete" as const, createdAt: 1, updatedAt: 1 },
+        sections: [],
+        groups: [],
+      };
+    };
+
+    await runDigestTick(database, { runForUser: fakeRunForUser, userPageSize: 2, userConcurrency: 2 });
+
+    assertEquals(calledUserIds.size, 5);
+    assertEquals(maximumInFlight <= 2, true);
   });
 });

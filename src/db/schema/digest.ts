@@ -1,4 +1,5 @@
-import { bigint, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { bigint, check, index, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import { users } from "./user.ts";
 
 export const digestStatuses = ["pending", "complete", "failed"] as const;
@@ -19,6 +20,9 @@ export const digests = pgTable(
   },
   (table) => [
     unique("digests_user_period_unique").on(table.userId, table.periodStartMs, table.periodEndMs),
+    index("digests_user_latest_idx").on(table.userId, table.periodEndMs.desc(), table.createdAt.desc()),
+    check("digests_status_check", sql`${table.status} in ('pending', 'complete', 'failed')`),
+    check("digests_period_order_check", sql`${table.periodStartMs} <= ${table.periodEndMs}`),
   ],
 );
 

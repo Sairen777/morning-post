@@ -1,6 +1,6 @@
 import type { Database } from "../db/client.ts";
 import { findLatestDigestForUser } from "../repositories/digest-repository.ts";
-import { listUsers } from "../repositories/user-repository.ts";
+import { listUsersPage, type User } from "../repositories/user-repository.ts";
 import type { DigestView } from "../services/digest-service.ts";
 import type { OrchestratorDependencies } from "../services/orchestrator.ts";
 import { runForUser, type DigestPeriod } from "../services/orchestrator.ts";
@@ -8,7 +8,8 @@ import type { Scheduler } from "./scheduler.ts";
 
 export const DEFAULT_DIGEST_CRON = "0 6 * * *";
 export const DIGEST_CADENCE_MS = 24 * 60 * 60 * 1000;
-
+export const DEFAULT_USER_PAGE_SIZE = 100;
+export const DEFAULT_USER_CONCURRENCY = 5;
 
 export type RunForUserFunction = (
   database: Database,
@@ -21,6 +22,8 @@ export interface DigestJobDependencies extends OrchestratorDependencies {
   cadenceMs?: number;
   runForUser?: RunForUserFunction;
   logError?: (message: string) => void;
+  userPageSize?: number;
+  userConcurrency?: number;
 }
 
 const runningUsers = new Set<string>();
@@ -50,9 +53,10 @@ export async function runDigestTick(
   const cadenceMs = dependencies.cadenceMs ?? DIGEST_CADENCE_MS;
   const runDigestForUser = dependencies.runForUser ?? runForUser;
   const logError = dependencies.logError ?? ((message: string) => console.error(message));
-  const users = await listUsers(database);
+  const userPageSize = Math.max(1, Math.floor(dependencies.userPageSize ?? DEFAULT_USER_PAGE_SIZE));
+  const userConcurrency = Math.max(1, Math.floor(dependencies.userConcurrency ?? DEFAULT_USER_CONCURRENCY));
 
-  await Promise.all(users.map(async (user) => {
+  const runOneUser = async (user: User): Promise<void> => {
     if (runningUsers.has(user.id)) {
       return;
     }
@@ -65,7 +69,22 @@ export async function runDigestTick(
     } finally {
       runningUsers.delete(user.id);
     }
-  }));
+  };
+
+  let afterCreatedAt: number | undefined;
+  let afterId: string | undefined;
+  while (true) {
+    const page = await listUsersPage(database, { afterCreatedAt, afterId, limit: userPageSize });
+    for (let index = 0; index < page.length; index += userConcurrency) {
+      await Promise.all(page.slice(index, index + userConcurrency).map(runOneUser));
+    }
+    if (page.length < userPageSize) {
+      break;
+    }
+    const lastUser = page[page.length - 1];
+    afterCreatedAt = lastUser.createdAt;
+    afterId = lastUser.id;
+  }
 }
 
 export function scheduleDigestJob(

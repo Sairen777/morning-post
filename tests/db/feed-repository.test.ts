@@ -2,7 +2,7 @@ import { assert,
 assertEquals,
 assertExists,
 assertRejects, } from "@std/assert"
-import { z } from "zod";
+import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -280,21 +280,19 @@ Deno.test("createOrReviveFeed rejects disconnected sources", async () => {
 
 Deno.test("feed row validation rejects unknown feed kinds at repository boundary", async () => {
   await withTestDb(async (database) => {
-    const { user, source } = await createOwnedSource(database, "feed-kind@example.com");
+    const { source } = await createOwnedSource(database, "feed-kind@example.com");
     const now = Date.now();
-    await database.insert(feeds).values({
-      sourceId: source.id,
-      externalId: "bad-kind",
-      name: "Bad Kind",
-      kind: "invalid" as FeedKind,
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    });
 
     await assertRejects(
-      () => listFeedsForUser(database, user.id),
-      z.ZodError,
+      () => database.insert(feeds).values({
+        sourceId: source.id,
+        externalId: "bad-kind",
+        name: "Bad Kind",
+        kind: "invalid" as FeedKind,
+        enabled: true,
+        createdAt: now,
+        updatedAt: now,
+      }),
     );
   });
 });
@@ -323,5 +321,16 @@ Deno.test("setLastFetched updates only the fetch cursor and row timestamp", asyn
     assertEquals(updated.enabled, feed.enabled);
     assertEquals(updated.deletedAt, feed.deletedAt);
     assertEquals(updated.createdAt, feed.createdAt);
+  });
+});
+
+Deno.test("feed check constraint rejects invalid feed kind at database level", async () => {
+  await withTestDb(async (database) => {
+    const { user, source } = await createOwnedSource(database, "feed-check@example.com");
+    const feed = await createOrReviveFeed(database, feedInput(user.id, source.id, { kind: "news" }));
+
+    await assertRejects(
+      () => database.update(feeds).set({ kind: "invalid" as FeedKind }).where(eq(feeds.id, feed.id)),
+    );
   });
 });
