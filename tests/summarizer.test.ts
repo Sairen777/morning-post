@@ -1,15 +1,17 @@
-import { assertEquals, assertStringIncludes } from "jsr:@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert"
 import { OpenAICompatibleSummarizerService } from "../src/summarizers/openai-compatible-summarizer.ts";
 import {
   buildDiscussionPrompt,
   buildNewsPrompt,
+  selectRuleset,
 } from "../src/summarizers/prompts.ts";
 import type { NormalizedItem } from "../src/connectors/connector.types.ts";
 import { ConnectorId } from "../src/constants.ts";
 
 const item = (overrides: Partial<NormalizedItem> = {}): NormalizedItem => ({
   connectorId: ConnectorId.Telegram,
-  sourceId: "TestChannel",
+  feedExternalId: "TestChannel",
+  externalId: "1",
   date: new Date("2026-01-01T10:00:00Z").getTime(),
   title: null,
   text: "Some news post",
@@ -73,6 +75,38 @@ Deno.test("buildDiscussionPrompt — contains discussion instruction", () => {
 Deno.test("buildNewsPrompt — explicit language overrides default", () => {
   const { systemPrompt } = buildNewsPrompt({ language: "Ukrainian" });
   assertStringIncludes(systemPrompt, "Ukrainian");
+});
+
+// --- selectRuleset ---
+
+Deno.test("selectRuleset — explicit kind 'discussion' returns discussion ruleset", () => {
+  const items = [item({ meta: { isGroup: false } })];
+  const rules = selectRuleset(items, "discussion");
+  assertStringIncludes(rules.systemPrompt, "discussion summarizer");
+});
+
+Deno.test("selectRuleset — explicit kind 'news' returns news ruleset", () => {
+  const items = [item({ meta: { isGroup: true } })];
+  const rules = selectRuleset(items, "news");
+  assertStringIncludes(rules.systemPrompt, "news summarizer");
+});
+
+Deno.test("selectRuleset — no kind, isGroup=true infers discussion", () => {
+  const items = [item({ meta: { isGroup: true } })];
+  const rules = selectRuleset(items);
+  assertStringIncludes(rules.systemPrompt, "discussion summarizer");
+});
+
+Deno.test("selectRuleset — no kind, isGroup=false infers news", () => {
+  const items = [item({ meta: { isGroup: false } })];
+  const rules = selectRuleset(items);
+  assertStringIncludes(rules.systemPrompt, "news summarizer");
+});
+
+Deno.test("selectRuleset — explicit kind overrides meta.isGroup", () => {
+  const items = [item({ meta: { isGroup: true } })];
+  const rules = selectRuleset(items, "news");
+  assertStringIncludes(rules.systemPrompt, "news summarizer");
 });
 
 // --- summarizer wiring ---

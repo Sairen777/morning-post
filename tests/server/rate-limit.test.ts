@@ -1,0 +1,289 @@
+import { assertEquals } from "@std/assert"
+import { Hono, type MiddlewareHandler } from "@hono/hono";
+import { createRateLimitMiddleware } from "../../src/server/middleware/rate-limit.ts";
+import { errorHandler } from "../../src/server/errors.ts";
+import { buildAuthRoutes } from "../../src/server/routes/auth.ts";
+import { withTestDb } from "../../src/db/testing.ts";
+import type { Database } from "../../src/db/client.ts";
+
+const PASSWORD = "analytical-engine-1843";
+
+function noRateLimit(): MiddlewareHandler {
+  return async (_context, next) => {
+    await next();
+  };
+}
+
+function jsonBody(body: unknown): RequestInit {
+  return {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  };
+}
+
+function registerBody(email: string): Record<string, string> {
+  return {
+    name: "Ada Lovelace",
+    email,
+    password: PASSWORD,
+  };
+}
+
+function buildRateLimitedTestApp(options: {
+  bucket: string;
+  limit: number;
+  windowMs: number;
+  now: () => number;
+}): Hono {
+  const app = new Hono();
+  app.onError(errorHandler);
+  app.get(
+    "/limited",
+    createRateLimitMiddleware(options),
+    (context) => context.json({ ok: true }),
+  );
+  return app;
+}
+
+function buildAuthTestApp(
+  database: Database,
+  options: {
+    registerRateLimiter?: MiddlewareHandler;
+    loginRateLimiter?: MiddlewareHandler;
+  },
+): Hono {
+  const app = new Hono();
+  app.onError(errorHandler);
+  app.route("/auth", buildAuthRoutes(database, options));
+  return app;
+}
+
+async function register(app: Hono, email: string): Promise<Response> {
+  return await app.request("/auth/register", jsonBody(registerBody(email)));
+}
+
+async function login(app: Hono, email: string, password = PASSWORD): Promise<Response> {
+  return await app.request("/auth/login", jsonBody({ email, password }));
+}
+
+Deno.test("rate limit middleware allows requests until the threshold is crossed", async () => {
+  let currentTime = 1_000;
+  const app = buildRateLimitedTestApp({
+    bucket: "middleware-threshold",
+    limit: 2,
+    windowMs: 60_000,
+    now: () => currentTime,
+  });
+
+  const first = await app.request("/limited");
+  const second = await app.request("/limited");
+  const third = await app.request("/limited");
+
+  assertEquals(first.status, 200);
+  assertEquals(second.status, 200);
+  assertEquals(third.status, 429);
+  assertEquals(await third.json(), {
+    error: { code: "RATE_LIMITED", message: "Too many requests" },
+  });
+
+  currentTime += 60_000;
+  const reset = await app.request("/limited");
+  assertEquals(reset.status, 200);
+});
+
+Deno.test("rate limit middleware keys callers by forwarded IP", async () => {
+  const app = buildRateLimitedTestApp({
+    bucket: "middleware-ip-keys",
+    limit: 1,
+    windowMs: 60_000,
+    now: () => 1_000,
+  });
+
+  const first = await app.request("/limited", {
+    headers: { "x-forwarded-for": "203.0.113.1, 10.0.0.1" },
+  });
+  const sameForwardedIp = await app.request("/limited", {
+    headers: { "x-forwarded-for": "203.0.113.1, 10.0.0.2" },
+  });
+  const differentForwardedIp = await app.request("/limited", {
+    headers: { "x-forwarded-for": "203.0.113.2" },
+  });
+
+  assertEquals(first.status, 200);
+  assertEquals(sameForwardedIp.status, 429);
+  assertEquals(differentForwardedIp.status, 200);
+});
+
+Deno.test("rate limit middleware falls back to real IP when forwarded IP is absent", async () => {
+  const app = buildRateLimitedTestApp({
+    bucket: "middleware-real-ip",
+    limit: 1,
+    windowMs: 60_000,
+    now: () => 1_000,
+  });
+
+  const first = await app.request("/limited", {
+    headers: { "x-real-ip": "198.51.100.1" },
+  });
+  const sameRealIp = await app.request("/limited", {
+    headers: { "x-real-ip": "198.51.100.1" },
+  });
+  const differentRealIp = await app.request("/limited", {
+    headers: { "x-real-ip": "198.51.100.2" },
+  });
+
+  assertEquals(first.status, 200);
+  assertEquals(sameRealIp.status, 429);
+  assertEquals(differentRealIp.status, 200);
+});
+
+Deno.test("register and login rate limits use separate buckets", async () => {
+  await withTestDb(async (database) => {
+    const app = buildAuthTestApp(database, {
+      registerRateLimiter: createRateLimitMiddleware({
+        bucket: "real-register-separate",
+        limit: 1,
+        windowMs: 60_000,
+        now: () => 1_000,
+      }),
+      loginRateLimiter: createRateLimitMiddleware({
+        bucket: "real-login-separate",
+        limit: 1,
+        windowMs: 60_000,
+        now: () => 1_000,
+      }),
+    });
+
+    const firstRegister = await register(app, "separate@example.com");
+    const blockedRegister = await register(app, "blocked-register@example.com");
+    const firstLogin = await login(app, "ghost@example.com");
+    const blockedLogin = await login(app, "ghost@example.com");
+    const stillBlockedRegister = await register(app, "still-blocked@example.com");
+
+    assertEquals(firstRegister.status, 201);
+    assertEquals(blockedRegister.status, 429);
+    assertEquals(firstLogin.status, 401);
+    assertEquals(blockedLogin.status, 429);
+    assertEquals(stillBlockedRegister.status, 429);
+  });
+});
+
+Deno.test("real auth route limits reset deterministically after the window", async () => {
+  await withTestDb(async (database) => {
+    let currentTime = 1_000;
+    const app = buildAuthTestApp(database, {
+      registerRateLimiter: noRateLimit(),
+      loginRateLimiter: createRateLimitMiddleware({
+        bucket: "real-login-reset",
+        limit: 1,
+        windowMs: 60_000,
+        now: () => currentTime,
+      }),
+    });
+
+    const first = await login(app, "ghost@example.com");
+    const blocked = await login(app, "ghost@example.com");
+    currentTime += 60_000;
+    const afterReset = await login(app, "ghost@example.com");
+
+    assertEquals(first.status, 401);
+    assertEquals(blocked.status, 429);
+    assertEquals(afterReset.status, 401);
+  });
+});
+
+Deno.test("real auth route keeps different forwarded IP keys separate", async () => {
+  await withTestDb(async (database) => {
+    const app = buildAuthTestApp(database, {
+      registerRateLimiter: createRateLimitMiddleware({
+        bucket: "real-register-ip-keys",
+        limit: 1,
+        windowMs: 60_000,
+        now: () => 1_000,
+      }),
+      loginRateLimiter: noRateLimit(),
+    });
+
+    const first = await app.request("/auth/register", {
+      ...jsonBody(registerBody("ip-one@example.com")),
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.10" },
+    });
+    const sameIp = await app.request("/auth/register", {
+      ...jsonBody(registerBody("same-ip@example.com")),
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.10" },
+    });
+    const differentIp = await app.request("/auth/register", {
+      ...jsonBody(registerBody("ip-two@example.com")),
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.11" },
+    });
+
+    assertEquals(first.status, 201);
+    assertEquals(sameIp.status, 429);
+    assertEquals(differentIp.status, 201);
+  });
+});
+
+Deno.test("real login preserves identical credential errors until rate limited", async () => {
+  await withTestDb(async (database) => {
+    const app = buildAuthTestApp(database, {
+      registerRateLimiter: noRateLimit(),
+      loginRateLimiter: createRateLimitMiddleware({
+        bucket: "real-login-identical-errors",
+        limit: 2,
+        windowMs: 60_000,
+        now: () => 1_000,
+      }),
+    });
+
+    const registered = await register(app, "real-user@example.com");
+    assertEquals(registered.status, 201);
+    await registered.body?.cancel();
+
+    const wrongPassword = await login(app, "real-user@example.com", "not-the-password");
+    const unknownEmail = await login(app, "ghost@example.com");
+    const rateLimitedWrongPassword = await login(app, "real-user@example.com", "not-the-password");
+    const rateLimitedUnknownEmail = await login(app, "ghost@example.com");
+
+    assertEquals(wrongPassword.status, 401);
+    assertEquals(unknownEmail.status, 401);
+    assertEquals(await wrongPassword.text(), await unknownEmail.text());
+
+    assertEquals(rateLimitedWrongPassword.status, 429);
+    assertEquals(rateLimitedUnknownEmail.status, 429);
+    assertEquals(await rateLimitedWrongPassword.text(), await rateLimitedUnknownEmail.text());
+  });
+});
+
+Deno.test("separate app instances have isolated default auth rate limiters", async () => {
+  await withTestDb(async (database) => {
+    // Build app A with default limiters (no overrides)
+    const appA = buildAuthTestApp(database, {});
+
+    // Same forwarded IP for the whole test
+    const ip = "10.0.0.1";
+    const requestOpts = (email: string) => ({
+      ...jsonBody(registerBody(email)),
+      headers: { "content-type": "application/json", "x-forwarded-for": ip },
+    });
+
+    // Exhaust app A's default register limiter (limit=5)
+    for (let i = 0; i < 5; i++) {
+      const response = await appA.request("/auth/register", requestOpts(`isolated-a-${i}@example.com`));
+      assertEquals(response.status, 201, `request ${i + 1} should succeed on app A`);
+      await response.body?.cancel();
+    }
+
+    // 6th request hits the default limit
+    const blocked = await appA.request("/auth/register", requestOpts("isolated-a-blocked@example.com"));
+    assertEquals(blocked.status, 429);
+    await blocked.body?.cancel();
+
+    // Build app B separately — fresh buildAuthRoutes call → new bucket namespace
+    const appB = buildAuthTestApp(database, {});
+
+    const fresh = await appB.request("/auth/register", requestOpts("isolated-b-fresh@example.com"));
+    assertEquals(fresh.status, 201, "separate app instance should have fresh default rate limit state");
+    await fresh.body?.cancel();
+  });
+});

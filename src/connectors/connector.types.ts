@@ -1,15 +1,27 @@
 import type { ConnectorId } from "../constants.ts";
 
 export interface Connector<TRawData> {
-  getRawData(from: number, to: number): Promise<TRawData>;
-  getNormalizedData(from: number, to: number): Promise<NormalizedData>;
+  getRawData(from: number, to: number, feedExternalIds?: string[]): Promise<TRawData>;
+  getNormalizedData(from: number, to: number, feedExternalIds?: string[]): Promise<NormalizedData>;
+  listAvailableFeeds?(): Promise<AvailableFeed[]>;
 }
 
+export interface AvailableFeed {
+  externalId: string;
+  name: string;
+  kind: FeedKind;
+}
+
+export type FeedKind = "news" | "discussion";
+
+// The map key is the feed's connector-native id, unique only within a source;
+// it is the same value as NormalizedItem.feedExternalId.
 export type NormalizedData = Record<string, NormalizedItem[]>;
 
 export interface NormalizedItem {
   connectorId: ConnectorId;
-  sourceId: string;
+  feedExternalId: string;
+  externalId: string;
   date: number;
   title: string | null;
   text: string;

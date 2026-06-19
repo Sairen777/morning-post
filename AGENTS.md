@@ -6,6 +6,8 @@ When implementing a feature, always write tests for the feature. Try to write un
 
 Never change existing test logic if they were passing before changes. If a test stopped passing, try to find case for it in the new code.
 
+If during implementation you catched an unexpected behaviour tha you had to fix, make sure to write tests for that behaviour.
+
 # Code style
 
 ## Method size — single responsibility

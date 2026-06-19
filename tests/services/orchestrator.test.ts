@@ -1,0 +1,234 @@
+import { assertEquals } from "@std/assert";
+import { ConflictError } from "../../src/server/errors.ts";
+import { ConnectorId } from "../../src/constants.ts";
+import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
+import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
+import type { Database } from "../../src/db/client.ts";
+import { withTestDb } from "../../src/db/testing.ts";
+import type { Connector, NormalizedData, NormalizedItem } from "../../src/connectors/connector.types.ts";
+import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
+import { listItemsForFeedInWindow } from "../../src/repositories/item-repository.ts";
+import { createSource } from "../../src/repositories/source-repository.ts";
+import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
+import { runForUser } from "../../src/services/orchestrator.ts";
+import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
+import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
+import { findSummaryForFeedPeriod } from "../../src/repositories/summary-repository.ts";
+
+class FakeConnector implements Connector<unknown> {
+  readonly calls: Array<{ from: number; to: number; feedExternalIds?: string[] }> = [];
+
+  constructor(
+    readonly responses: Record<string, NormalizedItem[]>,
+    readonly failingFeedExternalIds: Set<string> = new Set(),
+  ) {}
+
+  getRawData(): Promise<unknown> {
+    return Promise.resolve({});
+  }
+
+  getNormalizedData(from: number, to: number, feedExternalIds?: string[]): Promise<NormalizedData> {
+    this.calls.push({ from, to, feedExternalIds });
+    const selectedFeedExternalId = feedExternalIds?.[0];
+    if (selectedFeedExternalId && this.failingFeedExternalIds.has(selectedFeedExternalId)) {
+      return Promise.reject(new Error(`failed feed ${selectedFeedExternalId}`));
+    }
+    if (!selectedFeedExternalId) {
+      return Promise.resolve(this.responses);
+    }
+    return Promise.resolve(selectedFeedExternalId in this.responses ? { [selectedFeedExternalId]: this.responses[selectedFeedExternalId] } : {});
+  }
+}
+
+class FakeSummarizer implements SummarizerService {
+  readonly calls: Array<{ items: NormalizedItem[]; rules: SummaryRuleset; options?: SummarizeOptions }> = [];
+  #results: Array<SummaryPoint[] | Error>;
+
+  constructor(results: Array<SummaryPoint[] | Error>) {
+    this.#results = [...results];
+  }
+
+  summarize(items: NormalizedItem[], rules: SummaryRuleset, options?: SummarizeOptions): Promise<SummaryPoint[]> {
+    this.calls.push({ items, rules, options });
+    const result = this.#results.shift() ?? [];
+    if (result instanceof Error) {
+      return Promise.reject(result);
+    }
+    return Promise.resolve(result);
+  }
+}
+
+class FakeConnectorFactory {
+  readonly disposeCalls: string[] = [];
+
+  constructor(
+    readonly connectorsBySourceId: Record<string, FakeConnector>,
+    readonly failingSourceIds: Set<string> = new Set(),
+  ) {}
+
+  forSource(source: { id: string }, _userId: string): Promise<{ connector: FakeConnector; dispose: () => void }> {
+    if (this.failingSourceIds.has(source.id)) {
+      throw new ConflictError("source is disconnected");
+    }
+    const connector = this.connectorsBySourceId[source.id];
+    if (!connector) {
+      throw new Error(`missing connector for source ${source.id}`);
+    }
+    return Promise.resolve({
+      connector,
+      dispose: () => {
+        this.disposeCalls.push(source.id);
+      },
+    });
+  }
+}
+
+function userInput(email: string): CreateUserInput {
+  return {
+    name: "Orchestrator Owner",
+    email,
+    passwordHash: "$argon2id$fakehash",
+    systemPrompt: "Summarize tersely.",
+    defaultLanguage: "en",
+    defaultModel: "gpt-4o-mini",
+  };
+}
+
+function credentialCipher(): CredentialCipher {
+  return new CredentialCipher(new EnvMasterKeyProvider(new Uint8Array(32).fill(59)));
+}
+
+async function encryptedCredentials(userId: string, connectorId: ConnectorId): Promise<EncryptedBlob> {
+  return await credentialCipher().encrypt(JSON.stringify({ sessionString: `${connectorId}-session` }), {
+    userId,
+    connectorId,
+  });
+}
+
+async function createSourceAndFeed(
+  database: Database,
+  userId: string,
+  connectorId: ConnectorId,
+  sourcePosition: number,
+  feedExternalId: string,
+  feedName: string,
+  feedPosition = 1,
+) {
+  const source = await createSource(database, {
+    userId,
+    connectorId,
+    credentials: await encryptedCredentials(userId, connectorId),
+    position: sourcePosition,
+  });
+  const feed = await createOrReviveFeed(database, {
+    userId,
+    sourceId: source.id,
+    externalId: feedExternalId,
+    name: feedName,
+    kind: "news",
+    position: feedPosition,
+  });
+  return { source, feed };
+}
+
+function normalizedItem(feedExternalId: string, externalId: string, text: string): NormalizedItem {
+  return {
+    connectorId: ConnectorId.Telegram,
+    feedExternalId,
+    externalId,
+    date: 1_700_000_000_000,
+    title: null,
+    text,
+    author: "Channel",
+    url: null,
+  };
+}
+
+const period = { startMs: 1_700_000_000_000, endMs: 1_700_086_400_000 };
+
+Deno.test("runForUser ingests feeds, summarizes them, and returns a complete digest", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("orchestrator-happy@example.com"));
+    const first = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "First Feed");
+    const second = await createSourceAndFeed(database, user.id, ConnectorId.RSS, 2, "rss:1", "Second Feed");
+    const connectorFactory = new FakeConnectorFactory({
+      [first.source.id]: new FakeConnector({ [first.feed.externalId]: [normalizedItem(first.feed.externalId, "1", "first item")] }),
+      [second.source.id]: new FakeConnector({ [second.feed.externalId]: [normalizedItem(second.feed.externalId, "1", "second item")] }),
+    });
+    const summarizer = new FakeSummarizer([
+      [{ text: "first summary", sourceUrl: null }],
+      [{ text: "second summary", sourceUrl: null }],
+    ]);
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory: connectorFactory as never,
+      summarizer,
+      now: () => 200,
+    });
+
+    assertEquals(view.digest.status, "complete");
+    assertEquals(view.sections.map((section) => section.feedName), ["First Feed", "Second Feed"]);
+    assertEquals((await listItemsForFeedInWindow(database, first.feed.id, period.startMs, period.endMs)).length, 1);
+    assertEquals(connectorFactory.disposeCalls.length, 2);
+  });
+});
+
+Deno.test("runForUser is idempotent for the same period", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("orchestrator-idempotent@example.com"));
+    const setup = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "Only Feed");
+    const connector = new FakeConnector({ [setup.feed.externalId]: [normalizedItem(setup.feed.externalId, "1", "only item")] });
+    const connectorFactory = new FakeConnectorFactory({ [setup.source.id]: connector });
+    const summarizer = new FakeSummarizer([[{ text: "only summary", sourceUrl: null }]]);
+
+    const first = await runForUser(database, user.id, period, {
+      connectorFactory: connectorFactory as never,
+      summarizer,
+      now: () => 201,
+    });
+    const second = await runForUser(database, user.id, period, {
+      connectorFactory: connectorFactory as never,
+      summarizer,
+      now: () => 202,
+    });
+
+    assertEquals(first.digest.id, second.digest.id);
+    assertEquals(connector.calls.length, 1);
+    assertEquals(summarizer.calls.length, 1);
+  });
+});
+
+Deno.test("runForUser creates an empty digest for a user with no sources", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("orchestrator-empty@example.com"));
+    const view = await runForUser(database, user.id, period, { now: () => 203 });
+    assertEquals(view.digest.status, "complete");
+    assertEquals(view.sections, []);
+  });
+});
+
+Deno.test("runForUser isolates source failures and marks the digest failed", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("orchestrator-failure@example.com"));
+    const first = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "First Feed");
+    const second = await createSourceAndFeed(database, user.id, ConnectorId.RSS, 2, "rss:1", "Second Feed");
+    const connectorFactory = new FakeConnectorFactory(
+      {
+        [second.source.id]: new FakeConnector({ [second.feed.externalId]: [normalizedItem(second.feed.externalId, "1", "second item")] }),
+      },
+      new Set([first.source.id]),
+    );
+    const summarizer = new FakeSummarizer([[{ text: "second summary", sourceUrl: null }]]);
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory: connectorFactory as never,
+      summarizer,
+      now: () => 204,
+    });
+
+    assertEquals(view.digest.status, "failed");
+    assertEquals(view.sections.map((section) => section.feedName), ["Second Feed"]);
+    assertEquals((await findDigestForUserPeriod(database, user.id, period.startMs, period.endMs))?.status, "failed");
+    assertEquals(await findSummaryForFeedPeriod(database, first.feed.id, period.startMs, period.endMs), null);
+  });
+});

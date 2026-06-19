@@ -14,10 +14,15 @@ export interface SummaryPoint {
   date?: string;
 }
 
+export interface SummarizeOptions {
+  model?: string;
+}
+
 export interface SummarizerService {
   summarize(
     items: NormalizedItem[],
     rules: SummaryRuleset,
+    options?: SummarizeOptions,
   ): Promise<SummaryPoint[]>;
 }
 

@@ -4,6 +4,7 @@ import type {
   ContentPart,
   ImagePart,
   SummarizerService,
+  SummarizeOptions,
   SummaryPoint,
   SummaryRuleset,
   TextPart,
@@ -34,6 +35,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
   public async summarize(
     items: NormalizedItem[],
     rules: SummaryRuleset,
+    options: SummarizeOptions = {},
   ): Promise<SummaryPoint[]> {
     const { parts, indexedItems } = await this.buildContentParts(items, rules);
 
@@ -44,7 +46,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         ...(this.apiKey && { Authorization: `Bearer ${this.apiKey}` }),
       },
       body: JSON.stringify({
-        model: this.model,
+        model: options.model ?? this.model,
         stream: false,
         messages: [
           { role: "system", content: rules.systemPrompt },
@@ -140,7 +142,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         text: p.t,
         sourceUrl: item?.url ?? null,
         ...(item && {
-          channel: item.sourceId,
+          channel: item.feedExternalId,
           date: new Date(item.date).toLocaleString("en-GB", {
             day: "numeric",
             month: "short",

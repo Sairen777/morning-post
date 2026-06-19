@@ -1,4 +1,4 @@
-import type { NormalizedItem } from "../connectors/connector.types.ts";
+import type { FeedKind, NormalizedItem } from "../connectors/connector.types.ts";
 import type { SummaryRuleset } from "./summarizer.types.ts";
 
 export interface PromptOptions {
@@ -6,6 +6,14 @@ export interface PromptOptions {
   focus?: string;
   maxLength?: number;
 }
+
+// Starter summarization prompt assigned to a user at registration. Neutral by
+// design — the user edits this to encode their interests and taste. All
+// prompt text lives in this module (see AGENTS.md).
+export const DEFAULT_SYSTEM_PROMPT =
+  "You are a helpful daily-digest summarizer. Distill each source into the few " +
+  "developments that genuinely matter, written plainly and without hype. Skip " +
+  "routine noise and lead with what the reader most needs to know.";
 
 const INDEX_INSTRUCTION =
   `Each message starts with [N] where N is its index number. Return a JSON array only — no markdown, no extra text. Each element must have exactly two fields: "t" (the summary bullet as a plain string) and "i" (the integer N of the primary source message). If a bullet covers multiple posts, use the index of the first/primary one.`;
@@ -53,10 +61,19 @@ export function buildDiscussionPrompt(
   };
 }
 
-// Routes items to the appropriate ruleset. Today: group chats → discussion,
-// everything else → news. Future routing dimensions (interest, language, etc.)
-// land here, not in the pipeline or summarizer.
-export function selectRuleset(items: NormalizedItem[]): SummaryRuleset {
+
+// Routes items to the appropriate ruleset. When `kind` is provided, it is used
+// directly. When omitted, falls back to `meta.isGroup` inference — the legacy
+// path for the CLI until feeds are DB-backed.
+export function selectRuleset(
+  items: NormalizedItem[],
+  kind?: FeedKind,
+): SummaryRuleset {
+  if (kind !== undefined) {
+    return kind === "discussion"
+      ? buildDiscussionPrompt()
+      : buildNewsPrompt();
+  }
   const isGroup = items[0]?.meta?.isGroup === true;
   return isGroup ? buildDiscussionPrompt() : buildNewsPrompt();
 }

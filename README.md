@@ -8,6 +8,63 @@ git config core.hooksPath .githooks
 
 This activates the pre-push hook that runs tests before every push.
 
+## Running Locally
+
+### Prerequisites
+
+- [Deno](https://deno.com/) 2.x+
+- [PostgreSQL](https://www.postgresql.org/) 16+ (or Docker)
+- [OpenSSL](https://www.openssl.org/) (for generating the credential master key)
+
+### Database
+
+The easiest way to get a local Postgres is the included Docker Compose file:
+
+```sh
+docker compose up -d
+```
+
+This starts Postgres on port 5432 with user/password/database `morningpost`
+and an additional `morningpost_test` database for tests.
+
+If you already have Postgres running, create the databases manually:
+
+```sh
+createdb morningpost
+createdb morningpost_test
+```
+
+### Environment
+
+Copy `.env.example` to `.env` and fill in every value. The minimum set:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Postgres connection string (default: `postgres://morningpost:morningpost@localhost:5432/morningpost`) |
+| `TEST_DATABASE_URL` | Test database connection string (default: `postgres://morningpost:morningpost@localhost:5432/morningpost_test`) |
+| `CREDENTIAL_MASTER_KEY` | 32-byte base64 key for credential encryption. Generate: `openssl rand -base64 32` |
+| `TELEGRAM_API_ID` | Telegram API ID from [my.telegram.org/apps](https://my.telegram.org/apps) |
+| `TELEGRAM_API_HASH` | Telegram API hash (same page) |
+| `GEMINI_API_KEY` | Google Gemini API key for summarization |
+| `PORT` | API server port (default: 3000) |
+
+### Migrations
+
+```sh
+deno task db:migrate
+```
+
+### Commands
+
+| Task | What it does |
+| --- | --- |
+| `deno task dev:cli` | Run the pipeline once (fetch → summarize) with a hardcoded time window |
+| `deno task dev:api` | Start the API server on port 3000 with file watching |
+| `deno task start` | Start the API server without file watching (production) |
+| `deno task test` | Run the full test suite |
+| `deno task db:generate` | Generate a Drizzle migration from schema changes |
+| `deno task db:migrate` | Apply pending migrations |
+
 ## Get Telegram Credentials
 
 1. Open [https://my.telegram.org/apps](https://my.telegram.org/apps)
@@ -22,10 +79,10 @@ This activates the pre-push hook that runs tests before every push.
 ## Get Telegram Session String
 
 The app authenticates via QR code on first run and prints a session string so
-you don't have to log in again. Run the app `deno task dev`.
+you don't have to log in again. Run `deno task dev:cli`.
 
 1. Leave `TELEGRAM_SESSION` empty in your `.env` file
-2. Run `deno task dev`
+2. Run `deno task dev:cli`
 3. Scan the QR code in Telegram: **Settings → Devices → Link Desktop Device**
 4. The session string will be printed to the console — copy it
 5. Set it in your `.env` file:

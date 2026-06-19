@@ -14,5 +14,5 @@ export interface ChannelMessage {
 
 export type TelegramConnectorRawData = Record<
   string,
-  { isGroup: boolean; messages: ChannelMessage[] }
+  { feedName: string; isGroup: boolean; messages: ChannelMessage[] }
 >;

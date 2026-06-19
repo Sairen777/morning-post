@@ -1,0 +1,221 @@
+import { assertEquals } from "@std/assert";
+import { ConnectorId } from "../../src/constants.ts";
+import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
+import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
+import type { Database } from "../../src/db/client.ts";
+import { withTestDb } from "../../src/db/testing.ts";
+import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
+import { createOrReviveFeed, softDeleteFeed, updateFeed, type PublicFeed } from "../../src/repositories/feed-repository.ts";
+import { upsertItems } from "../../src/repositories/item-repository.ts";
+import { createSource } from "../../src/repositories/source-repository.ts";
+import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
+import { assembleDigestForPeriod, buildDigestViewById, renderDigestMarkdown } from "../../src/services/digest-service.ts";
+import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
+
+class FakeSummarizer implements SummarizerService {
+  readonly calls: Array<{ items: NormalizedItem[]; rules: SummaryRuleset; options?: SummarizeOptions }> = [];
+  #results: Array<SummaryPoint[] | Error>;
+
+  constructor(results: Array<SummaryPoint[] | Error>) {
+    this.#results = [...results];
+  }
+
+  summarize(items: NormalizedItem[], rules: SummaryRuleset, options?: SummarizeOptions): Promise<SummaryPoint[]> {
+    this.calls.push({ items, rules, options });
+    const result = this.#results.shift() ?? [];
+    if (result instanceof Error) {
+      return Promise.reject(result);
+    }
+    return Promise.resolve(result);
+  }
+}
+
+function userInput(email: string): CreateUserInput {
+  return {
+    name: "Digest Service Owner",
+    email,
+    passwordHash: "$argon2id$fakehash",
+    systemPrompt: "Summarize tersely.",
+    defaultLanguage: "en",
+    defaultModel: "gpt-4o-mini",
+  };
+}
+
+function credentialCipher(): CredentialCipher {
+  return new CredentialCipher(new EnvMasterKeyProvider(new Uint8Array(32).fill(47)));
+}
+
+async function encryptedCredentials(userId: string, connectorId: ConnectorId): Promise<EncryptedBlob> {
+  return await credentialCipher().encrypt(JSON.stringify({ sessionString: `${connectorId}-session` }), {
+    userId,
+    connectorId,
+  });
+}
+
+async function createSourceForUser(
+  database: Database,
+  userId: string,
+  connectorId: ConnectorId,
+  position: number,
+): Promise<string> {
+  const source = await createSource(database, {
+    userId,
+    connectorId,
+    credentials: await encryptedCredentials(userId, connectorId),
+    position,
+  });
+  return source.id;
+}
+
+async function createFeedForSource(
+  database: Database,
+  userId: string,
+  sourceId: string,
+  feedPosition: number,
+  externalId: string,
+  name: string,
+  enabled = true,
+): Promise<PublicFeed> {
+  const feed = await createOrReviveFeed(database, {
+    userId,
+    sourceId,
+    externalId,
+    name,
+    kind: "news",
+    position: feedPosition,
+  });
+  return enabled ? feed : await updateFeed(database, feed.id, userId, { enabled: false });
+}
+
+function normalizedItem(feedExternalId: string, externalId: string, text: string): NormalizedItem {
+  return {
+    connectorId: ConnectorId.Telegram,
+    feedExternalId,
+    externalId,
+    date: 1_700_000_000_000,
+    title: null,
+    text,
+    author: "Channel",
+    url: null,
+  };
+}
+
+const periodStartMs = 1_700_000_000_000;
+const periodEndMs = 1_700_086_400_000;
+
+Deno.test("assembleDigestForPeriod orders sections by source then feed position", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("digest-service-order@example.com"));
+    const rssSourceId = await createSourceForUser(database, user.id, ConnectorId.RSS, 1);
+    const telegramSourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 2);
+    const rssLaterFeed = await createFeedForSource(database, user.id, rssSourceId, 2, "rss:2", "RSS Two");
+    const rssEarlierFeed = await createFeedForSource(database, user.id, rssSourceId, 1, "rss:1", "RSS One");
+    const telegramFeed = await createFeedForSource(database, user.id, telegramSourceId, 1, "channel:1", "Telegram One");
+    await upsertItems(database, rssLaterFeed.id, [normalizedItem(rssLaterFeed.externalId, "1", "rss-two")], 1);
+    await upsertItems(database, rssEarlierFeed.id, [normalizedItem(rssEarlierFeed.externalId, "1", "rss-one")], 1);
+    await upsertItems(database, telegramFeed.id, [normalizedItem(telegramFeed.externalId, "1", "telegram")], 1);
+
+    const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([
+        [{ text: "rss-two", sourceUrl: null }],
+        [{ text: "rss-one", sourceUrl: null }],
+        [{ text: "telegram", sourceUrl: null }],
+      ]),
+      now: () => 50,
+    });
+
+    assertEquals(view.digest.status, "complete");
+    assertEquals(view.sections.map((section) => section.feedName), ["RSS One", "RSS Two", "Telegram One"]);
+    assertEquals(view.groups.map((group) => group.connectorId), [ConnectorId.RSS, ConnectorId.Telegram]);
+  });
+});
+
+Deno.test("assembleDigestForPeriod excludes disabled feeds on fresh assembly but keeps historical deleted summaries on read", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("digest-service-deleted@example.com"));
+    const telegramSourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const activeFeed = await createFeedForSource(database, user.id, telegramSourceId, 1, "channel:1", "Active Feed");
+    const deletedFeed = await createFeedForSource(database, user.id, telegramSourceId, 2, "channel:2", "Deleted Feed");
+    await upsertItems(database, activeFeed.id, [normalizedItem(activeFeed.externalId, "1", "active")], 1);
+    await upsertItems(database, deletedFeed.id, [normalizedItem(deletedFeed.externalId, "1", "deleted")], 1);
+
+    const firstDigest = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([
+        [{ text: "active", sourceUrl: null }],
+        [{ text: "deleted", sourceUrl: null }],
+      ]),
+      now: () => 60,
+    });
+    assertEquals(firstDigest.sections.length, 2);
+
+    await softDeleteFeed(database, deletedFeed.id, user.id);
+    const secondDigest = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([]),
+      now: () => 61,
+    });
+    assertEquals(secondDigest.digest.id, firstDigest.digest.id);
+
+    const historicalView = await buildDigestViewById(database, user.id, firstDigest.digest.id);
+    assertEquals(historicalView.sections.map((section) => section.feedRemoved), [false, true]);
+    assertEquals(historicalView.sections[1].feedName, "Deleted Feed");
+  });
+});
+
+Deno.test("assembleDigestForPeriod marks partial failures as failed and keeps successful sections", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("digest-service-failure@example.com"));
+    const telegramSourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const firstFeed = await createFeedForSource(database, user.id, telegramSourceId, 1, "channel:1", "First");
+    const secondFeed = await createFeedForSource(database, user.id, telegramSourceId, 2, "channel:2", "Second");
+    await upsertItems(database, firstFeed.id, [normalizedItem(firstFeed.externalId, "1", "first")], 1);
+    await upsertItems(database, secondFeed.id, [normalizedItem(secondFeed.externalId, "1", "second")], 1);
+
+    const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([
+        [{ text: "first summary", sourceUrl: null }],
+        new Error("boom"),
+      ]),
+      now: () => 70,
+    });
+
+    assertEquals(view.digest.status, "failed");
+    assertEquals(view.sections.map((section) => section.feedName), ["First"]);
+  });
+});
+
+Deno.test("assembleDigestForPeriod is idempotent and reuses cached summaries", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("digest-service-idempotent@example.com"));
+    const telegramSourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const feed = await createFeedForSource(database, user.id, telegramSourceId, 1, "channel:1", "Only Feed");
+    await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "only")], 1);
+    const summarizer = new FakeSummarizer([[{ text: "once", sourceUrl: null }]]);
+
+    const first = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, { summarizer, now: () => 80 });
+    const second = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, { summarizer, now: () => 81 });
+
+    assertEquals(first.digest.id, second.digest.id);
+    assertEquals(summarizer.calls.length, 1);
+  });
+});
+
+Deno.test("renderDigestMarkdown includes ordered source groups and removed marker", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("digest-service-markdown@example.com"));
+    const telegramSourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const feed = await createFeedForSource(database, user.id, telegramSourceId, 1, "channel:1", "Markdown Feed");
+    await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "markdown")], 1);
+
+    const digest = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([[{ text: "markdown bullet", sourceUrl: null }]]),
+      now: () => 90,
+    });
+    await softDeleteFeed(database, feed.id, user.id);
+    const historicalView = await buildDigestViewById(database, user.id, digest.digest.id);
+
+    const markdown = renderDigestMarkdown(historicalView);
+    assertEquals(markdown.includes("## Telegram"), true);
+    assertEquals(markdown.includes("### Markdown Feed (removed)"), true);
+    assertEquals(markdown.includes("- markdown bullet"), true);
+  });
+});

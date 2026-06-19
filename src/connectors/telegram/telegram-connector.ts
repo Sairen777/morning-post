@@ -1,5 +1,11 @@
 import { Api, TelegramClient } from "telegram";
-import type { Connector, Media, NormalizedData } from "../connector.types.ts";
+import type {
+  AvailableFeed,
+  Connector,
+  FeedKind,
+  Media,
+  NormalizedData,
+} from "../connector.types.ts";
 
 import type {
   ChannelMessage,
@@ -10,6 +16,12 @@ import { DEFAULT_EXCLUDED_CHANNELS } from "./constants.ts";
 
 type IterableEntity = Parameters<TelegramClient["iterMessages"]>[0];
 
+interface TelegramFeedDetails extends AvailableFeed {
+  entity: Api.Channel | Api.Chat | Api.User;
+  channelUsername: string | null;
+  isGroup: boolean;
+}
+
 export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   private excludedChannels = [...DEFAULT_EXCLUDED_CHANNELS];
   private mediaDirReady = false;
@@ -19,8 +31,11 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   public async getRawData(
     from: number,
     to: number,
+    feedExternalIds?: string[],
   ): Promise<TelegramConnectorRawData> {
     const result: TelegramConnectorRawData = {};
+    if (feedExternalIds?.length === 0) return result;
+    const selectedFeedExternalIds = feedExternalIds === undefined ? null : new Set(feedExternalIds);
     const fromUnix = Math.floor(from / 1000);
 
     // `iterDialogs` yields pinned dialogs first, then non-pinned by last-message-date
@@ -31,29 +46,20 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     for await (const dialog of this.client.iterDialogs({})) {
       if (!dialog.message || dialog.message.date < fromUnix) continue;
 
-      const entity = dialog.entity;
-      if (!entity) continue;
-
-      const entityTitle = dialog.title || entity.id.toString();
-      if (this.excludedChannels.includes(entityTitle)) continue;
-
-      const isGroup =
-        (entity instanceof Api.Channel && entity.megagroup === true) ||
-        entity instanceof Api.Chat;
-      const channelUsername = entity instanceof Api.Channel
-        ? (entity.username ?? null)
-        : null;
+      const details = this.toFeedDetails(dialog.title, dialog.entity, true);
+      if (!details || this.isExcludedFeed(details)) continue;
+      if (selectedFeedExternalIds !== null && !selectedFeedExternalIds.has(details.externalId)) continue;
 
       const messages = await this.getMessagesFromEntity(
-        entity,
+        details.entity,
         from,
         to,
-        channelUsername,
-        isGroup,
+        details.channelUsername,
+        details.isGroup,
       );
 
       if (messages.length > 0) {
-        result[entityTitle] = { isGroup, messages };
+        result[details.externalId] = { feedName: details.name, isGroup: details.isGroup, messages };
       }
     }
 
@@ -63,23 +69,25 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   public async getNormalizedData(
     from: number,
     to: number,
+    feedExternalIds?: string[],
   ): Promise<NormalizedData> {
     // TODO: caching for repeat calls in a short window belongs with the DB layer
     // (see ROADMAP) — once persistence is in place, hit cache before refetching.
-    const rawData = await this.getRawData(from, to);
+    const rawData = await this.getRawData(from, to, feedExternalIds);
     const result: NormalizedData = {};
 
     for (
-      const [channelName, { isGroup, messages }] of Object.entries(rawData)
+      const [feedExternalId, { feedName, isGroup, messages }] of Object.entries(rawData)
     ) {
-      result[channelName] = messages.map((message) => ({
+      result[feedExternalId] = messages.map((message) => ({
         connectorId: ConnectorId.Telegram,
-        sourceId: channelName,
+        feedExternalId,
+        externalId: message.id.toString(),
         date: message.date.getTime(),
         title: null,
         text: message.text,
-        // for groups: use the actual message sender; for channels: use the channel name
-        author: message.author ?? channelName,
+        // for groups: use the actual message sender; for channels: use the feed name
+        author: message.author ?? feedName,
         url: message.url ?? null,
         media: message.media,
         meta: { isGroup },
@@ -87,6 +95,78 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     }
 
     return result;
+  }
+
+  public async listAvailableFeeds(): Promise<AvailableFeed[]> {
+    const feeds: AvailableFeed[] = [];
+
+    for await (const dialog of this.client.iterDialogs({})) {
+      const details = this.toFeedDetails(dialog.title, dialog.entity, true);
+      if (!details || this.isExcludedFeed(details)) continue;
+
+      feeds.push({
+        externalId: details.externalId,
+        name: details.name,
+        kind: details.kind,
+      });
+    }
+
+    return feeds;
+  }
+
+  private toFeedDetails(
+    dialogTitle: string | null | undefined,
+    entity: Api.TypeEntityLike | null | undefined,
+    includePrivateDialogs = false,
+  ): TelegramFeedDetails | null {
+    if (!entity) return null;
+    if (
+      !(entity instanceof Api.Channel || entity instanceof Api.Chat) &&
+      !(includePrivateDialogs && entity instanceof Api.User)
+    ) {
+      return null;
+    }
+
+    const entityId = entity.id.toString();
+    const name = dialogTitle || entityId;
+    const isGroup = this.isDiscussionEntity(entity);
+
+    return {
+      entity,
+      externalId: this.toExternalId(entity),
+      name,
+      kind: this.toFeedKind(isGroup),
+      channelUsername: entity instanceof Api.Channel
+        ? (entity.username ?? null)
+        : null,
+      isGroup,
+    };
+  }
+  private isExcludedFeed(feed: AvailableFeed): boolean {
+    return this.excludedChannels.includes(feed.externalId) ||
+      this.excludedChannels.includes(feed.name);
+  }
+
+  private isDiscussionEntity(
+    entity: Api.Channel | Api.Chat | Api.User,
+  ): boolean {
+    return entity instanceof Api.User ||
+      (entity instanceof Api.Channel && entity.megagroup === true) ||
+      entity instanceof Api.Chat;
+  }
+
+  private toFeedKind(isGroup: boolean): FeedKind {
+    return isGroup ? "discussion" : "news";
+  }
+
+  private toExternalId(entity: Api.Channel | Api.Chat | Api.User): string {
+    if (entity instanceof Api.Channel) {
+      return `channel:${entity.id.toString()}`;
+    }
+    if (entity instanceof Api.Chat) {
+      return `chat:${entity.id.toString()}`;
+    }
+    return `user:${entity.id.toString()}`;
   }
 
   private async getMessagesFromEntity(

@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert"
 import { Api, type TelegramClient } from "telegram";
 import { TelegramConnector } from "../src/connectors/telegram/telegram-connector.ts";
 import { ConnectorId } from "../src/constants.ts";
@@ -50,9 +50,27 @@ function fakeChannel(fields: Partial<Api.Channel> = {}): Api.Channel {
   });
 }
 
+function fakeChat(fields: Partial<Api.Chat> = {}): Api.Chat {
+  return applyFields(Object.create(Api.Chat.prototype), {
+    id: 2,
+    title: "Chat",
+    ...fields,
+  });
+}
+
+function fakeUser(fields: Partial<Api.User> = {}): Api.User {
+  return applyFields(Object.create(Api.User.prototype), {
+    id: 3,
+    username: "user",
+    firstName: "Direct",
+    lastName: "User",
+    ...fields,
+  });
+}
+
 interface FakeDialog {
   title: string;
-  entity: Api.Channel | Api.Chat;
+  entity: Api.Channel | Api.Chat | Api.User;
   messages: Api.Message[];
 }
 
@@ -68,7 +86,6 @@ function fakeTelegramClient(data: FakeClientData = {}): TelegramClient {
   }
 
   const client = {
-    // deno-lint-ignore require-yield
     async *iterDialogs() {
       for (const dialog of data.dialogs ?? []) {
         const latest = dialog.messages.length > 0
@@ -113,6 +130,64 @@ const TO_MS = 1_700_100_000_000;
 
 // --- tests ---
 
+Deno.test("listAvailableFeeds — returns channel and group feed details", async () => {
+  const channel = fakeChannel({ id: 10 as unknown as Api.Channel["id"], title: "Announcements" });
+  const megagroup = fakeChannel({
+    id: 11 as unknown as Api.Channel["id"],
+    title: "Community",
+    megagroup: true,
+  });
+  const chat = fakeChat({ id: 12 as unknown as Api.Chat["id"], title: "Legacy Chat" });
+  const user = fakeUser({ id: 13 as unknown as Api.User["id"], firstName: "Direct", lastName: "Person" });
+  const client = fakeTelegramClient({
+    dialogs: [
+      { title: "Announcements", entity: channel, messages: [] },
+      { title: "Community", entity: megagroup, messages: [] },
+      { title: "Legacy Chat", entity: chat, messages: [] },
+      { title: "Direct Person", entity: user, messages: [] },
+    ],
+  });
+
+  const result = await new TelegramConnector(client).listAvailableFeeds();
+
+  assertEquals(result, [
+    { externalId: "channel:10", name: "Announcements", kind: "news" },
+    { externalId: "channel:11", name: "Community", kind: "discussion" },
+    { externalId: "chat:12", name: "Legacy Chat", kind: "discussion" },
+    { externalId: "user:13", name: "Direct Person", kind: "discussion" },
+  ]);
+});
+
+Deno.test("listAvailableFeeds — falls back to entity id for missing dialog title", async () => {
+  const channel = fakeChannel({ id: 42 as unknown as Api.Channel["id"], title: "Entity Title" });
+  const client = fakeTelegramClient({
+    dialogs: [{ title: "", entity: channel, messages: [] }],
+  });
+
+  const result = await new TelegramConnector(client).listAvailableFeeds();
+
+  assertEquals(result, [
+    { externalId: "channel:42", name: "42", kind: "news" },
+  ]);
+});
+
+Deno.test("listAvailableFeeds — excluded dialog titles are skipped", async () => {
+  const defaultChannel = fakeChannel({ title: "Telegram" });
+  const subscribedChannel = fakeChannel({ id: 2 as unknown as Api.Channel["id"], title: "Subscribed" });
+  const client = fakeTelegramClient({
+    dialogs: [
+      { title: "Telegram", entity: defaultChannel, messages: [] },
+      { title: "Subscribed", entity: subscribedChannel, messages: [] },
+    ],
+  });
+
+  const result = await new TelegramConnector(client).listAvailableFeeds();
+
+  assertEquals(result, [
+    { externalId: "channel:2", name: "Subscribed", kind: "news" },
+  ]);
+});
+
 Deno.test("getNormalizedData — channel message becomes a NormalizedItem", async () => {
   const channel = fakeChannel({ title: "TestChannel", username: "test" });
   const message = fakeApiMessage({
@@ -129,12 +204,12 @@ Deno.test("getNormalizedData — channel message becomes a NormalizedItem", asyn
     TO_MS,
   );
 
-  assertEquals(Object.keys(result), ["TestChannel"]);
-  assertEquals(result.TestChannel.length, 1);
-  const item = result.TestChannel[0];
+  assertEquals(Object.keys(result), ["channel:1"]);
+  assertEquals(result["channel:1"].length, 1);
+  const item = result["channel:1"][0];
   assertEquals(item.text, "hello world");
   assertEquals(item.connectorId, ConnectorId.Telegram);
-  assertEquals(item.sourceId, "TestChannel");
+  assertEquals(item.feedExternalId, "channel:1");
   assertEquals(item.url, "https://t.me/test/1");
   assertEquals(item.date, IN_RANGE_S * 1000);
   assertEquals(item.meta, { isGroup: false });
@@ -159,6 +234,37 @@ Deno.test("getNormalizedData — excluded dialog titles are skipped", async () =
   assertEquals(Object.keys(result), []);
 });
 
+Deno.test("getNormalizedData — feedExternalIds filter returns only selected feeds", async () => {
+  const firstChannel = fakeChannel({ id: 1 as unknown as Api.Channel["id"], title: "First" });
+  const secondChannel = fakeChannel({ id: 2 as unknown as Api.Channel["id"], title: "Second" });
+  const client = fakeTelegramClient({
+    dialogs: [
+      { title: "First", entity: firstChannel, messages: [fakeApiMessage({ id: 1, date: IN_RANGE_S, message: "first" })] },
+      { title: "Second", entity: secondChannel, messages: [fakeApiMessage({ id: 2, date: IN_RANGE_S, message: "second" })] },
+    ],
+  });
+
+  const result = await new TelegramConnector(client).getNormalizedData(
+    FROM_MS,
+    TO_MS,
+    ["channel:2", "channel:999"],
+  );
+
+  assertEquals(Object.keys(result), ["channel:2"]);
+  assertEquals(result["channel:2"][0].text, "second");
+});
+
+Deno.test("getNormalizedData — empty feedExternalIds filter fetches nothing", async () => {
+  const channel = fakeChannel({ title: "TestChannel" });
+  const client = fakeTelegramClient({
+    dialogs: [{ title: "TestChannel", entity: channel, messages: [fakeApiMessage({ date: IN_RANGE_S, message: "ignored" })] }],
+  });
+
+  const result = await new TelegramConnector(client).getNormalizedData(FROM_MS, TO_MS, []);
+
+  assertEquals(result, {});
+});
+
 Deno.test("getNormalizedData — megagroup channel marks items as isGroup", async () => {
   const group = fakeChannel({ title: "MyGroup", megagroup: true });
   const message = fakeApiMessage({
@@ -175,7 +281,7 @@ Deno.test("getNormalizedData — megagroup channel marks items as isGroup", asyn
     TO_MS,
   );
 
-  assertEquals(result.MyGroup[0].meta, { isGroup: true });
+  assertEquals(result["channel:1"][0].meta, { isGroup: true });
 });
 
 Deno.test("getNormalizedData — message without replyTo leaves text unchanged", async () => {
@@ -194,7 +300,7 @@ Deno.test("getNormalizedData — message without replyTo leaves text unchanged",
     TO_MS,
   );
 
-  assertEquals(result.TestChannel[0].text, "no reply");
+  assertEquals(result["channel:1"][0].text, "no reply");
 });
 
 Deno.test("getNormalizedData — replyTo without a matching quote leaves text unchanged", async () => {
@@ -215,7 +321,7 @@ Deno.test("getNormalizedData — replyTo without a matching quote leaves text un
     TO_MS,
   );
 
-  assertEquals(result.TestChannel[0].text, "reply");
+  assertEquals(result["channel:1"][0].text, "reply");
 });
 
 Deno.test("getNormalizedData — matching quote is prepended to the message body", async () => {
@@ -238,7 +344,7 @@ Deno.test("getNormalizedData — matching quote is prepended to the message body
   );
 
   assertEquals(
-    result.TestChannel[0].text,
+    result["channel:1"][0].text,
     "[QUOTED_MESSAGE]the original[/QUOTED_MESSAGE]\n\nmy reply",
   );
 });
@@ -275,6 +381,6 @@ Deno.test("getNormalizedData — messages sharing a groupedId fold to one item",
     TO_MS,
   );
 
-  assertEquals(result.TestChannel.length, 1);
-  assertEquals(result.TestChannel[0].text, "caption");
+  assertEquals(result["channel:1"].length, 1);
+  assertEquals(result["channel:1"][0].text, "caption");
 });

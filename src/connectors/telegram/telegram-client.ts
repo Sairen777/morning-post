@@ -1,23 +1,15 @@
 import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions/index.js";
 import input from "input";
 import qrcode from "qrcode-terminal";
-
-const API_ID = Number(Deno.env.get("TELEGRAM_API_ID"));
-const API_HASH = Deno.env.get("TELEGRAM_API_HASH") ?? "";
-const SESSION_STRING = Deno.env.get("TELEGRAM_SESSION") ?? "";
-
+import { createClientFromSession, readTelegramApiCredentials } from "./client-factory.ts";
 export async function createTelegramClient(): Promise<TelegramClient> {
-  const session = new StringSession(SESSION_STRING);
-  const client = new TelegramClient(session, API_ID, API_HASH, {
-    connectionRetries: 5,
-  });
-
-  await client.connect();
+  const sessionString = Deno.env.get("TELEGRAM_SESSION") ?? "";
+  const { apiId, apiHash } = readTelegramApiCredentials();
+  const client = await createClientFromSession(sessionString);
 
   if (!(await client.isUserAuthorized())) {
     console.log("Logging in via QR code...");
-    await client.signInUserWithQrCode({ apiId: API_ID, apiHash: API_HASH }, {
+    await client.signInUserWithQrCode({ apiId, apiHash }, {
       qrCode: (code) => {
         const url = `tg://login?token=${code.token.toString("base64url")}`;
         console.log(
