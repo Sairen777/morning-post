@@ -45,7 +45,7 @@ export async function runForUser(
   dependencies: OrchestratorDependencies = {},
 ): Promise<DigestView> {
   const now = dependencies.now ?? Date.now;
-  const connectorFactory = dependencies.connectorFactory ?? new ConnectorFactory(database);
+  let connectorFactory = dependencies.connectorFactory;
   const [sources, feeds] = await Promise.all([
     listSourcesForUser(database, userId),
     listFeedsForUser(database, userId),
@@ -62,8 +62,21 @@ export async function runForUser(
       continue;
     }
 
+    const feedsNeedingIngestion: PublicFeed[] = [];
+    for (const feed of sourceFeeds) {
+      if (alreadyIngestedForPeriod(feed, period)) {
+        successfulFeedIds.push(feed.id);
+      } else {
+        feedsNeedingIngestion.push(feed);
+      }
+    }
+    if (feedsNeedingIngestion.length === 0) {
+      continue;
+    }
+
     let handle;
     try {
+      connectorFactory ??= new ConnectorFactory(database);
       handle = await connectorFactory.forSource(source, userId);
     } catch {
       hadFailure = true;
@@ -71,11 +84,7 @@ export async function runForUser(
     }
 
     try {
-      for (const feed of sourceFeeds) {
-        if (alreadyIngestedForPeriod(feed, period)) {
-          successfulFeedIds.push(feed.id);
-          continue;
-        }
+      for (const feed of feedsNeedingIngestion) {
         try {
           await ingestFeed(database, userId, feed, handle.connector, {
             window: {

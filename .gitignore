@@ -7,15 +7,14 @@
 
 # testing
 /coverage
+test-results/
 
 # next.js
 /.next/
-/out/
-
 # production
 /build
-
-# misc
+.vinxi/
+.output/
 .DS_Store
 *.pem
 .zed
@@ -39,7 +38,6 @@ yarn-error.log*
 **/*.tar.gz
 **/*.tgz
 **/*.log
-package-lock.json
 **/*.bun
 node_modules/
 .claude

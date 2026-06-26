@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "moduleResolution": "Bundler",
+    "module": "ESNext",
+    "target": "ES2022",
+    "skipLibCheck": true,
+    "strict": true,
+    "types": ["vinxi/types/client"]
+  },
+  "include": ["src", "app.config.ts", "vitest.config.ts", "playwright.config.ts"]
+}

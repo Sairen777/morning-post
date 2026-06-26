@@ -11,6 +11,7 @@ import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
+import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
 import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
 
 const PASSWORD = "analytical-engine-1843";
@@ -171,5 +172,98 @@ Deno.test("GET /digests/:id.md renders markdown for deleted historical feeds", a
     assertEquals(markdown.includes("## Telegram"), true);
     assertEquals(markdown.includes("### Markdown Feed (removed)"), true);
     assertEquals(markdown.includes("- markdown bullet"), true);
+  });
+});
+
+Deno.test("POST /digests/run creates an empty digest for an authenticated user with no sources", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const userId = await register(app, "digests-run-empty@example.com");
+    const cookie = await login(app, "digests-run-empty@example.com");
+
+    const response = await app.request("/digests/run", {
+      ...jsonRequest("POST", { periodStartMs: 1700000000000, periodEndMs: 1700086400000 }),
+      headers: { cookie },
+    });
+    assertEquals(response.status, 200);
+    const json = await response.json();
+    assertEquals(json.digest.status, "complete");
+    assertEquals(json.sections, []);
+    assertEquals(json.groups, []);
+
+    const dbDigest = await findDigestForUserPeriod(database, userId, 1700000000000, 1700086400000);
+    assertEquals(dbDigest !== null, true);
+    assertEquals(dbDigest!.id, json.digest.id);
+  });
+});
+
+Deno.test("POST /digests/run requires authentication", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+
+    const response = await app.request("/digests/run", jsonRequest("POST", {
+      periodStartMs: 1700000000000,
+      periodEndMs: 1700086400000,
+    }));
+    assertEquals(response.status, 401);
+    const json = await response.json();
+    assertEquals(json.error.code, "UNAUTHORIZED");
+  });
+});
+
+Deno.test("POST /digests/run rejects incomplete period input", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    await register(app, "digests-run-incomplete@example.com");
+    const cookie = await login(app, "digests-run-incomplete@example.com");
+
+    const response = await app.request("/digests/run", {
+      ...jsonRequest("POST", { periodStartMs: 1700000000000 }),
+      headers: { cookie },
+    });
+    assertEquals(response.status, 422);
+  });
+});
+
+Deno.test("POST /digests/run rejects inverted periods", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    await register(app, "digests-run-inverted@example.com");
+    const cookie = await login(app, "digests-run-inverted@example.com");
+
+    const response = await app.request("/digests/run", {
+      ...jsonRequest("POST", { periodStartMs: 1700086400000, periodEndMs: 1700000000000 }),
+      headers: { cookie },
+    });
+    assertEquals(response.status, 422);
+  });
+});
+
+Deno.test("POST /digests/run rate-limits repeated runs", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    await register(app, "digests-run-ratelimit@example.com");
+    const cookie = await login(app, "digests-run-ratelimit@example.com");
+    const body = { periodStartMs: 1700000000000, periodEndMs: 1700086400000 };
+
+    const responses: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const response = await app.request("/digests/run", {
+        ...jsonRequest("POST", body),
+        headers: { cookie },
+      });
+      responses.push(response.status);
+    }
+    assertEquals(responses[0], 200);
+    assertEquals(responses[1], 200);
+    assertEquals(responses[2], 200);
+    assertEquals(responses[3], 429);
+    const rateLimitResponse = await app.request("/digests/run", {
+      ...jsonRequest("POST", body),
+      headers: { cookie },
+    });
+    const json = await rateLimitResponse.json();
+    assertEquals(json.error.code, "RATE_LIMITED");
+
   });
 });

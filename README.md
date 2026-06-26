@@ -11,8 +11,8 @@ This activates the pre-push hook that runs tests before every push.
 ## Running Locally
 
 ### Prerequisites
-
 - [Deno](https://deno.com/) 2.x+
+- [Node.js](https://nodejs.org/) 22.13+ and npm (for the SolidStart web frontend)
 - [PostgreSQL](https://www.postgresql.org/) 16+ (or Docker)
 - [OpenSSL](https://www.openssl.org/) (for generating the credential master key)
 
@@ -64,6 +64,65 @@ deno task db:migrate
 | `deno task test` | Run the full test suite |
 | `deno task db:generate` | Generate a Drizzle migration from schema changes |
 | `deno task db:migrate` | Apply pending migrations |
+
+### Frontend
+
+The web frontend is a SolidStart SPA (client-side rendering only) served through
+a Vite dev proxy that forwards API calls to the Deno backend on port 3000.
+
+**Pre-flight.** Before the first frontend run:
+
+1. Install web dependencies:
+
+   ```sh
+   npm install
+   ```
+
+2. Postgres must be running (`docker compose up -d` or local service).
+
+3. `.env.production.local` must include `DATABASE_URL` and `TEST_DATABASE_URL`.
+   See [Environment](#environment) above for the full variable list.
+
+4. Apply migrations:
+
+   ```sh
+   deno run --env-file=.env.production.local --allow-net --allow-env --allow-read src/db/migrate.ts
+   ```
+
+**Smoke test** (browser):
+
+```sh
+# Terminal 1: backend
+deno task dev:api
+
+# Terminal 2: frontend
+npm run web:dev
+```
+
+Open `http://127.0.0.1:5173`. Register an account, click "Run digest",
+and verify the digest appears with status `complete`.
+
+**Automated tests:**
+
+| Command | What it does |
+| --- | --- |
+| `deno task test` | Full backend test suite |
+| `npm run web:test` | Frontend unit/component tests (Vitest, 14 tests) |
+| `npm run web:typecheck` | TypeScript type checking |
+| `npm run web:build` | Production build |
+| `npm run web:e2e` | E2E smoke test (starts backend + frontend, registers, runs digest) |
+
+**Verify in the database** after a browser smoke run:
+
+```sql
+select id, email, created_at from users order by created_at desc limit 5;
+select id, user_id, status, period_start_ms, period_end_ms, created_at
+from digests order by created_at desc limit 5;
+select id, user_id, connector_id, enabled, created_at
+from sources order by created_at desc limit 5;
+select id, source_id, external_id, name, kind, enabled, last_fetched_period_end_ms
+from feeds order by created_at desc limit 10;
+```
 
 ## Get Telegram Credentials
 
