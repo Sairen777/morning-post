@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import { sql } from "drizzle-orm";
 import type { Hono } from "@hono/hono";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
@@ -265,5 +266,27 @@ Deno.test("POST /digests/run rate-limits repeated runs", async () => {
     const json = await rateLimitResponse.json();
     assertEquals(json.error.code, "RATE_LIMITED");
 
+  });
+});
+
+Deno.test("POST /digests/run creates a manual digest run record", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const userId = await register(app, "digests-run-record@example.com");
+    const cookie = await login(app, "digests-run-record@example.com");
+
+    const response = await app.request("/digests/run", {
+      ...jsonRequest("POST", { periodStartMs: 1700000000000, periodEndMs: 1700086400000 }),
+      headers: { cookie },
+    });
+    assertEquals(response.status, 200);
+    const json = await response.json();
+    assertEquals(json.digest.status, "complete");
+
+    const rows = await database.execute(
+      sql`select trigger from digest_runs where user_id = ${userId} order by started_at desc limit 1`,
+    );
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].trigger, "manual");
   });
 });

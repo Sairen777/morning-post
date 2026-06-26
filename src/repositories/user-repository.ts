@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { users } from "../db/schema/user.ts";
 import { ConflictError, NotFoundError } from "../server/errors.ts";
+import { isUniqueViolation } from "../db/errors.ts";
 
 /**
  * Shape-check applied to every row leaving the repository, so callers can rely
@@ -41,30 +42,6 @@ export type UpdateUserInput = Partial<{
   defaultModel: string | null;
 }>;
 
-const POSTGRES_UNIQUE_VIOLATION = "23505";
-
-function hasUniqueViolationCode(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "code" in value &&
-    (value as { code: unknown }).code === POSTGRES_UNIQUE_VIOLATION
-  );
-}
-
-// Drizzle wraps driver errors in a DrizzleQueryError; the postgres.js error
-// carrying the SQLSTATE code sits on `.cause`. Check both levels.
-function isUniqueViolation(error: unknown): boolean {
-  if (hasUniqueViolationCode(error)) {
-    return true;
-  }
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "cause" in error &&
-    hasUniqueViolationCode((error as { cause: unknown }).cause)
-  );
-}
 
 function parseUser(row: unknown): User {
   return userRowSchema.parse(row);

@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import type { ConnectorFactoryLike, ConnectorHandle } from "../../src/connectors/connector-factory.ts";
 import { ConflictError } from "../../src/server/errors.ts";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
@@ -8,12 +9,14 @@ import { withTestDb } from "../../src/db/testing.ts";
 import type { Connector, NormalizedData, NormalizedItem } from "../../src/connectors/connector.types.ts";
 import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
 import { listItemsForFeedInWindow } from "../../src/repositories/item-repository.ts";
-import { createSource } from "../../src/repositories/source-repository.ts";
-import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
+import { createSource, type PublicSource } from "../../src/repositories/source-repository.ts";
 import { runForUser } from "../../src/services/orchestrator.ts";
+import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
 import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
 import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
 import { findSummaryForFeedPeriod } from "../../src/repositories/summary-repository.ts";
+import { sql } from "drizzle-orm";
+import { listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
 
 class FakeConnector implements Connector<unknown> {
   readonly calls: Array<{ from: number; to: number; feedExternalIds?: string[] }> = [];
@@ -58,7 +61,7 @@ class FakeSummarizer implements SummarizerService {
   }
 }
 
-class FakeConnectorFactory {
+class FakeConnectorFactory implements ConnectorFactoryLike {
   readonly disposeCalls: string[] = [];
 
   constructor(
@@ -66,7 +69,7 @@ class FakeConnectorFactory {
     readonly failingSourceIds: Set<string> = new Set(),
   ) {}
 
-  forSource(source: { id: string }, _userId: string): Promise<{ connector: FakeConnector; dispose: () => void }> {
+  forSource(source: PublicSource, _userId: string): Promise<ConnectorHandle<unknown>> {
     if (this.failingSourceIds.has(source.id)) {
       throw new ConflictError("source is disconnected");
     }
@@ -161,7 +164,7 @@ Deno.test("runForUser ingests feeds, summarizes them, and returns a complete dig
     ]);
 
     const view = await runForUser(database, user.id, period, {
-      connectorFactory: connectorFactory as never,
+      connectorFactory,
       summarizer,
       now: () => 200,
     });
@@ -170,6 +173,10 @@ Deno.test("runForUser ingests feeds, summarizes them, and returns a complete dig
     assertEquals(view.sections.map((section) => section.feedName), ["First Feed", "Second Feed"]);
     assertEquals((await listItemsForFeedInWindow(database, first.feed.id, period.startMs, period.endMs)).length, 1);
     assertEquals(connectorFactory.disposeCalls.length, 2);
+
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs.length >= 1, true);
+    assertEquals(runs[0].trigger, "manual");
   });
 });
 
@@ -182,12 +189,12 @@ Deno.test("runForUser is idempotent for the same period", async () => {
     const summarizer = new FakeSummarizer([[{ text: "only summary", sourceUrl: null }]]);
 
     const first = await runForUser(database, user.id, period, {
-      connectorFactory: connectorFactory as never,
+      connectorFactory,
       summarizer,
       now: () => 201,
     });
     const second = await runForUser(database, user.id, period, {
-      connectorFactory: connectorFactory as never,
+      connectorFactory,
       summarizer,
       now: () => 202,
     });
@@ -221,7 +228,7 @@ Deno.test("runForUser isolates source failures and marks the digest failed", asy
     const summarizer = new FakeSummarizer([[{ text: "second summary", sourceUrl: null }]]);
 
     const view = await runForUser(database, user.id, period, {
-      connectorFactory: connectorFactory as never,
+      connectorFactory,
       summarizer,
       now: () => 204,
     });
@@ -230,5 +237,43 @@ Deno.test("runForUser isolates source failures and marks the digest failed", asy
     assertEquals(view.sections.map((section) => section.feedName), ["Second Feed"]);
     assertEquals((await findDigestForUserPeriod(database, user.id, period.startMs, period.endMs))?.status, "failed");
     assertEquals(await findSummaryForFeedPeriod(database, first.feed.id, period.startMs, period.endMs), null);
+
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs.length >= 1, true);
+
+    const feedRows: Array<Record<string, unknown>> = await database.execute(sql`select * from digest_run_feeds where run_id = ${runs[0].id}`);
+    const failedRows = feedRows.filter(
+      (r) => r.status === "failed" && r.error_message !== null,
+    );
+    assertEquals(failedRows.length >= 1, true);
+  });
+});
+
+Deno.test("runForUser marks run partial when summarization fails but ingestion succeeds", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("orchestrator-summarizer-fail@example.com"));
+    const setup = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "Only Feed");
+    const connectorFactory = new FakeConnectorFactory({
+      [setup.source.id]: new FakeConnector({ [setup.feed.externalId]: [normalizedItem(setup.feed.externalId, "1", "some item")] }),
+    });
+    const summarizer = new FakeSummarizer([new Error("summarizer crash")]);
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => 205,
+    });
+
+    assertEquals(view.digest.status, "failed");
+
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs.length >= 1, true);
+    assertEquals(runs[0].status, "partial");
+
+    const feedRows: Array<Record<string, unknown>> = await database.execute(sql`select * from digest_run_feeds where run_id = ${runs[0].id}`);
+    const failedRows = feedRows.filter(
+      (r) => r.stage === "summarization" && r.status === "failed" && r.error_message !== null,
+    );
+    assertEquals(failedRows.length >= 1, true);
   });
 });

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, integer, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, index, integer, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import type { FeedKind } from "../../connectors/connector.types.ts";
 import { sources } from "./source.ts";
 
@@ -23,6 +23,8 @@ export const feeds = pgTable(
   },
   (table) => [
     unique("feeds_source_id_external_id_unique").on(table.sourceId, table.externalId),
+    index("feeds_source_id_idx").on(table.sourceId),
+    index("feeds_source_order_idx").on(table.sourceId, table.position, table.name),
     check("feeds_kind_check", sql`${table.kind} in ('news', 'discussion')`),
   ],
 );

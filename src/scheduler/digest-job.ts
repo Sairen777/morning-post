@@ -63,7 +63,7 @@ export async function runDigestTick(
     runningUsers.add(user.id);
     try {
       const period = await computeDigestPeriod(database, user.id, now(), cadenceMs);
-      await runDigestForUser(database, user.id, period, dependencies);
+      await runDigestForUser(database, user.id, period, { ...dependencies, trigger: "scheduled" });
     } catch (error) {
       logError(`Digest tick failed for user ${user.id}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {

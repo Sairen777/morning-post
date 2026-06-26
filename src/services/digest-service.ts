@@ -10,6 +10,13 @@ import { listSummariesForFeedPeriods, listSummariesForUserPeriod, type UserPerio
 import { findUserById } from "../repositories/user-repository.ts";
 import { summarizeOwnedFeedPeriod, type SummarizeFeedPeriodDependencies } from "./summarization-service.ts";
 import type { Database } from "../db/client.ts";
+import {
+  startDigestRunFeed,
+  finishDigestRunFeed,
+  type CreateDigestRunFeedInput,
+} from "../repositories/digest-run-repository.ts";
+import { listSourcesForUser } from "../repositories/source-repository.ts";
+import { summarizeErrorForOps } from "../server/error-sanitizer.ts";
 import { NotFoundError } from "../server/errors.ts";
 
 export interface DigestSection {
@@ -35,6 +42,9 @@ export interface DigestView {
 
 export interface AssembleDigestDependencies extends SummarizeFeedPeriodDependencies {
   feedIds?: string[];
+  runId?: string;
+  sourceConnectorIdsBySourceId?: Map<string, string>;
+  feeds?: PublicFeed[];
 }
 
 function toDigestSections(userPeriodSummaries: UserPeriodSummary[]): DigestSection[] {
@@ -119,26 +129,63 @@ export async function assembleDigestForPeriod(
     status: "pending",
   });
 
-  const feeds = activeFeeds(await listFeedsForUser(database, userId), dependencies.feedIds);
+  const rawFeeds = dependencies.feeds ?? await listFeedsForUser(database, userId);
+  const feeds = activeFeeds(rawFeeds, dependencies.feedIds);
 
   const summariesByFeedId = new Map(
     (await listSummariesForFeedPeriods(database, feeds.map((feed) => feed.id), periodStartMs, periodEndMs))
       .map((summary) => [summary.feedId, summary] as const),
   );
 
+  let sourceConnectorIdsBySourceId = dependencies.sourceConnectorIdsBySourceId;
+  if (dependencies.runId && !sourceConnectorIdsBySourceId) {
+    const sources = await listSourcesForUser(database, userId);
+    sourceConnectorIdsBySourceId = new Map(sources.map((source) => [source.id, source.connectorId]));
+  }
+
   let hadFailure = false;
   for (const feed of feeds) {
     if (summariesByFeedId.has(feed.id)) {
       continue;
     }
+
+    let feedRunId: string | undefined;
+    if (dependencies.runId && sourceConnectorIdsBySourceId) {
+      const connectorId = sourceConnectorIdsBySourceId.get(feed.sourceId);
+      if (!connectorId) {
+        throw new Error("connector id missing for feed source");
+      }
+      const feedRunInput: CreateDigestRunFeedInput = {
+        runId: dependencies.runId,
+        sourceId: feed.sourceId,
+        connectorId,
+        feedId: feed.id,
+        feedExternalId: feed.externalId,
+        feedName: feed.name,
+        stage: "summarization",
+        status: "running",
+      };
+      const feedRun = await startDigestRunFeed(database, feedRunInput);
+      feedRunId = feedRun.id;
+    }
+
     try {
       await summarizeOwnedFeedPeriod(
         database,
         { user, feed, periodStartMs, periodEndMs },
         dependencies,
       );
-    } catch {
+      if (feedRunId) {
+        await finishDigestRunFeed(database, feedRunId, { status: "complete" });
+      }
+    } catch (error) {
       hadFailure = true;
+      if (feedRunId) {
+        await finishDigestRunFeed(database, feedRunId, {
+          status: "failed",
+          errorMessage: summarizeErrorForOps(error),
+        });
+      }
     }
   }
 

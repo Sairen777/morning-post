@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import { sql } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -7,6 +8,7 @@ import { withTestDb } from "../../src/db/testing.ts";
 import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
 import { createOrReviveFeed, softDeleteFeed, updateFeed, type PublicFeed } from "../../src/repositories/feed-repository.ts";
 import { upsertItems } from "../../src/repositories/item-repository.ts";
+import { createDigestRun } from "../../src/repositories/digest-run-repository.ts";
 import { upsertSummaryForPeriod } from "../../src/repositories/summary-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
@@ -285,5 +287,48 @@ Deno.test("assembleDigestForPeriod keeps source groups contiguous when positions
         assertEquals(section.sourceId, group.sourceId);
       }
     }
+  });
+});
+
+Deno.test("assembleDigestForPeriod records summarization failures in digest_run_feeds when runId is supplied", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("digest-service-run-failure@example.com"));
+    const telegramSourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const feed = await createFeedForSource(database, user.id, telegramSourceId, 1, "channel:boom", "Boom Feed");
+    await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "boom text")], 1);
+
+    const digestRun = await createDigestRun(database, {
+      userId: user.id,
+      trigger: "manual",
+      periodStartMs,
+      periodEndMs,
+      status: "running",
+    });
+
+    const sourceConnectorIdsBySourceId = new Map([[telegramSourceId, ConnectorId.Telegram]]);
+
+    const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([new Error("summarizer boom")]),
+      runId: digestRun.id,
+      sourceConnectorIdsBySourceId,
+    });
+
+    assertEquals(view.digest.status, "failed");
+
+    const feedRows: Array<Record<string, unknown>> = await database.execute(
+      sql`select * from digest_run_feeds where run_id = ${digestRun.id}`,
+    );
+    const failedSummarizationRows = feedRows.filter(
+      (r) => r.stage === "summarization" && r.status === "failed" && r.error_message !== null,
+    );
+    assertEquals(failedSummarizationRows.length >= 1, true);
+
+    // assembleDigestForPeriod records feed-level failures but does not finish
+    // the digest run — that's the orchestrator's job. Verify the run is still "running".
+    const runRows = await database.execute(
+      sql`select status from digest_runs where id = ${digestRun.id}`,
+    );
+    assertEquals(runRows.length, 1);
+    assertEquals(runRows[0].status, "running");
   });
 });

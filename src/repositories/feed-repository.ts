@@ -5,8 +5,8 @@ import { feeds } from "../db/schema/feed.ts";
 import { sources } from "../db/schema/source.ts";
 import { ConflictError, NotFoundError } from "../server/errors.ts";
 import type { FeedKind } from "../connectors/connector.types.ts";
+import { isUniqueViolation } from "../db/errors.ts";
 
-const POSTGRES_UNIQUE_VIOLATION = "23505";
 
 const feedKindSchema = z.enum(["news", "discussion"]);
 
@@ -63,27 +63,6 @@ export type UpdateFeedInput = Partial<{
 
 export interface ListFeedsForUserOptions {
   includeDeleted?: boolean;
-}
-
-function hasUniqueViolationCode(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "code" in value &&
-    (value as { code: unknown }).code === POSTGRES_UNIQUE_VIOLATION
-  );
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  if (hasUniqueViolationCode(error)) {
-    return true;
-  }
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "cause" in error &&
-    hasUniqueViolationCode((error as { cause: unknown }).cause)
-  );
 }
 
 function publicColumns() {

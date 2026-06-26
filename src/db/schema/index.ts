@@ -6,3 +6,4 @@ export * from "./feed.ts";
 export * from "./item.ts";
 export * from "./summary.ts";
 export * from "./digest.ts";
+export * from "./digest-run.ts";

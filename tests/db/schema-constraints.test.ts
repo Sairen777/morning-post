@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { sql } from "drizzle-orm";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
@@ -51,6 +51,21 @@ Deno.test("database schema exposes required performance indexes", async () => {
       true,
       "users_created_at_id_idx should exist",
     );
+    assertEquals(
+      await indexExists(database, "sources_user_id_idx"),
+      true,
+      "sources_user_id_idx should exist",
+    );
+    assertEquals(
+      await indexExists(database, "feeds_source_id_idx"),
+      true,
+      "feeds_source_id_idx should exist",
+    );
+    assertEquals(
+      await indexExists(database, "feeds_source_order_idx"),
+      true,
+      "feeds_source_order_idx should exist",
+    );
   });
 });
 
@@ -92,6 +107,62 @@ Deno.test("database schema rejects invalid persisted states", async () => {
       ),
       true,
       "summaries_period_order_check should exist on summaries",
+    );
+    assertEquals(
+      await constraintExists(
+        database,
+        "sources",
+        "sources_connector_id_check",
+      ),
+      true,
+      "sources_connector_id_check should exist on sources",
+    );
+    assertEquals(
+      await constraintExists(
+        database,
+        "digest_runs",
+        "digest_runs_status_check",
+      ),
+      true,
+      "digest_runs_status_check should exist on digest_runs",
+    );
+    assertEquals(
+      await constraintExists(
+        database,
+        "digest_runs",
+        "digest_runs_trigger_check",
+      ),
+      true,
+      "digest_runs_trigger_check should exist on digest_runs",
+    );
+    assertEquals(
+      await constraintExists(
+        database,
+        "digest_run_feeds",
+        "digest_run_feeds_stage_check",
+      ),
+      true,
+      "digest_run_feeds_stage_check should exist on digest_run_feeds",
+    );
+    assertEquals(
+      await constraintExists(
+        database,
+        "digest_run_feeds",
+        "digest_run_feeds_status_check",
+      ),
+      true,
+      "digest_run_feeds_status_check should exist on digest_run_feeds",
+    );
+  });
+});
+
+Deno.test("database schema rejects invalid connector id", async () => {
+  await withTestDb(async (database) => {
+    const now = Date.now();
+    await assertRejects(
+      () =>
+        database.execute(sql`insert into sources (user_id, connector_id, credentials, enabled, created_at, updated_at)
+          values ('00000000-0000-0000-0000-000000000001', 'unknown', null, true, ${now}, ${now})`),
     );
   });
 });

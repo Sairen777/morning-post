@@ -19,6 +19,10 @@ export interface ConnectorHandle<TRawData = unknown> {
   dispose?(): Promise<void> | void;
 }
 
+export interface ConnectorFactoryLike {
+  forSource(source: PublicSource, userId: string): Promise<ConnectorHandle>;
+}
+
 export interface TelegramClientFactory {
   createClientFromSession(sessionString: string): Promise<TelegramClientHandle>;
 }

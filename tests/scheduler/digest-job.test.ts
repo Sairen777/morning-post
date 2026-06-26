@@ -1,7 +1,9 @@
 import { assertEquals } from "@std/assert";
+import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
 import { createUser, type CreateUserInput, type User } from "../../src/repositories/user-repository.ts";
+import { listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
 import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
 import { clearDigestJobStateForTesting, computeDigestPeriod, DEFAULT_DIGEST_CRON, runDigestTick, scheduleDigestJob } from "../../src/scheduler/digest-job.ts";
 import type { Scheduler } from "../../src/scheduler/scheduler.ts";
@@ -152,5 +154,20 @@ Deno.test("runDigestTick pages users and respects bounded concurrency", async ()
 
     assertEquals(calledUserIds.size, 5);
     assertEquals(maximumInFlight <= 2, true);
+  });
+});
+
+Deno.test("runDigestTick creates scheduled digest run records", async () => {
+  clearDigestJobStateForTesting();
+  await withTestDb(async (database: Database) => {
+    const user = await createUser(database, userInput("scheduler-run-scheduled@example.com"));
+
+    await runDigestTick(database, {
+      now: () => 1_000,
+    });
+
+    const runs = await listDigestRunsForUser(database, user.id);
+    assertEquals(runs.length >= 1, true);
+    assertEquals(runs[0].trigger, "scheduled");
   });
 });

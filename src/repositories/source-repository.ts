@@ -6,8 +6,8 @@ import type { Database } from "../db/client.ts";
 import { feeds } from "../db/schema/feed.ts";
 import { sources } from "../db/schema/source.ts";
 import { ConflictError, NotFoundError, ValidationError } from "../server/errors.ts";
+import { isUniqueViolation } from "../db/errors.ts";
 
-const POSTGRES_UNIQUE_VIOLATION = "23505";
 
 const encryptedBlobSchema = z.object({
   v: z.number(),
@@ -53,26 +53,6 @@ export interface UpsertSourceCredentialsInput {
   credentials: EncryptedBlob;
 }
 
-function hasUniqueViolationCode(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "code" in value &&
-    (value as { code: unknown }).code === POSTGRES_UNIQUE_VIOLATION
-  );
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  if (hasUniqueViolationCode(error)) {
-    return true;
-  }
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "cause" in error &&
-    hasUniqueViolationCode((error as { cause: unknown }).cause)
-  );
-}
 
 function publicColumns() {
   return {
