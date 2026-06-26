@@ -1,4 +1,4 @@
-import { assertEquals, assertExists, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import {
@@ -65,7 +65,7 @@ Deno.test("createDigestRun round-trips all fields", async () => {
 
     assertEquals(typeof run.id, "string");
     assertEquals(typeof run.startedAt, "number");
-    assertExists(run.startedAt > 1_000_000_000_000, "startedAt should be epoch-ms");
+    assertEquals(run.startedAt > 1_000_000_000_000, true, "startedAt should be epoch-ms");
   });
 });
 
@@ -83,7 +83,7 @@ Deno.test("finishDigestRun sets finishedAt, status", async () => {
     assertEquals(finished.status, "complete");
     assertEquals(finished.digestId, null);
     assertEquals(typeof finished.finishedAt, "number");
-    assertExists(finished.finishedAt! >= run.startedAt, "finishedAt should be >= startedAt");
+    assertEquals(finished.finishedAt! >= run.startedAt, true, "finishedAt should be >= startedAt");
   });
 });
 
@@ -148,7 +148,7 @@ Deno.test("startDigestRunFeed round-trips fields", async () => {
 
     assertEquals(typeof feedRun.id, "string");
     assertEquals(typeof feedRun.startedAt, "number");
-    assertExists(feedRun.startedAt > 1_000_000_000_000, "startedAt should be epoch-ms");
+    assertEquals(feedRun.startedAt > 1_000_000_000_000, true, "startedAt should be epoch-ms");
   });
 });
 
@@ -175,7 +175,7 @@ Deno.test("finishDigestRunFeed sets finishedAt, status, itemCount", async () => 
     assertEquals(finished.status, "complete");
     assertEquals(finished.itemCount, 12);
     assertEquals(typeof finished.finishedAt, "number");
-    assertExists(finished.finishedAt! >= feedRun.startedAt, "finishedAt should be >= startedAt");
+    assertEquals(finished.finishedAt! >= feedRun.startedAt, true, "finishedAt should be >= startedAt");
   });
 });
 
@@ -224,9 +224,9 @@ Deno.test("listDigestRunsForUser returns only that user's runs, ordered desc", a
     const alice = await createUser(database, userInput({ email: "alice@example.com" }));
     const bob = await createUser(database, userInput({ email: "bob@example.com" }));
 
-    const aliceRun1 = await createDigestRun(database, runInput(alice.id));
-    const bobRun = await createDigestRun(database, runInput(bob.id));
-    const aliceRun2 = await createDigestRun(database, runInput(alice.id));
+    const aliceRun1 = await createDigestRun(database, runInput(alice.id), 1000);
+    const bobRun = await createDigestRun(database, runInput(bob.id), 2000);
+    const aliceRun2 = await createDigestRun(database, runInput(alice.id), 3000);
 
     const aliceRuns = await listDigestRunsForUser(database, alice.id);
     const bobRuns = await listDigestRunsForUser(database, bob.id);
