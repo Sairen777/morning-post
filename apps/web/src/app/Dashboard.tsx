@@ -14,27 +14,42 @@ import {
   runDigest,
   getDigest,
   logoutUser,
+  disconnectSource,
+  listFeedsForSource,
+  getFeed,
+  unsubscribeFeed,
+  listDigestRuns,
+  getDigestRunDetail,
+  updateCurrentUser,
   ApiClientError,
 } from "../api/client";
 import type {
+  PublicUser,
   PublicSource,
   PublicFeed,
   PublicDigest,
   AvailableFeed,
   DigestView,
+  PublicDigestRun,
+  DigestRunDetail,
+  DisconnectSourceResponse,
 } from "../api/types";
 import DigestRunnerCard from "./DigestRunnerCard";
 import SourcesPanel from "./SourcesPanel";
 import FeedsPanel from "./FeedsPanel";
 import DigestsPanel from "./DigestsPanel";
+import DigestRunsPanel from "./DigestRunsPanel";
+import TelegramConnectPanel from "./TelegramConnectPanel";
+import ProfilePanel from "./ProfilePanel";
 
 interface DashboardProps {
-  user: { id: string; email: string };
+  user: PublicUser;
   onLogout: () => void;
   onAuthError: () => void;
+  onUserUpdate: (user: PublicUser) => void;
 }
 
-type TabId = "digests" | "sources" | "feeds";
+type TabId = "digests" | "runs" | "connections" | "sources" | "feeds" | "profile";
 
 export default function Dashboard(props: DashboardProps) {
   const [activeTab, setActiveTab] = createSignal<TabId>("digests");
@@ -43,21 +58,33 @@ export default function Dashboard(props: DashboardProps) {
   const [sources, setSources] = createSignal<PublicSource[]>([]);
   const [feeds, setFeeds] = createSignal<PublicFeed[]>([]);
   const [digests, setDigests] = createSignal<PublicDigest[]>([]);
+  const [digestRuns, setDigestRuns] = createSignal<PublicDigestRun[]>([]);
   const [availableFeeds, setAvailableFeeds] = createSignal<
     Record<string, AvailableFeed[]>
   >({});
+  const [sourceFeeds, setSourceFeeds] = createSignal<
+    Record<string, PublicFeed[]>
+  >({});
+
+  const withAuthError = <T,>(fn: () => Promise<T>, fallback: () => T): (() => Promise<T>) => {
+    return async () => {
+      try {
+        return await fn();
+      } catch (err: unknown) {
+        if (err instanceof ApiClientError && err.status === 401) {
+          props.onAuthError();
+        }
+        return fallback();
+      }
+    };
+  };
 
   // Fetch helpers
   const refreshSources = async () => {
     try {
       setSources(await listSources());
     } catch (err: unknown) {
-      if (
-        err instanceof ApiClientError &&
-        err.status === 401
-      ) {
-        props.onAuthError();
-      }
+      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
     }
   };
 
@@ -65,12 +92,7 @@ export default function Dashboard(props: DashboardProps) {
     try {
       setFeeds(await listFeeds());
     } catch (err: unknown) {
-      if (
-        err instanceof ApiClientError &&
-        err.status === 401
-      ) {
-        props.onAuthError();
-      }
+      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
     }
   };
 
@@ -78,11 +100,26 @@ export default function Dashboard(props: DashboardProps) {
     try {
       setDigests(await listDigests());
     } catch (err: unknown) {
-      if (
-        err instanceof ApiClientError &&
-        err.status === 401
-      ) {
-        props.onAuthError();
+      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+    }
+  };
+
+  const refreshDigestRuns = async () => {
+    try {
+      setDigestRuns(await listDigestRuns());
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+    }
+  };
+
+  const refreshSourceFeedsIfLoaded = async (sourceId: string) => {
+    const current = sourceFeeds();
+    if (Object.prototype.hasOwnProperty.call(current, sourceId)) {
+      try {
+        const result = await listFeedsForSource(sourceId);
+        setSourceFeeds((prev) => ({ ...prev, [sourceId]: result }));
+      } catch (err: unknown) {
+        if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
       }
     }
   };
@@ -91,19 +128,40 @@ export default function Dashboard(props: DashboardProps) {
     refreshSources();
     refreshFeeds();
     refreshDigests();
+    refreshDigestRuns();
   });
 
   // Actions
   const handleToggleSource = async (id: string, enabled: boolean) => {
-    await updateSource(id, { enabled });
+    try {
+      await updateSource(id, { enabled });
+    } finally {
+      await refreshSources();
+    }
+  };
+
+  const handleUpdateSourcePosition = async (id: string, position: number | null) => {
+    await updateSource(id, { position });
     await refreshSources();
   };
 
-  const handleDiscoverFeeds = async (
-    sourceId: string,
-  ): Promise<AvailableFeed[]> => {
+  const handleDisconnectSource = async (id: string): Promise<DisconnectSourceResponse> => {
+    const result = await disconnectSource(id);
+    await refreshSources();
+    await refreshFeeds();
+    await refreshSourceFeedsIfLoaded(id);
+    return result;
+  };
+
+  const handleDiscoverFeeds = async (sourceId: string): Promise<AvailableFeed[]> => {
     const result = await listAvailableFeeds(sourceId);
     setAvailableFeeds((prev) => ({ ...prev, [sourceId]: result }));
+    return result;
+  };
+
+  const handleLoadSourceFeeds = async (sourceId: string): Promise<PublicFeed[]> => {
+    const result = await listFeedsForSource(sourceId);
+    setSourceFeeds((prev) => ({ ...prev, [sourceId]: result }));
     return result;
   };
 
@@ -112,7 +170,7 @@ export default function Dashboard(props: DashboardProps) {
     await refreshFeeds();
   };
 
-  const handleSubscribe = async (
+  const handleSubscribeFeed = async (
     sourceId: string,
     feed: AvailableFeed,
   ) => {
@@ -122,6 +180,26 @@ export default function Dashboard(props: DashboardProps) {
       kind: feed.kind,
     });
     await refreshFeeds();
+    await refreshSourceFeedsIfLoaded(sourceId);
+  };
+
+  const handleLoadFeed = async (id: string): Promise<PublicFeed> => {
+    return await getFeed(id);
+  };
+
+  const handleUpdateFeed = async (
+    id: string,
+    input: { kind?: "news" | "discussion"; customPrompt?: string | null; position?: number | null; enabled?: boolean },
+  ) => {
+    const updated = await updateFeed(id, input);
+    await refreshFeeds();
+    await refreshSourceFeedsIfLoaded(updated.sourceId);
+  };
+
+  const handleUnsubscribeFeed = async (id: string) => {
+    const deleted = await unsubscribeFeed(id);
+    await refreshFeeds();
+    await refreshSourceFeedsIfLoaded(deleted.sourceId);
   };
 
   const handleRunDigest = async (body: {
@@ -130,10 +208,31 @@ export default function Dashboard(props: DashboardProps) {
   }) => {
     await runDigest(body);
     await refreshDigests();
+    await refreshDigestRuns();
   };
 
   const handleSelectDigest = async (id: string): Promise<DigestView> => {
     return await getDigest(id);
+  };
+
+  const handleSelectRun = async (id: string): Promise<DigestRunDetail> => {
+    return await getDigestRunDetail(id);
+  };
+
+  const handleSaveProfile = async (input: {
+    name?: string;
+    systemPrompt?: string;
+    defaultLanguage?: string | null;
+    defaultModel?: string | null;
+  }): Promise<PublicUser> => {
+    const updated = await updateCurrentUser(input);
+    props.onUserUpdate(updated);
+    return updated;
+  };
+
+  const handleTelegramConnected = async () => {
+    await refreshSources();
+    await refreshFeeds();
   };
 
   const handleLogout = async () => {
@@ -167,8 +266,11 @@ export default function Dashboard(props: DashboardProps) {
 
       <nav style="margin-bottom: 1.5rem;">
         {tabLabel("digests", "Digests")}
+        {tabLabel("runs", "Runs")}
+        {tabLabel("connections", "Connections")}
         {tabLabel("sources", "Sources")}
         {tabLabel("feeds", "Feeds")}
+        {tabLabel("profile", "Profile")}
       </nav>
 
       <Show when={activeTab() === "digests"}>
@@ -185,11 +287,35 @@ export default function Dashboard(props: DashboardProps) {
         </div>
       </Show>
 
+      <Show when={activeTab() === "runs"}>
+        <DigestRunsPanel
+          runs={digestRuns()}
+          onSelectRun={handleSelectRun}
+          onRefresh={refreshDigestRuns}
+          onAuthError={props.onAuthError}
+        />
+      </Show>
+
+      <Show when={activeTab() === "connections"}>
+        <TelegramConnectPanel
+          sources={sources()}
+          onConnected={handleTelegramConnected}
+          onAuthError={props.onAuthError}
+        />
+      </Show>
+
       <Show when={activeTab() === "sources"}>
         <SourcesPanel
           sources={sources()}
+          feeds={feeds()}
+          availableFeeds={availableFeeds()}
+          sourceFeeds={sourceFeeds()}
           onToggleSource={handleToggleSource}
+          onUpdateSourcePosition={handleUpdateSourcePosition}
+          onDisconnectSource={handleDisconnectSource}
           onDiscoverFeeds={handleDiscoverFeeds}
+          onLoadSourceFeeds={handleLoadSourceFeeds}
+          onSubscribe={handleSubscribeFeed}
           onAuthError={props.onAuthError}
         />
       </Show>
@@ -197,9 +323,19 @@ export default function Dashboard(props: DashboardProps) {
       <Show when={activeTab() === "feeds"}>
         <FeedsPanel
           feeds={feeds()}
-          availableFeeds={availableFeeds()}
+          onLoadFeed={handleLoadFeed}
           onToggleFeed={handleToggleFeed}
-          onSubscribe={handleSubscribe}
+          onUpdateFeed={handleUpdateFeed}
+          onUnsubscribeFeed={handleUnsubscribeFeed}
+          onAuthError={props.onAuthError}
+        />
+      </Show>
+
+      <Show when={activeTab() === "profile"}>
+        <ProfilePanel
+          user={props.user}
+          onSave={handleSaveProfile}
+          onSaved={props.onUserUpdate}
           onAuthError={props.onAuthError}
         />
       </Show>

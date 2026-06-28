@@ -1,12 +1,17 @@
 import type {
   ApiErrorBody,
   AvailableFeed,
+  DigestRunDetail,
   DigestView,
+  DisconnectSourceResponse,
   FeedKind,
   PublicDigest,
+  PublicDigestRun,
   PublicFeed,
   PublicSource,
   PublicUser,
+  TelegramLoginSessionStatus,
+  TelegramLoginStart,
 } from "./types.ts";
 
 export class ApiClientError extends Error {
@@ -51,6 +56,7 @@ async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+// Auth
 export function getCurrentUser(): Promise<PublicUser> {
   return apiRequest<PublicUser>("/auth/me");
 }
@@ -80,6 +86,47 @@ export function logoutUser(): Promise<void> {
   return apiRequest<void>("/auth/logout", { method: "POST" });
 }
 
+export function updateCurrentUser(input: {
+  name?: string;
+  systemPrompt?: string;
+  defaultLanguage?: string | null;
+  defaultModel?: string | null;
+}): Promise<PublicUser> {
+  return apiRequest<PublicUser>("/auth/me", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+// Telegram login
+export function startTelegramLogin(): Promise<TelegramLoginStart> {
+  return apiRequest<TelegramLoginStart>("/connectors/telegram/login", {
+    method: "POST",
+  });
+}
+
+export function getTelegramLoginStatus(
+  loginSessionId: string,
+): Promise<TelegramLoginSessionStatus> {
+  return apiRequest<TelegramLoginSessionStatus>(
+    `/connectors/telegram/login/${loginSessionId}`,
+  );
+}
+
+export function submitTelegramTwoFactorAuthentication(
+  loginSessionId: string,
+  input: { password: string },
+): Promise<TelegramLoginSessionStatus> {
+  return apiRequest<TelegramLoginSessionStatus>(
+    `/connectors/telegram/login/${loginSessionId}/2fa`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+// Sources
 export function listSources(): Promise<PublicSource[]> {
   return apiRequest<PublicSource[]>("/sources");
 }
@@ -94,8 +141,25 @@ export function updateSource(
   });
 }
 
+export function disconnectSource(
+  id: string,
+): Promise<DisconnectSourceResponse> {
+  return apiRequest<DisconnectSourceResponse>(`/sources/${id}`, {
+    method: "DELETE",
+  });
+}
+
+// Feeds
 export function listFeeds(): Promise<PublicFeed[]> {
   return apiRequest<PublicFeed[]>("/feeds");
+}
+
+export function listFeedsForSource(sourceId: string): Promise<PublicFeed[]> {
+  return apiRequest<PublicFeed[]>(`/sources/${sourceId}/feeds`);
+}
+
+export function getFeed(id: string): Promise<PublicFeed> {
+  return apiRequest<PublicFeed>(`/feeds/${id}`);
 }
 
 export function updateFeed(
@@ -110,6 +174,12 @@ export function updateFeed(
   return apiRequest<PublicFeed>(`/feeds/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export function unsubscribeFeed(id: string): Promise<PublicFeed> {
+  return apiRequest<PublicFeed>(`/feeds/${id}`, {
+    method: "DELETE",
   });
 }
 
@@ -133,6 +203,7 @@ export function subscribeFeed(
   });
 }
 
+// Digests
 export function listDigests(): Promise<PublicDigest[]> {
   return apiRequest<PublicDigest[]>("/digests");
 }
@@ -149,4 +220,13 @@ export function runDigest(input: {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+// Digest runs
+export function listDigestRuns(): Promise<PublicDigestRun[]> {
+  return apiRequest<PublicDigestRun[]>("/digests/runs");
+}
+
+export function getDigestRunDetail(id: string): Promise<DigestRunDetail> {
+  return apiRequest<DigestRunDetail>(`/digests/runs/${id}`);
 }

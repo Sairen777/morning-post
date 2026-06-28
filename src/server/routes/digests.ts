@@ -7,6 +7,11 @@ import {
   renderDigestMarkdown,
 } from "../../services/digest-service.ts";
 import {
+  listDigestRunsForUser,
+  findDigestRunForUser,
+  listDigestRunFeedsForRun,
+} from "../../repositories/digest-run-repository.ts";
+import {
   type AuthVariables,
   requireAuth,
 } from "../middleware/require-auth.ts";
@@ -14,6 +19,9 @@ import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
 import { computeDigestPeriod } from "../../scheduler/digest-job.ts";
 import { runForUser } from "../../services/orchestrator.ts";
 import { validate } from "../validate.ts";
+import { NotFoundError } from "../errors.ts";
+
+const digestRunIdSchema = z.string().uuid("id must be a valid UUID");
 
 const digestIdSchema = z.string().uuid("id must be a valid UUID");
 
@@ -77,6 +85,21 @@ export function buildDigestRoutes(database: Database): Hono<{ Variables: AuthVar
   routes.get("/", async (context) => {
     const digests = await listDigestViewsForUser(database, context.var.userId);
     return context.json(digests, 200);
+  });
+
+  routes.get("/runs", async (context) => {
+    const runs = await listDigestRunsForUser(database, context.var.userId);
+    return context.json(runs, 200);
+  });
+
+  routes.get("/runs/:id", async (context) => {
+    const id = validate(digestRunIdSchema, context.req.param("id"));
+    const run = await findDigestRunForUser(database, id, context.var.userId);
+    if (!run) {
+      throw new NotFoundError("digest run not found");
+    }
+    const feeds = await listDigestRunFeedsForRun(database, run.id);
+    return context.json({ run, feeds }, 200);
   });
 
   routes.get("/:id", async (context) => {

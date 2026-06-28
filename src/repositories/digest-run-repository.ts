@@ -1,4 +1,4 @@
-import { eq, desc } from "drizzle-orm";
+import { and, asc, eq, desc } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import {
@@ -193,4 +193,28 @@ export async function listDigestRunsForUser(
     .orderBy(desc(digestRuns.startedAt))
     .limit(options.limit ?? 50);
   return rows.map(parsePublicDigestRun);
+}
+
+export async function findDigestRunForUser(
+  database: Database,
+  id: string,
+  userId: string,
+): Promise<PublicDigestRun | null> {
+  const [row] = await database
+    .select()
+    .from(digestRuns)
+    .where(and(eq(digestRuns.id, id), eq(digestRuns.userId, userId)));
+  return row ? parsePublicDigestRun(row) : null;
+}
+
+export async function listDigestRunFeedsForRun(
+  database: Database,
+  runId: string,
+): Promise<PublicDigestRunFeed[]> {
+  const rows = await database
+    .select()
+    .from(digestRunFeeds)
+    .where(eq(digestRunFeeds.runId, runId))
+    .orderBy(asc(digestRunFeeds.startedAt));
+  return rows.map(parsePublicDigestRunFeed);
 }

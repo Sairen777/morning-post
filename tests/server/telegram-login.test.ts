@@ -385,6 +385,13 @@ Deno.test("Telegram reconnect updates an existing source without duplicating it"
       await encryptedTelegramSessionString(database, credentialCipher, user.id),
       factory.clients[0].sessionString,
     );
+
+    // API lookup should show connected === true
+    const listResponse = await app.request("/sources", { headers: { cookie } });
+    assertEquals(listResponse.status, 200);
+    const listedSources = await listResponse.json();
+    assertEquals(listedSources.length, 1);
+    assertEquals(listedSources[0].connected, true);
   });
 });
 
@@ -517,7 +524,7 @@ Deno.test("Telegram login reserves capacity before awaiting client creation", as
 
     await factory.waitForClientCreationAttempts(3);
 
-    let timeoutId: number | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const fourthResponse = await Promise.race([
       requests[3],
       new Promise<Response>((_, reject) => {

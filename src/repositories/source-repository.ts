@@ -22,6 +22,7 @@ const publicSourceRowSchema = z.object({
   connectorId: z.string(),
   position: z.number().nullable(),
   enabled: z.boolean(),
+  connected: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -54,24 +55,32 @@ export interface UpsertSourceCredentialsInput {
 }
 
 
-function publicColumns() {
+/** Internal projection: includes credentials so parsePublicSource can compute `connected`. Callers MUST pass through parsePublicSource. */
+function selectableColumns() {
   return {
     id: sources.id,
     userId: sources.userId,
     connectorId: sources.connectorId,
     position: sources.position,
     enabled: sources.enabled,
+    credentials: sources.credentials,
     createdAt: sources.createdAt,
     updatedAt: sources.updatedAt,
   };
 }
 
-function parsePublicSource(row: unknown): PublicSource {
-  return publicSourceRowSchema.parse(row);
+function parsePublicSource(row: Record<string, unknown>): PublicSource {
+  return publicSourceRowSchema.parse({
+    ...row,
+    connected: row.credentials != null,
+  });
 }
 
-function parseSourceWithCredentials(row: unknown): SourceWithCredentials {
-  return sourceWithCredentialsRowSchema.parse(row);
+function parseSourceWithCredentials(row: Record<string, unknown>): SourceWithCredentials {
+  return sourceWithCredentialsRowSchema.parse({
+    ...row,
+    connected: row.credentials != null,
+  });
 }
 
 async function findOwnedSourceWithCredentials(
@@ -80,7 +89,7 @@ async function findOwnedSourceWithCredentials(
   userId: string,
 ): Promise<SourceWithCredentials | null> {
   const rows = await database
-    .select()
+    .select(selectableColumns())
     .from(sources)
     .where(and(eq(sources.id, id), eq(sources.userId, userId)))
     .limit(1);
@@ -106,7 +115,7 @@ export async function createSource(
         createdAt: now,
         updatedAt: now,
       })
-      .returning(publicColumns());
+      .returning(selectableColumns());
     return parsePublicSource(rows[0]);
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -121,7 +130,7 @@ export async function listSourcesForUser(
   userId: string,
 ): Promise<PublicSource[]> {
   const rows = await database
-    .select(publicColumns())
+    .select(selectableColumns())
     .from(sources)
     .where(eq(sources.userId, userId))
     .orderBy(asc(sources.position), asc(sources.createdAt));
@@ -134,7 +143,7 @@ export async function findSourceById(
   userId: string,
 ): Promise<PublicSource | null> {
   const rows = await database
-    .select(publicColumns())
+    .select(selectableColumns())
     .from(sources)
     .where(and(eq(sources.id, id), eq(sources.userId, userId)))
     .limit(1);
@@ -147,7 +156,7 @@ export async function findSourceByConnectorId(
   connectorId: string,
 ): Promise<PublicSource | null> {
   const rows = await database
-    .select(publicColumns())
+    .select(selectableColumns())
     .from(sources)
     .where(and(eq(sources.userId, userId), eq(sources.connectorId, connectorId)))
     .limit(1);
@@ -178,7 +187,7 @@ export async function upsertSourceCredentials(
         updatedAt: now,
       },
     })
-    .returning(publicColumns());
+    .returning(selectableColumns());
   return parsePublicSource(rows[0]);
 }
 
@@ -208,7 +217,7 @@ export async function updateSource(
       .update(sources)
       .set(updates)
       .where(updatePredicate)
-      .returning(publicColumns());
+      .returning(selectableColumns());
     if (!rows[0]) {
       if (partial.enabled === true) {
         const existingSource = await findOwnedSourceWithCredentials(database, id, userId);
@@ -241,7 +250,7 @@ export async function deleteSourceCredentials(
       .update(sources)
       .set({ credentials: null, enabled: false, updatedAt: now })
       .where(and(eq(sources.id, id), eq(sources.userId, userId)))
-      .returning(publicColumns());
+      .returning(selectableColumns());
     if (!rows[0]) {
       throw new NotFoundError("source not found");
     }

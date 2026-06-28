@@ -3,8 +3,8 @@ export interface PublicUser {
   name: string;
   email: string;
   systemPrompt: string;
-  defaultLanguage: string;
-  defaultModel: string;
+  defaultLanguage: string | null;
+  defaultModel: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -13,8 +13,9 @@ export interface PublicSource {
   id: string;
   userId: string;
   connectorId: string;
-  position: number;
+  position: number | null;
   enabled: boolean;
+  connected: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -34,7 +35,7 @@ export interface PublicFeed {
   name: string;
   kind: FeedKind;
   customPrompt: string | null;
-  position: number;
+  position: number | null;
   enabled: boolean;
   deletedAt: number | null;
   lastFetchedPeriodEndMs: number | null;
@@ -87,4 +88,69 @@ export interface ApiErrorBody {
     code: string;
     message: string;
   };
+}
+
+export type ConnectorId = "Telegram" | "Substack" | "YouTube" | "Reddit" | "X" | "RSS";
+
+export type TelegramLoginStatus = "pending" | "needs_2fa" | "complete" | "error" | "expired";
+
+export interface TelegramLoginStart {
+  loginSessionId: string;
+  qrUrl: string;
+  expiresAt: number;
+}
+
+export interface TelegramLoginSessionStatus {
+  status: TelegramLoginStatus;
+  qrUrl?: string;
+  errorMessage?: string;
+  expiresAt: number;
+}
+
+export interface DisconnectSourceResponse {
+  source: PublicSource;
+  revokeTelegramSession: boolean;
+  message: string;
+}
+
+export type DigestRunTrigger = "manual" | "scheduled";
+
+export type DigestRunStatus = "running" | "complete" | "partial" | "failed";
+
+export type DigestRunFeedStage = "connector" | "ingestion" | "summarization";
+
+export type DigestRunFeedStatus = "running" | "complete" | "skipped" | "failed";
+
+export interface PublicDigestRun {
+  id: string;
+  digestId: string | null;
+  userId: string;
+  trigger: DigestRunTrigger;
+  periodStartMs: number;
+  periodEndMs: number;
+  status: DigestRunStatus;
+  startedAt: number;
+  finishedAt: number | null;
+  errorMessage: string | null;
+}
+
+export interface PublicDigestRunFeed {
+  id: string;
+  runId: string;
+  sourceId: string | null;
+  feedId: string | null;
+  connectorId: string;
+  feedExternalId: string | null;
+  feedName: string | null;
+  stage: DigestRunFeedStage;
+  status: DigestRunFeedStatus;
+  itemCount: number | null;
+  startedAt: number;
+  finishedAt: number | null;
+  errorMessage: string | null;
+}
+
+export interface DigestRunDetail {
+  run: PublicDigestRun;
+  feeds: PublicDigestRunFeed[];
 }

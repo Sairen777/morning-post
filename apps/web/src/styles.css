@@ -145,6 +145,24 @@ a:hover {
   border-color: #ffecb3;
 }
 
+.badge-partial {
+  background: #fbbf24;
+  color: #1a1a2e;
+  border-color: #fcd34d;
+}
+
+.badge-muted {
+  background: #4a4a6a;
+  color: #ccccdd;
+  border-color: #5a5a7a;
+}
+
+.badge-warning {
+  background: #f59e0b;
+  color: #1a1a2e;
+  border-color: #fbbf24;
+}
+
 .error {
   color: #c62828;
   font-size: 0.85rem;

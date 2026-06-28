@@ -222,3 +222,198 @@ Deno.test(
     restore();
   },
 );
+
+// --- retry / API error helpers ---
+
+type ResponseSpec = { status: number; body: string };
+
+function stubFetchSequence(specs: ResponseSpec[]): {
+  callCount: () => number;
+  restore: () => void;
+} {
+  const original = globalThis.fetch;
+  let callIndex = 0;
+  globalThis.fetch = () => {
+    const spec = specs[callIndex] ?? specs[specs.length - 1];
+    callIndex++;
+    return Promise.resolve(
+      new Response(spec.body, {
+        status: spec.status,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  };
+  return {
+    callCount: () => callIndex,
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+}
+
+// --- retry behavior ---
+
+Deno.test("summarize — retries on 429 and succeeds on second attempt", async () => {
+  const { callCount, restore } = stubFetchSequence([
+    { status: 429, body: '{"error":"rate limited"}' },
+    { status: 200, body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"ok\\",\\"i\\":0}]"}}]}' },
+  ]);
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "ok");
+    assertEquals(callCount(), 2);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("summarize — retries on 503 and succeeds on third attempt", async () => {
+  const { callCount, restore } = stubFetchSequence([
+    { status: 503, body: "Service Unavailable" },
+    { status: 503, body: "Service Unavailable" },
+    { status: 200, body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"ok\\",\\"i\\":0}]"}}]}' },
+  ]);
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "ok");
+    assertEquals(callCount(), 3);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("summarize — does not retry on 400 (non-retryable status)", async () => {
+  const { callCount, restore } = stubFetchSequence([
+    { status: 400, body: '{"error":"bad request"}' },
+  ]);
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    await svc.summarize([item()], buildNewsPrompt());
+    throw new Error("expected summarize to throw on 400");
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "expected summarize to throw on 400") throw err;
+    assertEquals(err instanceof Error, true);
+    assertStringIncludes((err as Error).message, "Summarizer API 400");
+    assertStringIncludes((err as Error).message, "bad request");
+    assertEquals(callCount(), 1);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("summarize — includes response body in error message", async () => {
+  const { restore } = stubFetchSequence([
+    { status: 500, body: '{"error":"internal quota exceeded"}' },
+  ]);
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    await svc.summarize([item()], buildNewsPrompt());
+    throw new Error("expected summarize to throw on 500");
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "expected summarize to throw on 500") throw err;
+    assertEquals(err instanceof Error, true);
+    assertStringIncludes((err as Error).message, "internal quota exceeded");
+  } finally {
+    restore();
+  }
+});
+
+// --- parsePoints boundary cases ---
+
+Deno.test("parsePoints — throws on empty response", async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: "" } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    await svc.summarize([item()], buildNewsPrompt());
+    throw new Error("expected summarize to throw on empty response");
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "expected summarize to throw on empty response") throw err;
+    assertEquals(err instanceof Error, true);
+    assertStringIncludes((err as Error).message, "empty response");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("parsePoints — throws on non-array JSON response", async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: '{"not":"an array"}' } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    await svc.summarize([item()], buildNewsPrompt());
+    throw new Error("expected summarize to throw on non-array response");
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "expected summarize to throw on non-array response") throw err;
+    assertEquals(err instanceof Error, true);
+    assertStringIncludes((err as Error).message, "non-array");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("parsePoints — throws on non-array object response", async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: '{"status":"ok","summary":"done"}' } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    await svc.summarize([item()], buildNewsPrompt());
+    throw new Error("expected summarize to throw on non-array");
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "expected summarize to throw on non-array") throw err;
+    assertEquals(err instanceof Error, true);
+    assertStringIncludes((err as Error).message, "non-array");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("parsePoints — strips bare fence without language tag", async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: '```\n[{"t":"bare","i":0}]\n```' } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "bare");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("parsePoints — strips think tags before fence extraction", async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: '<think>reasoning</think>\n```json\n[{"t":"after think","i":0}]\n```' } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "after think");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("parsePoints — throws on element without string t (prose turned to word array)", async () => {
+  // jsonrepair turns "Sure, here is your summary:" into ["Sure","here is your summary:"]
+  // — a valid array whose elements lack t/i, which should fail element validation.
+  const restore = stubFetch({
+    choices: [{ message: { content: "Sure, here is your summary:" } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    await svc.summarize([item()], buildNewsPrompt());
+    throw new Error("expected summarize to throw on element validation");
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message === "expected summarize to throw on element validation") throw err;
+    assertEquals(err instanceof Error, true);
+    assertStringIncludes((err as Error).message, "non-object at index 0");
+  } finally {
+    restore();
+  }
+});

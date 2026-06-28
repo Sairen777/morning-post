@@ -15,8 +15,8 @@
   },
   "tasks": {
     "dev:cli": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/cli/run-once.ts",
-    "db:generate": "deno run -A npm:drizzle-kit@0.31 generate",
-    "db:migrate": "deno run --allow-net --allow-env --allow-read src/db/migrate.ts",
+    "db:generate": "deno run --env-file=.env.production.local -A npm:drizzle-kit@0.31 generate",
+    "db:migrate": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read src/db/migrate.ts",
     "dev:api": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/server/main.ts",
     "start": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/server/main.ts",
     "test": "deno test --env-file=.env.production.local --allow-read --allow-write --allow-net --allow-env tests/",

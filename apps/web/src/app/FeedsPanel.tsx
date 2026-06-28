@@ -1,55 +1,34 @@
-import { For, Show } from "solid-js";
-import type { PublicFeed, AvailableFeed } from "../api/types";
+import { createSignal, For, Show } from "solid-js";
+import type { PublicFeed, FeedKind } from "../api/types";
+import { ApiClientError } from "../api/client";
+import FormatTime from "./FormatTime";
 
 interface FeedsPanelProps {
   feeds: PublicFeed[];
-  availableFeeds: Record<string, AvailableFeed[]>;
+  onLoadFeed: (id: string) => Promise<PublicFeed>;
   onToggleFeed: (id: string, enabled: boolean) => Promise<void>;
-  onSubscribe: (
-    sourceId: string,
-    feed: AvailableFeed,
+  onUpdateFeed: (
+    id: string,
+    input: {
+      kind?: FeedKind;
+      customPrompt?: string | null;
+      position?: number | null;
+      enabled?: boolean;
+    },
   ) => Promise<void>;
+  onUnsubscribeFeed: (id: string) => Promise<void>;
   onAuthError: () => void;
 }
 
-function isSubscribed(
-  feeds: PublicFeed[],
-  sourceId: string,
-  externalId: string,
-): boolean {
-  return feeds.some(
-    (f) => f.sourceId === sourceId && f.externalId === externalId,
-  );
-}
-
 export default function FeedsPanel(props: FeedsPanelProps) {
-  const handleToggle = async (id: string, enabled: boolean) => {
-    try {
-      await props.onToggleFeed(id, enabled);
-    } catch (err: unknown) {
-      if (
-        err instanceof Error &&
-        "status" in err &&
-        (err as { status: number }).status === 401
-      ) {
-        props.onAuthError();
-      }
-    }
-  };
-
-  const handleSubscribe = async (sourceId: string, feed: AvailableFeed) => {
-    try {
-      await props.onSubscribe(sourceId, feed);
-    } catch (err: unknown) {
-      if (
-        err instanceof Error &&
-        "status" in err &&
-        (err as { status: number }).status === 401
-      ) {
-        props.onAuthError();
-      }
-    }
-  };
+  const [errors, setErrors] = createSignal<Record<string, string>>({});
+  const [loadingFeed, setLoadingFeed] = createSignal<Record<string, boolean>>({});
+  const [editingFeed, setEditingFeed] = createSignal<Record<string, boolean>>({});
+  const [savingFeed, setSavingFeed] = createSignal<Record<string, boolean>>({});
+  const [unsubscribing, setUnsubscribing] = createSignal<Record<string, boolean>>({});
+  const [feedEdits, setFeedEdits] = createSignal<
+    Record<string, { kind: FeedKind; customPrompt: string; position: string }>
+  >({});
 
   const feedsBySource = () => {
     const map: Record<string, PublicFeed[]> = {};
@@ -62,6 +41,99 @@ export default function FeedsPanel(props: FeedsPanelProps) {
 
   const sourceIds = () => Object.keys(feedsBySource());
 
+  const handleToggle = async (id: string, enabled: boolean) => {
+    try {
+      await props.onToggleFeed(id, enabled);
+      setErrors((e) => {
+        const next = { ...e };
+        delete next[id];
+        return next;
+      });
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setErrors((e) => ({ ...e, [id]: err.message }));
+      }
+    }
+  };
+
+  const handleLoad = async (id: string) => {
+    setLoadingFeed((l) => ({ ...l, [id]: true }));
+    setErrors((e) => {
+      const next = { ...e };
+      delete next[id];
+      return next;
+    });
+    try {
+      const feed = await props.onLoadFeed(id);
+      setEditingFeed((e) => ({ ...e, [id]: true }));
+      setFeedEdits((e) => ({
+        ...e,
+        [id]: {
+          kind: feed.kind,
+          customPrompt: feed.customPrompt ?? "",
+          position: feed.position != null ? String(feed.position) : "",
+        },
+      }));
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setErrors((e) => ({ ...e, [id]: err.message }));
+      }
+    } finally {
+      setLoadingFeed((l) => ({ ...l, [id]: false }));
+    }
+  };
+
+  const handleSave = async (id: string) => {
+    const edit = feedEdits()[id];
+    if (!edit) return;
+    setSavingFeed((s) => ({ ...s, [id]: true }));
+    try {
+      await props.onUpdateFeed(id, {
+        kind: edit.kind,
+        customPrompt: edit.customPrompt.trim() === "" ? null : edit.customPrompt,
+        position: edit.position.trim() === "" ? null : Number(edit.position),
+      });
+      setEditingFeed((e) => ({ ...e, [id]: false }));
+      setErrors((e) => {
+        const next = { ...e };
+        delete next[id];
+        return next;
+      });
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setErrors((e) => ({ ...e, [id]: err.message }));
+      }
+    } finally {
+      setSavingFeed((s) => ({ ...s, [id]: false }));
+    }
+  };
+
+  const handleUnsubscribe = async (id: string) => {
+    setUnsubscribing((u) => ({ ...u, [id]: true }));
+    try {
+      await props.onUnsubscribeFeed(id);
+      setErrors((e) => {
+        const next = { ...e };
+        delete next[id];
+        return next;
+      });
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setErrors((e) => ({ ...e, [id]: err.message }));
+      }
+    } finally {
+      setUnsubscribing((u) => ({ ...u, [id]: false }));
+    }
+  };
+
   return (
     <div class="card">
       <div class="card-header">
@@ -69,18 +141,15 @@ export default function FeedsPanel(props: FeedsPanelProps) {
       </div>
       <Show
         when={sourceIds().length > 0}
-        fallback={<p class="hint">No feeds subscribed yet.</p>}
+        fallback={<p style="padding: 1rem;">No subscribed feeds yet. Discover and subscribe in the Sources tab.</p>}
       >
         <For each={sourceIds()}>
           {(sourceId) => (
-            <div style="margin-bottom: 1.5rem;">
+            <div style="margin-bottom: 1rem;">
               <h3 class="section-title">Source: {sourceId}</h3>
               <For each={feedsBySource()[sourceId]}>
                 {(feed) => (
-                  <div
-                    class="card"
-                    style="margin-bottom: 0.5rem; padding: 0.75rem;"
-                  >
+                  <div class="card" style="margin-bottom: 0.5rem;">
                     <div class="meta-row">
                       <dt>Name</dt>
                       <dd>{feed.name}</dd>
@@ -90,71 +159,113 @@ export default function FeedsPanel(props: FeedsPanelProps) {
                       <dd>{feed.kind}</dd>
                     </div>
                     <div class="meta-row">
-                      <dt>Enabled</dt>
-                      <dd>
-                        <label class="toggle">
-                          <input
-                            type="checkbox"
-                            checked={feed.enabled}
-                            onChange={(e) =>
-                              handleToggle(feed.id, e.currentTarget.checked)
-                            }
-                          />
-                          <span>{feed.enabled ? "On" : "Off"}</span>
-                        </label>
+                      <dt>External ID</dt>
+                      <dd style="font-family: monospace; font-size: 0.75rem;">
+                        {feed.externalId}
                       </dd>
                     </div>
-                    <Show when={feed.lastFetchedPeriodEndMs != null}>
+                    <Show when={feed.lastFetchedPeriodEndMs !== null}>
                       <div class="meta-row">
                         <dt>Last fetched</dt>
                         <dd>
-                          {new Date(feed.lastFetchedPeriodEndMs!).toLocaleString()}
+                          <FormatTime ms={feed.lastFetchedPeriodEndMs!} />
                         </dd>
                       </div>
                     </Show>
-                    <div class="meta-row">
-                      <dt>Custom prompt</dt>
-                      <dd>{feed.customPrompt ? "Yes" : "No"}</dd>
+                    <Show when={feed.customPrompt}>
+                      <div class="meta-row">
+                        <dt>Custom prompt</dt>
+                        <dd class="hint">Set</dd>
+                      </div>
+                    </Show>
+
+                    <div class="form-row" style="align-items: center; margin: 0.5rem 0;">
+                      <label class="toggle">
+                        <input
+                          type="checkbox"
+                          checked={feed.enabled}
+                          onChange={(e) => handleToggle(feed.id, e.currentTarget.checked)}
+                        />
+                        <span>Enabled</span>
+                      </label>
                     </div>
+
+                    <div class="form-row" style="gap: 0.5rem; margin: 0.5rem 0;">
+                      <button
+                        onClick={() => handleLoad(feed.id)}
+                        disabled={loadingFeed()[feed.id]}
+                      >
+                        {loadingFeed()[feed.id] ? "Loading…" : "Load details"}
+                      </button>
+                      <button
+                        onClick={() => handleUnsubscribe(feed.id)}
+                        disabled={unsubscribing()[feed.id]}
+                      >
+                        {unsubscribing()[feed.id] ? "Unsubscribing…" : "Unsubscribe"}
+                      </button>
+                    </div>
+
+                    <Show when={editingFeed()[feed.id] && feedEdits()[feed.id]}>
+                      <div style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border);">
+                        <div class="form-group">
+                          <label>Kind</label>
+                          <select
+                            value={feedEdits()[feed.id].kind}
+                            onChange={(e) =>
+                              setFeedEdits((edits) => ({
+                                ...edits,
+                                [feed.id]: { ...edits[feed.id], kind: e.currentTarget.value as FeedKind },
+                              }))
+                            }
+                          >
+                            <option value="news">News</option>
+                            <option value="discussion">Discussion</option>
+                          </select>
+                        </div>
+                        <div class="form-group">
+                          <label>Position</label>
+                          <input
+                            type="number"
+                            value={feedEdits()[feed.id].position}
+                            onInput={(e) =>
+                              setFeedEdits((edits) => ({
+                                ...edits,
+                                [feed.id]: { ...edits[feed.id], position: e.currentTarget.value },
+                              }))
+                            }
+                            placeholder="Auto"
+                          />
+                        </div>
+                        <div class="form-group">
+                          <label>Custom prompt</label>
+                          <textarea
+                            value={feedEdits()[feed.id].customPrompt}
+                            onInput={(e) =>
+                              setFeedEdits((edits) => ({
+                                ...edits,
+                                [feed.id]: { ...edits[feed.id], customPrompt: e.currentTarget.value },
+                              }))
+                            }
+                            placeholder="No custom prompt"
+                            rows={3}
+                          />
+                        </div>
+                        <button
+                          onClick={() => handleSave(feed.id)}
+                          disabled={savingFeed()[feed.id]}
+                          class="primary"
+                        >
+                          {savingFeed()[feed.id] ? "Saving…" : "Save feed"}
+                        </button>
+                      </div>
+                    </Show>
+
+                    <Show when={errors()[feed.id]}>
+                      <div class="error">{errors()[feed.id]}</div>
+                    </Show>
                   </div>
                 )}
               </For>
-              {/* Available feeds to subscribe */}
-              <Show when={props.availableFeeds[sourceId]?.length > 0}>
-                <h4 style="margin-top: 0.75rem; font-size: 0.9rem;">
-                  Available to subscribe
-                </h4>
-                <For each={props.availableFeeds[sourceId]}>
-                  {(af) => (
-                    <div
-                      class="card"
-                      style="margin-bottom: 0.5rem; padding: 0.75rem;"
-                    >
-                      <div class="meta-row">
-                        <dt>Name</dt>
-                        <dd>{af.name}</dd>
-                      </div>
-                      <div class="meta-row">
-                        <dt>Kind</dt>
-                        <dd>{af.kind}</dd>
-                      </div>
-                      <button
-                        onClick={() => handleSubscribe(sourceId, af)}
-                        disabled={isSubscribed(
-                          props.feeds,
-                          sourceId,
-                          af.externalId,
-                        )}
-                        style="margin-top: 0.5rem;"
-                      >
-                        {isSubscribed(props.feeds, sourceId, af.externalId)
-                          ? "Subscribed"
-                          : "Subscribe"}
-                      </button>
-                    </div>
-                  )}
-                </For>
-              </Show>
             </div>
           )}
         </For>

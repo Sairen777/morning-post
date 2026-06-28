@@ -1,28 +1,25 @@
 import { createSignal, Show, onMount } from "solid-js";
-import { getCurrentUser, ApiClientError } from "../api/client";
+import { getCurrentUser } from "../api/client";
+import type { PublicUser } from "../api/types";
 import AuthPanel from "../app/AuthPanel";
 import Dashboard from "../app/Dashboard";
 
 export default function HomePage() {
-  const [user, setUser] = createSignal<{ id: string; email: string } | null>(
-    null,
-  );
+  const [user, setUser] = createSignal<PublicUser | null>(null);
   const [authChecked, setAuthChecked] = createSignal(false);
 
   onMount(async () => {
     try {
       const u = await getCurrentUser();
-      setUser({ id: u.id, email: u.email });
-    } catch (err: unknown) {
-      if (err instanceof ApiClientError && err.status === 401) {
-        setUser(null);
-      }
+      setUser(u);
+    } catch {
+      setUser(null);
     } finally {
       setAuthChecked(true);
     }
   });
 
-  const handleLogin = (u: { id: string; email: string }) => {
+  const handleLogin = (u: PublicUser) => {
     setUser(u);
     setAuthChecked(true);
   };
@@ -43,9 +40,10 @@ export default function HomePage() {
       >
         {(u) => (
           <Dashboard
-            user={{ id: u().id, email: u().email }}
+            user={u()}
             onLogout={handleLogout}
             onAuthError={handleAuthError}
+            onUserUpdate={setUser}
           />
         )}
       </Show>

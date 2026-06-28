@@ -143,6 +143,7 @@ Deno.test("GET /sources returns only the caller sources ordered by position then
       trailingSource.id,
     ]);
     assertEquals(json.every((source: Record<string, unknown>) => !("credentials" in source)), true);
+    assertEquals(json.every((source: { connected: boolean }) => source.connected === true), true);
     assertEquals(json.every((source: { userId: string }) => source.userId === user.id), true);
   });
 });
@@ -292,6 +293,7 @@ Deno.test("DELETE /sources/:id disconnects telegram sources and preserves the ro
     assertEquals(deleteJson.revokeTelegramSession, true);
     assertEquals(deleteJson.message, TELEGRAM_REVOKE_MESSAGE);
     assertEquals(deleteJson.source.id, source.id);
+    assertEquals(deleteJson.source.connected, false);
     assertEquals(deleteJson.source.enabled, false);
     assertEquals("credentials" in deleteJson.source, false);
 
@@ -316,6 +318,7 @@ Deno.test("DELETE /sources/:id disconnects telegram sources and preserves the ro
     const listedSources = await listResponse.json();
     assertEquals(listedSources.length, 1);
     assertEquals(listedSources[0].id, source.id);
+    assertEquals(listedSources[0].connected, false);
     assertEquals(listedSources[0].enabled, false);
     assertEquals("credentials" in listedSources[0], false);
   });

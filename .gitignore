@@ -9,7 +9,6 @@
 /coverage
 test-results/
 
-# next.js
 /.next/
 # production
 /build
@@ -18,6 +17,7 @@ test-results/
 .DS_Store
 *.pem
 .zed
+.idea
 
 # debug
 npm-debug.log*
@@ -30,7 +30,6 @@ yarn-error.log*
 .env.test.local
 .env.production.local
 
-# vercel
 .vercel
 
 **/*.trace

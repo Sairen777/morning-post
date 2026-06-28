@@ -30,6 +30,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     private baseUrl: string = Deno.env.get("SUMMARIZER_BASE_URL") ??
       DEFAULTS.baseUrl,
     private apiKey: string | undefined = DEFAULTS.apiKey,
+    private retryBaseDelayMs: number = 1000,
   ) {}
 
   public async summarize(
@@ -39,31 +40,57 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
   ): Promise<SummaryPoint[]> {
     const { parts, indexedItems } = await this.buildContentParts(items, rules);
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(this.apiKey && { Authorization: `Bearer ${this.apiKey}` }),
-      },
-      body: JSON.stringify({
-        model: options.model ?? this.model,
-        stream: false,
-        messages: [
-          { role: "system", content: rules.systemPrompt },
-          { role: "user", content: parts },
-        ],
-      }),
+    const body = JSON.stringify({
+      model: options.model ?? this.model,
+      stream: false,
+      messages: [
+        { role: "system", content: rules.systemPrompt },
+        { role: "user", content: parts },
+      ],
     });
 
-    if (!response.ok) {
-      throw new Error(
-        `Request failed: ${response.status} ${response.statusText}`,
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(this.apiKey && { Authorization: `Bearer ${this.apiKey}` }),
+        },
+        body,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const raw = data.choices[0].message.content as string;
+        return this.parsePoints(raw, indexedItems);
+      }
+
+      let bodyText = "";
+      try {
+        bodyText = await response.text();
+      } catch {
+        // ignore
+      }
+
+      const retryable = response.status === 429 || response.status === 503;
+      lastError = new Error(
+        `Summarizer API ${response.status} — ${bodyText.slice(0, 300)}`,
       );
+
+      if (retryable && attempt < maxRetries - 1) {
+        const delay = Math.pow(2, attempt) * this.retryBaseDelayMs;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+
+      throw lastError;
     }
 
-    const data = await response.json();
-    const raw = data.choices[0].message.content as string;
-    return this.parsePoints(raw, indexedItems);
+    throw lastError ?? new Error("Summarizer API: unexpected retry exhaustion");
+
   }
 
   private async buildContentParts(
@@ -129,12 +156,64 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     raw: string,
     indexedItems: NormalizedItem[],
   ): SummaryPoint[] {
-    // Strip <think>...</think> reasoning tokens (Qwen3, DeepSeek-R1, etc.) first,
-    // then let jsonrepair handle malformed JSON, fences, and other LLM quirks.
-    const stripped = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-    const json = jsonrepair(stripped);
+    // Strip <think>...</think> reasoning tokens (Qwen3, DeepSeek-R1, etc.)
+    let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 
-    const parsed = JSON.parse(json) as Array<{ t: string; i: number }>;
+    // Strip markdown code fences (```json / ```) that some models wrap output in.
+    // jsonrepair handles inner JSON quirks but fences confuse it.
+    const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) {
+      cleaned = fenceMatch[1].trim();
+    }
+
+    if (!cleaned) {
+      throw new Error(
+        `Summarizer returned empty response. Raw: ${raw.slice(0, 200)}`,
+      );
+    }
+
+    let json: string;
+    try {
+      json = jsonrepair(cleaned);
+    } catch {
+      throw new Error(
+        `jsonrepair failed on summarizer output: ${cleaned.slice(0, 200)}`,
+      );
+    }
+
+    let parsed: Array<{ t: string; i: number }>;
+    try {
+      parsed = JSON.parse(json) as Array<{ t: string; i: number }>;
+    } catch {
+      throw new Error(
+        `Summarizer returned unparseable JSON after repair. Cleaned: ${cleaned.slice(0, 200)}`,
+      );
+    }
+
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `Summarizer returned non-array: ${JSON.stringify(parsed).slice(0, 200)}`,
+      );
+    }
+
+    for (let idx = 0; idx < parsed.length; idx++) {
+      const el = parsed[idx];
+      if (typeof el !== "object" || el === null) {
+        throw new Error(
+          `Summarizer returned non-object at index ${idx}: ${JSON.stringify(el)}`,
+        );
+      }
+      if (typeof el.t !== "string") {
+        throw new Error(
+          `Summarizer returned element without string "t" at index ${idx}: ${JSON.stringify(el).slice(0, 100)}`,
+        );
+      }
+      if (typeof el.i !== "number") {
+        throw new Error(
+          `Summarizer returned element without number "i" at index ${idx}: ${JSON.stringify(el).slice(0, 100)}`,
+        );
+      }
+    }
 
     return parsed.map((p) => {
       const item = indexedItems[p.i];

@@ -1,8 +1,8 @@
 import { createSignal } from "solid-js";
 import { loginUser, registerUser, ApiClientError } from "../api/client";
-
+import type { PublicUser } from "../api/types";
 interface AuthPanelProps {
-  onLogin: (user: { id: string; email: string }) => void;
+  onLogin: (user: PublicUser) => void;
 }
 
 export default function AuthPanel(props: AuthPanelProps) {
@@ -35,13 +35,13 @@ export default function AuthPanel(props: AuthPanelProps) {
           email: email(),
           password: password(),
         });
-        props.onLogin({ id: user.id, email: user.email });
+        props.onLogin(user);
       } else {
         const user = await loginUser({
           email: email(),
           password: password(),
         });
-        props.onLogin({ id: user.id, email: user.email });
+        props.onLogin(user);
       }
     } catch (err) {
       if (err instanceof ApiClientError) {

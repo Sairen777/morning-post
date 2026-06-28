@@ -14,6 +14,7 @@ import { buildApp } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
 import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
 import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
+import { createDigestRun, finishDigestRun, startDigestRunFeed, finishDigestRunFeed } from "../../src/repositories/digest-run-repository.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const periodStartMs = 1_700_000_000_000;
@@ -288,5 +289,174 @@ Deno.test("POST /digests/run creates a manual digest run record", async () => {
     );
     assertEquals(rows.length, 1);
     assertEquals(rows[0].trigger, "manual");
+  });
+});
+
+Deno.test("GET /digests/runs requires authentication", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+
+    const response = await app.request("/digests/runs");
+    assertEquals(response.status, 401);
+    const json = await response.json();
+    assertEquals(json.error.code, "UNAUTHORIZED");
+  });
+});
+
+Deno.test("GET /digests/runs returns only caller run records latest first", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+
+    const user1 = await register(app, "digests-runs-owner@example.com");
+    const user1Cookie = await login(app, "digests-runs-owner@example.com");
+    await register(app, "digests-runs-other@example.com");
+
+    const now = Date.now();
+
+    const run1 = await createDigestRun(database, {
+      userId: user1,
+      trigger: "manual",
+      periodStartMs: 1000,
+      periodEndMs: 2000,
+      status: "complete",
+    }, now - 2000);
+    await finishDigestRun(database, run1.id, { status: "complete" }, now - 1000);
+
+    const run2 = await createDigestRun(database, {
+      userId: user1,
+      trigger: "scheduled",
+      periodStartMs: 3000,
+      periodEndMs: 4000,
+      status: "complete",
+    }, now);
+    await finishDigestRun(database, run2.id, { status: "complete" }, now + 1000);
+
+    const user2 = await register(app, "digests-runs-other2@example.com");
+    const run3 = await createDigestRun(database, {
+      userId: user2,
+      trigger: "manual",
+      periodStartMs: 5000,
+      periodEndMs: 6000,
+      status: "complete",
+    }, now - 500);
+    await finishDigestRun(database, run3.id, { status: "complete" }, now);
+
+    const response = await app.request("/digests/runs", {
+      headers: { cookie: user1Cookie },
+    });
+    assertEquals(response.status, 200);
+    const json = await response.json();
+
+    assertEquals(json.length, 2);
+    assertEquals(json[0].id, run2.id);
+    assertEquals(json[0].userId, user1);
+    assertEquals(json[1].id, run1.id);
+    assertEquals(json[1].userId, user1);
+  });
+});
+
+Deno.test("GET /digests/runs/:id returns owned run with feed stages", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const userId = await register(app, "digests-run-detail@example.com");
+    const cookie = await login(app, "digests-run-detail@example.com");
+
+    const now = Date.now();
+    const run = await createDigestRun(database, {
+      userId,
+      trigger: "manual",
+      periodStartMs: 1000,
+      periodEndMs: 2000,
+      status: "running",
+    }, now);
+
+    const connectorFeed = await startDigestRunFeed(database, {
+      runId: run.id,
+      connectorId: "Telegram",
+      stage: "connector",
+      status: "running",
+    }, now);
+    await finishDigestRunFeed(database, connectorFeed.id, {
+      status: "complete",
+      itemCount: 5,
+    }, now + 100);
+
+    const ingestionFeed = await startDigestRunFeed(database, {
+      runId: run.id,
+      connectorId: "Telegram",
+      feedExternalId: "channel:1",
+      feedName: "Test Channel",
+      stage: "ingestion",
+      status: "running",
+    }, now + 200);
+    await finishDigestRunFeed(database, ingestionFeed.id, {
+      status: "complete",
+      itemCount: 3,
+    }, now + 300);
+
+    const summarizationFeed = await startDigestRunFeed(database, {
+      runId: run.id,
+      connectorId: "Telegram",
+      stage: "summarization",
+      status: "running",
+    }, now + 400);
+    await finishDigestRunFeed(database, summarizationFeed.id, {
+      status: "complete",
+      itemCount: 0,
+    }, now + 500);
+
+    const response = await app.request(`/digests/runs/${run.id}`, {
+      headers: { cookie },
+    });
+    assertEquals(response.status, 200);
+    const json = await response.json();
+
+    assertEquals(json.run.id, run.id);
+    assertEquals(json.run.userId, userId);
+    assertEquals(json.run.trigger, "manual");
+    assertEquals(json.run.status, "running");
+    assertEquals(json.feeds.length, 3);
+
+    assertEquals(json.feeds[0].stage, "connector");
+    assertEquals(json.feeds[0].itemCount, 5);
+    assertEquals(json.feeds[1].stage, "ingestion");
+    assertEquals(json.feeds[1].feedName, "Test Channel");
+    assertEquals(json.feeds[1].itemCount, 3);
+    assertEquals(json.feeds[2].stage, "summarization");
+    assertEquals(json.feeds[2].itemCount, 0);
+  });
+});
+
+Deno.test("GET /digests/runs/:id hides another user's run", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+
+    const user1 = await register(app, "digests-run-hidden-owner@example.com");
+    const user1Cookie = await login(app, "digests-run-hidden-owner@example.com");
+    const _user2 = await register(app, "digests-run-hidden-other@example.com");
+    const user2Cookie = await login(app, "digests-run-hidden-other@example.com");
+
+    const now = Date.now();
+    const run = await createDigestRun(database, {
+      userId: user1,
+      trigger: "manual",
+      periodStartMs: 1000,
+      periodEndMs: 2000,
+      status: "complete",
+    }, now);
+    await finishDigestRun(database, run.id, { status: "complete" }, now);
+
+    const response = await app.request(`/digests/runs/${run.id}`, {
+      headers: { cookie: user2Cookie },
+    });
+    assertEquals(response.status, 404);
+    const json = await response.json();
+    assertEquals(json.error.code, "NOT_FOUND");
+    assertEquals(json.error.message, "digest run not found");
+
+    const ownResponse = await app.request(`/digests/runs/${run.id}`, {
+      headers: { cookie: user1Cookie },
+    });
+    assertEquals(ownResponse.status, 200);
   });
 });
