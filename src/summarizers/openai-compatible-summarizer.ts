@@ -181,9 +181,9 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       );
     }
 
-    let parsed: Array<{ t: string; i: number }>;
+    let parsed: Array<{ t: string; i?: number }>;
     try {
-      parsed = JSON.parse(json) as Array<{ t: string; i: number }>;
+      parsed = JSON.parse(json) as Array<{ t: string; i?: number }>;
     } catch {
       throw new Error(
         `Summarizer returned unparseable JSON after repair. Cleaned: ${cleaned.slice(0, 200)}`,
@@ -208,15 +208,11 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
           `Summarizer returned element without string "t" at index ${idx}: ${JSON.stringify(el).slice(0, 100)}`,
         );
       }
-      if (typeof el.i !== "number") {
-        throw new Error(
-          `Summarizer returned element without number "i" at index ${idx}: ${JSON.stringify(el).slice(0, 100)}`,
-        );
-      }
     }
 
     return parsed.map((p) => {
-      const item = indexedItems[p.i];
+      const idx = typeof p.i === "number" ? p.i : typeof p.i === "string" ? Number(p.i) : NaN;
+      const item = Number.isFinite(idx) && idx >= 0 ? indexedItems[idx] : undefined;
       return {
         text: p.t,
         sourceUrl: item?.url ?? null,

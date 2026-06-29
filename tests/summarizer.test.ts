@@ -72,6 +72,17 @@ Deno.test("buildDiscussionPrompt — contains discussion instruction", () => {
   assertStringIncludes(systemPrompt, "discussion summarizer");
 });
 
+Deno.test("buildDiscussionPrompt — requires topic, arguments, and conclusion status", () => {
+  const { systemPrompt } = buildDiscussionPrompt();
+  // Must ban topic-only bullets.
+  assertStringIncludes(systemPrompt, "topic-only");
+  // Must require concrete arguments in addition to positions.
+  assertStringIncludes(systemPrompt, "arguments");
+  // Must require conclusion status including explicit unresolved.
+  assertStringIncludes(systemPrompt, "unresolved");
+  assertStringIncludes(systemPrompt, "no shared conclusion");
+});
+
 Deno.test("buildNewsPrompt — explicit language overrides default", () => {
   const { systemPrompt } = buildNewsPrompt({ language: "Ukrainian" });
   assertStringIncludes(systemPrompt, "Ukrainian");
@@ -218,6 +229,23 @@ Deno.test(
     );
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "orphan");
+    assertEquals(results[0].sourceUrl, null);
+    restore();
+  },
+);
+
+Deno.test(
+  "parsePoints — missing source index maps to null sourceUrl",
+  async () => {
+    const restore = stubFetch({
+      choices: [{ message: { content: '[{"t":"discussion summary without index"}]' } }],
+    });
+    const svc = new OpenAICompatibleSummarizerService(
+      "test-model",
+      "http://localhost",
+    );
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "discussion summary without index");
     assertEquals(results[0].sourceUrl, null);
     restore();
   },

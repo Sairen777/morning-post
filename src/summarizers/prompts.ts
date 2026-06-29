@@ -52,7 +52,7 @@ export function buildDiscussionPrompt(
     "Messages may contain a [QUOTED_MESSAGE]...[/QUOTED_MESSAGE] block — this is the message being replied to. Use it for context but do not summarize it separately.",
     "Each message starts with [N] on the first line followed by the author name, then the message text.",
     INDEX_INSTRUCTION,
-    "Identify the main topics discussed. For each topic, describe what positions were expressed and by whom (mention author names when relevant), and any conclusions the group reached.",
+    "Identify the main topics discussed. For each topic, describe the topic or question, concrete arguments or positions (with author names when relevant), and the conclusion status. If no conclusion was reached, state that the discussion stayed unresolved or had no shared conclusion. Do not produce topic-only bullets that merely describe the subject.",
   ];
   return {
     systemPrompt: withTrailingRules(parts, options),

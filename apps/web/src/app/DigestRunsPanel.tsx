@@ -128,6 +128,22 @@ export default function DigestRunsPanel(props: DigestRunsPanelProps) {
                 <div class="error">{run.errorMessage}</div>
               </Show>
 
+              <Show when={run.digestId}>
+                <div class="meta-row">
+                  <dt>Digest</dt>
+                  <dd>
+                    <a
+                      href={`/digests/${run.digestId}.md`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="link"
+                    >
+                      Open digest
+                    </a>
+                  </dd>
+                </div>
+              </Show>
+
               <button
                 onClick={() => handleSelectRun(run.id)}
                 disabled={loading()}
