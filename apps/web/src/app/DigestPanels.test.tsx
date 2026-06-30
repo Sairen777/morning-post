@@ -3,6 +3,8 @@ import { describe, it, expect } from "vitest";
 import { render } from "@solidjs/testing-library";
 import type { DigestView, PublicDigestRun, DigestRunDetail } from "../api/types";
 import DigestRunsPanel from "./DigestRunsPanel";
+import DigestsPanel from "./DigestsPanel";
+import type { PublicDigest } from "../api/types";
 
 // Inline a minimal digest panel renderer for testing
 function DigestDetailTest(props: { view: DigestView }) {
@@ -174,5 +176,49 @@ describe("DigestRunsPanel digest link", () => {
     ));
     const buttons = getAllByText("View run details");
     expect(buttons).toHaveLength(2);
+  });
+});
+
+const sampleDigests: PublicDigest[] = [
+  {
+    id: "d-1",
+    userId: "u1",
+    periodStartMs: 1_702_000_000_000,
+    periodEndMs: 1_702_086_400_000,
+    status: "complete",
+    createdAt: 1_702_100_000_000,
+    updatedAt: 1_702_100_000_000,
+  },
+  {
+    id: "d-2",
+    userId: "u1",
+    periodStartMs: 1_701_000_000_000,
+    periodEndMs: 1_701_086_400_000,
+    status: "failed",
+    createdAt: 1_701_100_000_000,
+    updatedAt: 1_701_100_000_000,
+  },
+];
+
+const noopOnAuthError = () => {};
+
+describe("DigestsPanel ordinal numbering", () => {
+  it("renders #1 and #2 in list order", () => {
+    const { getAllByText } = render(() => (
+      <DigestsPanel
+        digests={sampleDigests}
+        onSelectDigest={async () => ({
+          digest: sampleDigests[0],
+          sections: [],
+          groups: [],
+        })}
+        onAuthError={noopOnAuthError}
+      />
+    ));
+
+    const ordinals = getAllByText(/^#\d+$/);
+    expect(ordinals).toHaveLength(2);
+    expect(ordinals[0].textContent).toBe("#1");
+    expect(ordinals[1].textContent).toBe("#2");
   });
 });

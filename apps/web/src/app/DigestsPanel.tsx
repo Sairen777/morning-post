@@ -52,7 +52,7 @@ export default function DigestsPanel(props: DigestsPanelProps) {
       >
         <ul class="bullet-list">
           <For each={props.digests}>
-            {(digest) => (
+            {(digest, index) => (
               <li>
                 <button
                   onClick={() => handleSelect(digest.id)}
@@ -77,6 +77,7 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                       "flex-wrap": "wrap",
                     }}
                   >
+                    <span class="digest-ordinal">#{index() + 1}</span>
                     <FormatTime ms={digest.periodStartMs} />
                     <span>–</span>
                     <FormatTime ms={digest.periodEndMs} />

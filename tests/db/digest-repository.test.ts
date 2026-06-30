@@ -101,6 +101,45 @@ Deno.test("digest repository lists and finds digests only for the owner", async 
   });
 });
 
+Deno.test("digest repository lists digests latest-first by periodEndMs then createdAt", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUserWithSource(database, "digest-order@example.com");
+
+    // Create three digests with varying periodEndMs and createdAt.
+    // periodEndMs descending should be the primary sort key,
+    // createdAt descending the tiebreaker.
+    const digestA = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 1_701_000_000_000,
+      periodEndMs: 1_701_086_400_000,
+      status: "complete",
+    }, 1_701_100_000_000);
+
+    const digestB = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 1_700_000_000_000,
+      periodEndMs: 1_700_086_400_000,
+      status: "failed",
+    }, 1_700_100_000_000);
+
+    // Same periodEndMs as digestB, but later createdAt — should sort before B.
+    const digestC = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 1_699_900_000_000,
+      periodEndMs: 1_700_086_400_000,
+      status: "pending",
+    }, 1_700_200_000_000);
+
+    const listed = await listDigestsForUser(database, user.id);
+    const ids = listed.map((d) => d.id);
+
+    // Latest periodEndMs first: digestA (#1).
+    // Same periodEndMs: digestC (later createdAt) before digestB.
+    assertEquals(ids, [digestA.id, digestC.id, digestB.id]);
+    assertEquals(listed.length, 3);
+  });
+});
+
 Deno.test("digest check constraint rejects invalid status at database level", async () => {
   await withTestDb(async (database) => {
     const user = await createUserWithSource(database, "digest-check-status@example.com");

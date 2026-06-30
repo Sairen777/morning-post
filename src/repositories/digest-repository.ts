@@ -120,6 +120,6 @@ export async function listDigestsForUser(database: Database, userId: string): Pr
     .select()
     .from(digests)
     .where(eq(digests.userId, userId))
-    .orderBy(asc(digests.periodStartMs), asc(digests.createdAt));
+    .orderBy(desc(digests.periodEndMs), desc(digests.createdAt));
   return rows.map(parsePublicDigest);
 }

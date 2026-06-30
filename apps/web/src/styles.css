@@ -157,6 +157,12 @@ a:hover {
   border-color: #5a5a7a;
 }
 
+.digest-ordinal {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
 .badge-warning {
   background: #f59e0b;
   color: #1a1a2e;
