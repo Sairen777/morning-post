@@ -212,6 +212,10 @@ export function getDigest(id: string): Promise<DigestView> {
   return apiRequest<DigestView>(`/digests/${id}`);
 }
 
+export function deleteDigest(id: string): Promise<PublicDigest> {
+  return apiRequest<PublicDigest>(`/digests/${id}`, { method: "DELETE" });
+}
+
 export function runDigest(input: {
   periodStartMs?: number;
   periodEndMs?: number;

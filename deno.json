@@ -20,7 +20,9 @@
     "dev:api": "deno run --watch --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/server/main.ts",
     "start": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/server/main.ts",
     "test": "deno test --env-file=.env.production.local --allow-read --allow-write --allow-net --allow-env tests/",
-    "capture-fixtures": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi scripts/capture-fixtures.ts"
+    "capture-fixtures": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi scripts/capture-fixtures.ts",
+    "eval:capture-dialogue": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi scripts/evals/capture-dialogue.ts",
+    "eval": "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write scripts/evals/run-dialogue-eval.ts"
   },
   "lint": {
     "rules": {

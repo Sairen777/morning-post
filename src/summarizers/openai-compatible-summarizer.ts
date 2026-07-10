@@ -24,9 +24,13 @@ const DEFAULTS = Deno.env.get("LOCAL_API") === "true"
     apiKey: Deno.env.get("GEMINI_API_KEY"),
   };
 
+
+export function resolveOpenAICompatibleSummarizerModel(model?: string | null): string {
+  return model ?? Deno.env.get("SUMMARIZER_MODEL") ?? DEFAULTS.model;
+}
 export class OpenAICompatibleSummarizerService implements SummarizerService {
   constructor(
-    private model: string = Deno.env.get("SUMMARIZER_MODEL") ?? DEFAULTS.model,
+    private model: string = resolveOpenAICompatibleSummarizerModel(),
     private baseUrl: string = Deno.env.get("SUMMARIZER_BASE_URL") ??
       DEFAULTS.baseUrl,
     private apiKey: string | undefined = DEFAULTS.apiKey,

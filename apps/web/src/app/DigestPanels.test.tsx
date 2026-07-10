@@ -201,6 +201,20 @@ const sampleDigests: PublicDigest[] = [
 ];
 
 const noopOnAuthError = () => {};
+const noopOnDeleteDigest = async (_id: string) => {};
+
+function makeDigestsPanelProps(overrides: { onDeleteDigest?: (id: string) => Promise<void> } = {}) {
+  return {
+    digests: sampleDigests,
+    onSelectDigest: async () => ({
+      digest: sampleDigests[0],
+      sections: [],
+      groups: [],
+    }),
+    onDeleteDigest: overrides.onDeleteDigest ?? noopOnDeleteDigest,
+    onAuthError: noopOnAuthError,
+  };
+}
 
 describe("DigestsPanel ordinal numbering", () => {
   it("renders #1 and #2 in list order", () => {
@@ -212,6 +226,7 @@ describe("DigestsPanel ordinal numbering", () => {
           sections: [],
           groups: [],
         })}
+        onDeleteDigest={noopOnDeleteDigest}
         onAuthError={noopOnAuthError}
       />
     ));
@@ -220,5 +235,48 @@ describe("DigestsPanel ordinal numbering", () => {
     expect(ordinals).toHaveLength(2);
     expect(ordinals[0].textContent).toBe("#1");
     expect(ordinals[1].textContent).toBe("#2");
+  });
+});
+
+describe("DigestsPanel delete button", () => {
+  it("calls onDeleteDigest when confirm returns true", () => {
+    const originalConfirm = globalThis.confirm;
+    try {
+      globalThis.confirm = (() => true) as typeof confirm;
+      let calledWith: string | null = null;
+      const { getAllByText } = render(() => (
+        <DigestsPanel
+          {...makeDigestsPanelProps({
+            onDeleteDigest: async (id: string) => { calledWith = id; },
+          })}
+        />
+      ));
+      const buttons = getAllByText("Delete digest");
+      // The first row's delete button
+      buttons[0].click();
+      expect(calledWith).toBe("d-1");
+    } finally {
+      globalThis.confirm = originalConfirm;
+    }
+  });
+
+  it("does not call onDeleteDigest when confirm returns false", () => {
+    const originalConfirm = globalThis.confirm;
+    try {
+      globalThis.confirm = (() => false) as typeof confirm;
+      let called = false;
+      const { getAllByText } = render(() => (
+        <DigestsPanel
+          {...makeDigestsPanelProps({
+            onDeleteDigest: async () => { called = true; },
+          })}
+        />
+      ));
+      const buttons = getAllByText("Delete digest")[0];
+      buttons.click();
+      expect(called).toBe(false);
+    } finally {
+      globalThis.confirm = originalConfirm;
+    }
   });
 });

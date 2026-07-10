@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Morning Post Technical Design and Architecture Review</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f2ea;
+      --panel: #fffaf0;
+      --ink: #172016;
+      --muted: #5d6658;
+      --line: #d8cdbb;
+      --accent: #315c45;
+      --accent-2: #8d542e;
+      --danger: #8a1f1f;
+      --warn: #8a5a10;
+      --ok: #20603d;
+      --code-bg: #efe6d7;
+      --shadow: 0 12px 30px rgba(36, 28, 18, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #fff6df 0, var(--bg) 32rem);
+      color: var(--ink);
+      font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: var(--accent); }
+
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    header.hero {
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: linear-gradient(135deg, rgba(255, 250, 240, 0.98), rgba(237, 226, 205, 0.9));
+      box-shadow: var(--shadow);
+      padding: 36px;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent-2);
+      font-weight: 760;
+      font-size: 0.77rem;
+      margin: 0 0 10px;
+    }
+
+    h1, h2, h3, h4 {
+      line-height: 1.15;
+      margin: 0;
+      color: var(--ink);
+    }
+
+    h1 {
+      font-size: clamp(2.1rem, 6vw, 4.2rem);
+      letter-spacing: -0.055em;
+      max-width: 950px;
+    }
+
+    h2 {
+      font-size: clamp(1.65rem, 3vw, 2.3rem);
+      letter-spacing: -0.035em;
+      margin-bottom: 14px;
+    }
+
+    h3 {
+      font-size: 1.25rem;
+      letter-spacing: -0.018em;
+      margin: 24px 0 8px;
+    }
+
+    h4 {
+      font-size: 1.02rem;
+      margin: 16px 0 6px;
+    }
+
+    p { margin: 0 0 12px; }
+
+    .lede {
+      margin-top: 18px;
+      max-width: 880px;
+      font-size: 1.1rem;
+      color: var(--muted);
+    }
+
+    .meta-grid,
+    .summary-grid,
+    .risk-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .meta-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 28px;
+    }
+
+    .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .risk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .card,
+    section {
+      border: 1px solid var(--line);
+      background: rgba(255, 250, 240, 0.92);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .card { padding: 18px; }
+
+    .card-title {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--accent-2);
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+
+    .card strong { display: block; font-size: 1rem; }
+
+    .card p,
+    .card li { color: var(--muted); }
+
+    nav.toc {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 14px 0 24px;
+      background: linear-gradient(to bottom, var(--bg), rgba(246, 242, 234, 0.72));
+      backdrop-filter: blur(8px);
+    }
+
+    nav.toc a {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 250, 240, 0.88);
+      color: var(--accent);
+      font-weight: 700;
+      text-decoration: none;
+      padding: 7px 12px;
+      font-size: 0.9rem;
+    }
+
+    section {
+      padding: 30px;
+      margin: 22px 0;
+    }
+
+    .section-kicker {
+      color: var(--accent-2);
+      font-size: 0.8rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    ul, ol { padding-left: 1.35rem; margin-top: 8px; }
+    li { margin: 0.3rem 0; }
+
+    code,
+    .path {
+      background: var(--code-bg);
+      border: 1px solid #e1d4c1;
+      border-radius: 7px;
+      color: #24301d;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+      padding: 0.1em 0.35em;
+      white-space: nowrap;
+    }
+
+    pre {
+      background: #f1e7d8;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow-x: auto;
+      padding: 16px;
+    }
+
+    .mermaid {
+      background: #fffdf7;
+      text-align: left;
+      font-size: 0.86rem;
+    }
+
+    .diagram-note {
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--accent-2);
+      border-radius: 14px;
+      background: #fff7e7;
+      color: var(--muted);
+      margin: 18px 0 0;
+      padding: 12px 14px;
+      max-width: 880px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 8px;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 11px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eadfcf;
+      color: #2c3327;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 850;
+      letter-spacing: 0.05em;
+      padding: 0.22rem 0.55rem;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .critical { background: #fde2dd; color: var(--danger); border: 1px solid #efb2a7; }
+    .high { background: #fbeccf; color: var(--warn); border: 1px solid #e5bd73; }
+    .medium { background: #eef0d2; color: #657010; border: 1px solid #c9cc7e; }
+    .low { background: #e5efe6; color: var(--ok); border: 1px solid #a8c8ae; }
+    .info { background: #e7edf0; color: #30505d; border: 1px solid #b7ccd5; }
+
+    .callout {
+      border-left: 5px solid var(--accent);
+      background: #f4ead9;
+      padding: 14px 16px;
+      border-radius: 12px;
+      margin: 16px 0;
+    }
+
+    .callout.warning { border-left-color: var(--warn); }
+    .callout.danger { border-left-color: var(--danger); }
+    .callout.ok { border-left-color: var(--ok); }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .small { color: var(--muted); font-size: 0.92rem; }
+
+    .decision-list dt {
+      font-weight: 850;
+      margin-top: 14px;
+    }
+
+    .decision-list dd {
+      margin: 4px 0 0 0;
+      color: var(--muted);
+    }
+
+    @media (max-width: 860px) {
+      .meta-grid,
+      .summary-grid,
+      .risk-grid,
+      .two-col { grid-template-columns: 1fr; }
+      header.hero, section { padding: 22px; border-radius: 18px; }
+      nav.toc { position: static; }
+      code, .path { white-space: normal; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      nav.toc { position: static; }
+      .card, section, header.hero { box-shadow: none; break-inside: avoid; }
+      a { color: #000; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">Morning Post · Technical Design Documentation</p>
+      <h1>Current architecture, security posture, and scalability review</h1>
+      <p class="lede">This document captures the repository architecture as implemented on 2026-07-09 and records the security and scalability review decisions for the current Deno/Hono API, SolidStart web UI, PostgreSQL persistence layer, Telegram connector, and OpenAI-compatible summarization pipeline.</p>
+      <p class="diagram-note">Diagrams are embedded as Mermaid source and intentionally do not load a CDN; this keeps the file offline and self-contained. Render with a local Mermaid tool if a graphical version is needed.</p>
+      <div class="meta-grid" aria-label="document metadata">
+        <div class="card">
+          <div class="card-title">Scope</div>
+          <strong>Review and design doc</strong>
+          <p>Architecture documentation only. No runtime behavior changed by this document.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Primary assets</div>
+          <strong>Credentials, sessions, messages</strong>
+          <p>Telegram session strings, session cookies, user prompts, message text/media, summaries, and digest history.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Main risk</div>
+          <strong>Trusted-custodian service</strong>
+          <p>The server must decrypt connector credentials and send content to the configured summarizer while users are offline.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Review basis</div>
+          <strong>Current code paths</strong>
+          <p><span class="path">src/server</span>, <span class="path">src/services</span>, <span class="path">src/repositories</span>, <span class="path">src/db/schema</span>, <span class="path">apps/web/src</span>, and <span class="path">deno.json</span>.</p>
+        </div>
+      </div>
+    </header>
+
+    <nav class="toc" aria-label="table of contents">
+      <a href="#executive-summary">Summary</a>
+      <a href="#context">Context</a>
+      <a href="#containers">Containers</a>
+      <a href="#domain-model">Domain model</a>
+      <a href="#flows">Flows</a>
+      <a href="#security">Security</a>
+      <a href="#scalability">Scalability</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#evidence">Evidence</a>
+    </nav>
+
+    <section id="executive-summary">
+      <div class="section-kicker">Executive summary</div>
+      <h2>Architecture is cleanly layered; production hardening is not complete.</h2>
+      <div class="summary-grid">
+        <div class="card">
+          <div class="card-title">What is strong</div>
+          <ul>
+            <li>Repository functions consistently accept <code>userId</code> and scope reads/writes to ownership.</li>
+            <li>Session tokens are random 256-bit values; only SHA-256 token hashes are stored.</li>
+            <li>Connector credentials use envelope encryption with AES-256-GCM and owner-bound AAD.</li>
+            <li>Item and summary writes are idempotent through database unique constraints and upserts.</li>
+            <li>Service seams are simple: connectors fetch/normalize, summarizers summarize, repositories persist.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="card-title">What blocks safe production scaling</div>
+          <ul>
+            <li>Deno tasks grant broad network, filesystem, environment, system, and FFI permissions.</li>
+            <li>Rate limiting is process-local and trusts request forwarding headers without an app-level trusted-proxy policy.</li>
+            <li>Digest scheduling is single-process: <code>Deno.cron</code> plus an in-memory <code>runningUsers</code> set.</li>
+            <li>Summarization sends all selected items/media in one request with no hard context or payload cap.</li>
+            <li>Telegram/media artifacts are written locally with no TTL, quota, or object-storage lifecycle.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="card-title">Important corrections</div>
+          <ul>
+            <li>No current digest-run IDOR was confirmed: <code>GET /digests/runs/:id</code> first loads the run with <code>findDigestRunForUser(database, id, context.var.userId)</code>, then lists feed rows for the owned run.</li>
+            <li><code>listDigestRunFeedsForRun(database, runId)</code> is still a fragile repository helper because it is not self-scoped; pass <code>userId</code> if another caller is added.</li>
+            <li><code>upsertDigestForPeriod</code> is already atomic: it uses <code>insert(...).onConflictDoUpdate(...).returning()</code>. There is no current check-then-insert race in digest upsert.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout warning">
+        <strong>Security decision:</strong> Morning Post is not zero-knowledge. Scheduled digests require the backend to decrypt connector credentials without the user present. The honest target is narrower: a database or backup leak alone should not expose credentials; provider boundaries should be explicit; operational access should be minimized and auditable.
+      </div>
+    </section>
+
+    <section id="context">
+      <div class="section-kicker">System context</div>
+      <h2>Morning Post is a multi-user digest service with external connector and LLM boundaries.</h2>
+      <p>The web UI calls the Deno API with cookie credentials. The API owns authentication, connector credential custody, feed subscription state, ingestion, summarization, digest assembly, and scheduled runs. PostgreSQL stores users, sessions, encrypted source credentials, feed subscriptions, item cache, summaries, digests, and digest-run audit rows.</p>
+
+      <pre class="mermaid">flowchart LR
+  Browser["Browser\nSolidStart SPA"] -->|credentials: include| API["Deno + Hono API"]
+  API -->|Drizzle/postgres.js| DB[("PostgreSQL")]
+  API -->|MTProto / connector APIs| Telegram["Telegram"]
+  API -->|/chat/completions| LLM["OpenAI-compatible summarizer\nGemini by default or LOCAL_API"]
+  API -->|read/write media| Media[("Local media dirs\nmedia/, telegram_media/")]
+  Scheduler["Deno scheduler"] --> API
+  Eval["Eval scripts"] --> API
+  Eval --> DB
+  Eval --> Telegram
+  Eval --> LLM
+
+  classDef external fill:#fbeccf,stroke:#8a5a10,color:#342107;
+  classDef storage fill:#e5efe6,stroke:#20603d,color:#0e2818;
+  class Telegram,LLM external;
+  class DB,Media storage;</pre>
+
+      <div class="two-col">
+        <div>
+          <h3>Trust boundaries</h3>
+          <ul>
+            <li><strong>Browser → API:</strong> cookie-authenticated requests. State-changing endpoints currently rely on SameSite=Lax, JSON content type, and same-origin deployment assumptions rather than explicit CSRF token or Origin enforcement.</li>
+            <li><strong>API → PostgreSQL:</strong> persistence for sensitive metadata and encrypted credentials. TLS mode is not enforced in <code>src/db/client.ts</code>; production must enforce it in the connection string or client config when DB is remote.</li>
+            <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
+            <li><strong>API → summarizer provider:</strong> message text, prompt text, and selected media leave the app to the configured OpenAI-compatible endpoint unless <code>LOCAL_API=true</code> points to a local provider.</li>
+            <li><strong>API → filesystem:</strong> media, eval captures, and result artifacts are local files. They are gitignored, but local retention still needs lifecycle management.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Runtime entry points</h3>
+          <table>
+            <thead><tr><th>Entry point</th><th>Purpose</th><th>Observed permission posture</th></tr></thead>
+            <tbody>
+              <tr><td><code>deno task dev:api</code></td><td>Watched API server</td><td>Broad <code>--allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi</code></td></tr>
+              <tr><td><code>deno task start</code></td><td>Production API server</td><td>Same broad permissions as dev API</td></tr>
+              <tr><td><code>deno task dev:cli</code></td><td>One-shot CLI pipeline</td><td>Broad permissions including FFI</td></tr>
+              <tr><td><code>deno task eval:capture-dialogue</code></td><td>Capture real dialogue eval data</td><td>Broad permissions and live connector access</td></tr>
+              <tr><td><code>deno task eval</code></td><td>Run evals through summarizer path</td><td>Network/env/read/write permissions</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="containers">
+      <div class="section-kicker">Container architecture</div>
+      <h2>The codebase uses a conventional route → service → repository split.</h2>
+
+      <pre class="mermaid">flowchart TB
+  subgraph Web["apps/web/src"]
+    UI["Solid components"]
+    Client["api/client.ts"]
+    UI --> Client
+  end
+
+  subgraph API["src/server"]
+    App["app.ts"]
+    AuthRoutes["routes/auth.ts"]
+    ConnectorRoutes["routes/connectors.ts"]
+    SourceRoutes["routes/sources.ts"]
+    FeedRoutes["routes/feeds.ts"]
+    DigestRoutes["routes/digests.ts"]
+    RequireAuth["middleware/require-auth.ts"]
+    RateLimit["middleware/rate-limit.ts"]
+  end
+
+  subgraph Domain["src/services"]
+    Login["login/registration/profile services"]
+    Orchestrator["orchestrator.ts"]
+    Ingestion["ingestion-service.ts"]
+    DigestService["digest-service.ts"]
+    Summarization["summarization-service.ts"]
+  end
+
+  subgraph Integrations["src/connectors + src/summarizers"]
+    Factory["ConnectorFactory"]
+    Connector["Connector implementations"]
+    Summarizer["OpenAICompatibleSummarizerService"]
+    Prompts["prompts.ts"]
+  end
+
+  subgraph Persistence["src/repositories + src/db/schema"]
+    Repos["Repository modules"]
+    Schema["Drizzle schema"]
+    DB[("PostgreSQL")]
+  end
+
+  Client --> App
+  App --> AuthRoutes
+  App --> ConnectorRoutes
+  App --> SourceRoutes
+  App --> FeedRoutes
+  App --> DigestRoutes
+  AuthRoutes --> RateLimit
+  ConnectorRoutes --> RateLimit
+  DigestRoutes --> RateLimit
+  SourceRoutes --> RequireAuth
+  FeedRoutes --> RequireAuth
+  DigestRoutes --> RequireAuth
+  AuthRoutes --> Login
+  ConnectorRoutes --> Factory
+  DigestRoutes --> Orchestrator
+  Orchestrator --> Ingestion
+  Orchestrator --> DigestService
+  DigestService --> Summarization
+  Summarization --> Summarizer
+  Summarizer --> Prompts
+  Ingestion --> Connector
+  Domain --> Repos
+  Factory --> Repos
+  Repos --> Schema
+  Schema --> DB</pre>
+
+      <table>
+        <thead><tr><th>Layer</th><th>Current responsibilities</th><th>Design notes</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Frontend</td>
+            <td>SolidStart SPA, dashboard panels, API client, cookie-authenticated fetches.</td>
+            <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>. Auth state is client loaded via <code>/auth/me</code>.</td>
+          </tr>
+          <tr>
+            <td>Server routes</td>
+            <td>HTTP shape, auth middleware, rate limit attachment, request parsing, response projection.</td>
+            <td>Routes are thin. Known errors go through centralized Hono <code>errorHandler</code>.</td>
+          </tr>
+          <tr>
+            <td>Services</td>
+            <td>Registration, login, source/profile workflows, ingestion orchestration, digest assembly, summarization.</td>
+            <td>Digest flow is readable and testable; expensive stages are mostly sequential today.</td>
+          </tr>
+          <tr>
+            <td>Connectors</td>
+            <td>External service fetching and normalization into <code>NormalizedItem[]</code>.</td>
+            <td>Connector output stays connector-agnostic; connector-specific data belongs in <code>meta</code>.</td>
+          </tr>
+          <tr>
+            <td>Summarizer</td>
+            <td>Builds OpenAI-compatible request content and parses JSON points.</td>
+            <td>The class is domain-agnostic; prompt construction is centralized in <code>src/summarizers/prompts.ts</code>.</td>
+          </tr>
+          <tr>
+            <td>Repositories</td>
+            <td>Drizzle queries, ownership filters, JSON shape parsing, upserts, soft delete behavior.</td>
+            <td>Repository boundaries are the strongest IDOR defense; keep them user-scoped by default.</td>
+          </tr>
+          <tr>
+            <td>Scheduler</td>
+            <td>Daily digest tick, user paging, bounded per-process user concurrency.</td>
+            <td>Safe for one process; needs distributed locks before multiple API instances run the scheduler.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="domain-model">
+      <div class="section-kicker">Domain model</div>
+      <h2>The persistence model is generic across connectors.</h2>
+      <p>The app models connector accounts as <strong>sources</strong> and individual subscriptions as <strong>feeds</strong>. Items and summaries are cached per feed. Digests are user-facing period aggregates derived from summaries. Digest-run tables are operational audit trails for each manual or scheduled run.</p>
+
+      <pre class="mermaid">erDiagram
+  users ||--o{ sessions : owns
+  users ||--o{ sources : owns
+  users ||--o{ digests : owns
+  users ||--o{ digest_runs : owns
+  sources ||--o{ feeds : contains
+  feeds ||--o{ items : caches
+  feeds ||--o{ summaries : summarized_by
+  digests ||--o{ digest_runs : linked_from
+  digest_runs ||--o{ digest_run_feeds : records
+  sources ||--o{ digest_run_feeds : snapshots
+  feeds ||--o{ digest_run_feeds : snapshots
+
+  users {
+    uuid id PK
+    text email UK
+    text password_hash
+    text system_prompt
+    bigint created_at
+  }
+  sessions {
+    uuid id PK
+    uuid user_id FK
+    text token_hash UK
+    bigint expires_at
+    bigint last_seen_at
+  }
+  sources {
+    uuid id PK
+    uuid user_id FK
+    text connector_id
+    jsonb credentials
+    boolean enabled
+  }
+  feeds {
+    uuid id PK
+    uuid source_id FK
+    text external_id
+    text kind
+    bigint last_fetched_period_end_ms
+    bigint deleted_at
+  }
+  items {
+    uuid id PK
+    uuid feed_id FK
+    text external_id
+    bigint date
+    jsonb payload
+  }
+  summaries {
+    uuid id PK
+    uuid feed_id FK
+    bigint period_start_ms
+    bigint period_end_ms
+    jsonb points
+  }
+  digests {
+    uuid id PK
+    uuid user_id FK
+    bigint period_start_ms
+    bigint period_end_ms
+    text status
+  }
+  digest_runs {
+    uuid id PK
+    uuid user_id FK
+    uuid digest_id FK
+    text status
+    text trigger
+  }</pre>
+
+      <table>
+        <thead><tr><th>Entity</th><th>Security/scalability invariant</th><th>Observed implementation</th></tr></thead>
+        <tbody>
+          <tr><td>User</td><td>Owns all sensitive objects; public projection must not leak password hash.</td><td><code>toPublicUser()</code> enumerates safe fields explicitly.</td></tr>
+          <tr><td>Session</td><td>Raw token must never be persisted.</td><td>Random 32-byte base64url token; SHA-256 token hash stored; expiry checked on lookup.</td></tr>
+          <tr><td>Source</td><td>Credentials are sensitive connector-account bearer material.</td><td><code>credentials</code> is encrypted JSONB; public source projection exposes <code>connected</code>, not ciphertext.</td></tr>
+          <tr><td>Feed</td><td>External IDs are unique only within a source.</td><td>Unique constraint on <code>(sourceId, externalId)</code>; <code>kind</code> check restricts to <code>news</code> or <code>discussion</code>.</td></tr>
+          <tr><td>Item</td><td>Re-fetches must be idempotent and update cached payload.</td><td>Unique <code>(feedId, externalId)</code> and indexed <code>(feedId, date, externalId)</code>.</td></tr>
+          <tr><td>Summary</td><td>One summary per feed and period; summaries snapshot feed names for history.</td><td>Upsert on <code>(feedId, periodStartMs, periodEndMs)</code>; points validated with Zod.</td></tr>
+          <tr><td>Digest</td><td>One digest per user and period; derived sections stay queryable by ownership.</td><td>Unique <code>(userId, periodStartMs, periodEndMs)</code>; atomic upsert with <code>onConflictDoUpdate</code>.</td></tr>
+          <tr><td>Digest run</td><td>Operational state for observability, partial failures, and retries.</td><td>Run and per-feed rows track stages, status, item counts, timing, and sanitized error message.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="flows">
+      <div class="section-kicker">Main flows</div>
+      <h2>Authentication and digest generation are the two load-bearing flows.</h2>
+
+      <h3>Authentication and session flow</h3>
+      <pre class="mermaid">sequenceDiagram
+  participant B as Browser
+  participant A as Hono API
+  participant R as User/session repositories
+  participant D as PostgreSQL
+
+  B->>A: POST /auth/login {email,password}
+  A->>R: authenticateUser(email,password)
+  R->>D: find user by email
+  A->>A: verify argon2id or dummy hash
+  A->>A: mint 32-byte random token
+  A->>D: store SHA-256 token hash + expiry
+  A-->>B: Set-Cookie session; HttpOnly; Secure; SameSite=Lax
+  B->>A: GET /auth/me with cookie
+  A->>D: lookup non-expired token hash
+  A-->>B: explicit PublicUser projection</pre>
+
+      <h3>Digest generation flow</h3>
+      <pre class="mermaid">sequenceDiagram
+  participant S as Scheduler or /digests/run
+  participant O as runForUser
+  participant C as ConnectorFactory/Connector
+  participant I as Item repository
+  participant G as Summarizer
+  participant DB as PostgreSQL
+
+  S->>O: userId + period
+  O->>DB: create digest_run(status=running)
+  O->>DB: load enabled sources and feeds
+  loop each source
+    O->>C: create connector handle from decrypted source credentials
+    loop each feed needing ingestion
+      O->>DB: start digest_run_feed(stage=ingestion)
+      O->>C: getNormalizedData(from,to,[feed.externalId])
+      O->>I: upsert items and advance lastFetchedPeriodEndMs
+      O->>DB: finish digest_run_feed
+    end
+    O->>C: dispose connector handle
+  end
+  O->>DB: upsert digest(status=pending)
+  loop each successful feed without summary
+    O->>DB: start digest_run_feed(stage=summarization)
+    O->>G: summarize feed-period items
+    G->>G: send prompt + item text/media to configured provider
+    O->>DB: upsert summary
+    O->>DB: finish digest_run_feed
+  end
+  O->>DB: set digest status; finish digest_run
+  O-->>S: derived DigestView</pre>
+
+      <div class="risk-grid">
+        <div class="card">
+          <div class="card-title">Current failure isolation</div>
+          <p>A connector creation failure records a failed connector-stage run feed. Per-feed ingestion and summarization failures are caught and recorded; successful feeds still contribute to a partial digest.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Current scalability constraint</div>
+          <p>Inside a source, ingestion calls <code>connector.getNormalizedData(from, to, [feed.externalId])</code> once per feed. Connectors already accept multiple external IDs, so the current orchestration repeats upstream work when many feeds share one source.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="security">
+      <div class="section-kicker">Security review</div>
+      <h2>Primary risks are permission breadth, provider boundaries, and edge hardening.</h2>
+
+      <h3>Security controls already in place</h3>
+      <table>
+        <thead><tr><th>Control</th><th>Observed implementation</th><th>Why it matters</th></tr></thead>
+        <tbody>
+          <tr><td>Password hashing</td><td><code>hash-wasm</code> Argon2id with 19 MiB memory, 2 iterations, parallelism 1.</td><td>Baseline resistance to offline password cracking; parameters are encoded in the hash.</td></tr>
+          <tr><td>Login enumeration resistance</td><td>Unknown email and bad password return the same message; dummy hash path is verified.</td><td>Reduces user enumeration and simple timing leaks.</td></tr>
+          <tr><td>Session token storage</td><td>Raw 256-bit token goes only to cookie; database stores SHA-256 hash.</td><td>A session table leak does not directly yield replayable cookies.</td></tr>
+          <tr><td>Cookie flags</td><td><code>httpOnly: true</code>, <code>secure: true</code>, <code>sameSite: "Lax"</code>, <code>path: "/"</code>.</td><td>Protects the token from JavaScript read access and normal cross-site form posts.</td></tr>
+          <tr><td>Credential encryption</td><td>Per-call random data key, AES-256-GCM, owner AAD, wrapped data key, <code>KeyProvider</code> seam.</td><td>A database or backup leak alone should not expose connector credentials.</td></tr>
+          <tr><td>Ownership scoping</td><td>Repositories generally take <code>userId</code> and include ownership filters; route handlers use <code>requireAuth</code>.</td><td>Prevents cross-user object access at the persistence layer.</td></tr>
+          <tr><td>Input validation</td><td>Zod schemas validate bodies, params, row projections, JSON columns, and summary points.</td><td>Protects service logic from malformed inputs and schema drift.</td></tr>
+          <tr><td>Error responses</td><td>Known <code>AppError</code> types return structured errors; unknown failures return generic 500s.</td><td>Reduces accidental stack/SQL leakage through HTTP.</td></tr>
+          <tr><td>Prompt locality</td><td>System prompts live in <code>src/summarizers/prompts.ts</code>.</td><td>Keeps provider instructions reviewable instead of scattering prompt text across services.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Security findings</h3>
+      <table>
+        <thead><tr><th>Priority</th><th>Finding</th><th>Evidence</th><th>Recommended design</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge critical">S1</span></td>
+            <td>Deno runtime permissions are broad for API, CLI, tests, capture, and eval tasks.</td>
+            <td><code>deno.json</code> grants unscoped <code>--allow-net</code>, <code>--allow-env</code>, <code>--allow-read</code>, <code>--allow-write</code>, <code>--allow-sys</code>, and often <code>--allow-ffi</code>.</td>
+            <td>Split dev/test/prod task profiles. Scope network hosts, readable paths, writable paths, and allowed env names. Keep FFI only where native packages require it.</td>
+          </tr>
+          <tr>
+            <td><span class="badge high">S2</span></td>
+            <td>Summarization is a privacy boundary, not an internal call.</td>
+            <td><code>OpenAICompatibleSummarizerService</code> sends system prompt plus item text/media to <code>${baseUrl}/chat/completions</code>. Default hosted endpoint is Gemini-compatible unless <code>LOCAL_API=true</code>.</td>
+            <td>Expose a deployment decision: hosted provider allowed vs local-only. Document provider retention terms outside code, add per-user/source “do not send media/text to hosted LLM” policy if needed, and log provider/model selection without message content.</td>
+          </tr>
+          <tr>
+            <td><span class="badge high">S3</span></td>
+            <td>No app-level HTTP security headers or explicit Origin/CSRF validation were observed.</td>
+            <td><code>src/server/app.ts</code> wires routes and the error handler only. No CSP, HSTS, <code>X-Content-Type-Options</code>, frame policy, referrer policy, or Origin guard is set in app code.</td>
+            <td>Add security headers middleware. For POST/PATCH/DELETE, validate <code>Origin</code> or <code>Referer</code> against configured origin. SameSite=Lax and JSON preflight are helpful but should not be the only CSRF defense for cookie auth.</td>
+          </tr>
+          <tr>
+            <td><span class="badge high">S4</span></td>
+            <td>Rate limiting is process-local and can be bypassed in multi-instance deployments.</td>
+            <td><code>rate-limit.ts</code> uses a module-level <code>Map</code>. The default key trusts <code>x-forwarded-for</code> or <code>x-real-ip</code> before falling back to <code>global</code>.</td>
+            <td>For one VPS, document as best-effort only. Before public multi-instance deployment, use Redis/Postgres-backed shared counters and accept forwarding headers only from a trusted proxy path.</td>
+          </tr>
+          <tr>
+            <td><span class="badge high">S5</span></td>
+            <td>Database transport security is not enforced by code.</td>
+            <td><code>src/db/client.ts</code> calls <code>postgres(url)</code> directly. README examples use local <code>postgres://...</code> URLs.</td>
+            <td>For remote production DBs, require <code>sslmode=require</code> or <code>verify-full</code> in <code>DATABASE_URL</code>, or enforce TLS in client configuration. Local Docker DB can stay plaintext on loopback.</td>
+          </tr>
+          <tr>
+            <td><span class="badge medium">S6</span></td>
+            <td>Session hardening is good but not complete for a credential-holding service.</td>
+            <td>Cookie name is <code>session</code>, TTL is 30 days, <code>touchSession()</code> exists in the repository layer but <code>requireAuth</code> currently only validates and sets <code>userId</code>.</td>
+            <td>Rename cookie to <code>__Host-session</code>. Decide shorter absolute TTL and sliding last-seen behavior. Add MFA/WebAuthn/TOTP to the security roadmap before broader multi-user exposure.</td>
+          </tr>
+          <tr>
+            <td><span class="badge medium">S7</span></td>
+            <td>Operational error messages are sanitized but not key-redacted.</td>
+            <td><code>summarizeErrorForOps()</code> strips Drizzle params and truncates at 500 chars, but does not redact provider keys or credential-bearing URLs.</td>
+            <td>Add redaction patterns for known API-key shapes and URL userinfo before persisting <code>digest_run_feeds.errorMessage</code>.</td>
+          </tr>
+          <tr>
+            <td><span class="badge medium">S8</span></td>
+            <td>No request body size limit was observed at the Hono app boundary.</td>
+            <td>Routes call <code>context.req.json()</code> directly; no body-size middleware appears in <code>buildApp()</code>.</td>
+            <td>Add a conservative JSON body limit. Most API bodies should be small; connector auth and profile updates do not need large payloads.</td>
+          </tr>
+          <tr>
+            <td><span class="badge low">S9</span></td>
+            <td><code>listDigestRunFeedsForRun</code> is a fragile helper, not a current exposed IDOR.</td>
+            <td>The current route first scopes <code>findDigestRunForUser(database, id, context.var.userId)</code> and only calls the helper with the owned <code>run.id</code>. The helper itself filters only by <code>runId</code>.</td>
+            <td>Pass <code>userId</code> into the helper and join/filter through <code>digest_runs.userId</code> so future callers cannot accidentally expose arbitrary run feed rows.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout danger">
+        <strong>Highest-impact security fix:</strong> narrow production Deno permissions. That single change reduces the blast radius of a compromised dependency, connector bug, accidental eval import, or unexpected code-execution path more than most local code refactors.
+      </div>
+    </section>
+
+    <section id="scalability">
+      <div class="section-kicker">Scalability review</div>
+      <h2>The current shape supports one process and moderate usage; the next bottlenecks are connector batching, LLM payload limits, and distributed coordination.</h2>
+
+      <h3>Scalability strengths</h3>
+      <table>
+        <thead><tr><th>Strength</th><th>Observed implementation</th><th>Why it scales</th></tr></thead>
+        <tbody>
+          <tr><td>User paging</td><td>Scheduler pages users by <code>(createdAt, id)</code> with default page size 100.</td><td>A daily tick does not need to load all users into memory at once.</td></tr>
+          <tr><td>Bounded per-process user concurrency</td><td><code>DEFAULT_USER_CONCURRENCY = 5</code> in <code>digest-job.ts</code>.</td><td>Prevents one process from starting all users at once.</td></tr>
+          <tr><td>Idempotent item cache</td><td><code>items_feed_id_external_id_unique</code> and upsert behavior.</td><td>Overlapping windows can refresh changed items without duplicate rows.</td></tr>
+          <tr><td>Idempotent summaries and digests</td><td>Summary and digest repositories use <code>onConflictDoUpdate</code>.</td><td>Retries can converge to one row per feed-period or user-period.</td></tr>
+          <tr><td>Partial failure model</td><td>Digest-run feed rows track connector, ingestion, and summarization stages.</td><td>Operators can see which feed failed without throwing away successful feeds.</td></tr>
+          <tr><td>Historical digest resilience</td><td>Feed soft delete and summary feed-name snapshots preserve old digests.</td><td>User history survives feed removal and upstream rename.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Scalability findings</h3>
+      <table>
+        <thead><tr><th>Priority</th><th>Finding</th><th>Evidence</th><th>Recommended design</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="badge critical">P1</span></td>
+            <td>Ingestion repeats connector work once per feed within the same source.</td>
+            <td><code>ingestUserFeeds()</code> groups feeds by source and creates one connector handle, but then loops feeds and calls <code>ingestFeed()</code>. <code>ingestFeed()</code> calls <code>connector.getNormalizedData(window.from, window.to, [feed.externalId])</code>.</td>
+            <td>Add <code>ingestFeedsForSource()</code>: compute one source window, call <code>getNormalizedData(from, to, externalIds)</code> once, validate items per feed, then upsert each feed in its own transaction or bounded batch.</td>
+          </tr>
+          <tr>
+            <td><span class="badge critical">P2</span></td>
+            <td>Summarization has no hard context, item, image, or byte cap.</td>
+            <td><code>buildContentParts()</code> contains a warning that 300+ group messages may overflow context, but still sends all selected messages/media in a single provider request.</td>
+            <td>Introduce a summarization budget: text token/byte cap, image count cap, chunked map-reduce summarization for long threads, and explicit “truncated due to budget” metadata.</td>
+          </tr>
+          <tr>
+            <td><span class="badge high">P3</span></td>
+            <td>Scheduler coordination is process-local.</td>
+            <td><code>scheduleDigestJob()</code> registers a scheduler callback in each process. <code>runningUsers</code> is a module-level <code>Set</code> and only prevents overlap inside one runtime.</td>
+            <td>Before running multiple API instances or workers, guard scheduled work with Postgres advisory locks or a dedicated job table with leased rows.</td>
+          </tr>
+          <tr>
+            <td><span class="badge high">P4</span></td>
+            <td>In-flight digest runs have no crash recovery state transition.</td>
+            <td><code>runForUser()</code> creates <code>digest_runs.status = running</code> and marks finished at the end. A process crash between those points leaves running rows.</td>
+            <td>On startup or scheduler tick, mark stale <code>running</code> runs older than a threshold as failed/stale, then retry based on period and idempotent upserts.</td>
+          </tr>
+          <tr>
+            <td><span class="badge high">P5</span></td>
+            <td>Local media retention is unbounded.</td>
+            <td>Connector media paths use local media directories; README notes Telegram photos are downloaded for channels. No TTL, quota, or cleanup worker is present in the reviewed flow.</td>
+            <td>Add lifecycle: content-addressed paths or per-run dirs, reference counting or age-based cleanup, disk quota alerts, and eventual object storage if multi-host.</td>
+          </tr>
+          <tr>
+            <td><span class="badge high">P6</span></td>
+            <td>No timeout/cancellation boundary around external connector and summarizer calls.</td>
+            <td><code>fetch()</code> in the summarizer has retries for 429/503 but no <code>AbortSignal</code>. Connector calls are awaited without a visible timeout wrapper.</td>
+            <td>Add deadline propagation from digest run to connector and summarizer calls. Record timeout as a first-class operational error.</td>
+          </tr>
+          <tr>
+            <td><span class="badge medium">P7</span></td>
+            <td>Summaries are generated sequentially per feed.</td>
+            <td><code>assembleDigestForPeriod()</code> loops feeds and awaits <code>summarizeOwnedFeedPeriod()</code> one at a time.</td>
+            <td>Add small configurable summarizer concurrency after context caps are in place. Keep per-provider rate limits and per-user fairness.</td>
+          </tr>
+          <tr>
+            <td><span class="badge medium">P8</span></td>
+            <td>Digest listing is not explicitly paginated at the route/API shape.</td>
+            <td><code>GET /digests</code> returns <code>listDigestViewsForUser(database, userId)</code>. Digest-run listing has a default limit in the repository; digest listing should expose pagination consistently.</td>
+            <td>Add cursor or limit/offset pagination to digest and run listings before histories become large.</td>
+          </tr>
+          <tr>
+            <td><span class="badge medium">P9</span></td>
+            <td>Database pool behavior is implicit.</td>
+            <td><code>src/db/client.ts</code> calls <code>postgres(url)</code> with defaults.</td>
+            <td>Set explicit max connections, idle timeout, connect timeout, and SSL mode per deployment. This matters once scheduler workers and API requests share the same database.</td>
+          </tr>
+          <tr>
+            <td><span class="badge info">P10</span></td>
+            <td>Digest upsert is already race-safe.</td>
+            <td><code>upsertDigestForPeriod()</code> uses <code>insert(...).onConflictDoUpdate(...).returning()</code> on <code>(userId, periodStartMs, periodEndMs)</code>.</td>
+            <td>No change needed for a check-then-insert race. Keep this pattern for future period-scoped tables.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-kicker">Prioritized roadmap</div>
+      <h2>Do hardening before horizontal scale; do payload budgets before summarizer concurrency.</h2>
+
+      <h3>Phase 1 — production safety baseline</h3>
+      <table>
+        <thead><tr><th>Work</th><th>Why first</th><th>Acceptance criteria</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Scope Deno permissions for production tasks.</td>
+            <td>Reduces blast radius across every component.</td>
+            <td>Production <code>start</code> task whitelists network hosts, env names, read paths, and write paths. Tests cover startup with the scoped profile.</td>
+          </tr>
+          <tr>
+            <td>Add HTTP hardening middleware.</td>
+            <td>Cookie-authenticated app needs explicit browser security posture.</td>
+            <td>Responses include HSTS, nosniff, frame denial, referrer policy, and a documented CSP strategy. State-changing routes reject unexpected Origin/Referer.</td>
+          </tr>
+          <tr>
+            <td>Add request size limits and operational error redaction.</td>
+            <td>Small controls prevent cheap memory and leakage failures.</td>
+            <td>Oversized JSON request returns a controlled 413. Provider/API-key patterns and credential-bearing URLs are redacted before persistence.</td>
+          </tr>
+          <tr>
+            <td>Define LLM privacy policy in configuration.</td>
+            <td>User messages and media can leave the app.</td>
+            <td>Admin/user-visible setting states hosted vs local provider. The app can refuse hosted LLM calls for protected feeds or deployments.</td>
+          </tr>
+          <tr>
+            <td>Enforce summarizer budgets.</td>
+            <td>Prevents context overflow, unbounded cost, and giant media payloads.</td>
+            <td>Long threads are chunked or truncated deterministically with recorded metadata. Tests cover text-only, media-heavy, and empty-after-filter cases.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Phase 2 — multi-user and multi-instance readiness</h3>
+      <table>
+        <thead><tr><th>Work</th><th>Why second</th><th>Acceptance criteria</th></tr></thead>
+        <tbody>
+          <tr><td>Shared rate limiter.</td><td>Required once more than one API process can receive traffic.</td><td>Redis/Postgres counters enforce the same login/register/connector/digest limits across instances and ignore spoofed forwarding headers unless request came from a trusted proxy.</td></tr>
+          <tr><td>Distributed scheduler lock or leased job table.</td><td>Prevents duplicate scheduled digests in multi-instance deployment.</td><td>Only one worker processes a user-period at a time. Stale leases expire safely.</td></tr>
+          <tr><td>Crash recovery for digest runs.</td><td>Operational truth must survive process death.</td><td>Startup/tick reconciles stale <code>running</code> rows to failed/stale and can retry idempotently.</td></tr>
+          <tr><td>Explicit database pool and TLS configuration.</td><td>A scheduler plus web traffic can exhaust implicit defaults.</td><td>Pool size, connect timeout, idle timeout, and SSL mode are documented and enforced per environment.</td></tr>
+          <tr><td>Credential custody hardening.</td><td>Telegram session strings are full-account bearer tokens.</td><td>Master key moves off-box to KMS/Vault/secret manager, backup encryption uses a separate key, and MFA is available for user accounts.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Phase 3 — throughput and cost efficiency</h3>
+      <table>
+        <thead><tr><th>Work</th><th>Why later</th><th>Acceptance criteria</th></tr></thead>
+        <tbody>
+          <tr><td>Batch ingestion per source.</td><td>Removes repeated connector calls and upstream scans.</td><td>One connector call fetches all feed external IDs for a source-period; per-feed errors remain isolated.</td></tr>
+          <tr><td>Connector feed lookup caching/direct lookup.</td><td>Telegram dialog scans are expensive at scale.</td><td>Requested feeds resolve directly or through cached mapping instead of scanning all dialogs for every run.</td></tr>
+          <tr><td>Bounded summarizer concurrency.</td><td>Improves latency after budgets and provider rate controls exist.</td><td>Configurable per-process and per-user concurrency with provider 429 backoff and fairness.</td></tr>
+          <tr><td>Media lifecycle and object storage.</td><td>Needed for multi-host and disk-bound deployments.</td><td>Media has TTL/quota cleanup, deterministic paths, and optional object-store backend.</td></tr>
+          <tr><td>Paginated digest history.</td><td>Prevents unbounded dashboard payloads.</td><td>Digest and digest-run APIs expose cursor pagination and the web UI loads incrementally.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="evidence">
+      <div class="section-kicker">Evidence map</div>
+      <h2>Review claims are tied to observed files.</h2>
+      <dl class="decision-list">
+        <dt>Route and middleware shape</dt>
+        <dd><span class="path">src/server/app.ts</span>, <span class="path">src/server/routes/auth.ts</span>, <span class="path">src/server/routes/digests.ts</span>, <span class="path">src/server/middleware/require-auth.ts</span>, <span class="path">src/server/middleware/rate-limit.ts</span>.</dd>
+
+        <dt>Authentication and session storage</dt>
+        <dd><span class="path">src/auth/password.ts</span>, <span class="path">src/auth/session-service.ts</span>, <span class="path">src/repositories/session-repository.ts</span>.</dd>
+
+        <dt>Credential encryption and source custody</dt>
+        <dd><span class="path">src/crypto/credential-cipher.ts</span>, <span class="path">src/crypto/key-provider.ts</span>, <span class="path">src/db/schema/source.ts</span>, <span class="path">src/repositories/source-repository.ts</span>.</dd>
+
+        <dt>Digest generation and scheduler behavior</dt>
+        <dd><span class="path">src/services/orchestrator.ts</span>, <span class="path">src/services/ingestion-service.ts</span>, <span class="path">src/services/digest-service.ts</span>, <span class="path">src/scheduler/digest-job.ts</span>.</dd>
+
+        <dt>Summarizer boundary</dt>
+        <dd><span class="path">src/summarizers/openai-compatible-summarizer.ts</span>, <span class="path">src/summarizers/prompts.ts</span>, <span class="path">src/services/summarization-service.ts</span>.</dd>
+
+        <dt>Database model</dt>
+        <dd><span class="path">src/db/schema/user.ts</span>, <span class="path">src/db/schema/source.ts</span>, <span class="path">src/db/schema/feed.ts</span>, <span class="path">src/db/schema/item.ts</span>, <span class="path">src/db/schema/digest.ts</span>, <span class="path">src/db/schema/digest-run.ts</span>, <span class="path">src/repositories/digest-repository.ts</span>, <span class="path">src/repositories/summary-repository.ts</span>.</dd>
+
+        <dt>Frontend API assumptions</dt>
+        <dd><span class="path">apps/web/src/api/client.ts</span>, <span class="path">apps/web/src/app/Dashboard.tsx</span>.</dd>
+
+        <dt>Runtime permissions and commands</dt>
+        <dd><span class="path">deno.json</span>, <span class="path">README.md</span>.</dd>
+      </dl>
+
+      <div class="callout ok">
+        <strong>Documentation status:</strong> The root <span class="path">ARCHITECTURE.md</span> still contains older planned-language around persistence. This HTML document reflects the current implemented persistence, digest-run, API, and web architecture observed in the repository.
+      </div>
+    </section>
+  </main>
+
+</body>
+</html>

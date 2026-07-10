@@ -45,3 +45,7 @@ node_modules/
 .debug_logs/
 media/
 telegram_media/
+
+# local summarization eval artifacts
+eval-data/
+eval-results/

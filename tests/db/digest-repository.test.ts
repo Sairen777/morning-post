@@ -5,6 +5,7 @@ import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import {
+  deleteDigestForUser,
   findDigestById,
   findDigestForUserPeriod,
   listDigestsForUser,
@@ -167,5 +168,45 @@ Deno.test("digest check constraint rejects reversed period order", async () => {
         status: "pending",
       }),
     );
+  });
+});
+
+Deno.test("deleteDigestForUser deletes an owned digest and returns it", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUserWithSource(database, "digest-delete@example.com");
+    const digest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs,
+      periodEndMs,
+      status: "complete",
+    }, 100);
+
+    const result = await deleteDigestForUser(database, digest.id, user.id);
+    assertEquals(result.id, digest.id);
+
+    // Verify it's gone for the owner
+    assertEquals(await findDigestById(database, digest.id, user.id), null);
+  });
+});
+
+Deno.test("deleteDigestForUser throws NotFoundError for non-owner", async () => {
+  await withTestDb(async (database) => {
+    const firstUser = await createUserWithSource(database, "digest-delete-first@example.com");
+    const secondUser = await createUserWithSource(database, "digest-delete-second@example.com");
+    const digest = await upsertDigestForPeriod(database, {
+      userId: firstUser.id,
+      periodStartMs,
+      periodEndMs,
+      status: "complete",
+    }, 100);
+
+    await assertRejects(
+      () => deleteDigestForUser(database, digest.id, secondUser.id),
+      "digest not found",
+    );
+
+    // Verify it still exists for the owner
+    const stillExists = await findDigestById(database, digest.id, firstUser.id);
+    assertEquals(stillExists?.id, digest.id);
   });
 });

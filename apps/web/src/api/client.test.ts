@@ -11,6 +11,7 @@ import {
   unsubscribeFeed,
   listDigestRuns,
   getDigestRunDetail,
+  deleteDigest,
 } from "../api/client";
 
 describe("ApiClientError", () => {
@@ -215,6 +216,28 @@ describe("getDigestRunDetail", () => {
       const result = await getDigestRunDetail("r1");
       expect(fetchCalls[0][0]).toBe("/digests/runs/r1");
       expect(result.run.id).toBe("r1");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("deleteDigest", () => {
+  it("sends DELETE /digests/:id and returns the deleted digest", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      const fetchCalls: Array<[string, RequestInit?]> = [];
+      const sample = { id: "d1", userId: "u1", periodStartMs: 1, periodEndMs: 2, status: "complete", createdAt: 3, updatedAt: 4 };
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        fetchCalls.push([url, opts]);
+        return Promise.resolve(
+          new Response(JSON.stringify(sample), { status: 200 }),
+        );
+      }) as typeof fetch;
+      const result = await deleteDigest("d1");
+      expect(fetchCalls[0][0]).toBe("/digests/d1");
+      expect(fetchCalls[0][1]?.method).toBe("DELETE");
+      expect(result.id).toBe("d1");
     } finally {
       globalThis.fetch = originalFetch;
     }

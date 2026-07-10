@@ -13,6 +13,7 @@ import {
   subscribeFeed,
   runDigest,
   getDigest,
+  deleteDigest,
   logoutUser,
   disconnectSource,
   listFeedsForSource,
@@ -215,6 +216,12 @@ export default function Dashboard(props: DashboardProps) {
     return await getDigest(id);
   };
 
+  const handleDeleteDigest = async (id: string): Promise<void> => {
+    await deleteDigest(id);
+    await refreshDigests();
+    await refreshDigestRuns();
+  };
+
   const handleSelectRun = async (id: string): Promise<DigestRunDetail> => {
     return await getDigestRunDetail(id);
   };
@@ -282,6 +289,7 @@ export default function Dashboard(props: DashboardProps) {
           <DigestsPanel
             digests={digests()}
             onSelectDigest={handleSelectDigest}
+            onDeleteDigest={handleDeleteDigest}
             onAuthError={props.onAuthError}
           />
         </div>

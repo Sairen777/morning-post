@@ -123,3 +123,18 @@ export async function listDigestsForUser(database: Database, userId: string): Pr
     .orderBy(desc(digests.periodEndMs), desc(digests.createdAt));
   return rows.map(parsePublicDigest);
 }
+
+export async function deleteDigestForUser(
+  database: Database,
+  id: string,
+  userId: string,
+): Promise<PublicDigest> {
+  const rows = await database
+    .delete(digests)
+    .where(and(eq(digests.id, id), eq(digests.userId, userId)))
+    .returning();
+  if (!rows[0]) {
+    throw new NotFoundError("digest not found");
+  }
+  return parsePublicDigest(rows[0]);
+}

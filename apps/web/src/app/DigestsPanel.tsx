@@ -6,6 +6,7 @@ import FormatTime from "./FormatTime";
 interface DigestsPanelProps {
   digests: PublicDigest[];
   onSelectDigest: (id: string) => Promise<DigestView>;
+  onDeleteDigest: (id: string) => Promise<void>;
   onAuthError: () => void;
 }
 
@@ -13,6 +14,7 @@ export default function DigestsPanel(props: DigestsPanelProps) {
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [digestView, setDigestView] = createSignal<DigestView | null>(null);
   const [loading, setLoading] = createSignal(false);
+  const [deletingId, setDeletingId] = createSignal<string | null>(null);
   const [error, setError] = createSignal<string | null>(null);
 
   const handleSelect = async (id: string) => {
@@ -41,6 +43,33 @@ export default function DigestsPanel(props: DigestsPanelProps) {
     }
   };
 
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this digest?")) return;
+
+    const wasSelected = selectedId() === id;
+    setDeletingId(id);
+    setError(null);
+
+    try {
+      await props.onDeleteDigest(id);
+      if (wasSelected) {
+        setSelectedId(null);
+        setDigestView(null);
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && "status" in err) {
+        const status = (err as { status: number }).status;
+        if (status === 401) {
+          props.onAuthError();
+        }
+      }
+      const message = err instanceof Error ? err.message : "Delete failed";
+      setError(message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <div class="card">
       <div class="card-header">
@@ -54,36 +83,54 @@ export default function DigestsPanel(props: DigestsPanelProps) {
           <For each={props.digests}>
             {(digest, index) => (
               <li>
-                <button
-                  onClick={() => handleSelect(digest.id)}
+                <div
                   style={{
-                    background: "none",
-                    border: "none",
-                    padding: "0.5rem 0",
-                    cursor: "pointer",
-                    color:
-                      selectedId() === digest.id
-                        ? "var(--accent)"
-                        : "inherit",
-                    "text-align": "left",
-                    width: "100%",
+                    display: "flex",
+                    "align-items": "center",
+                    "justify-content": "space-between",
+                    gap: "0.5rem",
                   }}
                 >
-                  <div
+                  <button
+                    type="button"
+                    onClick={() => handleSelect(digest.id)}
                     style={{
-                      display: "flex",
-                      gap: "0.5rem",
-                      "align-items": "center",
-                      "flex-wrap": "wrap",
+                      background: "none",
+                      border: "none",
+                      padding: "0.5rem 0",
+                      cursor: "pointer",
+                      color:
+                        selectedId() === digest.id
+                          ? "var(--accent)"
+                          : "inherit",
+                      flex: "1",
+                      "text-align": "left",
                     }}
                   >
-                    <span class="digest-ordinal">#{index() + 1}</span>
-                    <FormatTime ms={digest.periodStartMs} />
-                    <span>–</span>
-                    <FormatTime ms={digest.periodEndMs} />
-                    <StatusBadge status={digest.status} />
-                  </div>
-                </button>
+                    <span
+                      style={{
+                        display: "flex",
+                        gap: "0.5rem",
+                        "align-items": "center",
+                        "flex-wrap": "wrap",
+                      }}
+                    >
+                      <span class="digest-ordinal">#{index() + 1}</span>
+                      <FormatTime ms={digest.periodStartMs} />
+                      <span>–</span>
+                      <FormatTime ms={digest.periodEndMs} />
+                      <StatusBadge status={digest.status} />
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="danger"
+                    onClick={() => handleDelete(digest.id)}
+                    disabled={deletingId() === digest.id}
+                  >
+                    {deletingId() === digest.id ? "Deleting…" : "Delete digest"}
+                  </button>
+                </div>
               </li>
             )}
           </For>

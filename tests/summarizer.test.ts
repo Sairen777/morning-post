@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes } from "@std/assert"
-import { OpenAICompatibleSummarizerService } from "../src/summarizers/openai-compatible-summarizer.ts";
+import { OpenAICompatibleSummarizerService, resolveOpenAICompatibleSummarizerModel } from "../src/summarizers/openai-compatible-summarizer.ts";
 import {
   buildDiscussionPrompt,
   buildNewsPrompt,
@@ -443,5 +443,20 @@ Deno.test("parsePoints — throws on element without string t (prose turned to w
     assertStringIncludes((err as Error).message, "non-object at index 0");
   } finally {
     restore();
+  }
+});
+
+Deno.test("resolveOpenAICompatibleSummarizerModel — env fallback and explicit override", () => {
+  const old = Deno.env.get("SUMMARIZER_MODEL");
+  try {
+    Deno.env.set("SUMMARIZER_MODEL", "eval-env-model");
+    assertEquals(resolveOpenAICompatibleSummarizerModel(null), "eval-env-model");
+    assertEquals(resolveOpenAICompatibleSummarizerModel("user-model"), "user-model");
+  } finally {
+    if (old === undefined) {
+      Deno.env.delete("SUMMARIZER_MODEL");
+    } else {
+      Deno.env.set("SUMMARIZER_MODEL", old);
+    }
   }
 });

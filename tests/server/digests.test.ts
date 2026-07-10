@@ -154,6 +154,71 @@ Deno.test("digest routes list and read user digests with grouped sections", asyn
   });
 });
 
+Deno.test("DELETE /digests/:id deletes an owned digest", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const ownerId = await register(app, "digests-delete-owner@example.com");
+    const ownerCookie = await login(app, "digests-delete-owner@example.com");
+    const feed = await createFeed(database, ownerId, ConnectorId.Telegram, 1, 1, "channel:delete", "Delete Feed");
+    await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "delete me")], 1);
+
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([[{ text: "delete bullet", sourceUrl: null }]]),
+      now: () => 105,
+    });
+
+    const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
+      method: "DELETE",
+      headers: { cookie: ownerCookie },
+    });
+    assertEquals(deleteResponse.status, 200);
+    const deleted = await deleteResponse.json();
+    assertEquals(deleted.id, digest.digest.id);
+
+    const readResponse = await app.request(`/digests/${digest.digest.id}`, {
+      headers: { cookie: ownerCookie },
+    });
+    assertEquals(readResponse.status, 404);
+
+    const listResponse = await app.request("/digests", { headers: { cookie: ownerCookie } });
+    assertEquals(listResponse.status, 200);
+    const listed = await listResponse.json();
+    assertEquals(listed.map((entry: { id: string }) => entry.id).includes(digest.digest.id), false);
+    assertEquals(await findDigestForUserPeriod(database, ownerId, periodStartMs, periodEndMs), null);
+  });
+});
+
+Deno.test("DELETE /digests/:id hides another user's digest", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const ownerId = await register(app, "digests-delete-hidden-owner@example.com");
+    const ownerCookie = await login(app, "digests-delete-hidden-owner@example.com");
+    await register(app, "digests-delete-hidden-other@example.com");
+    const otherCookie = await login(app, "digests-delete-hidden-other@example.com");
+    const feed = await createFeed(database, ownerId, ConnectorId.Telegram, 1, 1, "channel:hidden-delete", "Hidden Delete Feed");
+    await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "keep me")], 1);
+
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, {
+      summarizer: new FakeSummarizer([[{ text: "kept bullet", sourceUrl: null }]]),
+      now: () => 106,
+    });
+
+    const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
+      method: "DELETE",
+      headers: { cookie: otherCookie },
+    });
+    assertEquals(deleteResponse.status, 404);
+    const json = await deleteResponse.json();
+    assertEquals(json.error.code, "NOT_FOUND");
+    assertEquals(json.error.message, "digest not found");
+
+    const ownerReadResponse = await app.request(`/digests/${digest.digest.id}`, {
+      headers: { cookie: ownerCookie },
+    });
+    assertEquals(ownerReadResponse.status, 200);
+  });
+});
+
 Deno.test("GET /digests/:id.md renders markdown for deleted historical feeds", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);

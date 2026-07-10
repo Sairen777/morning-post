@@ -95,6 +95,16 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button.danger {
+  color: var(--danger, #c0392b);
+  border-color: var(--danger, #c0392b);
+}
+
+button.danger:hover {
+  background: var(--danger, #c0392b);
+  color: white;
+}
+
 a {
   color: var(--accent);
   text-decoration: none;

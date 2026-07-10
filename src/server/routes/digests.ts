@@ -20,6 +20,7 @@ import { computeDigestPeriod } from "../../scheduler/digest-job.ts";
 import { runForUser } from "../../services/orchestrator.ts";
 import { validate } from "../validate.ts";
 import { NotFoundError } from "../errors.ts";
+import { deleteDigestForUser } from "../../repositories/digest-repository.ts";
 
 const digestRunIdSchema = z.string().uuid("id must be a valid UUID");
 
@@ -114,5 +115,12 @@ export function buildDigestRoutes(database: Database): Hono<{ Variables: AuthVar
     return context.json(digest, 200);
   });
 
+  routes.delete("/:id", async (context) => {
+    const id = validate(digestIdSchema, context.req.param("id"));
+    const digest = await deleteDigestForUser(database, id, context.var.userId);
+    return context.json(digest, 200);
+  });
+
   return routes;
 }
+

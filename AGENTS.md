@@ -77,3 +77,7 @@ const processEverything = async () => {
   happen but the upstream API sometimes…"), keep it. When you'd otherwise write
   "TODO: do this later", either do it now or leave it with a clear scope and
   pointer (e.g. "belongs with the DB layer, see ROADMAP.md").
+
+## Documentation
+
+Keep up to date Technical Design Documentation in the `/docs` folder. Whanever you add new feature or change existig behaviour make sure to update the documentation.
