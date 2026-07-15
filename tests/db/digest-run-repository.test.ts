@@ -3,9 +3,11 @@ import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import {
   createDigestRun,
+  DigestRunAlreadyRunningError,
   finishDigestRun,
   finishDigestRunFeed,
   listDigestRunsForUser,
+  recoverStaleDigestRuns,
   startDigestRunFeed,
   type CreateDigestRunInput,
 } from "../../src/repositories/digest-run-repository.ts";
@@ -224,7 +226,7 @@ Deno.test("listDigestRunsForUser returns only that user's runs, ordered desc", a
     const alice = await createUser(database, userInput({ email: "alice@example.com" }));
     const bob = await createUser(database, userInput({ email: "bob@example.com" }));
 
-    const aliceRun1 = await createDigestRun(database, runInput(alice.id), 1000);
+    const aliceRun1 = await createDigestRun(database, runInput(alice.id, { status: "complete" }), 1000);
     const bobRun = await createDigestRun(database, runInput(bob.id), 2000);
     const aliceRun2 = await createDigestRun(database, runInput(alice.id), 3000);
 
@@ -248,12 +250,43 @@ Deno.test("listDigestRunsForUser respects limit", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
 
-    await createDigestRun(database, runInput(user.id));
-    await createDigestRun(database, runInput(user.id));
-    await createDigestRun(database, runInput(user.id));
+    await createDigestRun(database, runInput(user.id, { status: "complete" }));
+    await createDigestRun(database, runInput(user.id, { status: "partial" }));
+    await createDigestRun(database, runInput(user.id, { status: "failed" }));
 
     const limited = await listDigestRunsForUser(database, user.id, { limit: 2 });
     assertEquals(limited.length, 2);
+  });
+});
+
+Deno.test("createDigestRun surfaces a typed conflict for an active run", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput({ email: "active-run@example.com" }));
+    await createDigestRun(database, runInput(user.id), 1_000);
+
+    await assertRejects(
+      () => createDigestRun(database, runInput(user.id), 2_000),
+      DigestRunAlreadyRunningError,
+      "digest already running",
+    );
+  });
+});
+
+Deno.test("recoverStaleDigestRuns fails old runs once and is idempotent", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput({ email: "stale-run@example.com" }));
+    const stale = await createDigestRun(database, runInput(user.id), 1_000);
+
+    const recovered = await recoverStaleDigestRuns(database, 10_000, 5_000);
+    assertEquals(recovered, 1);
+    const repeated = await recoverStaleDigestRuns(database, 10_000, 5_000);
+    assertEquals(repeated, 0);
+
+    const [run] = await listDigestRunsForUser(database, user.id);
+    assertEquals(run.id, stale.id);
+    assertEquals(run.status, "failed");
+    assertEquals(run.finishedAt, 10_000);
+    assertEquals(run.errorMessage, "digest run lease expired");
   });
 });
 

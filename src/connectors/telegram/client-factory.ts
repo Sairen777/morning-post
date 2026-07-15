@@ -1,5 +1,5 @@
-import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions/index.js";
+import type { TelegramClient } from "telegram";
+import type { StringSession } from "telegram/sessions/index.js";
 
 export interface TelegramApiCredentials {
   apiId: number;
@@ -15,7 +15,18 @@ export function readTelegramApiCredentials(): TelegramApiCredentials {
 
 async function createTelegramClientWithSession(sessionString: string): Promise<TelegramClient> {
   const { apiId, apiHash } = readTelegramApiCredentials();
-  const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+  let TelegramClientConstructor: typeof TelegramClient;
+  let StringSessionConstructor: typeof StringSession;
+  try {
+    // Deliberately lazy: GramJS and its websocket/debug dependencies are only needed for Telegram use.
+    const telegram = await import("telegram");
+    const sessions = await import("telegram/sessions/index.js");
+    TelegramClientConstructor = telegram.TelegramClient;
+    StringSessionConstructor = sessions.StringSession;
+  } catch (error) {
+    throw new Error("Failed to load Telegram client runtime", { cause: error });
+  }
+  const client = new TelegramClientConstructor(new StringSessionConstructor(sessionString), apiId, apiHash, {
     connectionRetries: 5,
   });
 

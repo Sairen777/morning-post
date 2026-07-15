@@ -45,6 +45,7 @@ export interface AssembleDigestDependencies extends SummarizeFeedPeriodDependenc
   runId?: string;
   sourceConnectorIdsBySourceId?: Map<string, string>;
   feeds?: PublicFeed[];
+  summarizationConcurrency?: number;
 }
 
 function toDigestSections(userPeriodSummaries: UserPeriodSummary[]): DigestSection[] {
@@ -110,6 +111,33 @@ export async function buildDigestViewById(
   return await buildDigestViewForPeriod(database, digest);
 }
 
+/**
+ * Run async tasks with bounded concurrency, preserving input order.
+ * Each task runs independently; task failures do not stop other tasks.
+ */
+async function runBounded<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let index = 0;
+  const running = new Set<Promise<void>>();
+
+  while (index < items.length) {
+    while (index < items.length && running.size < concurrency) {
+      const item = items[index++];
+      const promise = fn(item).finally(() => running.delete(promise));
+      running.add(promise);
+    }
+
+    if (running.size > 0) {
+      await Promise.race(running);
+    }
+  }
+
+  await Promise.all(running);
+}
+
 export async function assembleDigestForPeriod(
   database: Database,
   userId: string,
@@ -144,32 +172,31 @@ export async function assembleDigestForPeriod(
   }
 
   let hadFailure = false;
-  for (const feed of feeds) {
-    if (summariesByFeedId.has(feed.id)) {
-      continue;
-    }
+  const feedsToSummarize = feeds.filter((feed) => !summariesByFeedId.has(feed.id));
+  const concurrency = dependencies.summarizationConcurrency ?? 2;
 
+  await runBounded(feedsToSummarize, concurrency, async (feed) => {
     let feedRunId: string | undefined;
-    if (dependencies.runId && sourceConnectorIdsBySourceId) {
-      const connectorId = sourceConnectorIdsBySourceId.get(feed.sourceId);
-      if (!connectorId) {
-        throw new Error("connector id missing for feed source");
-      }
-      const feedRunInput: CreateDigestRunFeedInput = {
-        runId: dependencies.runId,
-        sourceId: feed.sourceId,
-        connectorId,
-        feedId: feed.id,
-        feedExternalId: feed.externalId,
-        feedName: feed.name,
-        stage: "summarization",
-        status: "running",
-      };
-      const feedRun = await startDigestRunFeed(database, feedRunInput);
-      feedRunId = feedRun.id;
-    }
-
     try {
+      if (dependencies.runId && sourceConnectorIdsBySourceId) {
+        const connectorId = sourceConnectorIdsBySourceId.get(feed.sourceId);
+        if (!connectorId) {
+          throw new Error("connector id missing for feed source");
+        }
+        const feedRunInput: CreateDigestRunFeedInput = {
+          runId: dependencies.runId,
+          sourceId: feed.sourceId,
+          connectorId,
+          feedId: feed.id,
+          feedExternalId: feed.externalId,
+          feedName: feed.name,
+          stage: "summarization",
+          status: "running",
+        };
+        const feedRun = await startDigestRunFeed(database, feedRunInput);
+        feedRunId = feedRun.id;
+      }
+
       await summarizeOwnedFeedPeriod(
         database,
         { user, feed, periodStartMs, periodEndMs },
@@ -187,7 +214,7 @@ export async function assembleDigestForPeriod(
         });
       }
     }
-  }
+  });
 
   digest = await setDigestStatus(database, digest.id, userId, hadFailure ? "failed" : "complete");
   return await buildDigestViewForPeriod(database, digest);

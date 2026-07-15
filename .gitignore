@@ -46,6 +46,5 @@ node_modules/
 media/
 telegram_media/
 
-# local summarization eval artifacts
-eval-data/
-eval-results/
+.test-data/
+docs/

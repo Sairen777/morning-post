@@ -45,7 +45,7 @@ function buildCredentialCipher(): CredentialCipher {
 function jsonRequest(method: "POST" | "PATCH" | "DELETE", body?: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
     body: body === undefined ? undefined : JSON.stringify(body),
   };
 }
@@ -136,14 +136,14 @@ Deno.test("feed routes subscribe, list, patch, and unsubscribe feeds", async () 
 
     const subscribeRssResponse = await app.request(`/sources/${rss.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "rss-a", name: "RSS A", kind: "news", position: 1 }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(subscribeRssResponse.status, 201);
     const rssFeed = await subscribeRssResponse.json();
 
     const subscribeTelegramResponse = await app.request(`/sources/${telegram.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "tg-a", name: "Telegram A", kind: "discussion", position: 1 }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(subscribeTelegramResponse.status, 201);
     const telegramFeed = await subscribeTelegramResponse.json();
@@ -158,7 +158,7 @@ Deno.test("feed routes subscribe, list, patch, and unsubscribe feeds", async () 
 
     const patchResponse = await app.request(`/feeds/${telegramFeed.id}`, {
       ...jsonRequest("PATCH", { customPrompt: "   ", enabled: false, kind: "news", position: 4 }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(patchResponse.status, 200);
     const patched = await patchResponse.json();
@@ -169,7 +169,7 @@ Deno.test("feed routes subscribe, list, patch, and unsubscribe feeds", async () 
 
     const deleteResponse = await app.request(`/feeds/${telegramFeed.id}`, {
       method: "DELETE",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(deleteResponse.status, 200);
     assertEquals((await deleteResponse.json()).deletedAt !== null, true);
@@ -187,14 +187,14 @@ Deno.test("subscribing a soft-deleted feed revives the same row", async () => {
 
     const firstResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "same", name: "Old", kind: "news" }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     const first = await firstResponse.json();
-    await app.request(`/feeds/${first.id}`, { method: "DELETE", headers: { cookie } });
+    await app.request(`/feeds/${first.id}`, { method: "DELETE", headers: { cookie, Origin: "http://127.0.0.1:5173" } });
 
     const revivedResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "same", name: "New", kind: "discussion" }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(revivedResponse.status, 201);
     const revived = await revivedResponse.json();
@@ -212,26 +212,26 @@ Deno.test("subscribing a disconnected source is rejected", async () => {
     const source = await createOwnedSource(database, user.id, ConnectorId.Telegram);
     const firstResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "same", name: "Old", kind: "news" }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(firstResponse.status, 201);
     const first = await firstResponse.json();
 
     const disconnectResponse = await app.request(`/sources/${source.id}`, {
       method: "DELETE",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(disconnectResponse.status, 200);
 
     const revivedResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "same", name: "Revived", kind: "discussion" }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(revivedResponse.status, 409);
 
     const newFeedResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "new", name: "New", kind: "news" }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(newFeedResponse.status, 409);
 
@@ -257,22 +257,22 @@ Deno.test("feed routes keep users scoped to their own sources and feeds", async 
       kind: "news",
     });
 
-    const otherListResponse = await app.request(`/sources/${source.id}/feeds`, { headers: { cookie: otherCookie } });
+    const otherListResponse = await app.request(`/sources/${source.id}/feeds`, { headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(otherListResponse.status, 404);
 
     const otherSubscribeResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "cross", name: "Cross", kind: "news" }),
-      headers: { "content-type": "application/json", cookie: otherCookie },
+      headers: { "content-type": "application/json", cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(otherSubscribeResponse.status, 404);
 
     const otherPatchResponse = await app.request(`/feeds/${feed.id}`, {
       ...jsonRequest("PATCH", { enabled: false }),
-      headers: { "content-type": "application/json", cookie: otherCookie },
+      headers: { "content-type": "application/json", cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(otherPatchResponse.status, 404);
 
-    const ownerListResponse = await app.request("/feeds", { headers: { cookie: ownerCookie } });
+    const ownerListResponse = await app.request("/feeds", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(ownerListResponse.status, 200);
     assertEquals((await ownerListResponse.json()).length, 1);
   });
@@ -293,19 +293,19 @@ Deno.test("feed routes validate bodies and parameters", async () => {
 
     const invalidPositionResponse = await app.request(`/feeds/${feed.id}`, {
       ...jsonRequest("PATCH", { position: 2_147_483_648 }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(invalidPositionResponse.status, 422);
 
     const invalidKindResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "bad", name: "Bad", kind: "chat" }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(invalidKindResponse.status, 422);
 
     const invalidParameterResponse = await app.request("/feeds/not-a-uuid", {
       ...jsonRequest("PATCH", { enabled: false }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(invalidParameterResponse.status, 422);
   });

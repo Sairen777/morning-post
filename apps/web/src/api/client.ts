@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   AvailableFeed,
+  CursorPage,
   DigestRunDetail,
   DigestView,
   DisconnectSourceResponse,
@@ -204,8 +205,18 @@ export function subscribeFeed(
 }
 
 // Digests
-export function listDigests(): Promise<PublicDigest[]> {
-  return apiRequest<PublicDigest[]>("/digests");
+export interface DigestListParams {
+  cursor?: string;
+  limit?: number;
+}
+
+export function listDigests(params?: DigestListParams): Promise<CursorPage<PublicDigest>> {
+  const qs = params ? "?" + new URLSearchParams(
+    Object.fromEntries(
+      Object.entries(params).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)]),
+    ),
+  ).toString() : "";
+  return apiRequest<CursorPage<PublicDigest>>(`/digests${qs}`);
 }
 
 export function getDigest(id: string): Promise<DigestView> {
@@ -227,8 +238,13 @@ export function runDigest(input: {
 }
 
 // Digest runs
-export function listDigestRuns(): Promise<PublicDigestRun[]> {
-  return apiRequest<PublicDigestRun[]>("/digests/runs");
+export function listDigestRuns(params?: DigestListParams): Promise<CursorPage<PublicDigestRun>> {
+  const qs = params ? "?" + new URLSearchParams(
+    Object.fromEntries(
+      Object.entries(params).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)]),
+    ),
+  ).toString() : "";
+  return apiRequest<CursorPage<PublicDigestRun>>(`/digests/runs${qs}`);
 }
 
 export function getDigestRunDetail(id: string): Promise<DigestRunDetail> {

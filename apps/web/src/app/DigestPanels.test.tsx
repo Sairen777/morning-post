@@ -280,3 +280,131 @@ describe("DigestsPanel delete button", () => {
     }
   });
 });
+
+describe("DigestsPanel Load more", () => {
+  const noopSelect = async () => ({ digest: sampleDigests[0], sections: [], groups: [] });
+  const noopDelete = async (_id: string) => {};
+  const noopAuth = () => {};
+
+  it("does not render Load more when nextCursor is undefined", () => {
+    const { queryByText } = render(() => (
+      <DigestsPanel
+        digests={sampleDigests}
+        onSelectDigest={noopSelect}
+        onDeleteDigest={noopDelete}
+        onAuthError={noopAuth}
+      />
+    ));
+    expect(queryByText("Load more")).toBeNull();
+  });
+
+  it("renders Load more when nextCursor is set", () => {
+    const { getByText, queryByText } = render(() => (
+      <DigestsPanel
+        digests={sampleDigests}
+        onSelectDigest={noopSelect}
+        onDeleteDigest={noopDelete}
+        onAuthError={noopAuth}
+        nextCursor="abc123"
+      />
+    ));
+    expect(getByText("Load more")).toBeDefined();
+    expect(queryByText("Load more")).not.toBeNull();
+  });
+
+  it("disables Load more button when loadingMore is true", () => {
+    const { getByText } = render(() => (
+      <DigestsPanel
+        digests={sampleDigests}
+        onSelectDigest={noopSelect}
+        onDeleteDigest={noopDelete}
+        onAuthError={noopAuth}
+        nextCursor="abc123"
+        loadingMore={true}
+      />
+    ));
+    const button = getByText("Loading…") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
+  it("calls onLoadMore when Load more is clicked", () => {
+    let called = false;
+    const { getByText } = render(() => (
+      <DigestsPanel
+        digests={sampleDigests}
+        onSelectDigest={noopSelect}
+        onDeleteDigest={noopDelete}
+        onAuthError={noopAuth}
+        nextCursor="abc123"
+        onLoadMore={async () => { called = true; }}
+      />
+    ));
+    getByText("Load more").click();
+    expect(called).toBe(true);
+  });
+});
+
+describe("DigestRunsPanel Load more", () => {
+  const noopSelect = async (id: string) => ({
+    run: completedRun,
+    feeds: [],
+  });
+  const noopRefresh = async () => {};
+  const noopAuth = () => {};
+
+  it("does not render Load more when nextCursor is undefined", () => {
+    const { queryByText } = render(() => (
+      <DigestRunsPanel
+        runs={[completedRun]}
+        onSelectRun={noopSelect}
+        onRefresh={noopRefresh}
+        onAuthError={noopAuth}
+      />
+    ));
+    expect(queryByText("Load more")).toBeNull();
+  });
+
+  it("renders Load more when nextCursor is set", () => {
+    const { getByText } = render(() => (
+      <DigestRunsPanel
+        runs={[completedRun]}
+        onSelectRun={noopSelect}
+        onRefresh={noopRefresh}
+        onAuthError={noopAuth}
+        nextCursor="abc123"
+      />
+    ));
+    expect(getByText("Load more")).toBeDefined();
+  });
+
+  it("disables Load more button when loadingMore is true", () => {
+    const { getByText } = render(() => (
+      <DigestRunsPanel
+        runs={[completedRun]}
+        onSelectRun={noopSelect}
+        onRefresh={noopRefresh}
+        onAuthError={noopAuth}
+        nextCursor="abc123"
+        loadingMore={true}
+      />
+    ));
+    const button = getByText("Loading…") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
+  it("calls onLoadMore when Load more is clicked", () => {
+    let called = false;
+    const { getByText } = render(() => (
+      <DigestRunsPanel
+        runs={[completedRun]}
+        onSelectRun={noopSelect}
+        onRefresh={noopRefresh}
+        onAuthError={noopAuth}
+        nextCursor="abc123"
+        onLoadMore={async () => { called = true; }}
+      />
+    ));
+    getByText("Load more").click();
+    expect(called).toBe(true);
+  });
+});

@@ -1,4 +1,4 @@
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { sessions } from "../db/schema/session.ts";
@@ -78,13 +78,29 @@ export async function deleteSessionByTokenHash(
   await database.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
 }
 
-export async function touchSession(
+/**
+ * Records activity at most once per interval. A near-expiry extension can
+ * bypass the interval, but the expiry comparison remains atomic so concurrent
+ * requests cannot repeatedly extend the same session.
+ */
+export async function touchSessionIfDue(
   database: Database,
   id: string,
   now: number,
-): Promise<void> {
-  await database
+  nextExpiresAt: number,
+  touchIntervalMs: number,
+): Promise<Session | null> {
+  const rows = await database
     .update(sessions)
-    .set({ lastSeenAt: now })
-    .where(eq(sessions.id, id));
+    .set({ lastSeenAt: now, expiresAt: nextExpiresAt })
+    .where(and(
+      eq(sessions.id, id),
+      or(
+        isNull(sessions.lastSeenAt),
+        lte(sessions.lastSeenAt, now - touchIntervalMs),
+        lt(sessions.expiresAt, nextExpiresAt),
+      ),
+    ))
+    .returning();
+  return rows[0] ? parseSession(rows[0]) : null;
 }

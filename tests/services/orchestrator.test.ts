@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assert } from "@std/assert";
 import type { ConnectorFactoryLike, ConnectorHandle } from "../../src/connectors/connector-factory.ts";
 import { ConflictError } from "../../src/server/errors.ts";
 import { ConnectorId } from "../../src/constants.ts";
@@ -275,5 +275,81 @@ Deno.test("runForUser marks run partial when summarization fails but ingestion s
       (r) => r.stage === "summarization" && r.status === "failed" && r.error_message !== null,
     );
     assertEquals(failedRows.length >= 1, true);
+  });
+});
+
+Deno.test("runForUser batches multiple feeds from the same source", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("batch-same-source@example.com"));
+    const setup1 = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "Feed One");
+    const feed2 = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: setup1.source.id,
+      externalId: "channel:2",
+      name: "Feed Two",
+      kind: "news",
+    });
+
+    const connector = new FakeConnector({
+      "channel:1": [normalizedItem("channel:1", "1", "item from feed 1")],
+      "channel:2": [normalizedItem("channel:2", "2", "item from feed 2")],
+    });
+    const connectorFactory = new FakeConnectorFactory({
+      [setup1.source.id]: connector,
+    });
+    const summarizer = new FakeSummarizer([[{ text: "sum", sourceUrl: null }]]);
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => 205,
+    });
+
+    // Exactly one connector call for both feeds
+    assertEquals(connector.calls.length, 1);
+    assert(connector.calls[0].feedExternalIds?.includes("channel:1"));
+    assert(connector.calls[0].feedExternalIds?.includes("channel:2"));
+
+    assertEquals(view.digest.status, "complete");
+  });
+});
+
+Deno.test("runForUser connector failure marks all pending feeds failed when batching", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("batch-connector-fail@example.com"));
+    const setup1 = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "Feed One");
+    const feed2 = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: setup1.source.id,
+      externalId: "channel:2",
+      name: "Feed Two",
+      kind: "news",
+    });
+
+    // Both feeds are set to fail at the connector level
+    const connector = new FakeConnector(
+      { "channel:1": [], "channel:2": [] },
+      new Set(["channel:1", "channel:2"]),
+    );
+    const connectorFactory = new FakeConnectorFactory({
+      [setup1.source.id]: connector,
+    });
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      now: () => 205,
+    });
+
+    assertEquals(view.digest.status, "failed");
+
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "partial");
+
+    const feedRows: Array<Record<string, unknown>> = await database.execute(
+      sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,
+    );
+    // Both feeds should have failed ingestion-stage rows
+    const failedRows = feedRows.filter((r) => r.stage === "ingestion" && r.status === "failed");
+    assertEquals(failedRows.length, 2);
   });
 });

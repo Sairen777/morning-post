@@ -1,59 +1,70 @@
 import type { Context, MiddlewareHandler } from "@hono/hono";
+import { getConnInfo } from "@hono/hono/deno";
+import type { Database } from "../../db/client.ts";
+import { consumeRateLimit } from "../../repositories/rate-limit-repository.ts";
 import { RateLimitError } from "../errors.ts";
 
-interface RateLimitState {
-  count: number;
-  resetsAt: number;
-}
-
-const buckets = new Map<string, RateLimitState>();
-
 export interface RateLimitOptions {
+  database: Database;
   bucket: string;
   limit: number;
   windowMs: number;
   now?: () => number;
   key?: (context: Context) => string;
+  trustedProxyCount?: number;
 }
 
-function defaultKey(context: Context): string {
+/**
+ * Resolve the client address without trusting spoofable forwarding headers by
+ * default. Forwarded hops are considered only when the deployment explicitly
+ * configures a trusted proxy chain.
+ */
+export function resolveClientAddress(context: Context, trustedProxyCount: number): string {
+  let directAddress: string | undefined;
+  try {
+    directAddress = getConnInfo(context).remote.address?.trim() || undefined;
+  } catch {
+    // Hono's in-memory Request adapter has no Deno remoteAddr. Production
+    // Deno.serve requests always provide one.
+  }
+
+  if (trustedProxyCount <= 0) {
+    return directAddress ?? "global";
+  }
+
   const forwardedFor = context.req.header("x-forwarded-for");
   if (forwardedFor) {
-    return forwardedFor.split(",", 1)[0].trim() || "global";
-  }
-
-  return context.req.header("x-real-ip")?.trim() || "global";
-}
-
-function pruneExpiredBuckets(now: number): void {
-  for (const [key, state] of buckets) {
-    if (now >= state.resetsAt) {
-      buckets.delete(key);
+    const hops = forwardedFor.split(",").map((hop) => hop.trim()).filter(Boolean);
+    if (hops.length > 0) {
+      // The right-most trusted hops are proxies. Select the first untrusted
+      // address to their left; clamp malformed/short chains to the leftmost.
+      const index = Math.max(0, hops.length - trustedProxyCount - 1);
+      return hops[index] ?? directAddress ?? "global";
     }
   }
+
+  const realIp = context.req.header("x-real-ip")?.trim();
+  return realIp || directAddress || "global";
 }
 
 export function createRateLimitMiddleware(options: RateLimitOptions): MiddlewareHandler {
   const now = options.now ?? Date.now;
-  const key = options.key ?? defaultKey;
+  const trustedProxyCount = options.trustedProxyCount ?? 0;
+  const key = options.key ?? ((context: Context) => resolveClientAddress(context, trustedProxyCount));
 
   return async (context, next) => {
     const currentTime = now();
-    pruneExpiredBuckets(currentTime);
-
     const bucketKey = `${options.bucket}:${key(context)}`;
-    const currentState = buckets.get(bucketKey);
-    const state = currentState && currentTime < currentState.resetsAt
-      ? currentState
-      : { count: 0, resetsAt: currentTime + options.windowMs };
-
-    state.count += 1;
-    buckets.set(bucketKey, state);
-
-    if (state.count > options.limit) {
+    const allowed = await consumeRateLimit(
+      options.database,
+      bucketKey,
+      options.limit,
+      options.windowMs,
+      currentTime,
+    );
+    if (!allowed) {
       throw new RateLimitError();
     }
-
     await next();
   };
 }

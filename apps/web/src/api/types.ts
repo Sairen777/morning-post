@@ -154,3 +154,8 @@ export interface DigestRunDetail {
   run: PublicDigestRun;
   feeds: PublicDigestRunFeed[];
 }
+
+export interface CursorPage<T> {
+  data: T[];
+  nextCursor?: string;
+}

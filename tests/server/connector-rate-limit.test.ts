@@ -23,7 +23,7 @@ function buildCredentialCipher(): CredentialCipher {
 function jsonRequest(method: "POST", body?: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
     body: body === undefined ? undefined : JSON.stringify(body),
   };
 }
@@ -113,22 +113,34 @@ Deno.test("telegram login start and 2fa routes are rate limited", async () => {
     const app = buildApp(database, {
       connectors: {
         telegramLoginSessionManager: manager,
-        telegramLoginRateLimiter: createRateLimitMiddleware({ bucket: "telegram-start-test", limit: 1, windowMs: 60_000, now: () => now }),
-        telegramTwoFactorRateLimiter: createRateLimitMiddleware({ bucket: "telegram-2fa-test", limit: 1, windowMs: 60_000, now: () => now }),
+        telegramLoginRateLimiter: createRateLimitMiddleware({
+          database,
+          bucket: "telegram-start-test",
+          limit: 1,
+          windowMs: 60_000,
+          now: () => now,
+        }),
+        telegramTwoFactorRateLimiter: createRateLimitMiddleware({
+          database,
+          bucket: "telegram-2fa-test",
+          limit: 1,
+          windowMs: 60_000,
+          now: () => now,
+        }),
       },
     });
     await register(app, "connector-limit@example.com");
     const cookie = await login(app, "connector-limit@example.com");
 
     clientFactory.queueClient("approval");
-    const firstStart = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, "x-forwarded-for": "1.1.1.1" } });
+    const firstStart = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "1.1.1.1" } });
     assertEquals(firstStart.status, 201);
-    const secondStart = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, "x-forwarded-for": "1.1.1.1" } });
+    const secondStart = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "1.1.1.1" } });
     assertEquals(secondStart.status, 429);
 
     now += 60_001;
     clientFactory.queueClient("two-factor-authentication");
-    const startTwoFactor = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, "x-forwarded-for": "2.2.2.2" } });
+    const startTwoFactor = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "2.2.2.2" } });
     assertEquals(startTwoFactor.status, 201);
     const startTwoFactorJson = await startTwoFactor.json();
     const loginSessionId = String(startTwoFactorJson.loginSessionId);
@@ -136,12 +148,12 @@ Deno.test("telegram login start and 2fa routes are rate limited", async () => {
 
     const firstTwoFactor = await app.request(`/connectors/telegram/login/${loginSessionId}/2fa`, {
       ...jsonRequest("POST", { password: TWO_FACTOR_AUTHENTICATION_PASSWORD }),
-      headers: { "content-type": "application/json", cookie, "x-forwarded-for": "3.3.3.3" },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "3.3.3.3" },
     });
     assertEquals(firstTwoFactor.status, 200);
     const secondTwoFactor = await app.request(`/connectors/telegram/login/${loginSessionId}/2fa`, {
       ...jsonRequest("POST", { password: TWO_FACTOR_AUTHENTICATION_PASSWORD }),
-      headers: { "content-type": "application/json", cookie, "x-forwarded-for": "3.3.3.3" },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "3.3.3.3" },
     });
     assertEquals(secondTwoFactor.status, 429);
   });

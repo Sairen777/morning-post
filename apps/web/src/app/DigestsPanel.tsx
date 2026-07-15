@@ -8,6 +8,9 @@ interface DigestsPanelProps {
   onSelectDigest: (id: string) => Promise<DigestView>;
   onDeleteDigest: (id: string) => Promise<void>;
   onAuthError: () => void;
+  nextCursor?: string;
+  loadingMore?: boolean;
+  onLoadMore?: () => Promise<void>;
 }
 
 export default function DigestsPanel(props: DigestsPanelProps) {
@@ -135,6 +138,17 @@ export default function DigestsPanel(props: DigestsPanelProps) {
             )}
           </For>
         </ul>
+      </Show>
+
+      <Show when={props.nextCursor}>
+        <div style="text-align: center; margin-top: 1rem;">
+          <button
+            onClick={() => props.onLoadMore?.()}
+            disabled={props.loadingMore}
+          >
+            {props.loadingMore ? "Loading…" : "Load more"}
+          </button>
+        </div>
       </Show>
 
       {/* Selected digest detail */}

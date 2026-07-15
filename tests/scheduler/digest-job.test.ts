@@ -3,9 +3,10 @@ import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
 import { createUser, type CreateUserInput, type User } from "../../src/repositories/user-repository.ts";
-import { listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
+import { DigestRunAlreadyRunningError, listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
 import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
-import { clearDigestJobStateForTesting, computeDigestPeriod, DEFAULT_DIGEST_CRON, runDigestTick, scheduleDigestJob } from "../../src/scheduler/digest-job.ts";
+import { clearDigestJobStateForTesting, computeDigestPeriod, DEFAULT_DIGEST_CRON, MEDIA_HOUSEKEEPING_CRON, runDigestTick, scheduleDigestJob, scheduleMediaHousekeeping } from "../../src/scheduler/digest-job.ts";
+import { bootServer } from "../../src/server/main.ts";
 import type { Scheduler } from "../../src/scheduler/scheduler.ts";
 
 class FakeScheduler implements Scheduler {
@@ -57,7 +58,7 @@ Deno.test("runDigestTick triggers one run per user and isolates errors", async (
       runForUser: (_database, userId, period) => {
         calls.push({ userId, period });
         if (userId === firstUser.id) {
-          throw new Error("boom");
+          throw new Error("provider failed sk-scheduler-secret at https://scheduler-user:scheduler-pass@example.com");
         }
         return Promise.resolve({ digest: { id: "x", userId, periodStartMs: period.startMs, periodEndMs: period.endMs, status: "complete", createdAt: 0, updatedAt: 0 }, sections: [], groups: [] });
       },
@@ -67,7 +68,10 @@ Deno.test("runDigestTick triggers one run per user and isolates errors", async (
     assertEquals(calls[0].period.endMs, 1_000);
     assertEquals(errors.length, 1);
     assertEquals(errors[0].includes(firstUser.id), true);
-    assertEquals(errors[0].includes("boom"), true);
+    assertEquals(errors[0].includes("provider failed"), true);
+    assertEquals(errors[0].includes("sk-scheduler-secret"), false);
+    assertEquals(errors[0].includes("scheduler-user:scheduler-pass"), false);
+    assertEquals(errors[0].includes("[REDACTED]"), true);
   });
 });
 
@@ -125,6 +129,136 @@ Deno.test("scheduleDigestJob registers the default cron and handler", async () =
   });
 });
 
+Deno.test("scheduleMediaHousekeeping registers the weekly Sunday cron", () => {
+  const scheduler = new FakeScheduler();
+  scheduleMediaHousekeeping(scheduler);
+  assertEquals(scheduler.jobs.length, 1);
+  assertEquals(scheduler.jobs[0].name, "media-housekeeping");
+  assertEquals(scheduler.jobs[0].cron, MEDIA_HOUSEKEEPING_CRON);
+  assertEquals(scheduler.jobs[0].cron, "0 6 * * SUN");
+});
+
+Deno.test("scheduleDigestJob skips digest work when the lease is held by another worker", async () => {
+  await withTestDb(async (database: Database) => {
+    const scheduler = new FakeScheduler();
+    let runCalls = 0;
+    let leaseDuration = 0;
+    scheduleDigestJob(scheduler, database, {
+      now: () => 2_000,
+      ownerId: "worker-2",
+      schedulerLeaseMs: 321,
+      acquireLease: async (_database, name, ownerId, now, leaseMs) => {
+        assertEquals(name, "digest-job");
+        assertEquals(ownerId, "worker-2");
+        assertEquals(now, 2_000);
+        leaseDuration = leaseMs;
+        return false;
+      },
+      runForUser: () => {
+        runCalls++;
+        return Promise.reject(new Error("losing worker must not run digest work"));
+      },
+    });
+
+    await scheduler.jobs[0].handler();
+    assertEquals(leaseDuration, 321);
+    assertEquals(runCalls, 0);
+  });
+});
+
+Deno.test("bootServer injects scheduler and serve without startup side effects", async () => {
+  await withTestDb(async (database: Database) => {
+    const scheduler = new FakeScheduler();
+    let served = 0;
+    bootServer({
+
+      database,
+      scheduler,
+      config: {
+        databaseUrl: "postgres://localhost/test",
+        port: 31_001,
+        allowedOrigins: ["http://localhost:5173"],
+        trustedProxyCount: 0,
+        maxRequestBodyBytes: 1_000,
+        databasePoolMax: 1,
+        databaseIdleTimeoutSeconds: 1,
+        databaseConnectTimeoutSeconds: 1,
+        databaseSslMode: "disable",
+        allowRemoteSummarization: false,
+        connectorTimeoutMs: 1,
+        summarizerTextBytesPerChunk: 1,
+        summarizerMaxItemsPerChunk: 1,
+        summarizerMaxImageBytes: 1,
+        summarizerTimeoutMs: 1,
+        summarizationConcurrency: 1,
+        mediaTtlMs: 1,
+        mediaQuotaBytes: 1,
+        digestRunStaleAfterMs: 1,
+        schedulerLeaseMs: 1,
+      },
+      serve: (_options, _handler) => {
+        served++;
+      },
+      log: () => {},
+    });
+    assertEquals(scheduler.jobs.length, 2);
+    assertEquals(served, 1);
+  });
+});
+Deno.test("leader tick recovers stale runs before processing users", async () => {
+  await withTestDb(async (database: Database) => {
+    const scheduler = new FakeScheduler();
+    const events: string[] = [];
+    const user = await createUser(database, userInput("scheduler-recovery-order@example.com"));
+    scheduleDigestJob(scheduler, database, {
+      now: () => 4_000,
+      ownerId: "worker-leader",
+      acquireLease: async () => {
+        events.push("lease");
+        return true;
+      },
+      recoverStaleRuns: async (_database, now, staleAfterMs) => {
+        events.push(`recovery:${now}:${staleAfterMs}`);
+        return 0;
+      },
+      runForUser: (_database, userId) => {
+        events.push(`run:${userId}`);
+        return Promise.resolve({
+          digest: { id: "x", userId, periodStartMs: 0, periodEndMs: 0, status: "complete" as const, createdAt: 0, updatedAt: 0 },
+          sections: [],
+          groups: [],
+        });
+      },
+    });
+    await scheduler.jobs[0].handler();
+    assertEquals(events, ["lease", "recovery:4000:900000", `run:${user.id}`]);
+  });
+});
+
+Deno.test("scheduler skips an already-running user without logging a tick failure", async () => {
+  clearDigestJobStateForTesting();
+  await withTestDb(async (database: Database) => {
+    await createUser(database, userInput("scheduler-conflict-first@example.com"));
+    await createUser(database, userInput("scheduler-conflict-second@example.com"));
+    const errors: string[] = [];
+    let calls = 0;
+    await runDigestTick(database, {
+      now: () => 5_000,
+      logError: (message) => errors.push(message),
+      runForUser: (_database, userId, period) => {
+        calls++;
+        if (calls === 1) return Promise.reject(new DigestRunAlreadyRunningError());
+        return Promise.resolve({
+          digest: { id: "x", userId, periodStartMs: period.startMs, periodEndMs: period.endMs, status: "complete" as const, createdAt: 0, updatedAt: 0 },
+          sections: [],
+          groups: [],
+        });
+      },
+    });
+    assertEquals(calls, 2);
+    assertEquals(errors, []);
+  });
+});
 Deno.test("runDigestTick pages users and respects bounded concurrency", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {

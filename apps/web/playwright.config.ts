@@ -23,14 +23,14 @@ export default defineConfig({
     {
       cwd: "../..",
       command:
-        "deno run --env-file=.env.production.local --allow-net --allow-env --allow-read src/db/migrate.ts && deno run --env-file=.env.production.local --allow-net --allow-env --allow-read --allow-write --allow-sys --allow-ffi src/server/main.ts",
+        "deno task db:migrate && deno task start",
       url: "http://127.0.0.1:3000/health",
       reuseExistingServer: !process.env.CI,
       timeout: 15_000,
     },
     {
       cwd: "../..",
-      command: "npm --workspace apps/web run dev -- --host 127.0.0.1 --port 5173",
+      command: "npm --workspace apps/web run dev",
       url: "http://127.0.0.1:5173",
       reuseExistingServer: !process.env.CI,
       timeout: 15_000,

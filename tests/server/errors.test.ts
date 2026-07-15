@@ -4,11 +4,13 @@ import {
   AuthError,
   ConflictError,
   NotFoundError,
+  PayloadTooLargeError,
   ValidationError,
   errorHandler,
 } from "../../src/server/errors.ts";
 import { buildApp } from "../../src/server/app.ts";
 import { database } from "../../src/db/client.ts";
+import { summarizeErrorForOps } from "../../src/server/error-sanitizer.ts";
 
 // --- helpers ---
 
@@ -123,7 +125,7 @@ Deno.test("malformed JSON body returns error, not 500", async () => {
   });
   const response = await app.request("/parse-body", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
     body: "{ not valid json @@@@",
   });
   // 400 is the expected status for Hono's JSON parse failure
@@ -167,6 +169,68 @@ Deno.test("catch-all handler sanitizes \\nparams: from error messages", async ()
     });
     const logText = logged.join(" ");
     assertNotEquals(logText.includes("super-secret-hash"), true);
+  } finally {
+    globalThis.console.error = originalConsoleError;
+  }
+});
+
+Deno.test("buildApp applies secure response headers before routes", async () => {
+  const app = buildApp(database, {}, {
+    allowedOrigins: ["http://127.0.0.1:5173"],
+    maxRequestBodyBytes: 1_048_576,
+  });
+  const response = await app.request("/health");
+  assertEquals(response.status, 200);
+  assertEquals(response.headers.get("x-frame-options"), "DENY");
+  assertEquals(response.headers.get("strict-transport-security"), "max-age=31536000; includeSubDomains");
+  assertEquals(response.headers.get("x-content-type-options"), "nosniff");
+  assertEquals(response.headers.get("content-security-policy"), null);
+});
+
+Deno.test("buildApp returns typed 413 for oversized request bodies", async () => {
+  const app = buildApp(database, {}, {
+    allowedOrigins: ["http://127.0.0.1:5173"],
+    maxRequestBodyBytes: 4,
+  });
+  const response = await app.request("/health", {
+    method: "POST",
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
+    body: "12345",
+  });
+  assertEquals(response.status, 413);
+  assertEquals(await response.json(), {
+    error: { code: "PAYLOAD_TOO_LARGE", message: "Request body too large" },
+  });
+  assertEquals(new PayloadTooLargeError().statusCode, 413);
+});
+
+Deno.test("operational redaction removes API keys, PEM keys, and URL userinfo", async () => {
+  const logged: string[] = [];
+  const originalConsoleError = globalThis.console.error;
+  globalThis.console.error = (...args: unknown[]) => {
+    logged.push(args.join(" "));
+  };
+  const rawApiKey = "sk-live-secret";
+  const rawGoogleKey = "AIzaSySecretKey";
+  const rawXaiKey = "xai-secret";
+  const rawGrokKey = "gsk_secret";
+  const rawBearer = "Bearer token-secret";
+  const rawPem = "-----BEGIN PRIVATE KEY-----\\nprivate-secret\\n-----END PRIVATE KEY-----";
+  try {
+    const app = testApp((a) => {
+      a.get("/secret-error", () => {
+        throw new Error(
+          `credentials ${rawApiKey} ${rawGoogleKey} ${rawXaiKey} ${rawGrokKey} ${rawBearer} ${rawPem} https://alice:password@example.com/path`,
+        );
+      });
+    });
+    assertEquals((await app.request("/secret-error")).status, 500);
+    const logText = logged.join(" ");
+    for (const secret of [rawApiKey, rawGoogleKey, rawXaiKey, rawGrokKey, rawBearer, rawPem, "alice:password"]) {
+      assertEquals(logText.includes(secret), false);
+    }
+    assertEquals(summarizeErrorForOps(new Error(`${rawApiKey}\\nparams: db-secret`)).includes(rawApiKey), false);
+    assertEquals(summarizeErrorForOps(new Error("x".repeat(501))).length, 500);
   } finally {
     globalThis.console.error = originalConsoleError;
   }

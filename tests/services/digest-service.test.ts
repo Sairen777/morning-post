@@ -308,7 +308,11 @@ Deno.test("assembleDigestForPeriod records summarization failures in digest_run_
     const sourceConnectorIdsBySourceId = new Map([[telegramSourceId, ConnectorId.Telegram]]);
 
     const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
-      summarizer: new FakeSummarizer([new Error("summarizer boom")]),
+      summarizer: new FakeSummarizer([
+        new Error(
+          "summarizer failed with sk-live-secret and https://alice:password@example.com/path",
+        ),
+      ]),
       runId: digestRun.id,
       sourceConnectorIdsBySourceId,
     });
@@ -322,6 +326,9 @@ Deno.test("assembleDigestForPeriod records summarization failures in digest_run_
       (r) => r.stage === "summarization" && r.status === "failed" && r.error_message !== null,
     );
     assertEquals(failedSummarizationRows.length >= 1, true);
+    const persistedError = String(failedSummarizationRows[0].error_message);
+    assertEquals(persistedError.includes("sk-live-secret"), false);
+    assertEquals(persistedError.includes("alice:password"), false);
 
     // assembleDigestForPeriod records feed-level failures but does not finish
     // the digest run — that's the orchestrator's job. Verify the run is still "running".
@@ -330,5 +337,114 @@ Deno.test("assembleDigestForPeriod records summarization failures in digest_run_
     );
     assertEquals(runRows.length, 1);
     assertEquals(runRows[0].status, "running");
+  });
+});
+
+/**
+ * A summarizer that tracks the maximum number of concurrent calls.
+ * Each call yields once to allow other calls to start concurrently.
+ */
+class ConcurrentCountingSummarizer implements SummarizerService {
+  active = 0;
+  maxActive = 0;
+  callCount = 0;
+
+  async summarize(
+    _items: NormalizedItem[],
+    _rules: SummaryRuleset,
+    _options?: SummarizeOptions,
+  ): Promise<SummaryPoint[]> {
+    this.callCount++;
+    this.active++;
+    this.maxActive = Math.max(this.maxActive, this.active);
+    // Yield once so the event loop can start other concurrent calls
+    await Promise.resolve();
+    this.active--;
+    return [{ text: "summary", sourceUrl: null }];
+  }
+}
+
+Deno.test("assembleDigestForPeriod respects summarizationConcurrency=2 with bounded parallelism", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("concurrency-2-test@example.com"));
+    const sourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const feed1 = await createFeedForSource(database, user.id, sourceId, 1, "channel:a", "Feed A");
+    const feed2 = await createFeedForSource(database, user.id, sourceId, 2, "channel:b", "Feed B");
+    const feed3 = await createFeedForSource(database, user.id, sourceId, 3, "channel:c", "Feed C");
+    for (const feed of [feed1, feed2, feed3]) {
+      await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "item text")], 1);
+    }
+
+    const counter = new ConcurrentCountingSummarizer();
+    const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: counter,
+      summarizationConcurrency: 2,
+    });
+
+    assertEquals(view.digest.status, "complete", "digest should complete");
+    assertEquals(view.sections.length, 3, "all 3 feeds should produce sections");
+    assertEquals(counter.callCount, 3, "all 3 feeds should be summarized");
+    // With concurrency=2 and 3 feeds, at most 2 should run concurrently
+    assertEquals(counter.maxActive <= 2, true, `max concurrent should be ≤2, was ${counter.maxActive}`);
+    // Ordering should be by position
+    assertEquals(view.sections[0].feedId, feed1.id);
+    assertEquals(view.sections[1].feedId, feed2.id);
+    assertEquals(view.sections[2].feedId, feed3.id);
+  });
+});
+
+Deno.test("assembleDigestForPeriod with concurrency=1 runs feeds sequentially", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("concurrency-1-test@example.com"));
+    const sourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const feed1 = await createFeedForSource(database, user.id, sourceId, 1, "channel:x", "Feed X");
+    const feed2 = await createFeedForSource(database, user.id, sourceId, 2, "channel:y", "Feed Y");
+    for (const feed of [feed1, feed2]) {
+      await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "item text")], 1);
+    }
+
+    const counter = new ConcurrentCountingSummarizer();
+    const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: counter,
+      summarizationConcurrency: 1,
+    });
+
+    assertEquals(view.digest.status, "complete", "digest should complete");
+    assertEquals(view.sections.length, 2, "both feeds should produce sections");
+    assertEquals(counter.callCount, 2, "both feeds should be summarized");
+    // With concurrency=1, feeds run sequentially
+    assertEquals(counter.maxActive, 1, `max concurrent should be 1, was ${counter.maxActive}`);
+    assertEquals(view.sections[0].feedId, feed1.id);
+    assertEquals(view.sections[1].feedId, feed2.id);
+  });
+});
+
+Deno.test("assembleDigestForPeriod with concurrent summarization isolates feed failures", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("concurrency-failure@example.com"));
+    const sourceId = await createSourceForUser(database, user.id, ConnectorId.Telegram, 1);
+    const feed1 = await createFeedForSource(database, user.id, sourceId, 1, "channel:good", "Good Feed");
+    const feed2 = await createFeedForSource(database, user.id, sourceId, 2, "channel:bad", "Bad Feed");
+    for (const feed of [feed1, feed2]) {
+      await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "item text")], 1);
+    }
+
+    // Second summarizer call throws; first succeeds
+    const failingSummarizer = new FakeSummarizer([
+      [{ text: "good summary", sourceUrl: null }],
+      new Error("bad feed error"),
+    ]);
+
+    const view = await assembleDigestForPeriod(database, user.id, periodStartMs, periodEndMs, {
+      summarizer: failingSummarizer,
+      summarizationConcurrency: 5,
+    });
+
+    // Digest marked failed because one feed failed
+    assertEquals(view.digest.status, "failed");
+    // The good feed's section is still present
+    assertEquals(view.sections.length, 1, "only the successful feed should have a section");
+    assertEquals(view.sections[0].feedId, feed1.id);
+    assertEquals(view.sections[0].points[0].text, "good summary");
   });
 });

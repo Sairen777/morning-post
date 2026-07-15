@@ -28,7 +28,7 @@ function buildCredentialCipher(): CredentialCipher {
 function jsonRequest(method: "POST" | "PATCH" | "DELETE", body?: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
     body: body === undefined ? undefined : JSON.stringify(body),
   };
 }
@@ -160,7 +160,7 @@ Deno.test("PATCH /sources/:id updates position and enabled", async () => {
 
     const response = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { position: 1, enabled: false }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 200);
     const json = await response.json();
@@ -199,13 +199,13 @@ Deno.test("sources routes keep users scoped to their own rows", async () => {
 
     const patchResponse = await app.request(`/sources/${userBSource.id}`, {
       ...jsonRequest("PATCH", { enabled: false }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(patchResponse.status, 404);
 
     const deleteResponse = await app.request(`/sources/${userBSource.id}`, {
       method: "DELETE",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(deleteResponse.status, 404);
   });
@@ -218,13 +218,13 @@ Deno.test("sources routes reject invalid UUID parameters with 422", async () => 
 
     const patchResponse = await app.request("/sources/not-a-uuid", {
       ...jsonRequest("PATCH", { enabled: false }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(patchResponse.status, 422);
 
     const deleteResponse = await app.request("/sources/not-a-uuid", {
       method: "DELETE",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(deleteResponse.status, 422);
   });
@@ -239,7 +239,7 @@ Deno.test("PATCH /sources/:id rejects unsupported fields", async () => {
 
     const response = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { connectorId: "rss" }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 422);
   });
@@ -254,13 +254,13 @@ Deno.test("PATCH /sources/:id rejects positions outside the PostgreSQL integer r
 
     const tooLargeResponse = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { position: 2_147_483_648 }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(tooLargeResponse.status, 422);
 
     const tooSmallResponse = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { position: -2_147_483_649 }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(tooSmallResponse.status, 422);
   });
@@ -285,7 +285,7 @@ Deno.test("DELETE /sources/:id disconnects telegram sources and preserves the ro
 
     const deleteResponse = await app.request(`/sources/${source.id}`, {
       method: "DELETE",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(deleteResponse.status, 200);
     const deleteJson = await deleteResponse.json();
@@ -335,13 +335,13 @@ Deno.test("PATCH /sources/:id rejects re-enabling a disconnected source", async 
 
     const deleteResponse = await app.request(`/sources/${source.id}`, {
       method: "DELETE",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(deleteResponse.status, 200);
 
     const patchResponse = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { enabled: true }),
-      headers: { "content-type": "application/json", cookie },
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(patchResponse.status, 409);
     const patchJson = await patchResponse.json();
@@ -362,7 +362,7 @@ Deno.test("DELETE /sources/:id returns revokeTelegramSession false for non-teleg
 
     const response = await app.request(`/sources/${source.id}`, {
       method: "DELETE",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 200);
     const json = await response.json();

@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes } from "@std/assert"
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert"
 import { OpenAICompatibleSummarizerService, resolveOpenAICompatibleSummarizerModel } from "../src/summarizers/openai-compatible-summarizer.ts";
 import {
   buildDiscussionPrompt,
@@ -458,5 +458,242 @@ Deno.test("resolveOpenAICompatibleSummarizerModel — env fallback and explicit 
     } else {
       Deno.env.set("SUMMARIZER_MODEL", old);
     }
+  }
+});
+
+// --- empty and filtered input ---
+
+Deno.test("summarize — returns [] for empty items", async () => {
+  const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+  const results = await svc.summarize([], buildNewsPrompt());
+  assertEquals(results, []);
+});
+
+Deno.test("summarize — returns [] when all items are filtered (emoji-only, no photo)", async () => {
+  const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+  const results = await svc.summarize(
+    [item({ text: "👍🔥😂" }), item({ text: "" })],
+    buildNewsPrompt(),
+  );
+  assertEquals(results, []);
+});
+
+// --- chunking and merge ---
+
+Deno.test("summarize — chunks items and merges when maxItemsPerChunk is exceeded", async () => {
+  // 3 items, maxItemsPerChunk=2 → chunk 1 gets items 0,1; chunk 2 gets item 2.
+  // Each chunk returns fewer points than items to simulate real summarization reduction.
+  // Merge call returns final points.
+  const responses = [
+    // Chunk 1 (2 items → 1 point)
+    {
+      status: 200,
+      body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"summary AB\\",\\"i\\":0}]"}}]}',
+    },
+    // Chunk 2 (1 item → 1 point)
+    {
+      status: 200,
+      body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"summary C\\",\\"i\\":0}]"}}]}',
+    },
+    // Merge: 2 synthetic items, maxItemsPerChunk=2 → 1 chunk → result
+    {
+      status: 200,
+      body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"final X\\",\\"i\\":0},{\\"t\\":\\"final Y\\",\\"i\\":1}]"}}]}',
+    },
+  ];
+  const { callCount, restore } = stubFetchSequence(responses);
+  try {
+    const svc = new OpenAICompatibleSummarizerService(
+      "test-model", "http://localhost", undefined, 0, 120_000, 2,
+    );
+    const results = await svc.summarize(
+      [item({ text: "item A" }), item({ text: "item B" }), item({ text: "item C" })],
+      buildNewsPrompt(),
+    );
+    assertEquals(callCount(), 3, "expected 3 calls: 2 chunk + 1 merge");
+    assertEquals(results.length, 2);
+    assertEquals(results[0].text, "final X");
+    assertEquals(results[1].text, "final Y");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("summarize — single chunk skips merge", async () => {
+  const { callCount, restore } = stubFetchSequence([
+    {
+      status: 200,
+      body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"single\\",\\"i\\":0}]"}}]}',
+    },
+  ]);
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(callCount(), 1, "expected single call with no merge");
+    assertEquals(results.length, 1);
+    assertEquals(results[0].text, "single");
+  } finally {
+    restore();
+  }
+});
+
+// --- oversize text truncation ---
+
+Deno.test("summarize — truncates item text exceeding maxTextBytesPerChunk", async () => {
+  const longText = "A".repeat(200);
+  const maxBytes = 100;
+
+  const { captured, restore } = captureFetch({
+    choices: [{ message: { content: "[{\"t\":\"truncated\",\"i\":0}]" } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService(
+      "test-model", "http://localhost", undefined, 0, maxBytes,
+    );
+    await svc.summarize(
+      [item({ text: longText })],
+      buildNewsPrompt(),
+    );
+    const content = captured.body!.messages[1].content as string;
+    // The text part is "[0]\n" + truncated text
+    assertStringIncludes(content, "A".repeat(maxBytes));
+    assert(!content.includes("A".repeat(maxBytes + 1)), "text should be truncated");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("summarize — normal text below maxTextBytesPerChunk is not truncated", async () => {
+  const normalText = "Hello world";
+
+  const { captured, restore } = captureFetch({
+    choices: [{ message: { content: "[{\"t\":\"normal\",\"i\":0}]" } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService(
+      "test-model", "http://localhost", undefined, 0, 100,
+    );
+    await svc.summarize(
+      [item({ text: normalText })],
+      buildNewsPrompt(),
+    );
+    const content = captured.body!.messages[1].content as string;
+    assertStringIncludes(content, "Hello world");
+  } finally {
+    restore();
+  }
+});
+
+// --- image omission ---
+
+Deno.test("summarize — omits images above maxImageBytes", async () => {
+  const temporaryDirectory = "./.test-data/summarizer-test-images";
+  try {
+    await Deno.mkdir(temporaryDirectory, { recursive: true });
+    await Deno.writeFile(`${temporaryDirectory}/small.jpg`, new Uint8Array(50)); // 50 bytes
+    await Deno.writeFile(`${temporaryDirectory}/large.jpg`, new Uint8Array(2_000)); // 2KB
+    const maxImageBytes = 100;
+
+    // Small image below threshold: included (not omitted)
+    const { captured, restore } = captureFetch({
+      choices: [{ message: { content: "[{\"t\":\"done\",\"i\":0}]" } }],
+    });
+    try {
+      const svc = new OpenAICompatibleSummarizerService(
+        "test-model", "http://localhost", undefined, 0, 120_000, 50, maxImageBytes,
+      );
+      await svc.summarize(
+        [item({ text: "small img", media: { type: "photo", localPath: `${temporaryDirectory}/small.jpg` } })],
+        buildNewsPrompt(),
+      );
+      const content = captured.body!.messages[1].content;
+      assert(Array.isArray(content), "small image should produce array content (image_url present)");
+      const textParts = content.filter((p: { type: string }) => p.type === "text");
+      const imageParts = content.filter((p: { type: string }) => p.type === "image_url");
+      assert(imageParts.length > 0, "small image should produce an image_url part");
+      const omittedTexts = textParts.filter((p: { text: string }) => p.text === "[IMAGE_OMITTED]");
+      assertEquals(omittedTexts.length, 0, "small image should not be omitted");
+    } finally {
+      restore();
+    }
+
+    // Large image above threshold: omitted → [IMAGE_OMITTED] text
+    const { captured: captured2, restore: restore2 } = captureFetch({
+      choices: [{ message: { content: "[{\"t\":\"done\",\"i\":0}]" } }],
+    });
+    try {
+      const svc = new OpenAICompatibleSummarizerService(
+        "test-model", "http://localhost", undefined, 0, 120_000, 50, maxImageBytes,
+      );
+      await svc.summarize(
+        [item({ text: "large img", media: { type: "photo", localPath: `${temporaryDirectory}/large.jpg` } })],
+        buildNewsPrompt(),
+      );
+      const content = captured2.body!.messages[1].content;
+      assert(typeof content === "string", "omitted images produce collapsed string");
+      assertStringIncludes(content, "[IMAGE_OMITTED]", "large image should be omitted");
+    } finally {
+      restore2();
+    }
+  } finally {
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — allows remote base URL with opt-in", async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: '[{"t":"remote summary","i":0}]' } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService(
+      "test-model",
+      "https://api.openai.com/v1",
+      undefined, 0, 120_000, 50, 1_000_000, true,
+    );
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "remote summary");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("summarize — allows loopback URL without opt-in flag", async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: '[{"t":"local summary","i":0}]' } }],
+  });
+  try {
+    const svc = new OpenAICompatibleSummarizerService(
+      "test-model",
+      "http://127.0.0.1:1234/v1",
+      undefined, 0, 120_000, 50, 1_000_000, false,
+    );
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "local summary");
+  } finally {
+    restore();
+  }
+});
+
+// --- Retry-After header ---
+
+Deno.test("summarize — retries on 429 with Retry-After header", async () => {
+  const original = globalThis.fetch;
+  let callIndex = 0;
+  const specs: Array<{ status: number; body: string; headers: Record<string, string> }> = [
+    { status: 429, body: '{"error":"rate limited"}', headers: { "Retry-After": "0", "Content-Type": "application/json" } },
+    { status: 200, body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"after retry-after\\",\\"i\\":0}]"}}]}', headers: { "Content-Type": "application/json" } },
+  ];
+  globalThis.fetch = () => {
+    const spec = specs[callIndex] ?? specs[specs.length - 1];
+    callIndex++;
+    return Promise.resolve(new Response(spec.body, { status: spec.status, headers: spec.headers }));
+  };
+  try {
+    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "after retry-after");
+    assertEquals(callIndex, 2);
+  } finally {
+    globalThis.fetch = original;
   }
 });

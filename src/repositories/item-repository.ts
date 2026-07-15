@@ -78,6 +78,28 @@ export async function upsertItems(
   return rows.map(parseStoredItem);
 }
 
+export async function listMediaPathsForFeedWindow(
+  database: Database,
+  feedId: string,
+  from: number,
+  to: number,
+): Promise<string[]> {
+  const rows = await database
+    .select()
+    .from(items)
+    .where(and(eq(items.feedId, feedId), between(items.date, from, to)))
+    .orderBy(asc(items.date), asc(items.externalId));
+  const paths: string[] = [];
+  for (const row of rows) {
+    const payload = row.payload as NormalizedItem;
+    if (payload.media?.type === "photo") {
+      paths.push(payload.media.localPath);
+    } else if (payload.media?.type === "album") {
+      paths.push(...payload.media.localPaths);
+    }
+  }
+  return paths;
+}
 export async function listItemsForFeedInWindow(
   database: Database,
   feedId: string,

@@ -1,6 +1,6 @@
 import type { Context } from "@hono/hono";
-
-type StatusCode = 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500;
+import { sanitizeErrorForOps } from "./error-sanitizer.ts";
+export type StatusCode = 400 | 401 | 403 | 404 | 409 | 413 | 422 | 429 | 500;
 
 export class AppError extends Error {
   constructor(
@@ -42,6 +42,12 @@ export class RateLimitError extends AppError {
   }
 }
 
+export class PayloadTooLargeError extends AppError {
+  constructor(message = "Request body too large") {
+    super(413, message);
+  }
+}
+
 function codeFromStatus(statusCode: StatusCode): string {
   const map: Record<number, string> = {
     400: "BAD_REQUEST",
@@ -49,6 +55,7 @@ function codeFromStatus(statusCode: StatusCode): string {
     403: "FORBIDDEN",
     404: "NOT_FOUND",
     409: "CONFLICT",
+    413: "PAYLOAD_TOO_LARGE",
     422: "VALIDATION_ERROR",
     429: "RATE_LIMITED",
     500: "INTERNAL_ERROR",
@@ -82,8 +89,9 @@ export function errorHandler(error: Error, context: Context): Response {
     );
   }
 
-  const message = error instanceof Error ? error.message.split("\nparams:")[0] : String(error);
-  console.error(`${error instanceof Error ? error.name : "Error"}: ${message}`);
+  const message = sanitizeErrorForOps(error);
+  const name = error instanceof Error ? sanitizeErrorForOps(error.name) : "Error";
+  console.error(`${name}: ${message}`);
   // Unknown errors — never leak internals.
   return context.json(
     {

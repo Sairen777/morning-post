@@ -1,5 +1,6 @@
 import { jsonrepair } from "jsonrepair";
 import type { NormalizedItem } from "../connectors/connector.types.ts";
+import { ConnectorId } from "../constants.ts";
 import type {
   ContentPart,
   ImagePart,
@@ -24,10 +25,85 @@ const DEFAULTS = Deno.env.get("LOCAL_API") === "true"
     apiKey: Deno.env.get("GEMINI_API_KEY"),
   };
 
+/**
+ * Default config-resolved values for summarization limits.
+ * These mirror the defaults in src/config.ts.
+ */
+const DEFAULT_MAX_TEXT_BYTES_PER_CHUNK = 120_000;
+const DEFAULT_MAX_ITEMS_PER_CHUNK = 50;
+const DEFAULT_MAX_IMAGE_BYTES = 1_000_000;
 
 export function resolveOpenAICompatibleSummarizerModel(model?: string | null): string {
   return model ?? Deno.env.get("SUMMARIZER_MODEL") ?? DEFAULTS.model;
 }
+
+export function resolveAllowRemoteSummarization(): boolean {
+  const val = Deno.env.get("ALLOW_REMOTE_SUMMARIZATION");
+  if (val === undefined) return false;
+  return val === "true" || val === "1";
+}
+
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException("Aborted", "AbortError"));
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Partition items into chunks respecting maxItemsPerChunk and maxTextBytesPerChunk.
+ * Items whose text alone exceeds the text budget are truncated at the budget
+ * (their index is preserved); they start a new chunk as a single-item chunk.
+ */
+function partitionItems(
+  items: NormalizedItem[],
+  maxItems: number,
+  maxTextBytes: number,
+): NormalizedItem[][] {
+  const chunks: NormalizedItem[][] = [];
+  let current: NormalizedItem[] = [];
+  let currentBytes = 0;
+
+  for (const item of items) {
+    const textLen = item.text ? item.text.length : 0;
+    const effectiveLen = Math.min(textLen, maxTextBytes);
+
+    // Start a new chunk if the current one is full — but never start empty
+    if (current.length > 0 && (current.length >= maxItems || currentBytes + effectiveLen > maxTextBytes)) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+
+    current.push(item);
+    currentBytes += effectiveLen;
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
 export class OpenAICompatibleSummarizerService implements SummarizerService {
   constructor(
     private model: string = resolveOpenAICompatibleSummarizerModel(),
@@ -35,6 +111,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       DEFAULTS.baseUrl,
     private apiKey: string | undefined = DEFAULTS.apiKey,
     private retryBaseDelayMs: number = 1000,
+    private maxTextBytesPerChunk: number = DEFAULT_MAX_TEXT_BYTES_PER_CHUNK,
+    private maxItemsPerChunk: number = DEFAULT_MAX_ITEMS_PER_CHUNK,
+    private maxImageBytes: number = DEFAULT_MAX_IMAGE_BYTES,
+    private allowRemoteSummarization: boolean = resolveAllowRemoteSummarization(),
   ) {}
 
   public async summarize(
@@ -42,10 +122,118 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     rules: SummaryRuleset,
     options: SummarizeOptions = {},
   ): Promise<SummaryPoint[]> {
-    const { parts, indexedItems } = await this.buildContentParts(items, rules);
+    const maxTextBytesPerChunk = options.maxTextBytesPerChunk ?? this.maxTextBytesPerChunk;
+    const maxItemsPerChunk = options.maxItemsPerChunk ?? this.maxItemsPerChunk;
+    const maxImageBytes = options.maxImageBytes ?? this.maxImageBytes;
+    const signal = options.signal;
+    const allowRemote = options.allowRemoteSummarization ?? this.allowRemoteSummarization;
 
+    // Remote URL validation: only loopback is allowed without explicit opt-in.
+    if (!isLoopbackUrl(this.baseUrl) && !allowRemote) {
+      throw new Error(
+        `Remote summarizer base URL "${this.baseUrl}" requires ALLOW_REMOTE_SUMMARIZATION=true`,
+      );
+    }
+
+    return this.summarizeInternal(items, rules, {
+      ...options,
+      maxTextBytesPerChunk,
+      maxItemsPerChunk,
+      maxImageBytes,
+      signal,
+    });
+  }
+
+  /**
+   * Internal summarization that skips remote-URL validation (used by merge).
+   */
+  private async summarizeInternal(
+    items: NormalizedItem[],
+    rules: SummaryRuleset,
+    options: Required<Pick<SummarizeOptions, "maxTextBytesPerChunk" | "maxItemsPerChunk" | "maxImageBytes">> &
+      Pick<SummarizeOptions, "model" | "signal">,
+  ): Promise<SummaryPoint[]> {
+    const maxTextBytes = options.maxTextBytesPerChunk;
+    const maxItems = options.maxItemsPerChunk;
+    const maxImageBytes = options.maxImageBytes;
+    const signal = options.signal;
+
+    // Filter emoji-only / empty-text items (same logic as buildContentParts filtering)
+    const filtered = items.filter((item) => {
+      const hasPhoto = item.media?.type === "photo" || item.media?.type === "album";
+      if (!item.text.trim() && !hasPhoto) return false;
+      if (isEmojiOnly(item.text) && !hasPhoto) return false;
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      return [];
+    }
+
+    // Partition into chunks
+    const chunks = partitionItems(filtered, maxItems, maxTextBytes);
+
+    // Process each chunk sequentially
+    const chunkResults: SummaryPoint[][] = [];
+    for (const chunk of chunks) {
+      const result = await this.processChunk(chunk, rules, {
+        maxTextBytesPerChunk: maxTextBytes,
+        maxImageBytes,
+        model: options.model,
+        signal,
+      });
+      chunkResults.push(result);
+    }
+
+    if (chunkResults.length === 1) {
+      return chunkResults[0];
+    }
+
+    // Merge multiple chunk results
+    return this.mergeChunkResults(chunkResults, rules, {
+      maxTextBytesPerChunk: maxTextBytes,
+      maxItemsPerChunk: maxItems,
+      maxImageBytes: 0,
+      model: options.model,
+      signal,
+    });
+  }
+
+  /**
+   * Build content parts and make one API call for a single chunk.
+   */
+  private async processChunk(
+    items: NormalizedItem[],
+    rules: SummaryRuleset,
+    options: {
+      maxTextBytesPerChunk: number;
+      maxImageBytes: number;
+      model?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<SummaryPoint[]> {
+    const { parts, indexedItems } = await this.buildContentParts(
+      items,
+      rules,
+      options.maxTextBytesPerChunk,
+      options.maxImageBytes,
+    );
+
+    return this.callApiWithRetry(parts, indexedItems, rules, options.model, options.signal);
+  }
+
+  /**
+   * Make the API call with retry logic, signal support, and Retry-After parsing.
+   */
+  private async callApiWithRetry(
+    parts: ContentPart[] | string,
+    indexedItems: NormalizedItem[],
+    rules: SummaryRuleset,
+    model?: string,
+    signal?: AbortSignal,
+  ): Promise<SummaryPoint[]> {
     const body = JSON.stringify({
-      model: options.model ?? this.model,
+      model: model ?? this.model,
       stream: false,
       messages: [
         { role: "system", content: rules.systemPrompt },
@@ -57,6 +245,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      if (signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
@@ -64,6 +256,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
           ...(this.apiKey && { Authorization: `Bearer ${this.apiKey}` }),
         },
         body,
+        signal,
       });
 
       if (response.ok) {
@@ -85,8 +278,17 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       );
 
       if (retryable && attempt < maxRetries - 1) {
-        const delay = Math.pow(2, attempt) * this.retryBaseDelayMs;
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        // Parse optional Retry-After header, bounded by same overall backoff cap
+        let retryAfterMs = Math.pow(2, attempt) * this.retryBaseDelayMs;
+        const retryAfterHeader = response.headers.get("Retry-After");
+        if (retryAfterHeader) {
+          const parsed = parseInt(retryAfterHeader, 10);
+          if (!isNaN(parsed) && parsed > 0) {
+            retryAfterMs = Math.min(parsed * 1000, 30_000); // clamp to 30s
+          }
+        }
+
+        await delay(retryAfterMs, signal);
         continue;
       }
 
@@ -94,12 +296,58 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     }
 
     throw lastError ?? new Error("Summarizer API: unexpected retry exhaustion");
+  }
 
+  /**
+   * Merge multiple chunk results into a single SummaryPoint[].
+   * Creates synthetic NormalizedItems from the chunk summaries, then
+   * summarizes them (no images). If the merge input exceeds chunk budgets,
+   * it is further partitioned and merged sequentially.
+   */
+  private async mergeChunkResults(
+    chunkResults: SummaryPoint[][],
+    rules: SummaryRuleset,
+    options: {
+      maxTextBytesPerChunk: number;
+      maxItemsPerChunk: number;
+      maxImageBytes: number;
+      model?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<SummaryPoint[]> {
+    // Build synthetic items from chunk results
+    const mergeItems: NormalizedItem[] = [];
+    for (let chunkIdx = 0; chunkIdx < chunkResults.length; chunkIdx++) {
+      for (let pointIdx = 0; pointIdx < chunkResults[chunkIdx].length; pointIdx++) {
+        const point = chunkResults[chunkIdx][pointIdx];
+        mergeItems.push({
+          connectorId: ConnectorId.Telegram,
+          feedExternalId: point.channel ?? `merge-chunk-${chunkIdx}`,
+          externalId: `merge-${chunkIdx}-${pointIdx}`,
+          date: point.date ? new Date(point.date).getTime() : Date.now(),
+          title: null,
+          text: point.text,
+          author: null,
+          url: point.sourceUrl,
+        });
+      }
+    }
+
+    // No images in merge
+    const mergeRules: SummaryRuleset = {
+      ...rules,
+      includeMedia: false,
+    };
+
+    // Recurse through summarization (skips remote URL check since we call the internal method)
+    return this.summarizeInternal(mergeItems, mergeRules, options);
   }
 
   private async buildContentParts(
     items: NormalizedItem[],
     rules: SummaryRuleset,
+    maxTextBytesPerChunk: number,
+    maxImageBytes: number,
   ): Promise<{
     parts: ContentPart[] | string;
     indexedItems: NormalizedItem[];
@@ -109,17 +357,6 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     const parts: ContentPart[] = [];
     const indexedItems: NormalizedItem[] = [];
 
-    // WARNING: for large group chats (300+ messages) this sends all messages in a single
-    // request and may overflow the model's context window. Options if that becomes a problem:
-    //   1. Hard cap — slice to the last N items before calling this method
-    //   2. Time-window cap — caller filters to a shorter period
-    //   3. Chunked summarization — split into batches of ~50, summarize each, then
-    //      summarize the intermediate summaries (most accurate for long threads)
-
-    // The OpenAI vision API requires images to be separate image_url objects in
-    // the content array — base64 cannot be embedded inside a text part.
-    // Association between text and images is positional: the model treats all
-    // consecutive image_url parts following a text part as belonging to that text.
     for (const item of items) {
       const hasPhoto = item.media?.type === "photo" ||
         item.media?.type === "album";
@@ -129,17 +366,28 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       const i = indexedItems.length;
       indexedItems.push(item);
 
+      // Truncate oversize item text to the per-item cap
+      const itemText = item.text.length > maxTextBytesPerChunk
+        ? item.text.slice(0, maxTextBytesPerChunk)
+        : item.text;
+
       const header = showAuthors
         ? `[${i}] ${item.author ?? "Unknown"}`
         : `[${i}]`;
-      parts.push({ type: "text", text: `${header}\n${item.text}` });
+      parts.push({ type: "text", text: `${header}\n${itemText}` });
 
       if (includeMedia) {
         if (item.media?.type === "photo") {
-          parts.push(await this.imagePartFromPath(item.media.localPath));
+          const omitted = await this.maybeAppendImage(item.media.localPath, maxImageBytes, parts);
+          if (omitted) {
+            parts.push({ type: "text", text: `[IMAGE_OMITTED]` });
+          }
         } else if (item.media?.type === "album") {
           for (const localPath of item.media.localPaths) {
-            parts.push(await this.imagePartFromPath(localPath));
+            const omitted = await this.maybeAppendImage(localPath, maxImageBytes, parts);
+            if (omitted) {
+              parts.push({ type: "text", text: `[IMAGE_OMITTED]` });
+            }
           }
         }
       }
@@ -154,6 +402,29 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     }
 
     return { parts, indexedItems };
+  }
+
+  /**
+   * Check image file size against maxImageBytes and either append the image
+   * part or skip. Returns true if the image was skipped (omitted).
+   */
+  private async maybeAppendImage(
+    localPath: string,
+    maxImageBytes: number,
+    parts: ContentPart[],
+  ): Promise<boolean> {
+    if (maxImageBytes > 0) {
+      try {
+        const stat = await Deno.stat(localPath);
+        if (stat.size > maxImageBytes) {
+          return true; // caller inserts [IMAGE_OMITTED]
+        }
+      } catch {
+        return true; // can't stat, omit
+      }
+    }
+    parts.push(await this.imagePartFromPath(localPath));
+    return false;
   }
 
   private parsePoints(

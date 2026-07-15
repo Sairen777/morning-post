@@ -1,7 +1,11 @@
 import { createMiddleware } from "@hono/hono/factory";
 import type { Database } from "../../db/client.ts";
 import { AuthError } from "../errors.ts";
-import { readSessionToken, validateSessionToken } from "../../auth/session-service.ts";
+import {
+  readSessionToken,
+  setSessionCookie,
+  validateSessionToken,
+} from "../../auth/session-service.ts";
 
 /** Hono context variables set by `requireAuth`. */
 export interface AuthVariables {
@@ -20,11 +24,14 @@ export function requireAuth(database: Database) {
     if (!token) {
       throw new AuthError();
     }
-    const userId = await validateSessionToken(database, token, Date.now());
-    if (!userId) {
+    const session = await validateSessionToken(database, token, Date.now());
+    if (!session) {
       throw new AuthError();
     }
-    context.set("userId", userId);
+    context.set("userId", session.userId);
+    if (session.refreshExpiresAt !== null) {
+      setSessionCookie(context, session.token, session.refreshExpiresAt);
+    }
     await next();
   });
 }

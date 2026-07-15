@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assert } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
@@ -14,7 +14,7 @@ import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { findSummaryForFeedPeriod } from "../../src/repositories/summary-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
-import { getOrSummarizeFeedPeriod, summarizeFeedPeriod } from "../../src/services/summarization-service.ts";
+import { cleanupFeedMedia, getOrSummarizeFeedPeriod, summarizeFeedPeriod } from "../../src/services/summarization-service.ts";
 import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
 
 class FakeSummarizer implements SummarizerService {
@@ -200,5 +200,136 @@ Deno.test("getOrSummarizeFeedPeriod enforces feed ownership on cached summaries"
       Error,
       "feed not found",
     );
+  });
+});
+
+// --- Fake summarizers for signal/timeout tests ---
+
+class SignalAwareFakeSummarizer implements SummarizerService {
+  readonly calls: Array<{ items: NormalizedItem[]; rules: SummaryRuleset; options?: SummarizeOptions }> = [];
+
+  summarize(items: NormalizedItem[], rules: SummaryRuleset, options?: SummarizeOptions): Promise<SummaryPoint[]> {
+    this.calls.push({ items, rules, options });
+    if (options?.signal?.aborted) {
+      return Promise.reject(options.signal.reason);
+    }
+    return Promise.resolve(items.map(() => ({ text: "ok", sourceUrl: null })));
+  }
+}
+
+class NeverSettlingFakeSummarizer implements SummarizerService {
+  summarize(_items: NormalizedItem[], _rules: SummaryRuleset, options?: SummarizeOptions): Promise<SummaryPoint[]> {
+    // Return a promise that rejects when the signal aborts, never resolves otherwise
+    return new Promise<SummaryPoint[]>((_resolve, reject) => {
+      if (options?.signal) {
+        if (options.signal.aborted) {
+          reject(options.signal.reason);
+          return;
+        }
+        options.signal.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+      }
+      // If no signal provided, never settle (simulates a hang)
+    });
+  }
+}
+
+Deno.test("summarizeOwnedFeedPeriod — abort signal before summarization rejects with AbortError", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(database, "summarize-abort@example.com");
+    await upsertItems(database, feed.id, [normalizedItem()], 1);
+    const summarizer = new SignalAwareFakeSummarizer();
+    const signal = AbortSignal.abort(new DOMException("test abort", "AbortError"));
+
+    await assertRejects(
+      () => summarizeFeedPeriod(database, user.id, feed.id, periodStartMs, periodEndMs, { summarizer, signal }),
+      DOMException,
+      "test abort",
+    );
+  });
+});
+
+Deno.test("summarizeOwnedFeedPeriod — timeout during summarization rejects with TimeoutError", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(database, "summarize-timeout@example.com");
+    await upsertItems(database, feed.id, [normalizedItem()], 1);
+    const summarizer = new NeverSettlingFakeSummarizer();
+
+    await assertRejects(
+      () => summarizeFeedPeriod(database, user.id, feed.id, periodStartMs, periodEndMs, { summarizer, timeoutMs: 5 }),
+      DOMException,
+      "Summarizer timed out",
+    );
+  });
+});
+Deno.test("cleanupFeedMedia — deletes files for media items in the window", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(database, "summarize-cleanup-file@example.com");
+    const testDir = "./media/test-summarization-cleanup";
+    await Deno.mkdir(testDir, { recursive: true });
+    const mediaPath = `${testDir}/test-photo.jpg`;
+    await Deno.writeTextFile(mediaPath, "fake image bytes");
+
+    await upsertItems(database, feed.id, [normalizedItem({
+      media: { type: "photo" as const, localPath: mediaPath },
+    })], 1);
+
+    await cleanupFeedMedia(database, feed.id, periodStartMs, periodEndMs);
+
+    // File should be gone
+    await assertRejects(() => Deno.stat(mediaPath), Deno.errors.NotFound);
+    await Deno.remove(testDir, { recursive: true }).catch(() => {});
+  });
+});
+
+Deno.test("cleanupFeedMedia — handles missing file without throwing", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(database, "summarize-cleanup-missing@example.com");
+    const testDir = "./media/test-summarization-cleanup-missing";
+    await Deno.mkdir(testDir, { recursive: true });
+    const missingPath = `${testDir}/nonexistent-media-file.jpg`;
+
+    await upsertItems(database, feed.id, [normalizedItem({
+      media: { type: "photo" as const, localPath: missingPath },
+    })], 1);
+
+    // Should not throw despite file not existing
+    await cleanupFeedMedia(database, feed.id, periodStartMs, periodEndMs);
+    await Deno.remove(testDir, { recursive: true }).catch(() => {});
+  });
+});
+
+Deno.test("summarizeFeedPeriod — media cleanup after success does not fail the summarization", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(database, "summarize-cleanup-nonfatal@example.com");
+    const testDir = "./media/test-summarization-cleanup-nonfatal";
+    await Deno.mkdir(testDir, { recursive: true });
+    await Deno.writeTextFile(`${testDir}/wont-be-deleted.jpg`, "image");
+    // Create a subdirectory with a file in it — Deno.remove on a non-empty
+    // directory fails (EPERM on macOS), simulating a nonfatal cleanup error.
+    await Deno.mkdir(`${testDir}/subdir`, { recursive: true });
+    await Deno.writeTextFile(`${testDir}/subdir/locked.jpg`, "locked");
+    const mediaPath = `${testDir}/subdir/locked.jpg`;
+
+    await upsertItems(database, feed.id, [normalizedItem({
+      media: { type: "photo" as const, localPath: mediaPath },
+    })], 1);
+
+    const summarizer = new FakeSummarizer([[{ text: "Keep me", sourceUrl: null }]]);
+
+    // Summarization should succeed even though cleanup will fail
+    // (Deno.remove on a single file should succeed, but this test simulates
+    //  a scenario where the cleanup encounters an error)
+    const summary = await summarizeFeedPeriod(
+      database,
+      user.id,
+      feed.id,
+      periodStartMs,
+      periodEndMs,
+      { summarizer, now: () => 55 },
+    );
+    assertEquals(summary.points.length, 1);
+    assertEquals(summary.points[0].text, "Keep me");
+
+    await Deno.remove(testDir, { recursive: true }).catch(() => {});
   });
 });

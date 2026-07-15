@@ -1,6 +1,7 @@
 import { Hono, type MiddlewareHandler } from "@hono/hono";
 import { z } from "zod";
 import type { Database } from "../../db/client.ts";
+import { getConfig } from "../../config.ts";
 import {
   type User,
 } from "../../repositories/user-repository.ts";
@@ -61,6 +62,7 @@ const INVALID_CREDENTIALS = "invalid email or password";
 export interface AuthRouteOptions {
   registerRateLimiter?: MiddlewareHandler;
   loginRateLimiter?: MiddlewareHandler;
+  trustedProxyCount?: number;
 }
 
 const AUTH_RATE_LIMIT = {
@@ -68,29 +70,36 @@ const AUTH_RATE_LIMIT = {
   windowMs: 5 * 60_000,
 };
 
-function defaultRegisterRateLimiter(authInstanceId: string): MiddlewareHandler {
+function defaultRegisterRateLimiter(database: Database, trustedProxyCount: number): MiddlewareHandler {
   return createRateLimitMiddleware({
-    bucket: `${authInstanceId}:auth-register`,
+    database,
+    bucket: "auth-register",
+    trustedProxyCount,
     ...AUTH_RATE_LIMIT,
   });
 }
 
-function defaultLoginRateLimiter(authInstanceId: string): MiddlewareHandler {
+function defaultLoginRateLimiter(database: Database, trustedProxyCount: number): MiddlewareHandler {
   return createRateLimitMiddleware({
-    bucket: `${authInstanceId}:auth-login`,
+    database,
+    bucket: "auth-login",
+    trustedProxyCount,
     ...AUTH_RATE_LIMIT,
   });
 }
-
 
 export function buildAuthRoutes(
   database: Database,
   options: AuthRouteOptions = {},
 ): Hono<{ Variables: AuthVariables }> {
   const routes = new Hono<{ Variables: AuthVariables }>();
-  const authInstanceId = crypto.randomUUID();
-  const registerRateLimiter = options.registerRateLimiter ?? defaultRegisterRateLimiter(authInstanceId);
-  const loginRateLimiter = options.loginRateLimiter ?? defaultLoginRateLimiter(authInstanceId);
+  const trustedProxyCount = options.trustedProxyCount ?? getConfig().trustedProxyCount;
+  const registerRateLimiter = options.registerRateLimiter ??
+    defaultRegisterRateLimiter(database, trustedProxyCount);
+  const loginRateLimiter = options.loginRateLimiter ??
+    defaultLoginRateLimiter(database, trustedProxyCount);
+
+
 
   routes.post("/register", registerRateLimiter, async (context) => {
     const body = await context.req.json();

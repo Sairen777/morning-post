@@ -1,26 +1,26 @@
 import { Hono } from "@hono/hono";
 import { z } from "zod";
+import { getConfig } from "../../config.ts";
 import type { Database } from "../../db/client.ts";
 import {
   buildDigestViewById,
-  listDigestViewsForUser,
   renderDigestMarkdown,
 } from "../../services/digest-service.ts";
 import {
-  listDigestRunsForUser,
+  listDigestRunPageForUser,
   findDigestRunForUser,
   listDigestRunFeedsForRun,
 } from "../../repositories/digest-run-repository.ts";
+import { listDigestPageForUser, deleteDigestForUser } from "../../repositories/digest-repository.ts";
 import {
   type AuthVariables,
   requireAuth,
 } from "../middleware/require-auth.ts";
 import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
-import { computeDigestPeriod } from "../../scheduler/digest-job.ts";
-import { runForUser } from "../../services/orchestrator.ts";
+import type { runForUser as runForUserType } from "../../services/orchestrator.ts";
 import { validate } from "../validate.ts";
 import { NotFoundError } from "../errors.ts";
-import { deleteDigestForUser } from "../../repositories/digest-repository.ts";
+import { parseLimit } from "../cursor.ts";
 
 const digestRunIdSchema = z.string().uuid("id must be a valid UUID");
 
@@ -52,12 +52,20 @@ function parseDigestId(rawId: string): { id: string; markdown: boolean } {
   return { id: validate(digestIdSchema, id), markdown };
 }
 
-export function buildDigestRoutes(database: Database): Hono<{ Variables: AuthVariables }> {
-  const routes = new Hono<{ Variables: AuthVariables }>();
+export interface DigestRouteOptions {
+  trustedProxyCount?: number;
+}
 
-  const digestInstanceId = crypto.randomUUID();
+export function buildDigestRoutes(
+  database: Database,
+  options: DigestRouteOptions = {},
+): Hono<{ Variables: AuthVariables }> {
+  const routes = new Hono<{ Variables: AuthVariables }>();
+  const trustedProxyCount = options.trustedProxyCount ?? getConfig().trustedProxyCount;
   const runDigestRateLimiter = createRateLimitMiddleware({
-    bucket: digestInstanceId + ":digest-run",
+    database,
+    bucket: "digest-run",
+    trustedProxyCount,
     ...DIGEST_RUN_RATE_LIMIT,
     key: (context) => context.var.userId,
   });
@@ -74,23 +82,42 @@ export function buildDigestRoutes(database: Database): Hono<{ Variables: AuthVar
       startMs = periodStartMs;
       endMs = periodEndMs;
     } else {
-      const period = await computeDigestPeriod(database, context.var.userId, Date.now());
-      startMs = period.startMs;
-      endMs = period.endMs;
+      try {
+        // Deliberately lazy: scheduler code pulls in Telegram connectors only when a digest runs.
+        const { computeDigestPeriod } = await import("../../scheduler/digest-job.ts");
+        const period = await computeDigestPeriod(database, context.var.userId, Date.now());
+        startMs = period.startMs;
+        endMs = period.endMs;
+      } catch (error) {
+        throw new Error("Failed to load digest scheduler", { cause: error });
+      }
     }
 
+    let runForUser: typeof runForUserType;
+    try {
+      // Deliberately lazy: orchestrator and Telegram connectors are used only by this mutation.
+      ({ runForUser } = await import("../../services/orchestrator.ts"));
+    } catch (error) {
+      throw new Error("Failed to load digest orchestrator", { cause: error });
+    }
     const digest = await runForUser(database, context.var.userId, { startMs, endMs });
     return context.json(digest, 200);
   });
 
   routes.get("/", async (context) => {
-    const digests = await listDigestViewsForUser(database, context.var.userId);
-    return context.json(digests, 200);
+    const url = new URL(context.req.url);
+    const cursor = url.searchParams.get("cursor") || undefined;
+    const limit = parseLimit(url.searchParams.get("limit"));
+    const page = await listDigestPageForUser(database, context.var.userId, { cursor, limit });
+    return context.json(page, 200);
   });
 
   routes.get("/runs", async (context) => {
-    const runs = await listDigestRunsForUser(database, context.var.userId);
-    return context.json(runs, 200);
+    const url = new URL(context.req.url);
+    const cursor = url.searchParams.get("cursor") || undefined;
+    const limit = parseLimit(url.searchParams.get("limit"));
+    const page = await listDigestRunPageForUser(database, context.var.userId, { cursor, limit });
+    return context.json(page, 200);
   });
 
   routes.get("/runs/:id", async (context) => {
@@ -99,7 +126,7 @@ export function buildDigestRoutes(database: Database): Hono<{ Variables: AuthVar
     if (!run) {
       throw new NotFoundError("digest run not found");
     }
-    const feeds = await listDigestRunFeedsForRun(database, run.id);
+    const feeds = await listDigestRunFeedsForRun(database, run.id, context.var.userId);
     return context.json({ run, feeds }, 200);
   });
 

@@ -13,6 +13,7 @@ import type {
 } from "./telegram-connector.types.ts";
 import { ConnectorId, CONNECTORS_MEDIA_DIR } from "../../constants.ts";
 import { DEFAULT_EXCLUDED_CHANNELS } from "./constants.ts";
+import { getConfig } from "../../config.ts";
 
 type IterableEntity = Parameters<TelegramClient["iterMessages"]>[0];
 
@@ -24,7 +25,6 @@ interface TelegramFeedDetails extends AvailableFeed {
 
 export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   private excludedChannels = [...DEFAULT_EXCLUDED_CHANNELS];
-  private mediaDirReady = false;
 
   constructor(private client: TelegramClient) {}
 
@@ -32,6 +32,7 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     from: number,
     to: number,
     feedExternalIds?: string[],
+    signal?: AbortSignal,
   ): Promise<TelegramConnectorRawData> {
     const result: TelegramConnectorRawData = {};
     if (feedExternalIds?.length === 0) return result;
@@ -50,12 +51,15 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
       if (!details || this.isExcludedFeed(details)) continue;
       if (selectedFeedExternalIds !== null && !selectedFeedExternalIds.has(details.externalId)) continue;
 
+      const feedKey = details.externalId.replace(/[^a-zA-Z0-9_-]/g, "_");
       const messages = await this.getMessagesFromEntity(
         details.entity,
         from,
         to,
         details.channelUsername,
         details.isGroup,
+        signal,
+        feedKey,
       );
 
       if (messages.length > 0) {
@@ -65,15 +69,15 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
 
     return result;
   }
-
   public async getNormalizedData(
     from: number,
     to: number,
     feedExternalIds?: string[],
+    signal?: AbortSignal,
   ): Promise<NormalizedData> {
+    const rawData = await this.getRawData(from, to, feedExternalIds, signal);
     // TODO: caching for repeat calls in a short window belongs with the DB layer
     // (see ROADMAP) — once persistence is in place, hit cache before refetching.
-    const rawData = await this.getRawData(from, to, feedExternalIds);
     const result: NormalizedData = {};
 
     for (
@@ -175,16 +179,18 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     to: number,
     channelUsername: string | null,
     isGroup: boolean,
+    signal?: AbortSignal,
+    feedKey?: string,
   ): Promise<ChannelMessage[]> {
     const collected: ChannelMessage[] = [];
-
     for await (
-      const apiMessage of this.iterateMessagesInRange(entity, from, to)
+      const apiMessage of this.iterateMessagesInRange(entity, from, to, signal)
     ) {
       const message = await this.toChannelMessage(
         apiMessage,
         channelUsername,
         isGroup,
+        feedKey,
       );
       if (message) collected.push(message);
     }
@@ -200,13 +206,16 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     entity: IterableEntity,
     from: number,
     to: number,
+    signal?: AbortSignal,
   ): AsyncGenerator<Api.Message> {
+    if (signal?.aborted) return;
     for await (
       const message of this.client.iterMessages(entity, {
         offsetDate: Math.floor(to / 1000) + 1,
         reverse: false,
       })
     ) {
+      if (signal?.aborted) return;
       // iterMessages may also yield MessageService (joins/pins/calls) or
       // MessageEmpty (deleted/error) — only Api.Message carries what we need.
       if (!(message instanceof Api.Message)) continue;
@@ -223,8 +232,9 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     apiMessage: Api.Message,
     channelUsername: string | null,
     isGroup: boolean,
+    feedKey?: string,
   ): Promise<ChannelMessage | null> {
-    const media = await this.processMedia(apiMessage, isGroup);
+    const media = await this.processMedia(apiMessage, isGroup, feedKey);
     if (!apiMessage.message.trim() && !media) return null;
 
     return {
@@ -246,10 +256,11 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
   private async processMedia(
     message: Api.Message,
     isGroup: boolean,
+    feedKey?: string,
   ): Promise<Media | undefined> {
     if (message.media instanceof Api.MessageMediaPhoto) {
       // skip photo download for groups — images are usually memes and waste tokens
-      return isGroup ? undefined : await this.downloadPhoto(message);
+      return isGroup ? undefined : await this.downloadPhoto(message, feedKey);
     }
     if (message.media) {
       return this.extractNonPhotoMedia(message.media);
@@ -288,8 +299,9 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     return result;
   }
 
-  private async downloadPhoto(message: Api.Message): Promise<Media> {
-    await this.ensureMediaDir();
+  private async downloadPhoto(message: Api.Message, feedKey?: string): Promise<Media> {
+    const subDir = feedKey ? `${CONNECTORS_MEDIA_DIR.Telegram}/${feedKey}` : CONNECTORS_MEDIA_DIR.Telegram;
+    await Deno.mkdir(subDir, { recursive: true });
     const buffer = (await this.client.downloadMedia(message, {})) as Uint8Array;
     // Lazy-import sharp: heavy native dep that wants --allow-sys/--allow-ffi.
     // Keeping it out of the module top means tests can import the connector
@@ -301,15 +313,12 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
       .resize(512, 512, { fit: "inside" })
       .jpeg({ quality: 75 })
       .toBuffer();
-    const localPath = `${CONNECTORS_MEDIA_DIR.Telegram}/${message.id}.jpg`;
+    const localPath = `${subDir}/${message.id}.jpg`;
+    // Enforce quota before write: delete oldest files under the connector media root
+    // until the new file fits.
+    await enforceMediaQuota(CONNECTORS_MEDIA_DIR.Telegram, getConfig().mediaQuotaBytes, resized.length);
     await Deno.writeFile(localPath, resized);
     return { type: "photo", localPath };
-  }
-
-  private async ensureMediaDir(): Promise<void> {
-    if (this.mediaDirReady) return;
-    await Deno.mkdir(CONNECTORS_MEDIA_DIR.Telegram, { recursive: true });
-    this.mediaDirReady = true;
   }
 
   private resolveAuthor(sender?: Api.TypeEntityLike): string | null {
@@ -344,6 +353,65 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
       }
     }
     return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Media quota enforcement — module-level helper
+// ---------------------------------------------------------------------------
+
+/** Walk `dir` recursively, collecting all file stats. */
+async function collectFilesRecursive(
+  dir: string,
+): Promise<{ path: string; size: number; mtime: number }[]> {
+  const files: { path: string; size: number; mtime: number }[] = [];
+  let entries: Deno.DirEntry[];
+  try {
+    entries = [...Deno.readDirSync(dir)];
+  } catch {
+    return files;
+  }
+
+  for (const entry of entries) {
+    const fullPath = `${dir}/${entry.name}`;
+    if (entry.isDirectory) {
+      const nested = await collectFilesRecursive(fullPath);
+      files.push(...nested);
+    } else if (entry.isFile) {
+      try {
+        const stat = await Deno.stat(fullPath);
+        if (stat.size !== null) {
+          files.push({ path: fullPath, size: stat.size, mtime: stat.mtime?.getTime() ?? 0 });
+        }
+      } catch {
+        // stat failed — skip this file
+      }
+    }
+  }
+  return files;
+}
+
+/** Delete oldest files under `dir` (recursively) until total size fits `quotaBytes` for `newFileBytes`. */
+export async function enforceMediaQuota(
+  dir: string,
+  quotaBytes: number,
+  newFileBytes: number,
+): Promise<void> {
+  const files = await collectFilesRecursive(dir);
+  let currentTotal = files.reduce((sum, f) => sum + f.size, 0);
+  if (currentTotal + newFileBytes <= quotaBytes) return;
+
+  // Sort oldest first by mtime, secondary by name for determinism
+  files.sort((a, b) => a.mtime - b.mtime || a.path.localeCompare(b.path));
+
+  for (const file of files) {
+    if (currentTotal + newFileBytes <= quotaBytes) break;
+    try {
+      await Deno.remove(file.path);
+      currentTotal -= file.size;
+    } catch {
+      // deletion failure — continue with next file
+    }
   }
 }
 

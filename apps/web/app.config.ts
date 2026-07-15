@@ -1,5 +1,8 @@
 import { defineConfig } from "@solidjs/start/config";
 
+// Vinxi's outer listener reads HOST; Vite's nested server host does not control it.
+process.env.HOST ??= "127.0.0.1";
+
 export default defineConfig({
   ssr: false,
   server: {

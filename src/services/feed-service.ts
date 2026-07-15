@@ -15,8 +15,8 @@ import {
   type PublicSource,
 } from "../repositories/source-repository.ts";
 import { ConflictError, NotFoundError } from "../server/errors.ts";
-import { createClientFromSession } from "../connectors/telegram/client-factory.ts";
-import { TelegramConnector } from "../connectors/telegram/telegram-connector.ts";
+import type { createClientFromSession as CreateClientFromSession } from "../connectors/telegram/client-factory.ts";
+import type { TelegramConnector as TelegramConnectorClass } from "../connectors/telegram/telegram-connector.ts";
 
 export interface FeedDiscoveryHandle {
   connector: Pick<Connector<unknown>, "listAvailableFeeds">;
@@ -47,6 +47,15 @@ export class DefaultFeedDiscoveryFactory implements FeedDiscoveryFactory {
       userId,
       this.#credentialCipher,
     );
+    let createClientFromSession: typeof CreateClientFromSession;
+    let TelegramConnector: typeof TelegramConnectorClass;
+    try {
+      // Deliberately lazy: feed discovery loads GramJS only when the discovery endpoint is used.
+      ({ createClientFromSession } = await import("../connectors/telegram/client-factory.ts"));
+      ({ TelegramConnector } = await import("../connectors/telegram/telegram-connector.ts"));
+    } catch (error) {
+      throw new Error("Failed to load Telegram feed discovery connector", { cause: error });
+    }
     const client = await createClientFromSession(credentials.sessionString);
     return {
       connector: new TelegramConnector(client),

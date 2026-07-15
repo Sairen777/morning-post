@@ -7,12 +7,15 @@ import {
   createSession as persistSession,
   deleteSessionByTokenHash,
   findValidSessionByTokenHash,
+  touchSessionIfDue,
 } from "../repositories/session-repository.ts";
 
-export const SESSION_COOKIE = "session";
+export const SESSION_COOKIE = "__Host-session";
 
 const TOKEN_BYTE_LENGTH = 32;
 const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSION_REFRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
  * Cookie attributes shared by set/clear. `httpOnly` keeps the token out of
@@ -41,6 +44,13 @@ export interface CreatedSession {
   expiresAt: number;
 }
 
+export interface ValidatedSession {
+  userId: string;
+  token: string;
+  expiresAt: number;
+  refreshExpiresAt: number | null;
+}
+
 /**
  * Mints a fresh session: a random 256-bit base64url token handed back for the
  * cookie, with only its hash persisted. `ttlMs` defaults to 30 days.
@@ -59,17 +69,37 @@ export async function createSession(
 }
 
 /**
- * Resolves a raw token to its owner's `userId` if a non-expired session matches
- * its hash; otherwise null.
+ * Resolves a raw token and records activity without rotating the bearer token.
+ * Near the idle boundary, the existing session is atomically extended.
  */
 export async function validateSessionToken(
   database: Database,
   token: string,
   now: number,
-): Promise<string | null> {
+): Promise<ValidatedSession | null> {
   const tokenHash = await hashToken(token);
   const session = await findValidSessionByTokenHash(database, tokenHash, now);
-  return session ? session.userId : null;
+  if (!session) {
+    return null;
+  }
+
+  const nextExpiresAt = session.expiresAt - now <= SESSION_REFRESH_WINDOW_MS
+    ? now + DEFAULT_SESSION_TTL_MS
+    : session.expiresAt;
+  const touched = await touchSessionIfDue(
+    database,
+    session.id,
+    now,
+    nextExpiresAt,
+    SESSION_TOUCH_INTERVAL_MS,
+  );
+  const expiresAt = touched?.expiresAt ?? session.expiresAt;
+  return {
+    userId: session.userId,
+    token,
+    expiresAt,
+    refreshExpiresAt: expiresAt > session.expiresAt ? expiresAt : null,
+  };
 }
 
 /** Deletes the session matching the raw token (no-op if none matches). */

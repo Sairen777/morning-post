@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assert } from "@std/assert";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -9,7 +9,7 @@ import { createOrReviveFeed, findFeedById, type PublicFeed } from "../../src/rep
 import { listItemsForFeedInWindow } from "../../src/repositories/item-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
-import { computeIngestionWindow, ingestFeed } from "../../src/services/ingestion-service.ts";
+import { computeIngestionWindow, ingestFeed, ingestFeedsForSource, type IngestFeedError, type IngestFeedResult, type IngestFeedsForSourceResult } from "../../src/services/ingestion-service.ts";
 
 function userInput(email: string): CreateUserInput {
   return {
@@ -65,7 +65,7 @@ function normalizedItem(overrides: Partial<NormalizedItem> = {}): NormalizedItem
 }
 
 class FakeConnector implements Connector<unknown> {
-  readonly calls: Array<{ from: number; to: number; feedExternalIds?: string[] }> = [];
+  readonly calls: Array<{ from: number; to: number; feedExternalIds?: string[]; signal?: AbortSignal }> = [];
   #responses: NormalizedData[];
 
   constructor(responses: NormalizedData[]) {
@@ -76,8 +76,8 @@ class FakeConnector implements Connector<unknown> {
     return Promise.resolve({});
   }
 
-  getNormalizedData(from: number, to: number, feedExternalIds?: string[]): Promise<NormalizedData> {
-    this.calls.push({ from, to, feedExternalIds });
+  getNormalizedData(from: number, to: number, feedExternalIds?: string[], signal?: AbortSignal): Promise<NormalizedData> {
+    this.calls.push(signal === undefined ? { from, to, feedExternalIds } : { from, to, feedExternalIds, signal });
     return Promise.resolve(this.#responses.shift() ?? {});
   }
 }
@@ -168,4 +168,141 @@ Deno.test("ingestFeed rejects items returned under the right key but belonging t
     const unchangedFeed = await findFeedById(database, feed.id, userId);
     assertEquals(unchangedFeed?.lastFetchedPeriodEndMs, null);
   });
+});
+
+async function createTwoFeeds(
+  database: Database,
+  email: string,
+): Promise<{ userId: string; feed1: PublicFeed; feed2: PublicFeed }> {
+  const user = await createUser(database, userInput(email));
+  const source = await createSource(database, {
+    userId: user.id,
+    connectorId: ConnectorId.Telegram,
+    credentials: await encryptedCredentials(user.id),
+  });
+  const feed1 = await createOrReviveFeed(database, {
+    userId: user.id,
+    sourceId: source.id,
+    externalId: "channel:1",
+    name: "Channel One",
+    kind: "news",
+  });
+  const feed2 = await createOrReviveFeed(database, {
+    userId: user.id,
+    sourceId: source.id,
+    externalId: "channel:2",
+    name: "Channel Two",
+    kind: "news",
+  });
+  return { userId: user.id, feed1, feed2 };
+}
+
+Deno.test("ingestFeedsForSource calls connector once for multiple feeds", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feed1, feed2 } = await createTwoFeeds(database, "batch-one-call@example.com");
+    const connector = new FakeConnector([{
+      "channel:1": [normalizedItem({ feedExternalId: "channel:1", externalId: "1", text: "A", date: 1_700_000_000_000 })],
+      "channel:2": [normalizedItem({ feedExternalId: "channel:2", externalId: "2", text: "B", date: 1_700_000_000_100 })],
+    }]);
+
+    const feedWindows = new Map<string, { from: number; to: number }>();
+    feedWindows.set(feed1.id, { from: 1_600_000_000_000, to: 1_800_000_000_000 });
+    feedWindows.set(feed2.id, { from: 1_600_000_000_000, to: 1_800_000_000_000 });
+
+    const result = await ingestFeedsForSource(database, userId, [feed1, feed2], connector, { feedWindows });
+
+    assertEquals(connector.calls.length, 1);
+    assertEquals(connector.calls[0].from, 1_600_000_000_000);
+    assertEquals(connector.calls[0].to, 1_800_000_000_000);
+    assert(connector.calls[0].feedExternalIds?.includes("channel:1"));
+    assert(connector.calls[0].feedExternalIds?.includes("channel:2"));
+    assertEquals(result.feedResults.length, 2);
+    assertEquals((result.feedResults[0] as IngestFeedResult).itemCount, 1);
+    assertEquals((result.feedResults[1] as IngestFeedResult).itemCount, 1);
+  });
+});
+
+Deno.test("ingestFeedsForSource filters items per feed by date range", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feed1, feed2 } = await createTwoFeeds(database, "batch-filter@example.com");
+    // feed1 window is later, so an item with date 1_700_000_000_000 should be excluded
+    const connector = new FakeConnector([{
+      "channel:1": [normalizedItem({ feedExternalId: "channel:1", externalId: "1", text: "Excluded", date: 1_700_000_000_000 })],
+      "channel:2": [normalizedItem({ feedExternalId: "channel:2", externalId: "2", text: "Included", date: 1_700_000_000_500 })],
+    }]);
+
+    const feedWindows = new Map<string, { from: number; to: number }>();
+    feedWindows.set(feed1.id, { from: 1_700_000_000_100, to: 1_800_000_000_000 });
+    feedWindows.set(feed2.id, { from: 1_600_000_000_000, to: 1_800_000_000_000 });
+
+    const result = await ingestFeedsForSource(database, userId, [feed1, feed2], connector, { feedWindows });
+
+    assertEquals(result.feedResults.length, 2);
+    assertEquals((result.feedResults[0] as IngestFeedResult).itemCount, 0);
+    assertEquals((result.feedResults[1] as IngestFeedResult).itemCount, 1);
+    // feed1 cursor should advance to its window.to even with no items
+    const updated1 = await findFeedById(database, feed1.id, userId);
+    assertEquals(updated1?.lastFetchedPeriodEndMs, 1_800_000_000_000);
+  });
+});
+
+Deno.test("ingestFeedsForSource isolates one-feed validation failure", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feed1, feed2 } = await createTwoFeeds(database, "batch-isolation@example.com");
+    // feed1 gets an invalid item (empty externalId); feed2 gets a valid one
+    const connector = new FakeConnector([{
+      "channel:1": [{ ...normalizedItem({ feedExternalId: "channel:1", externalId: "", date: 100 }) }],
+      "channel:2": [normalizedItem({ feedExternalId: "channel:2", externalId: "2", text: "Valid", date: 100 })],
+    }]);
+
+    const feedWindows = new Map<string, { from: number; to: number }>();
+    feedWindows.set(feed1.id, { from: 0, to: 10_000 });
+    feedWindows.set(feed2.id, { from: 0, to: 10_000 });
+
+    const result = await ingestFeedsForSource(database, userId, [feed1, feed2], connector, { feedWindows });
+
+    assertEquals(result.feedResults.length, 2);
+    // feed1 should have an error
+    assert("error" in result.feedResults[0]!);
+    // feed2 should succeed
+    assertEquals((result.feedResults[1] as IngestFeedResult).itemCount, 1);
+    // feed1 cursor should NOT advance
+    const unchanged1 = await findFeedById(database, feed1.id, userId);
+    assertEquals(unchanged1?.lastFetchedPeriodEndMs, null);
+    // feed2 cursor SHOULD advance
+    const updated2 = await findFeedById(database, feed2.id, userId);
+    assertEquals(updated2?.lastFetchedPeriodEndMs, 10_000);
+  });
+});
+
+Deno.test("ingestFeedsForSource returns empty results for empty connector data", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feed1, feed2 } = await createTwoFeeds(database, "batch-empty@example.com");
+    const connector = new FakeConnector([{}]);
+
+    const feedWindows = new Map<string, { from: number; to: number }>();
+    feedWindows.set(feed1.id, { from: 0, to: 10_000 });
+    feedWindows.set(feed2.id, { from: 0, to: 10_000 });
+
+    const result = await ingestFeedsForSource(database, userId, [feed1, feed2], connector, { feedWindows });
+
+    assertEquals(result.feedResults.length, 2);
+    assertEquals((result.feedResults[0] as IngestFeedResult).itemCount, 0);
+    assertEquals((result.feedResults[1] as IngestFeedResult).itemCount, 0);
+    // Both cursors should advance to their window.to
+    const updated1 = await findFeedById(database, feed1.id, userId);
+    assertEquals(updated1?.lastFetchedPeriodEndMs, 10_000);
+  });
+});
+
+Deno.test("ingestFeedsForSource passes abort signal to connector", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const connector = new FakeConnector([{}]);
+
+  // No DB needed — we just verify the signal is received
+  void connector.getNormalizedData(0, 10, ["channel:1"], controller.signal);
+  assertEquals(connector.calls.length, 1);
+  assertEquals(connector.calls[0].signal, controller.signal);
+  assert(connector.calls[0].signal?.aborted);
 });

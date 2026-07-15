@@ -3,6 +3,7 @@ import { TelegramConnector } from "../connectors/telegram/telegram-connector.ts"
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
 import { Pipeline } from "../pipeline/pipeline.ts";
 import type { SummaryPoint } from "../summarizers/summarizer.types.ts";
+import { sanitizeErrorForOps } from "../server/error-sanitizer.ts";
 
 function printSummary(feedExternalId: string, summary: SummaryPoint[]): void {
   console.log(`\n=== ${feedExternalId} ===\n`);
@@ -33,5 +34,5 @@ try {
     printSummary(feedExternalId, summary);
   }
 } catch (error) {
-  console.error(error);
+  console.error(sanitizeErrorForOps(error));
 }

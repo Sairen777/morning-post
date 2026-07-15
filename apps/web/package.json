@@ -5,13 +5,13 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinxi dev",
+    "dev": "vinxi dev --port 5173",
     "build": "vinxi build",
     "preview": "vinxi preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "node ../../node_modules/@playwright/test/cli.js test"
   },
   "dependencies": {
     "@solidjs/router": "0.16.1",

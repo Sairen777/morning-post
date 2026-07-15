@@ -52,7 +52,7 @@ async function encryptedCredentials(userId: string, connectorId: ConnectorId): P
 function jsonRequest(method: "POST" | "PATCH", body: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
     body: JSON.stringify(body),
   };
 }
@@ -130,13 +130,13 @@ Deno.test("security audit enforces authz and does not leak secrets in GET respon
       capturedLogs.push(args.map(String).join(" "));
     };
     try {
-      const unauthorizedFeedResponse = await app.request(`/feeds/${feed.id}`, { headers: { cookie: otherCookie } });
+      const unauthorizedFeedResponse = await app.request(`/feeds/${feed.id}`, { headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" } });
       assertEquals(unauthorizedFeedResponse.status, 404);
 
-      const unauthorizedDigestResponse = await app.request(`/digests/${digest.digest.id}`, { headers: { cookie: otherCookie } });
+      const unauthorizedDigestResponse = await app.request(`/digests/${digest.digest.id}`, { headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" } });
       assertEquals(unauthorizedDigestResponse.status, 404);
 
-      const unauthorizedMarkdownResponse = await app.request(`/digests/${digest.digest.id}.md`, { headers: { cookie: otherCookie } });
+      const unauthorizedMarkdownResponse = await app.request(`/digests/${digest.digest.id}.md`, { headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" } });
       assertEquals(unauthorizedMarkdownResponse.status, 404);
 
       await createUser(database, userInput("security-third@example.com"));
@@ -146,11 +146,11 @@ Deno.test("security audit enforces authz and does not leak secrets in GET respon
       assertEquals(summaryAccessError?.message, "feed not found");
 
       const responses = await Promise.all([
-        app.request("/auth/me", { headers: { cookie: ownerCookie } }),
-        app.request("/sources", { headers: { cookie: ownerCookie } }),
-        app.request("/feeds", { headers: { cookie: ownerCookie } }),
-        app.request("/digests", { headers: { cookie: ownerCookie } }),
-        app.request(`/digests/${digest.digest.id}`, { headers: { cookie: ownerCookie } }),
+        app.request("/auth/me", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } }),
+        app.request("/sources", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } }),
+        app.request("/feeds", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } }),
+        app.request("/digests", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } }),
+        app.request(`/digests/${digest.digest.id}`, { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } }),
       ]);
       const texts = await Promise.all(responses.map((response) => response.text()));
       const secretNeedles = [SESSION_STRING, "passwordHash", "wrappedDataKey", "ciphertext", ownerCookie.split("=")[1]];

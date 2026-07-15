@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, check, index, integer, pgTable, text, uuid } from "drizzle-orm/pg-core";
+import { bigint, check, index, integer, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { digests } from "./digest.ts";
 import { feeds } from "./feed.ts";
 import { sources } from "./source.ts";
@@ -28,6 +28,9 @@ export const digestRuns = pgTable(
     errorMessage: text("error_message"),
   },
   (table) => [
+    uniqueIndex("digest_runs_user_running_unique")
+      .on(table.userId)
+      .where(sql`${table.status} = 'running'`),
     index("digest_runs_user_started_idx").on(table.userId, table.startedAt.desc()),
     check("digest_runs_status_check", sql`${table.status} in ('running', 'complete', 'partial', 'failed')`),
     check("digest_runs_trigger_check", sql`${table.trigger} in ('manual', 'scheduled')`),

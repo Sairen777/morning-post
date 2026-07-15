@@ -9,6 +9,9 @@ interface DigestRunsPanelProps {
   onSelectRun: (id: string) => Promise<DigestRunDetail>;
   onRefresh: () => Promise<void>;
   onAuthError: () => void;
+  nextCursor?: string;
+  loadingMore?: boolean;
+  onLoadMore?: () => Promise<void>;
 }
 
 export default function DigestRunsPanel(props: DigestRunsPanelProps) {
@@ -223,6 +226,17 @@ export default function DigestRunsPanel(props: DigestRunsPanelProps) {
             </div>
           )}
         </For>
+      </Show>
+
+      <Show when={props.nextCursor}>
+        <div style="text-align: center; margin-top: 1rem;">
+          <button
+            onClick={() => props.onLoadMore?.()}
+            disabled={props.loadingMore}
+          >
+            {props.loadingMore ? "Loading…" : "Load more"}
+          </button>
+        </div>
       </Show>
     </div>
   );

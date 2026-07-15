@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert"
 import { Api, type TelegramClient } from "telegram";
-import { TelegramConnector } from "../src/connectors/telegram/telegram-connector.ts";
+import { TelegramConnector, enforceMediaQuota } from "../src/connectors/telegram/telegram-connector.ts";
+import { logTelegramClientError } from "../src/connectors/telegram/telegram-client.ts";
 import { ConnectorId } from "../src/constants.ts";
 
 // --- fakes ---
@@ -383,4 +384,83 @@ Deno.test("getNormalizedData — messages sharing a groupedId fold to one item",
 
   assertEquals(result["channel:1"].length, 1);
   assertEquals(result["channel:1"][0].text, "caption");
+});
+
+Deno.test("Telegram client operational errors redact provider secrets before logging", () => {
+  const logged: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  };
+  try {
+    const rawApiKey = "sk-telegram-secret";
+    const rawPassword = "https://telegram-user:telegram-pass@example.com";
+    logTelegramClientError(new Error(`provider failed with ${rawApiKey} at ${rawPassword}`));
+    assertEquals(logged.length, 1);
+    assertEquals(logged[0].includes(rawApiKey), false);
+    assertEquals(logged[0].includes(rawPassword), false);
+    assertEquals(logged[0].includes("[REDACTED]"), true);
+  } finally {
+    console.error = originalConsoleError;
+  }
+});
+
+Deno.test("getNormalizedData — pre-aborted signal returns no data", async () => {
+  const channel = fakeChannel({ title: "TestChannel", username: "test" });
+  const message = fakeApiMessage({
+    id: 1,
+    date: IN_RANGE_S,
+    message: "hello world",
+  });
+  const client = fakeTelegramClient({
+    dialogs: [{ title: "TestChannel", entity: channel, messages: [message] }],
+  });
+
+  const controller = new AbortController();
+  controller.abort();
+
+  const result = await new TelegramConnector(client).getNormalizedData(
+    FROM_MS,
+    TO_MS,
+    undefined,
+    controller.signal,
+  );
+
+  assertEquals(Object.keys(result).length, 0);
+});
+
+Deno.test("enforceMediaQuota — deletes oldest files across subdirectories", async () => {
+  const tmpDir = `./media/quota-test-${crypto.randomUUID()}`;
+  try {
+    await Deno.mkdir(`${tmpDir}/feed1`, { recursive: true });
+    await Deno.mkdir(`${tmpDir}/feed2`, { recursive: true });
+
+    const { writeFile, utime } = Deno;
+    const fileA = `${tmpDir}/feed1/oldest.txt`;
+    const fileB = `${tmpDir}/feed2/mid.txt`;
+    const fileC = `${tmpDir}/feed1/newest.txt`;
+    await writeFile(fileA, new Uint8Array(100));
+    await writeFile(fileB, new Uint8Array(100));
+    await writeFile(fileC, new Uint8Array(100));
+    // Set consistent mtimes so sorting is deterministic
+    await utime(fileA, 0, 1000);
+    await utime(fileB, 0, 2000);
+    await utime(fileC, 0, 3000);
+
+    // 300 bytes used, quota 250, new file 50 bytes: need 350, must evict 100
+    await enforceMediaQuota(tmpDir, 250, 50);
+
+    const survivors: string[] = [];
+    for await (const dirEntry of Deno.readDir(tmpDir + "/feed1")) {
+      survivors.push(`feed1/${dirEntry.name}`);
+    }
+    for await (const dirEntry of Deno.readDir(tmpDir + "/feed2")) {
+      survivors.push(`feed2/${dirEntry.name}`);
+    }
+    survivors.sort();
+
+    assertEquals(survivors, ["feed1/newest.txt", "feed2/mid.txt"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
 });

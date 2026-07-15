@@ -63,6 +63,10 @@ export default function Dashboard(props: DashboardProps) {
   const [availableFeeds, setAvailableFeeds] = createSignal<
     Record<string, AvailableFeed[]>
   >({});
+  const [digestCursor, setDigestCursor] = createSignal<string | undefined>(undefined);
+  const [digestRunCursor, setDigestRunCursor] = createSignal<string | undefined>(undefined);
+  const [loadingMoreDigests, setLoadingMoreDigests] = createSignal(false);
+  const [loadingMoreRuns, setLoadingMoreRuns] = createSignal(false);
   const [sourceFeeds, setSourceFeeds] = createSignal<
     Record<string, PublicFeed[]>
   >({});
@@ -99,7 +103,9 @@ export default function Dashboard(props: DashboardProps) {
 
   const refreshDigests = async () => {
     try {
-      setDigests(await listDigests());
+      const page = await listDigests();
+      setDigests(page.data);
+      setDigestCursor(page.nextCursor);
     } catch (err: unknown) {
       if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
     }
@@ -107,9 +113,49 @@ export default function Dashboard(props: DashboardProps) {
 
   const refreshDigestRuns = async () => {
     try {
-      setDigestRuns(await listDigestRuns());
+      const page = await listDigestRuns();
+      setDigestRuns(page.data);
+      setDigestRunCursor(page.nextCursor);
     } catch (err: unknown) {
       if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+    }
+  };
+
+  const handleLoadMoreDigests = async () => {
+    const cursor = digestCursor();
+    if (!cursor || loadingMoreDigests()) return;
+    setLoadingMoreDigests(true);
+    try {
+      const page = await listDigests({ cursor });
+      setDigests((prev) => {
+        const existingIds = new Set(prev.map((d) => d.id));
+        const newItems = page.data.filter((d) => !existingIds.has(d.id));
+        return [...prev, ...newItems];
+      });
+      setDigestCursor(page.nextCursor);
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+    } finally {
+      setLoadingMoreDigests(false);
+    }
+  };
+
+  const handleLoadMoreRuns = async () => {
+    const cursor = digestRunCursor();
+    if (!cursor || loadingMoreRuns()) return;
+    setLoadingMoreRuns(true);
+    try {
+      const page = await listDigestRuns({ cursor });
+      setDigestRuns((prev) => {
+        const existingIds = new Set(prev.map((r) => r.id));
+        const newItems = page.data.filter((r) => !existingIds.has(r.id));
+        return [...prev, ...newItems];
+      });
+      setDigestRunCursor(page.nextCursor);
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+    } finally {
+      setLoadingMoreRuns(false);
     }
   };
 
@@ -291,6 +337,9 @@ export default function Dashboard(props: DashboardProps) {
             onSelectDigest={handleSelectDigest}
             onDeleteDigest={handleDeleteDigest}
             onAuthError={props.onAuthError}
+            nextCursor={digestCursor()}
+            loadingMore={loadingMoreDigests()}
+            onLoadMore={handleLoadMoreDigests}
           />
         </div>
       </Show>
@@ -301,6 +350,9 @@ export default function Dashboard(props: DashboardProps) {
           onSelectRun={handleSelectRun}
           onRefresh={refreshDigestRuns}
           onAuthError={props.onAuthError}
+          nextCursor={digestRunCursor()}
+          loadingMore={loadingMoreRuns()}
+          onLoadMore={handleLoadMoreRuns}
         />
       </Show>
 

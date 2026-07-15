@@ -4,11 +4,8 @@ import { EnvMasterKeyProvider } from "../../crypto/key-provider.ts";
 import type { Database } from "../../db/client.ts";
 import { upsertSourceCredentials } from "../../repositories/source-repository.ts";
 import { AppError, ConflictError, NotFoundError } from "../../server/errors.ts";
-import {
-  createUnauthenticatedTelegramClient,
-  readTelegramApiCredentials,
-  type TelegramApiCredentials,
-} from "./client-factory.ts";
+import { readTelegramApiCredentials } from "./client-factory.ts";
+import type { TelegramApiCredentials } from "./client-factory.ts";
 
 const LOGIN_SESSION_TTL_MS = 10 * 60_000;
 const MAX_CONCURRENT_LOGIN_SESSIONS_PER_USER = 3;
@@ -74,7 +71,13 @@ export interface TelegramLoginSessionManagerDependencies {
 
 class DefaultTelegramLoginClientFactory implements TelegramLoginClientFactory {
   async createUnauthenticatedClient(): Promise<TelegramLoginClient> {
-    return await createUnauthenticatedTelegramClient() as unknown as TelegramLoginClient;
+    try {
+      // Deliberately lazy: the Telegram client factory loads GramJS only when login starts.
+      const { createUnauthenticatedTelegramClient } = await import("./client-factory.ts");
+      return await createUnauthenticatedTelegramClient() as unknown as TelegramLoginClient;
+    } catch (error) {
+      throw new Error("Failed to load Telegram login client factory", { cause: error });
+    }
   }
 
   readApiCredentials(): TelegramApiCredentials {

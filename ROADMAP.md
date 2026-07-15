@@ -1,3 +1,80 @@
+# Completed hardening phases
+
+The following production-hardening phases have been implemented (see
+`ARCHITECTURE.md` for details):
+
+### Phase 1 — Runtime permissions, HTTP boundaries, and error redaction
+
+- Named Deno 2.5+ permission sets (`api`, `migrate`, `test`, `cli`) with scoped network, env, read, write, sys, and FFI.
+- Security headers: HSTS (`max-age=31536000; includeSubDomains`),
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`.
+- Origin guard rejecting unexpected `Origin`/`Referer` on unsafe requests.
+- Body limit middleware (413 for oversized payloads).
+- Operational error redaction: API-key forms (`sk-...`, `AIza...`, `Bearer ...`),
+  PEM private-key blocks, and URL userinfo replaced with `[REDACTED]`.
+
+### Phase 2 — Authentication, database, and rate limits
+
+- `__Host-session` cookie with 30-day idle expiry, same-token extension within
+  7 days of idle boundary, and explicit logout revocation.
+- Postgres pool configuration: `DB_POOL_MAX`, `DB_IDLE_TIMEOUT_SECONDS`,
+  `DB_CONNECT_TIMEOUT_SECONDS`, `DB_SSL_MODE` with validation.
+- Database-backed rate limiting (`rate_limit_buckets` table, atomic
+  `INSERT ... ON CONFLICT DO UPDATE`).
+- Trusted proxy policy for client IP resolution in rate limiting.
+
+### Phase 3 — Cross-instance scheduling and recovery
+
+- Scheduler leader lease via `scheduler_leases` table with atomic
+  insert/upsert.
+- Partial unique index on `digest_runs(userId) WHERE status = 'running'`
+  preventing duplicate active runs.
+- Stale-run recovery: `recoverStaleDigestRuns()` marks expired running
+  rows as failed at the start of each leader tick.
+
+### Phase 4 — Source batching and connector deadlines
+
+- `ingestFeedsForSource()` batches one connector call per source for multiple
+  feeds, with per-feed result isolation.
+- `AbortSignal` support on connector methods; per-source timeout from
+  `CONNECTOR_TIMEOUT_MS`.
+
+### Phase 5 — Summarizer budgets, chunking, privacy, and concurrency
+
+- Deterministic sequential chunking (text bytes, item count, image byte caps).
+- Oversize image omission (`[IMAGE_OMITTED]`), per-item text truncation.
+- Bounded merge requests for multi-chunk results.
+- `AbortSignal` propagation through chunk/retry/merge with 3 retries.
+- Remote provider opt-in via `ALLOW_REMOTE_SUMMARIZATION` (loopback allowed by
+  default).
+- Bounded feed summarization concurrency (`SUMMARIZATION_CONCURRENCY`).
+
+### Phase 6 — Media retention and paginated history
+
+- Feed-isolated media paths (`telegram_media/<feed-key>/<message-id>.jpg`).
+- Per-connector media quota (`MEDIA_QUOTA_BYTES`) with oldest-file eviction.
+- Best-effort per-period media cleanup after successful summarization.
+- Weekly TTL sweep deleting files older than `MEDIA_TTL_MS`.
+- Cursor-based pagination for `GET /digests` and `GET /digests/runs`
+  with `{ data, nextCursor }` response shape and web UI "Load more".
+- Defense-in-depth: `listDigestRunFeedsForRun()` now joins through
+  `digest_runs.userId`.
+
+### Explicit deferrals
+
+The following remain for separate provider/product plans:
+
+- **KMS / off-box master key** — `KeyProvider` seam preserved; cloud KMS
+  integration not yet introduced.
+- **MFA / WebAuthn / TOTP** — session hardening in place; multi-factor not yet
+  implemented.
+- **Object storage for media** — local media lifecycle sufficient for
+  single-host; S3/R2/GCS deferred.
+- **Automatic feed theme classification** and **per-user/per-feed model
+  override** — remaining optional features.
+
+---
+
 <!-- Authored by: Claude Sonnet 4.5 (claude-sonnet-4-5-20250929) -->
 - [] telegram
 - [] substack

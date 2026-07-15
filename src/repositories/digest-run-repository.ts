@@ -1,4 +1,4 @@
-import { and, asc, eq, desc } from "drizzle-orm";
+import { and, asc, eq, desc, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import {
@@ -9,6 +9,10 @@ import {
   type DigestRunStatus,
   type DigestRunTrigger,
 } from "../db/schema/digest-run.ts";
+
+import { isUniqueViolation } from "../db/errors.ts";
+import { ConflictError } from "../server/errors.ts";
+import { type PageResult, encodeDigestRunCursor, decodeDigestRunCursor } from "../server/cursor.ts";
 
 const publicDigestRunSchema = z.object({
   id: z.string(),
@@ -43,6 +47,17 @@ const publicDigestRunFeedSchema = z.object({
 
 export type PublicDigestRunFeed = z.infer<typeof publicDigestRunFeedSchema>;
 
+export class DigestRunAlreadyRunningError extends ConflictError {
+  constructor() {
+    super("digest already running");
+    this.name = "DigestRunAlreadyRunningError";
+  }
+}
+
+export function isDigestRunAlreadyRunningError(error: unknown): error is DigestRunAlreadyRunningError {
+  return error instanceof DigestRunAlreadyRunningError;
+}
+
 export interface CreateDigestRunInput {
   userId: string;
   trigger: DigestRunTrigger;
@@ -76,21 +91,46 @@ export async function createDigestRun(
   input: CreateDigestRunInput,
   now = Date.now(),
 ): Promise<PublicDigestRun> {
-  const [row] = await database
-    .insert(digestRuns)
-    .values({
-      userId: input.userId,
-      trigger: input.trigger as DigestRunTrigger,
-      periodStartMs: input.periodStartMs,
-      periodEndMs: input.periodEndMs,
-      status: input.status as DigestRunStatus,
-      startedAt: now,
-    })
-    .returning();
-  if (!row) {
-    throw new Error("digest run insert returned no rows");
+  try {
+    const [row] = await database
+      .insert(digestRuns)
+      .values({
+        userId: input.userId,
+        trigger: input.trigger as DigestRunTrigger,
+        periodStartMs: input.periodStartMs,
+        periodEndMs: input.periodEndMs,
+        status: input.status as DigestRunStatus,
+        startedAt: now,
+      })
+      .returning();
+    if (!row) {
+      throw new Error("digest run insert returned no rows");
+    }
+    return parsePublicDigestRun(row);
+  } catch (error) {
+    if (input.status === "running" && isUniqueViolation(error)) {
+      throw new DigestRunAlreadyRunningError();
+    }
+    throw error;
   }
-  return parsePublicDigestRun(row);
+}
+
+export async function recoverStaleDigestRuns(
+  database: Database,
+  now: number,
+  staleAfterMs: number,
+): Promise<number> {
+  const staleBefore = now - staleAfterMs;
+  const rows = await database
+    .update(digestRuns)
+    .set({
+      status: "failed",
+      finishedAt: now,
+      errorMessage: "digest run lease expired",
+    })
+    .where(and(eq(digestRuns.status, "running"), lt(digestRuns.startedAt, staleBefore)))
+    .returning({ id: digestRuns.id });
+  return rows.length;
 }
 
 export async function finishDigestRun(
@@ -195,6 +235,46 @@ export async function listDigestRunsForUser(
   return rows.map(parsePublicDigestRun);
 }
 
+
+export async function listDigestRunPageForUser(
+  database: Database,
+  userId: string,
+  options: { cursor?: string; limit?: number } = {},
+): Promise<PageResult<PublicDigestRun>> {
+  const limit = (() => {
+    const n = options.limit ?? 20;
+    if (!Number.isInteger(n) || n < 1 || n > 100) {
+      throw new TypeError("limit must be an integer between 1 and 100");
+    }
+    return n;
+  })();
+
+  const conditions = [eq(digestRuns.userId, userId)];
+  if (options.cursor) {
+    const c = decodeDigestRunCursor(options.cursor);
+    const cursorCondition = or(
+      lt(digestRuns.startedAt, c.p),
+      and(eq(digestRuns.startedAt, c.p), lt(digestRuns.id, c.i)),
+    );
+    if (cursorCondition) conditions.push(cursorCondition);
+  }
+
+  const rows = await database
+    .select()
+    .from(digestRuns)
+    .where(and(...conditions))
+    .orderBy(desc(digestRuns.startedAt), desc(digestRuns.id))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const data = rows.slice(0, limit).map(parsePublicDigestRun);
+  const nextCursor: string | null = hasMore
+    ? encodeDigestRunCursor(data[data.length - 1].startedAt, data[data.length - 1].id)
+    : null;
+
+  return { data, nextCursor };
+}
+
 export async function findDigestRunForUser(
   database: Database,
   id: string,
@@ -210,11 +290,13 @@ export async function findDigestRunForUser(
 export async function listDigestRunFeedsForRun(
   database: Database,
   runId: string,
+  userId: string,
 ): Promise<PublicDigestRunFeed[]> {
   const rows = await database
     .select()
     .from(digestRunFeeds)
-    .where(eq(digestRunFeeds.runId, runId))
+    .innerJoin(digestRuns, eq(digestRunFeeds.runId, digestRuns.id))
+    .where(and(eq(digestRunFeeds.runId, runId), eq(digestRuns.userId, userId)))
     .orderBy(asc(digestRunFeeds.startedAt));
-  return rows.map(parsePublicDigestRunFeed);
+  return rows.map((row) => parsePublicDigestRunFeed(row.digest_run_feeds));
 }

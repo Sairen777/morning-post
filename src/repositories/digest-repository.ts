@@ -1,8 +1,9 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { digests, digestStatuses, type DigestStatus } from "../db/schema/digest.ts";
 import { NotFoundError } from "../server/errors.ts";
+import { type PageResult, encodeDigestCursor, decodeDigestCursor } from "../server/cursor.ts";
 
 const publicDigestSchema = z.object({
   id: z.string().uuid(),
@@ -122,6 +123,46 @@ export async function listDigestsForUser(database: Database, userId: string): Pr
     .where(eq(digests.userId, userId))
     .orderBy(desc(digests.periodEndMs), desc(digests.createdAt));
   return rows.map(parsePublicDigest);
+}
+
+export async function listDigestPageForUser(
+  database: Database,
+  userId: string,
+  options: { cursor?: string; limit?: number } = {},
+): Promise<PageResult<PublicDigest>> {
+  const limit = (() => {
+    const n = options.limit ?? 20;
+    if (!Number.isInteger(n) || n < 1 || n > 100) {
+      throw new TypeError("limit must be an integer between 1 and 100");
+    }
+    return n;
+  })();
+
+  const conditions = [eq(digests.userId, userId)];
+  if (options.cursor) {
+    const c = decodeDigestCursor(options.cursor);
+    const cursorCondition = or(
+      lt(digests.periodEndMs, c.p),
+      and(eq(digests.periodEndMs, c.p), lt(digests.createdAt, c.c)),
+      and(eq(digests.periodEndMs, c.p), eq(digests.createdAt, c.c), lt(digests.id, c.i)),
+    );
+    if (cursorCondition) conditions.push(cursorCondition);
+  }
+
+  const rows = await database
+    .select()
+    .from(digests)
+    .where(and(...conditions))
+    .orderBy(desc(digests.periodEndMs), desc(digests.createdAt), desc(digests.id))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const data = rows.slice(0, limit).map(parsePublicDigest);
+  const nextCursor: string | null = hasMore
+    ? encodeDigestCursor(data[data.length - 1].periodEndMs, data[data.length - 1].createdAt, data[data.length - 1].id)
+    : null;
+
+  return { data, nextCursor };
 }
 
 export async function deleteDigestForUser(

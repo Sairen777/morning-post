@@ -27,7 +27,7 @@ async function postRegister(
   const app = buildApp(database);
   return await app.request("/auth/register", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-forwarded-for": crypto.randomUUID() },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173", "x-forwarded-for": crypto.randomUUID() },
     body: JSON.stringify(body),
   });
 }

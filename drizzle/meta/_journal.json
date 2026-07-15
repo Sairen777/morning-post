@@ -64,6 +64,27 @@
       "when": 1782479436257,
       "tag": "0008_classy_rattler",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783705429000,
+      "tag": "0009_rate_limit_buckets",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783705429001,
+      "tag": "0010_scheduler_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783707081930,
+      "tag": "0011_digest_runs_running_unique",
+      "breakpoints": true
     }
   ]
 }

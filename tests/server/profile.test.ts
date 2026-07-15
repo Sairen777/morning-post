@@ -15,7 +15,7 @@ interface RegisteredUser {
 function jsonRequest(method: "POST" | "PATCH", body: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
     body: JSON.stringify(body),
   };
 }
@@ -62,7 +62,7 @@ async function patchProfile(
 ): Promise<Response> {
   return await app.request("/auth/me", {
     ...jsonRequest("PATCH", body),
-    headers: { "content-type": "application/json", cookie },
+    headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
   });
 }
 

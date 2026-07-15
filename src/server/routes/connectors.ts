@@ -1,10 +1,8 @@
 import { Hono, type MiddlewareHandler } from "@hono/hono";
 import { z } from "zod";
 import type { Database } from "../../db/client.ts";
-import {
-  createDefaultTelegramLoginSessionManager,
-  type TelegramLoginSessionManager,
-} from "../../connectors/telegram/login-session.ts";
+import { getConfig } from "../../config.ts";
+import type { TelegramLoginSessionManager } from "../../connectors/telegram/login-session.ts";
 import {
   type AuthVariables,
   requireAuth,
@@ -20,27 +18,33 @@ const twoFactorAuthenticationBodySchema = z.object({
   password: z.string().min(1, "password is required"),
 }).strict();
 
-const CONNECTOR_RATE_LIMIT = {
-  limit: 5,
-  windowMs: 5 * 60_000,
-};
 
 export interface ConnectorRouteDependencies {
   telegramLoginSessionManager?: TelegramLoginSessionManager;
   telegramLoginRateLimiter?: MiddlewareHandler;
   telegramTwoFactorRateLimiter?: MiddlewareHandler;
+  trustedProxyCount?: number;
 }
 
-function defaultTelegramLoginRateLimiter(instanceId: string): MiddlewareHandler {
+const CONNECTOR_RATE_LIMIT = {
+  limit: 5,
+  windowMs: 5 * 60_000,
+};
+
+function defaultTelegramLoginRateLimiter(database: Database, trustedProxyCount: number): MiddlewareHandler {
   return createRateLimitMiddleware({
-    bucket: `${instanceId}:telegram-login`,
+    database,
+    bucket: "telegram-login",
+    trustedProxyCount,
     ...CONNECTOR_RATE_LIMIT,
   });
 }
 
-function defaultTelegramTwoFactorRateLimiter(instanceId: string): MiddlewareHandler {
+function defaultTelegramTwoFactorRateLimiter(database: Database, trustedProxyCount: number): MiddlewareHandler {
   return createRateLimitMiddleware({
-    bucket: `${instanceId}:telegram-two-factor`,
+    database,
+    bucket: "telegram-two-factor",
+    trustedProxyCount,
     ...CONNECTOR_RATE_LIMIT,
   });
 }
@@ -51,27 +55,41 @@ export function buildConnectorRoutes(
 ): Hono<{ Variables: AuthVariables }> {
   const routes = new Hono<{ Variables: AuthVariables }>();
   let telegramLoginSessionManager = dependencies.telegramLoginSessionManager;
-  const instanceId = crypto.randomUUID();
-  const telegramLoginRateLimiter = dependencies.telegramLoginRateLimiter ?? defaultTelegramLoginRateLimiter(instanceId);
+  let telegramLoginSessionManagerLoader: Promise<TelegramLoginSessionManager> | undefined;
+  const trustedProxyCount = dependencies.trustedProxyCount ?? getConfig().trustedProxyCount;
+  const telegramLoginRateLimiter = dependencies.telegramLoginRateLimiter ??
+    defaultTelegramLoginRateLimiter(database, trustedProxyCount);
   const telegramTwoFactorRateLimiter = dependencies.telegramTwoFactorRateLimiter ??
-    defaultTelegramTwoFactorRateLimiter(instanceId);
+    defaultTelegramTwoFactorRateLimiter(database, trustedProxyCount);
 
-
-  function getTelegramLoginSessionManager(): TelegramLoginSessionManager {
-    telegramLoginSessionManager ??= createDefaultTelegramLoginSessionManager(database);
+  async function getTelegramLoginSessionManager(): Promise<TelegramLoginSessionManager> {
+    if (telegramLoginSessionManager === undefined) {
+      telegramLoginSessionManagerLoader ??= (async () => {
+        try {
+          // Deliberately lazy: Telegram login loads the GramJS runtime only at its use boundary.
+          const { createDefaultTelegramLoginSessionManager } = await import(
+            "../../connectors/telegram/login-session.ts"
+          );
+          return createDefaultTelegramLoginSessionManager(database);
+        } catch (error) {
+          throw new Error("Failed to load Telegram login session manager", { cause: error });
+        }
+      })();
+      telegramLoginSessionManager = await telegramLoginSessionManagerLoader;
+    }
     return telegramLoginSessionManager;
   }
 
-  routes.use("*", requireAuth(database));
-
   routes.post("/telegram/login", telegramLoginRateLimiter, async (context) => {
-    const result = await getTelegramLoginSessionManager().startLogin(context.var.userId);
+    const manager = await getTelegramLoginSessionManager();
+    const result = await manager.startLogin(context.var.userId);
     return context.json(result, 201);
   });
 
   routes.get("/telegram/login/:id", async (context) => {
     const { id } = validate(loginSessionParamsSchema, context.req.param());
-    const status = await getTelegramLoginSessionManager().getStatus(id, context.var.userId);
+    const manager = await getTelegramLoginSessionManager();
+    const status = await manager.getStatus(id, context.var.userId);
     return context.json(status, 200);
   });
 
@@ -79,7 +97,8 @@ export function buildConnectorRoutes(
     const { id } = validate(loginSessionParamsSchema, context.req.param());
     const body = await context.req.json();
     const { password } = validate(twoFactorAuthenticationBodySchema, body);
-    const status = await getTelegramLoginSessionManager().submitTwoFactorAuthentication(
+    const manager = await getTelegramLoginSessionManager();
+    const status = await manager.submitTwoFactorAuthentication(
       id,
       context.var.userId,
       password,

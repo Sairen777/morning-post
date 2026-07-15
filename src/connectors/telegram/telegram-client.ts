@@ -2,6 +2,11 @@ import { TelegramClient } from "telegram";
 import input from "input";
 import qrcode from "qrcode-terminal";
 import { createClientFromSession, readTelegramApiCredentials } from "./client-factory.ts";
+import { sanitizeErrorForOps } from "../../server/error-sanitizer.ts";
+
+export function logTelegramClientError(error: unknown): void {
+  console.error("QR login error:", sanitizeErrorForOps(error));
+}
 export async function createTelegramClient(): Promise<TelegramClient> {
   const sessionString = Deno.env.get("TELEGRAM_SESSION") ?? "";
   const { apiId, apiHash } = readTelegramApiCredentials();
@@ -21,7 +26,7 @@ export async function createTelegramClient(): Promise<TelegramClient> {
       },
       password: async () => await input.text("Enter your 2FA password: "),
       onError: (err) => {
-        console.error("QR login error:", err);
+        logTelegramClientError(err);
         return Promise.resolve(true);
       },
     });

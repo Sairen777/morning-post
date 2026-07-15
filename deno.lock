@@ -13,6 +13,7 @@
     "npm:@testing-library/jest-dom@6.9.1": "6.9.1",
     "npm:@types/node@22.20.0": "22.20.0",
     "npm:@types/qrcode@^1.5.6": "1.5.6",
+    "npm:drizzle-kit@*": "0.31.10",
     "npm:drizzle-kit@0.31": "0.31.10",
     "npm:drizzle-orm@0.44.7": "0.44.7_postgres@3.4.5",
     "npm:hash-wasm@4.12.0": "4.12.0",

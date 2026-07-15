@@ -8,8 +8,7 @@ import {
 } from "../repositories/source-repository.ts";
 import { ConflictError } from "../server/errors.ts";
 import type { Connector } from "./connector.types.ts";
-import { createClientFromSession } from "./telegram/client-factory.ts";
-import { TelegramConnector } from "./telegram/telegram-connector.ts";
+import type { TelegramConnector } from "./telegram/telegram-connector.ts";
 import type { TelegramConnectorRawData } from "./telegram/telegram-connector.types.ts";
 
 export type TelegramClientHandle = ConstructorParameters<typeof TelegramConnector>[0];
@@ -29,7 +28,13 @@ export interface TelegramClientFactory {
 
 class DefaultTelegramClientFactory implements TelegramClientFactory {
   async createClientFromSession(sessionString: string): Promise<TelegramClientHandle> {
-    return await createClientFromSession(sessionString);
+    try {
+      // Deliberately lazy: GramJS is loaded only when a Telegram connector is requested.
+      const { createClientFromSession } = await import("./telegram/client-factory.ts");
+      return await createClientFromSession(sessionString);
+    } catch (error) {
+      throw new Error("Failed to load Telegram client factory", { cause: error });
+    }
   }
 }
 
@@ -61,8 +66,15 @@ export class ConnectorFactory {
   async #telegramConnector(source: PublicSource, userId: string): Promise<ConnectorHandle<TelegramConnectorRawData>> {
     const credentials = await getDecryptedCredentials(this.#database, source.id, userId, this.#credentialCipher);
     const client = await this.#telegramClientFactory.createClientFromSession(credentials.sessionString);
+    let TelegramConnectorClass: typeof TelegramConnector;
+    try {
+      // Deliberately lazy: Telegram connector code and GramJS are used only for Telegram ingestion.
+      ({ TelegramConnector: TelegramConnectorClass } = await import("./telegram/telegram-connector.ts"));
+    } catch (error) {
+      throw new Error("Failed to load Telegram connector", { cause: error });
+    }
     return {
-      connector: new TelegramConnector(client),
+      connector: new TelegramConnectorClass(client),
       dispose: async () => await client.disconnect(),
     };
   }

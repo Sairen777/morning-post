@@ -44,7 +44,7 @@ function buildCredentialCipher(): CredentialCipher {
 function jsonRequest(method: "POST" | "PATCH", body?: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
     body: body === undefined ? undefined : JSON.stringify(body),
   };
 }
@@ -101,7 +101,7 @@ function buildHarness(database: Database, now: () => number = Date.now): LoginHa
 async function startTelegramLogin(app: Hono, cookie: string): Promise<Record<string, unknown>> {
   const response = await app.request("/connectors/telegram/login", {
     method: "POST",
-    headers: { cookie },
+    headers: { cookie, Origin: "http://127.0.0.1:5173" },
   });
   assertEquals(response.status, 201);
   return await response.json();
@@ -127,7 +127,7 @@ async function submitTwoFactorAuthentication(
 ): Promise<Response> {
   return await app.request(`/connectors/telegram/login/${loginSessionId}/2fa`, {
     ...jsonRequest("POST", { password }),
-    headers: { "content-type": "application/json", cookie },
+    headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
   });
 }
 
@@ -309,7 +309,7 @@ Deno.test("completed Telegram login sessions release clients, plaintext sessions
 
     const fourthResponse = await app.request("/connectors/telegram/login", {
       method: "POST",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(fourthResponse.status, 429);
   });
@@ -441,7 +441,7 @@ Deno.test("Telegram login disconnects a client created after the reservation exp
 
     const startPromise = app.request("/connectors/telegram/login", {
       method: "POST",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     await factory.waitForClientCreationAttempts(1);
     now += 10 * 60_000 + 1;
@@ -502,7 +502,7 @@ Deno.test("Telegram login enforces three concurrent sessions per user", async ()
 
     const fourthResponse = await app.request("/connectors/telegram/login", {
       method: "POST",
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(fourthResponse.status, 429);
   });
@@ -518,7 +518,7 @@ Deno.test("Telegram login reserves capacity before awaiting client creation", as
     const requests = Array.from({ length: 4 }, () =>
       app.request("/connectors/telegram/login", {
         method: "POST",
-        headers: { cookie },
+        headers: { cookie, Origin: "http://127.0.0.1:5173" },
       })
     );
 
@@ -560,7 +560,7 @@ Deno.test("Telegram login session ownership is hidden from other users", async (
     const loginSessionId = String(start.loginSessionId);
 
     const pollResponse = await app.request(`/connectors/telegram/login/${loginSessionId}`, {
-      headers: { cookie: otherCookie },
+      headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(pollResponse.status, 404);
 

@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
+import { getConfig } from "../config.ts";
 import type { Database } from "./client.ts";
 
 let migrationPromise: Promise<void> | null = null;
@@ -29,8 +30,23 @@ export async function withTestDb<T>(
 
   let client: postgres.Sql | undefined;
   try {
-    client = postgres(url);
-
+    const config = getConfig({ databaseUrl: url });
+    client = postgres(url, {
+      max: config.databasePoolMax,
+      idle_timeout: config.databaseIdleTimeoutSeconds,
+      connect_timeout: config.databaseConnectTimeoutSeconds,
+      ssl: config.databaseSslMode === "disable" ? false : config.databaseSslMode,
+      max_lifetime: 45 * 60,
+      backoff: (attemptNum) => (0.5 + Math.random() / 2) * Math.min(3 ** attemptNum / 100, 20),
+      keep_alive: 60,
+      prepare: true,
+      debug: false,
+      fetch_types: true,
+      publications: "alltables",
+      target_session_attrs: undefined,
+      // postgres.js reads this default through PGMAX_PIPELINE unless supplied.
+      max_pipeline: 100,
+    } as Parameters<typeof postgres>[1]);
     const database = drizzle(client);
 
     migrationPromise ??= migrate(database, { migrationsFolder: "./drizzle" });

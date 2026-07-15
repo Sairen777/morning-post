@@ -50,7 +50,7 @@ async function encryptedCredentials(userId: string, connectorId: ConnectorId): P
 function jsonRequest(method: "POST", body: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
     body: JSON.stringify(body),
   };
 }
@@ -139,17 +139,17 @@ Deno.test("digest routes list and read user digests with grouped sections", asyn
       now: () => 100,
     });
 
-    const listResponse = await app.request("/digests", { headers: { cookie: ownerCookie } });
+    const listResponse = await app.request("/digests", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(listResponse.status, 200);
-    assertEquals((await listResponse.json()).map((entry: { id: string }) => entry.id), [digest.digest.id]);
+    assertEquals((await listResponse.json()).data.map((entry: { id: string }) => entry.id), [digest.digest.id]);
 
-    const getResponse = await app.request(`/digests/${digest.digest.id}`, { headers: { cookie: ownerCookie } });
+    const getResponse = await app.request(`/digests/${digest.digest.id}`, { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(getResponse.status, 200);
     const getJson = await getResponse.json();
     assertEquals(getJson.sections.map((section: { feedName: string }) => section.feedName), ["RSS Feed", "Telegram Feed"]);
     assertEquals(getJson.groups.map((group: { connectorId: string }) => group.connectorId), [ConnectorId.RSS, ConnectorId.Telegram]);
 
-    const otherResponse = await app.request(`/digests/${digest.digest.id}`, { headers: { cookie: otherCookie } });
+    const otherResponse = await app.request(`/digests/${digest.digest.id}`, { headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(otherResponse.status, 404);
   });
 });
@@ -169,20 +169,20 @@ Deno.test("DELETE /digests/:id deletes an owned digest", async () => {
 
     const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
       method: "DELETE",
-      headers: { cookie: ownerCookie },
+      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(deleteResponse.status, 200);
     const deleted = await deleteResponse.json();
     assertEquals(deleted.id, digest.digest.id);
 
     const readResponse = await app.request(`/digests/${digest.digest.id}`, {
-      headers: { cookie: ownerCookie },
+      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(readResponse.status, 404);
 
-    const listResponse = await app.request("/digests", { headers: { cookie: ownerCookie } });
+    const listResponse = await app.request("/digests", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(listResponse.status, 200);
-    const listed = await listResponse.json();
+    const listed = (await listResponse.json()).data;
     assertEquals(listed.map((entry: { id: string }) => entry.id).includes(digest.digest.id), false);
     assertEquals(await findDigestForUserPeriod(database, ownerId, periodStartMs, periodEndMs), null);
   });
@@ -205,7 +205,7 @@ Deno.test("DELETE /digests/:id hides another user's digest", async () => {
 
     const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
       method: "DELETE",
-      headers: { cookie: otherCookie },
+      headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(deleteResponse.status, 404);
     const json = await deleteResponse.json();
@@ -213,7 +213,7 @@ Deno.test("DELETE /digests/:id hides another user's digest", async () => {
     assertEquals(json.error.message, "digest not found");
 
     const ownerReadResponse = await app.request(`/digests/${digest.digest.id}`, {
-      headers: { cookie: ownerCookie },
+      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(ownerReadResponse.status, 200);
   });
@@ -233,7 +233,7 @@ Deno.test("GET /digests/:id.md renders markdown for deleted historical feeds", a
     });
     await softDeleteFeed(database, feed.id, ownerId);
 
-    const markdownResponse = await app.request(`/digests/${digest.digest.id}.md`, { headers: { cookie: ownerCookie } });
+    const markdownResponse = await app.request(`/digests/${digest.digest.id}.md`, { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(markdownResponse.status, 200);
     const markdown = await markdownResponse.text();
     assertEquals(markdown.includes("## Telegram"), true);
@@ -250,7 +250,7 @@ Deno.test("POST /digests/run creates an empty digest for an authenticated user w
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", { periodStartMs: 1700000000000, periodEndMs: 1700086400000 }),
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 200);
     const json = await response.json();
@@ -286,7 +286,7 @@ Deno.test("POST /digests/run rejects incomplete period input", async () => {
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", { periodStartMs: 1700000000000 }),
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 422);
   });
@@ -300,7 +300,7 @@ Deno.test("POST /digests/run rejects inverted periods", async () => {
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", { periodStartMs: 1700086400000, periodEndMs: 1700000000000 }),
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 422);
   });
@@ -317,7 +317,7 @@ Deno.test("POST /digests/run rate-limits repeated runs", async () => {
     for (let i = 0; i < 4; i++) {
       const response = await app.request("/digests/run", {
         ...jsonRequest("POST", body),
-        headers: { cookie },
+        headers: { cookie, Origin: "http://127.0.0.1:5173" },
       });
       responses.push(response.status);
     }
@@ -327,7 +327,7 @@ Deno.test("POST /digests/run rate-limits repeated runs", async () => {
     assertEquals(responses[3], 429);
     const rateLimitResponse = await app.request("/digests/run", {
       ...jsonRequest("POST", body),
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     const json = await rateLimitResponse.json();
     assertEquals(json.error.code, "RATE_LIMITED");
@@ -343,7 +343,7 @@ Deno.test("POST /digests/run creates a manual digest run record", async () => {
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", { periodStartMs: 1700000000000, periodEndMs: 1700086400000 }),
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 200);
     const json = await response.json();
@@ -407,16 +407,15 @@ Deno.test("GET /digests/runs returns only caller run records latest first", asyn
     await finishDigestRun(database, run3.id, { status: "complete" }, now);
 
     const response = await app.request("/digests/runs", {
-      headers: { cookie: user1Cookie },
+      headers: { cookie: user1Cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 200);
     const json = await response.json();
-
-    assertEquals(json.length, 2);
-    assertEquals(json[0].id, run2.id);
-    assertEquals(json[0].userId, user1);
-    assertEquals(json[1].id, run1.id);
-    assertEquals(json[1].userId, user1);
+    assertEquals(json.data.length, 2);
+    assertEquals(json.data[0].id, run2.id);
+    assertEquals(json.data[0].userId, user1);
+    assertEquals(json.data[1].id, run1.id);
+    assertEquals(json.data[1].userId, user1);
   });
 });
 
@@ -471,7 +470,7 @@ Deno.test("GET /digests/runs/:id returns owned run with feed stages", async () =
     }, now + 500);
 
     const response = await app.request(`/digests/runs/${run.id}`, {
-      headers: { cookie },
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 200);
     const json = await response.json();
@@ -512,7 +511,7 @@ Deno.test("GET /digests/runs/:id hides another user's run", async () => {
     await finishDigestRun(database, run.id, { status: "complete" }, now);
 
     const response = await app.request(`/digests/runs/${run.id}`, {
-      headers: { cookie: user2Cookie },
+      headers: { cookie: user2Cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 404);
     const json = await response.json();
@@ -520,7 +519,7 @@ Deno.test("GET /digests/runs/:id hides another user's run", async () => {
     assertEquals(json.error.message, "digest run not found");
 
     const ownResponse = await app.request(`/digests/runs/${run.id}`, {
-      headers: { cookie: user1Cookie },
+      headers: { cookie: user1Cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(ownResponse.status, 200);
   });
