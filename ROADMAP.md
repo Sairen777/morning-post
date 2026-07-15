@@ -49,6 +49,11 @@ The following production-hardening phases have been implemented (see
   default).
 - Bounded feed summarization concurrency (`SUMMARIZATION_CONCURRENCY`).
 
+- Deployment-wide text and vision endpoint configuration; no per-user model
+  override.
+- Same-model multimodal routing and distinct vision-then-text routing with
+  run-local fallback markers and sanitized availability logging.
+
 ### Phase 6 — Media retention and paginated history
 
 - Feed-isolated media paths (`telegram_media/<feed-key>/<message-id>.jpg`).
@@ -70,8 +75,6 @@ The following remain for separate provider/product plans:
   implemented.
 - **Object storage for media** — local media lifecycle sufficient for
   single-host; S3/R2/GCS deferred.
-- **Automatic feed theme classification** and **per-user/per-feed model
-  override** — remaining optional features.
 
 ---
 
@@ -123,7 +126,6 @@ shape-validated at the app boundary; see the JSON ledger in ARCHITECTURE.md.
   questionnaire UI MAY LLM-draft it, but only the final prompt is stored (no
   raw answers, no derived/regenerated cache).
 - defaultLanguage? (default summary/presentation language)
-- defaultModel? (optional per-user model override)
 - createdAt, updatedAt
 
 ### Source (one per user per connector; holds credentials)

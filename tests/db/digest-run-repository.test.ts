@@ -20,7 +20,6 @@ function userInput(overrides: Partial<CreateUserInput> = {}): CreateUserInput {
     passwordHash: "$argon2id$fakehash",
     systemPrompt: "Summarize tersely.",
     defaultLanguage: "en",
-    defaultModel: "gpt-4o-mini",
     ...overrides,
   };
 }

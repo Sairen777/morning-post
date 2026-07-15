@@ -276,7 +276,6 @@ export default function Dashboard(props: DashboardProps) {
     name?: string;
     systemPrompt?: string;
     defaultLanguage?: string | null;
-    defaultModel?: string | null;
   }): Promise<PublicUser> => {
     const updated = await updateCurrentUser(input);
     props.onUserUpdate(updated);

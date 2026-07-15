@@ -145,7 +145,7 @@ export async function summarizeOwnedFeedPeriod(
           customPrompt: input.feed.customPrompt,
           language: input.user.defaultLanguage,
         }),
-        { model: input.user.defaultModel ?? undefined, signal: controller.signal },
+        { signal: controller.signal },
       );
 
     const result = await upsertSummaryForPeriod(

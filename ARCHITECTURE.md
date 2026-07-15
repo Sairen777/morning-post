@@ -95,22 +95,40 @@ in the orchestrator.
 
 #### Backends
 
-Current implementation: `OpenAICompatibleSummarizerService`. Default backend is
-**Gemini 2.5 Flash-Lite** (vision-capable). Set `LOCAL_API=true` (or `=1`) to
-flip defaults to a local LM Studio / Ollama-style server — useful for offline
-dev and for summarizing content that shouldn't leave the machine.
+Current implementation: `OpenAICompatibleSummarizerService`, constructed once
+by each entry point and injected into both request and scheduled digest paths.
+The service owns two OpenAI-compatible endpoint configurations:
 
-Env vars (consumed at construction time, with hardcoded fallbacks):
+- `summarizer`: the text completion model and endpoint
+- `vision`: the image-analysis model and endpoint
 
-| Env                   | Purpose                                                                                                                             |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `LOCAL_API`           | `true`/`1` to use local backend defaults                                                                                            |
-| `SUMMARIZER_MODEL`    | overrides the model name                                                                                                            |
-| `SUMMARIZER_BASE_URL` | overrides the OpenAI-compatible endpoint **root** (the directory containing `chat/completions`, e.g. `https://api.deepseek.com/v1`) |
-| `GEMINI_API_KEY`      | bearer token for the hosted backend                                                                                                 |
+When both endpoint model names and roots match, image-bearing chunks use one
+direct multimodal request. With distinct endpoints, the vision client runs first
+and returns strict indexed `{ i, description }` JSON; the text client then
+summarizes the original text plus those descriptions. A 400/415/422 response
+from same-model multimodal dispatch disables vision for the remainder of that
+summarization run and retries the affected chunk as text. Distinct-vision
+failures use the same run-local fallback and emit one sanitized operational log.
 
-Precedence: explicit constructor arg → env var → hardcoded default. Tests rely
-on the constructor-arg path to inject mock values.
+Runtime configuration is required and deployment-wide; there are no hardcoded
+model-name defaults and no per-user model override. The resolver accepts
+constructor overrides before environment variables, trims values, normalizes
+endpoint roots, and requires `ALLOW_REMOTE_SUMMARIZATION=true` for non-loopback
+providers.
+
+| Env | Purpose |
+| --- | --- |
+| `SUMMARIZER_MODEL` | Required text summarization model name |
+| `SUMMARIZER_BASE_URL` | Required text OpenAI-compatible endpoint root |
+| `SUMMARIZER_API_KEY` | Optional text provider bearer token |
+| `VISION_MODEL` | Required vision model name |
+| `VISION_BASE_URL` | Vision endpoint root when distinct from the text endpoint; otherwise inherited |
+| `VISION_API_KEY` | Optional vision provider bearer token; otherwise inherited for same-model routing |
+| `ALLOW_REMOTE_SUMMARIZATION` | Allows non-loopback provider roots; defaults to `false` |
+
+All system prompt text remains in `src/summarizers/prompts.ts`, including the
+vision-analysis contract. The transport is isolated in
+`src/summarizers/openai-compatible-client.ts`.
 
 ### 3. Presenter _(planned)_
 
@@ -334,35 +352,38 @@ Configuration: `DIGEST_RUN_STALE_AFTER_MS` (default 15 minutes) and
 
 **Source batching.** When two or more feeds need ingestion from the same source,
 `ingestFeedsForSource()` computes the union window, calls
-`connector.getNormalizedData(min(from), max(to), externalIds)` once, filters
-returned items per feed, validates each feed independently, and upserts each
-feed's items in its own transaction. A connector-level exception marks all
-pending feeds in that source failed; per-feed validation/transaction errors are
-isolated. The single-feed path (`ingestFeed`) remains for orphan feeds. See
-`src/services/ingestion-service.ts` and `src/services/orchestrator.ts`.
+`getNormalizedData(from, to)` once, filters returned items per feed, and
+upserts each feed independently. A connector-level failure marks all pending
+feeds failed; per-feed errors remain isolated.
 
 **Connector deadlines.** `Connector.getRawData`, `getNormalizedData`, and
-`getMessagesFromEntity` accept an optional `AbortSignal` as the final
-parameter. `ingestFeedsForSource` creates a per-source timeout controller from
-`CONNECTOR_TIMEOUT_MS` (default 120s). The Telegram connector checks the signal
-between dialog/message iterations; non-Telegram connectors that ignore the
-signal still receive the deadline at the service boundary. See
-`src/connectors/connector.types.ts`,
-`src/connectors/telegram/telegram-connector.ts`.
+`getMessagesFromEntity` accept an optional `AbortSignal`. Ingestion creates a
+per-source deadline from `CONNECTOR_TIMEOUT_MS` (default 120 seconds), and the
+Telegram connector checks it between iterations. Connectors that do not support
+the signal still receive the deadline at the service boundary.
 {/* Tests: tests/services/ingestion-service.test.ts,
     tests/services/orchestrator.test.ts, tests/connector.test.ts */}
 
-### 10. Summarizer budgets, chunking, and privacy
+### 10. Summarizer budgets, chunking, privacy, and vision routing
 
 **Chunked summarization.** `OpenAICompatibleSummarizerService` packs items into
 chunks respecting `maxTextBytesPerChunk` (default 120,000), `maxItemsPerChunk`
 (default 50), and `maxImageBytes` (default 1,000,000). Items pack sequentially;
 if one item's text alone exceeds the per-item text budget, only that item's text
-is truncated while preserving its index. Oversize images are replaced with
-`[IMAGE_OMITTED]`. Multi-chunk inputs produce a merge request using the same
-budget and no images; if the merge input still exceeds the cap, it recurses in
-sequential groups. Empty or all-filtered input makes zero provider calls and
-returns `[]`. See `src/summarizers/openai-compatible-summarizer.ts`.
+is truncated while preserving its index. Oversize or unreadable images become
+`[IMAGE_OMITTED]`. Multi-chunk inputs produce one terminal text-only merge
+request; empty or all-filtered input makes zero provider calls and returns `[]`.
+
+**Vision routing.** With one model endpoint, valid images are sent directly in
+the multimodal request. With distinct text and vision endpoints, the service
+sends indexed album labels and valid image parts to the vision endpoint first,
+then sends only text plus validated `[IMAGE_ANALYSIS]` descriptions to the text
+endpoint. Image labels preserve album order even when an earlier image is
+omitted. If vision is unavailable, the affected item receives
+`[IMAGE_ANALYSIS_UNAVAILABLE]`; `[IMAGE_OMITTED]` is never decorated. A
+same-model 400/415/422 enables this fallback for the remainder of the current
+run; other provider errors propagate. The next top-level summarize call retries
+vision, and each run emits at most one sanitized availability log.
 
 **Retry and timeout.** Each chunk, retry delay, and merge request receives the
 same `AbortSignal` from `SUMMARIZER_TIMEOUT_MS` (default 120s). Retries
@@ -373,7 +394,7 @@ summarization failure. See `src/services/summarization-service.ts`.
 **Remote provider opt-in.** `OpenAICompatibleSummarizerService` allows loopback
 endpoints (`localhost`, `127.0.0.1`, `::1`) unconditionally. Any non-loopback
 base URL throws a configuration error unless `ALLOW_REMOTE_SUMMARIZATION=true`.
-See `src/summarizers/openai-compatible-summarizer.ts`.
+See `src/summarizers/openai-compatible-client.ts`.
 
 **Bounded feed concurrency.** Summarization of pending feeds within a digest run
 is bounded by `SUMMARIZATION_CONCURRENCY` (default 2), using a small worker-pool
@@ -425,10 +446,6 @@ plans:
 - **Object storage for media.** Local media directories with TTL and quota
   suffice for single-host deployments; S3/R2/GCS integration is deferred until
   multi-host scaling requires it.
-- **Per-user / per-feed model override.** `User.defaultModel` and
-  `Feed.preferredModel` remain optional and can be layered onto the existing
-  summarizer backend precedence (constructor arg → env → default).
-  See "Things to Consider" below.
 - **Automatic feed theme classification.** Per-feed `customPrompt` handles
   manual steering; LLM-inferred theming is deferred.
 ---
@@ -442,10 +459,11 @@ plans:
 - **Caching**: per-window `getRawData` caching + persistence belongs with the DB
   layer in `ROADMAP.md`. Memory-only caching is a footgun under concurrent API
   requests.
-- **Vision model requirement**: multimodal summarization requires a
-  vision-capable model. If swapping to a text-only backend (e.g.
-  `deepseek-chat`), either flip `includeMedia: false` in the relevant prompt
-  builders or have the summarizer strip media before dispatch.
+- **Vision endpoint requirement**: every deployment supplies `VISION_MODEL`; a
+  distinct vision endpoint also supplies `VISION_BASE_URL`. Same-model routing
+  requires the configured model to support multimodal input. If vision fails,
+  the service falls back to text with an explicit analysis-unavailable marker
+  for the current run.
 - **Automatic feed theme classification** (LLM-inferred themes + prompt-fragment
   boosting — what the old Tag/FeedTag system did) is deferred. Per-feed steering
   is `Feed.customPrompt` for now; revisit automatic theming once you have many
@@ -458,8 +476,3 @@ plans:
   subscriptions. The interface should evolve to accept the user's subscribed
   feed external ids (constructor arg or per-call) so a fetch is scoped to one
   user's feeds. Belongs with the persistence-integration phase.
-- **Per-user / per-feed model override**: `User.defaultModel` and an optional
-  `Source`/`Feed.preferredModel` would let a user route, say, private channels
-  through a local model while everything else uses the hosted backend. Optional;
-  layer onto the existing summarizer backend precedence (constructor arg → env →
-  default).

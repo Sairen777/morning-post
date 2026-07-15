@@ -4,7 +4,6 @@ export interface PublicUser {
   email: string;
   systemPrompt: string;
   defaultLanguage: string | null;
-  defaultModel: string | null;
   createdAt: number;
   updatedAt: number;
 }

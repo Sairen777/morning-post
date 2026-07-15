@@ -29,7 +29,6 @@ export interface PublicUser {
   email: string;
   systemPrompt: string;
   defaultLanguage: string | null;
-  defaultModel: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -44,7 +43,6 @@ export function toPublicUser(user: User): PublicUser {
     email: user.email,
     systemPrompt: user.systemPrompt,
     defaultLanguage: user.defaultLanguage,
-    defaultModel: user.defaultModel,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };

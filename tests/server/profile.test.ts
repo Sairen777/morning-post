@@ -152,23 +152,30 @@ Deno.test("PATCH /auth/me allows an empty systemPrompt and round-trips it", asyn
   });
 });
 
-Deno.test("PATCH /auth/me trims name, language, and model; blank trimmed name is rejected", async () => {
+Deno.test("PATCH /auth/me trims name and language; unknown model fields are rejected", async () => {
   await withTestDb(async (database: Database) => {
     const { app, cookie } = await authenticatedApp(database, "profile-trim@example.com");
 
     const trimResponse = await patchProfile(app, cookie, {
       name: "  Ada Byron  ",
       defaultLanguage: " en-US ",
-      defaultModel: " gpt-4.1-mini ",
     });
     assertEquals(trimResponse.status, 200);
     const trimJson = await trimResponse.json();
     assertEquals(trimJson.name, "Ada Byron");
     assertEquals(trimJson.defaultLanguage, "en-US");
-    assertEquals(trimJson.defaultModel, "gpt-4.1-mini");
 
     const blankNameResponse = await patchProfile(app, cookie, { name: "   " });
     assertEquals(blankNameResponse.status, 422);
     await blankNameResponse.body?.cancel();
+  });
+});
+
+Deno.test("PATCH /auth/me rejects the removed defaultModel field", async () => {
+  await withTestDb(async (database) => {
+    const { app, cookie } = await authenticatedApp(database, "profile-removed-model@example.com");
+    const response = await patchProfile(app, cookie, { defaultModel: "ignored" });
+    assertEquals(response.status, 422);
+    await response.body?.cancel();
   });
 });

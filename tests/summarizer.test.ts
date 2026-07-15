@@ -1,10 +1,12 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert"
-import { OpenAICompatibleSummarizerService, resolveOpenAICompatibleSummarizerModel } from "../src/summarizers/openai-compatible-summarizer.ts";
+import { OpenAICompatibleSummarizerService } from "../src/summarizers/openai-compatible-summarizer.ts";
 import {
   buildDiscussionPrompt,
   buildNewsPrompt,
+  buildVisionAnalysisPrompt,
   selectRuleset,
 } from "../src/summarizers/prompts.ts";
+import type { OpenAICompatibleSummarizerOptions } from "../src/summarizers/openai-compatible-summarizer.ts";
 import type { NormalizedItem } from "../src/connectors/connector.types.ts";
 import { ConnectorId } from "../src/constants.ts";
 
@@ -19,6 +21,24 @@ const item = (overrides: Partial<NormalizedItem> = {}): NormalizedItem => ({
   url: "https://t.me/test/1",
   ...overrides,
 });
+
+const TEST_MODELS = {
+  summarizer: { model: "test-model", baseUrl: "http://localhost" },
+  vision: { model: "test-model", baseUrl: "http://localhost" },
+  sameModel: true,
+};
+
+const DISTINCT_TEST_MODELS = {
+  summarizer: { model: "text-model", baseUrl: "http://localhost:8000/v1" },
+  vision: { model: "vision-model", baseUrl: "http://localhost:9000/v1" },
+  sameModel: false,
+};
+
+function createTestSummarizer(
+  options: OpenAICompatibleSummarizerOptions = {},
+): OpenAICompatibleSummarizerService {
+  return new OpenAICompatibleSummarizerService({ models: TEST_MODELS, ...options });
+}
 
 type FetchRequest = { messages: Array<{ role: string; content: unknown }> };
 
@@ -88,6 +108,18 @@ Deno.test("buildNewsPrompt — explicit language overrides default", () => {
   assertStringIncludes(systemPrompt, "Ukrainian");
 });
 
+Deno.test("buildVisionAnalysisPrompt — enforces indexed OCR and album uncertainty contract", () => {
+  const { systemPrompt } = buildVisionAnalysisPrompt();
+  assertStringIncludes(systemPrompt, "exactly two fields");
+  assertStringIncludes(systemPrompt, "\"i\"");
+  assertStringIncludes(systemPrompt, "\"description\"");
+  assertStringIncludes(systemPrompt, "visible facts");
+  assertStringIncludes(systemPrompt, "OCR");
+  assertStringIncludes(systemPrompt, "uncertainty");
+  assertStringIncludes(systemPrompt, "Image 1");
+  assertStringIncludes(systemPrompt, "Image 2");
+});
+
 // --- selectRuleset ---
 
 Deno.test("selectRuleset — explicit kind 'discussion' returns discussion ruleset", () => {
@@ -128,10 +160,7 @@ Deno.test(
     const { captured, restore } = captureFetch({
       choices: [{ message: { content: '[{"t":"x","i":0}]' } }],
     });
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "http://localhost",
-    );
+    const svc = createTestSummarizer();
     await svc.summarize([item()], buildNewsPrompt());
     assertStringIncludes(captured.body!.messages[0].content as string, '"t"');
     restore();
@@ -144,10 +173,7 @@ Deno.test("buildContentParts — emoji-only item is filtered out", async () => {
   const { captured, restore } = captureFetch({
     choices: [{ message: { content: "[]" } }],
   });
-  const svc = new OpenAICompatibleSummarizerService(
-    "test-model",
-    "http://localhost",
-  );
+  const svc = createTestSummarizer();
   await svc.summarize(
     [item({ text: "👍🔥😂" }), item({ text: "Real news" })],
     buildNewsPrompt(),
@@ -165,10 +191,7 @@ Deno.test(
     const { captured, restore } = captureFetch({
       choices: [{ message: { content: "[]" } }],
     });
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "http://localhost",
-    );
+    const svc = createTestSummarizer();
     await svc.summarize(
       [item({ text: "hello", author: "@alice", meta: { isGroup: true } })],
       buildDiscussionPrompt(),
@@ -188,10 +211,7 @@ Deno.test("parsePoints — attaches metadata from indexedItems", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: '[{"t":"summary bullet","i":0}]' } }],
   });
-  const svc = new OpenAICompatibleSummarizerService(
-    "test-model",
-    "http://localhost",
-  );
+  const svc = createTestSummarizer();
   const results = await svc.summarize([item()], buildNewsPrompt());
   assertEquals(results[0].text, "summary bullet");
   assertEquals(results[0].sourceUrl, "https://t.me/test/1");
@@ -207,10 +227,7 @@ Deno.test(
         { message: { content: '```json\n[{"t":"fenced","i":0}]\n```' } },
       ],
     });
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "http://localhost",
-    );
+    const svc = createTestSummarizer();
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "fenced");
     restore();
@@ -223,10 +240,7 @@ Deno.test(
     const restore = stubFetch({
       choices: [{ message: { content: '[{"t":"orphan","i":99}]' } }],
     });
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "http://localhost",
-    );
+    const svc = createTestSummarizer();
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "orphan");
     assertEquals(results[0].sourceUrl, null);
@@ -240,10 +254,7 @@ Deno.test(
     const restore = stubFetch({
       choices: [{ message: { content: '[{"t":"discussion summary without index"}]' } }],
     });
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "http://localhost",
-    );
+    const svc = createTestSummarizer();
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "discussion summary without index");
     assertEquals(results[0].sourceUrl, null);
@@ -279,6 +290,54 @@ function stubFetchSequence(specs: ResponseSpec[]): {
   };
 }
 
+type CapturedModelRequest = {
+  url: string;
+  body: FetchRequest & { model: string };
+};
+
+function captureFetchSequence(specs: ResponseSpec[]): {
+  captured: CapturedModelRequest[];
+  callCount: () => number;
+  restore: () => void;
+} {
+  const original = globalThis.fetch;
+  const captured: CapturedModelRequest[] = [];
+  let callIndex = 0;
+  globalThis.fetch = (input, init) => {
+    captured.push({
+      url: String(input),
+      body: JSON.parse((init as RequestInit & { body: string }).body),
+    });
+    const spec = specs[callIndex] ?? specs[specs.length - 1];
+    callIndex++;
+    return Promise.resolve(
+      new Response(spec.body, {
+        status: spec.status,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  };
+  return {
+    captured,
+    callCount: () => callIndex,
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+}
+
+function modelResponse(content: string): string {
+  return JSON.stringify({
+    choices: [{ message: { content } }],
+  });
+}
+
+async function createRoutingTestDirectory(name: string): Promise<string> {
+  const directory = `./.test-data/${name}`;
+  await Deno.mkdir(directory, { recursive: true });
+  return directory;
+}
+
 // --- retry behavior ---
 
 Deno.test("summarize — retries on 429 and succeeds on second attempt", async () => {
@@ -287,7 +346,7 @@ Deno.test("summarize — retries on 429 and succeeds on second attempt", async (
     { status: 200, body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"ok\\",\\"i\\":0}]"}}]}' },
   ]);
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "ok");
     assertEquals(callCount(), 2);
@@ -303,7 +362,7 @@ Deno.test("summarize — retries on 503 and succeeds on third attempt", async ()
     { status: 200, body: '{"choices":[{"message":{"content":"[{\\"t\\":\\"ok\\",\\"i\\":0}]"}}]}' },
   ]);
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "ok");
     assertEquals(callCount(), 3);
@@ -317,13 +376,13 @@ Deno.test("summarize — does not retry on 400 (non-retryable status)", async ()
     { status: 400, body: '{"error":"bad request"}' },
   ]);
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
     await svc.summarize([item()], buildNewsPrompt());
     throw new Error("expected summarize to throw on 400");
   } catch (err: unknown) {
     if (err instanceof Error && err.message === "expected summarize to throw on 400") throw err;
     assertEquals(err instanceof Error, true);
-    assertStringIncludes((err as Error).message, "Summarizer API 400");
+    assertStringIncludes((err as Error).message, "Model API 400");
     assertStringIncludes((err as Error).message, "bad request");
     assertEquals(callCount(), 1);
   } finally {
@@ -336,7 +395,7 @@ Deno.test("summarize — includes response body in error message", async () => {
     { status: 500, body: '{"error":"internal quota exceeded"}' },
   ]);
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
     await svc.summarize([item()], buildNewsPrompt());
     throw new Error("expected summarize to throw on 500");
   } catch (err: unknown) {
@@ -355,7 +414,7 @@ Deno.test("parsePoints — throws on empty response", async () => {
     choices: [{ message: { content: "" } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const svc = createTestSummarizer();
     await svc.summarize([item()], buildNewsPrompt());
     throw new Error("expected summarize to throw on empty response");
   } catch (err: unknown) {
@@ -372,7 +431,7 @@ Deno.test("parsePoints — throws on non-array JSON response", async () => {
     choices: [{ message: { content: '{"not":"an array"}' } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const svc = createTestSummarizer();
     await svc.summarize([item()], buildNewsPrompt());
     throw new Error("expected summarize to throw on non-array response");
   } catch (err: unknown) {
@@ -389,7 +448,7 @@ Deno.test("parsePoints — throws on non-array object response", async () => {
     choices: [{ message: { content: '{"status":"ok","summary":"done"}' } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const svc = createTestSummarizer();
     await svc.summarize([item()], buildNewsPrompt());
     throw new Error("expected summarize to throw on non-array");
   } catch (err: unknown) {
@@ -406,7 +465,7 @@ Deno.test("parsePoints — strips bare fence without language tag", async () => 
     choices: [{ message: { content: '```\n[{"t":"bare","i":0}]\n```' } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const svc = createTestSummarizer();
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "bare");
   } finally {
@@ -419,7 +478,7 @@ Deno.test("parsePoints — strips think tags before fence extraction", async () 
     choices: [{ message: { content: '<think>reasoning</think>\n```json\n[{"t":"after think","i":0}]\n```' } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const svc = createTestSummarizer();
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "after think");
   } finally {
@@ -434,7 +493,7 @@ Deno.test("parsePoints — throws on element without string t (prose turned to w
     choices: [{ message: { content: "Sure, here is your summary:" } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const svc = createTestSummarizer();
     await svc.summarize([item()], buildNewsPrompt());
     throw new Error("expected summarize to throw on element validation");
   } catch (err: unknown) {
@@ -446,31 +505,17 @@ Deno.test("parsePoints — throws on element without string t (prose turned to w
   }
 });
 
-Deno.test("resolveOpenAICompatibleSummarizerModel — env fallback and explicit override", () => {
-  const old = Deno.env.get("SUMMARIZER_MODEL");
-  try {
-    Deno.env.set("SUMMARIZER_MODEL", "eval-env-model");
-    assertEquals(resolveOpenAICompatibleSummarizerModel(null), "eval-env-model");
-    assertEquals(resolveOpenAICompatibleSummarizerModel("user-model"), "user-model");
-  } finally {
-    if (old === undefined) {
-      Deno.env.delete("SUMMARIZER_MODEL");
-    } else {
-      Deno.env.set("SUMMARIZER_MODEL", old);
-    }
-  }
-});
 
 // --- empty and filtered input ---
 
 Deno.test("summarize — returns [] for empty items", async () => {
-  const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+  const svc = createTestSummarizer();
   const results = await svc.summarize([], buildNewsPrompt());
   assertEquals(results, []);
 });
 
 Deno.test("summarize — returns [] when all items are filtered (emoji-only, no photo)", async () => {
-  const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+  const svc = createTestSummarizer();
   const results = await svc.summarize(
     [item({ text: "👍🔥😂" }), item({ text: "" })],
     buildNewsPrompt(),
@@ -503,9 +548,10 @@ Deno.test("summarize — chunks items and merges when maxItemsPerChunk is exceed
   ];
   const { callCount, restore } = stubFetchSequence(responses);
   try {
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model", "http://localhost", undefined, 0, 120_000, 2,
-    );
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 2,
+    });
     const results = await svc.summarize(
       [item({ text: "item A" }), item({ text: "item B" }), item({ text: "item C" })],
       buildNewsPrompt(),
@@ -527,7 +573,7 @@ Deno.test("summarize — single chunk skips merge", async () => {
     },
   ]);
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost");
+    const svc = createTestSummarizer();
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(callCount(), 1, "expected single call with no merge");
     assertEquals(results.length, 1);
@@ -547,9 +593,10 @@ Deno.test("summarize — truncates item text exceeding maxTextBytesPerChunk", as
     choices: [{ message: { content: "[{\"t\":\"truncated\",\"i\":0}]" } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model", "http://localhost", undefined, 0, maxBytes,
-    );
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxTextBytesPerChunk: maxBytes,
+    });
     await svc.summarize(
       [item({ text: longText })],
       buildNewsPrompt(),
@@ -570,9 +617,10 @@ Deno.test("summarize — normal text below maxTextBytesPerChunk is not truncated
     choices: [{ message: { content: "[{\"t\":\"normal\",\"i\":0}]" } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model", "http://localhost", undefined, 0, 100,
-    );
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxTextBytesPerChunk: 100,
+    });
     await svc.summarize(
       [item({ text: normalText })],
       buildNewsPrompt(),
@@ -599,9 +647,10 @@ Deno.test("summarize — omits images above maxImageBytes", async () => {
       choices: [{ message: { content: "[{\"t\":\"done\",\"i\":0}]" } }],
     });
     try {
-      const svc = new OpenAICompatibleSummarizerService(
-        "test-model", "http://localhost", undefined, 0, 120_000, 50, maxImageBytes,
-      );
+      const svc = createTestSummarizer({
+        retryBaseDelayMs: 0,
+        maxImageBytes,
+      });
       await svc.summarize(
         [item({ text: "small img", media: { type: "photo", localPath: `${temporaryDirectory}/small.jpg` } })],
         buildNewsPrompt(),
@@ -622,9 +671,10 @@ Deno.test("summarize — omits images above maxImageBytes", async () => {
       choices: [{ message: { content: "[{\"t\":\"done\",\"i\":0}]" } }],
     });
     try {
-      const svc = new OpenAICompatibleSummarizerService(
-        "test-model", "http://localhost", undefined, 0, 120_000, 50, maxImageBytes,
-      );
+      const svc = createTestSummarizer({
+        retryBaseDelayMs: 0,
+        maxImageBytes,
+      });
       await svc.summarize(
         [item({ text: "large img", media: { type: "photo", localPath: `${temporaryDirectory}/large.jpg` } })],
         buildNewsPrompt(),
@@ -640,16 +690,236 @@ Deno.test("summarize — omits images above maxImageBytes", async () => {
   }
 });
 
+Deno.test("summarize — encodes an image at the configured byte limit", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory("image-limit");
+  const imagePath = `${temporaryDirectory}/limit.jpg`;
+  await Deno.writeFile(imagePath, new Uint8Array(1_000_000).fill(7));
+  const { captured, restore } = captureFetch({
+    choices: [{ message: { content: "[{\"t\":\"limit image\",\"i\":0}]" } }],
+  });
+  try {
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxImageBytes: 1_000_000,
+    });
+    await svc.summarize(
+      [item({ media: { type: "photo", localPath: imagePath } })],
+      buildNewsPrompt(),
+    );
+    const content = captured.body!.messages[1].content;
+    assert(Array.isArray(content), "an image at the limit should remain multimodal");
+    assertStringIncludes(JSON.stringify(content), "data:image/jpeg;base64");
+    assertEquals(JSON.stringify(content).includes("[IMAGE_OMITTED]"), false);
+  } finally {
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — same-model routing sends valid images directly as multimodal content", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory("same-model-direct");
+  const imagePath = `${temporaryDirectory}/photo.jpg`;
+  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  const { captured, restore } = captureFetchSequence([
+    { status: 200, body: modelResponse('[{"t":"direct image summary","i":0}]') },
+  ]);
+  try {
+    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
+    const results = await svc.summarize(
+      [item({ media: { type: "photo", localPath: imagePath } })],
+      buildNewsPrompt(),
+    );
+    assertEquals(results[0].text, "direct image summary");
+    assertEquals(captured.length, 1);
+    assertEquals(captured[0].body.model, "test-model");
+    assertStringIncludes(captured[0].url, "http://localhost/chat/completions");
+    assertStringIncludes(JSON.stringify(captured[0].body.messages[1].content), "image_url");
+  } finally {
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — distinct vision model analyzes images before text summarization", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory("distinct-vision");
+  const imagePath = `${temporaryDirectory}/photo.jpg`;
+  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  const { captured, restore } = captureFetchSequence([
+    { status: 200, body: modelResponse('[{"i":0,"description":"visible OCR text, uncertain context"}]') },
+    { status: 200, body: modelResponse('[{"t":"described image summary","i":0}]') },
+  ]);
+  try {
+    const svc = createTestSummarizer({
+      models: DISTINCT_TEST_MODELS,
+      retryBaseDelayMs: 0,
+    });
+    const results = await svc.summarize(
+      [item({ media: { type: "photo", localPath: imagePath } })],
+      buildNewsPrompt(),
+    );
+    assertEquals(results[0].text, "described image summary");
+    assertEquals(captured.length, 2);
+    assertEquals(captured[0].body.model, "vision-model");
+    assertStringIncludes(captured[0].url, "http://localhost:9000/v1/chat/completions");
+    assertStringIncludes(JSON.stringify(captured[0].body.messages[1].content), "Item [0], Image 1");
+    assertStringIncludes(JSON.stringify(captured[0].body.messages[1].content), "image_url");
+    assertEquals(captured[1].body.model, "text-model");
+    assertStringIncludes(captured[1].url, "http://localhost:8000/v1/chat/completions");
+    const summaryContent = captured[1].body.messages[1].content;
+    assertEquals(typeof summaryContent, "string");
+    assertStringIncludes(String(summaryContent), "[IMAGE_ANALYSIS]");
+    assertEquals(String(summaryContent).includes("image_url"), false);
+  } finally {
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — separate vision preserves omitted album images without decorating omission markers", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory("distinct-album");
+  const validImagePath = `${temporaryDirectory}/valid.jpg`;
+  const missingImagePath = `${temporaryDirectory}/missing.jpg`;
+  await Deno.writeFile(validImagePath, new Uint8Array([1, 2, 3]));
+  const { captured, restore } = captureFetchSequence([
+    { status: 200, body: modelResponse('[{"i":0,"description":"one visible album image"}]') },
+    { status: 200, body: modelResponse('[{"t":"album summary","i":0}]') },
+  ]);
+  try {
+    const svc = createTestSummarizer({
+      models: DISTINCT_TEST_MODELS,
+      retryBaseDelayMs: 0,
+    });
+    await svc.summarize(
+      [{
+        ...item({ text: "album post" }),
+        media: { type: "album", localPaths: [missingImagePath, validImagePath] },
+      }],
+      buildNewsPrompt(),
+    );
+    const visionContent = JSON.stringify(captured[0].body.messages[1].content);
+    assertStringIncludes(visionContent, "Item [0], Image 2");
+    assertEquals(visionContent.includes("Image 1"), false);
+    const summaryContent = captured[1].body.messages[1].content;
+    assertEquals(typeof summaryContent, "string");
+    const summaryText = String(summaryContent);
+    assertStringIncludes(summaryText, "[IMAGE_OMITTED]");
+    assertStringIncludes(summaryText, "[IMAGE_ANALYSIS]");
+    assertEquals(summaryText.includes("[IMAGE_OMITTED]\n[IMAGE_ANALYSIS]"), false);
+    assertEquals(summaryText.includes("[IMAGE_OMITTED]\n[IMAGE_ANALYSIS_UNAVAILABLE]"), false);
+  } finally {
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — same-model vision fallback disables image attempts for later chunks", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory("same-model-fallback");
+  const firstImagePath = `${temporaryDirectory}/first.jpg`;
+  const secondImagePath = `${temporaryDirectory}/second.jpg`;
+  await Deno.writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
+  await Deno.writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
+  const { captured, callCount, restore } = captureFetchSequence([
+    { status: 400, body: '{"error":"multimodal unsupported"}' },
+    { status: 200, body: modelResponse('[{"t":"first fallback","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"second fallback","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"merged fallback","i":0}]') },
+  ]);
+  try {
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 1,
+    });
+    const results = await svc.summarize(
+      [
+        item({ text: "first", media: { type: "photo", localPath: firstImagePath } }),
+        item({ text: "second", media: { type: "photo", localPath: secondImagePath } }),
+      ],
+      buildNewsPrompt(),
+    );
+    assertEquals(callCount(), 4);
+    assertEquals(results[0].text, "merged fallback");
+    assertStringIncludes(JSON.stringify(captured[0].body.messages[1].content), "image_url");
+    for (const request of captured.slice(1)) {
+      assertEquals(JSON.stringify(request.body.messages[1].content).includes("image_url"), false);
+    }
+    assertStringIncludes(String(captured[1].body.messages[1].content), "[IMAGE_ANALYSIS_UNAVAILABLE]");
+    assertStringIncludes(String(captured[2].body.messages[1].content), "[IMAGE_ANALYSIS_UNAVAILABLE]");
+  } finally {
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — same-model vision does not fall back on unrelated provider failures", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory("same-model-failure");
+  const imagePath = `${temporaryDirectory}/photo.jpg`;
+  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  const { callCount, restore } = captureFetchSequence([
+    { status: 401, body: '{"error":"unauthorized"}' },
+  ]);
+  try {
+    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
+    await assertRejects(
+      () => svc.summarize([item({ media: { type: "photo", localPath: imagePath } })], buildNewsPrompt()),
+      Error,
+      "Model API 401",
+    );
+    assertEquals(callCount(), 1);
+  } finally {
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — vision failure is logged once per run and retried on the next run", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory("vision-retry");
+  const imagePath = `${temporaryDirectory}/photo.jpg`;
+  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  const { captured, callCount, restore } = captureFetchSequence([
+    { status: 200, body: "not valid vision JSON" },
+    { status: 200, body: modelResponse('[{"t":"first unavailable","i":0}]') },
+    { status: 200, body: "not valid vision JSON" },
+    { status: 200, body: modelResponse('[{"t":"second unavailable","i":0}]') },
+  ]);
+  const originalError = console.error;
+  const logs: unknown[][] = [];
+  console.error = (...arguments_: unknown[]) => {
+    logs.push(arguments_);
+  };
+  try {
+    const svc = createTestSummarizer({
+      models: DISTINCT_TEST_MODELS,
+      retryBaseDelayMs: 0,
+    });
+    await svc.summarize([item({ media: { type: "photo", localPath: imagePath } })], buildNewsPrompt());
+    await svc.summarize([item({ media: { type: "photo", localPath: imagePath } })], buildNewsPrompt());
+    assertEquals(callCount(), 4);
+    assertEquals(logs.length, 2);
+    assertEquals(logs.every((entry) => entry[0] === "[summarization] vision analysis unavailable for this run:"), true);
+    assertEquals(String(logs[0][1]).includes("not valid vision JSON"), false);
+    assertStringIncludes(String(captured[1].body.messages[1].content), "[IMAGE_ANALYSIS_UNAVAILABLE]");
+    assertStringIncludes(String(captured[3].body.messages[1].content), "[IMAGE_ANALYSIS_UNAVAILABLE]");
+  } finally {
+    console.error = originalError;
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
 Deno.test("summarize — allows remote base URL with opt-in", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: '[{"t":"remote summary","i":0}]' } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "https://api.openai.com/v1",
-      undefined, 0, 120_000, 50, 1_000_000, true,
-    );
+    const svc = createTestSummarizer({
+      models: {
+        summarizer: { model: "test-model", baseUrl: "https://api.openai.com/v1" },
+        vision: { model: "test-model", baseUrl: "https://api.openai.com/v1" },
+        sameModel: true,
+      },
+      retryBaseDelayMs: 0,
+      allowRemoteSummarization: true,
+    });
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "remote summary");
   } finally {
@@ -662,11 +932,14 @@ Deno.test("summarize — allows loopback URL without opt-in flag", async () => {
     choices: [{ message: { content: '[{"t":"local summary","i":0}]' } }],
   });
   try {
-    const svc = new OpenAICompatibleSummarizerService(
-      "test-model",
-      "http://127.0.0.1:1234/v1",
-      undefined, 0, 120_000, 50, 1_000_000, false,
-    );
+    const svc = createTestSummarizer({
+      models: {
+        summarizer: { model: "test-model", baseUrl: "http://127.0.0.1:1234/v1" },
+        vision: { model: "test-model", baseUrl: "http://127.0.0.1:1234/v1" },
+        sameModel: true,
+      },
+      retryBaseDelayMs: 0,
+    });
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "local summary");
   } finally {
@@ -689,7 +962,7 @@ Deno.test("summarize — retries on 429 with Retry-After header", async () => {
     return Promise.resolve(new Response(spec.body, { status: spec.status, headers: spec.headers }));
   };
   try {
-    const svc = new OpenAICompatibleSummarizerService("test-model", "http://localhost", undefined, 0);
+    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
     const results = await svc.summarize([item()], buildNewsPrompt());
     assertEquals(results[0].text, "after retry-after");
     assertEquals(callIndex, 2);

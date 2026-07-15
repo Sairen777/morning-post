@@ -30,6 +30,7 @@ test("register, save profile, run digest, and verify runs tab", async ({ page })
 
   // Navigate to Profile tab
   await page.click('button:has-text("Profile")');
+  await expect(page.locator("#profile-model")).toHaveCount(0);
 
   // Edit profile name
   await page.fill("#profile-name", "E2E Updated Smoke");

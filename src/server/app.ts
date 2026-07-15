@@ -7,7 +7,7 @@ import { errorHandler, PayloadTooLargeError } from "./errors.ts";
 import { createOriginGuard } from "./middleware/origin-guard.ts";
 import { buildAuthRoutes } from "./routes/auth.ts";
 import { buildConnectorRoutes, type ConnectorRouteDependencies } from "./routes/connectors.ts";
-import { buildDigestRoutes } from "./routes/digests.ts";
+import { buildDigestRoutes, type DigestRouteOptions } from "./routes/digests.ts";
 import { buildFeedRoutes, type FeedRouteDependencies } from "./routes/feeds.ts";
 import { buildSourceRoutes } from "./routes/sources.ts";
 
@@ -19,6 +19,7 @@ export interface AppSecurityOptions {
 export interface AppDependencies {
   connectors?: ConnectorRouteDependencies;
   feeds?: FeedRouteDependencies;
+  digests?: DigestRouteOptions;
 }
 
 export function buildApp(
@@ -50,7 +51,7 @@ export function buildApp(
   app.route("/auth", buildAuthRoutes(database));
   app.route("/sources", buildSourceRoutes(database));
   app.route("/connectors", buildConnectorRoutes(database, dependencies.connectors));
-  app.route("/digests", buildDigestRoutes(database));
+  app.route("/digests", buildDigestRoutes(database, dependencies.digests));
   app.route("/", buildFeedRoutes(database, dependencies.feeds));
 
   return app;

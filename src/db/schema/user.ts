@@ -13,7 +13,6 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   systemPrompt: text("system_prompt").notNull(),
   defaultLanguage: text("default_language"),
-  defaultModel: text("default_model"),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 }, (table) => [

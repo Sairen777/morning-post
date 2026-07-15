@@ -91,7 +91,6 @@ export function updateCurrentUser(input: {
   name?: string;
   systemPrompt?: string;
   defaultLanguage?: string | null;
-  defaultModel?: string | null;
 }): Promise<PublicUser> {
   return apiRequest<PublicUser>("/auth/me", {
     method: "PATCH",

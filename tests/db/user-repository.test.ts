@@ -22,7 +22,6 @@ function userInput(overrides: Partial<CreateUserInput> = {}): CreateUserInput {
     passwordHash: "$argon2id$fakehash",
     systemPrompt: "Summarize tersely.",
     defaultLanguage: "en",
-    defaultModel: "gpt-4o-mini",
     ...overrides,
   };
 }
@@ -39,7 +38,6 @@ Deno.test("createUser then findUserById round-trips all fields", async () => {
     assertEquals(found.passwordHash, "$argon2id$fakehash");
     assertEquals(found.systemPrompt, "Summarize tersely.");
     assertEquals(found.defaultLanguage, "en");
-    assertEquals(found.defaultModel, "gpt-4o-mini");
 
     assertEquals(typeof found.createdAt, "number");
     assertEquals(typeof found.updatedAt, "number");
@@ -113,7 +111,6 @@ Deno.test("partial update leaves other fields intact and bumps updatedAt", async
     assertEquals(updated.email, created.email);
     assertEquals(updated.passwordHash, created.passwordHash);
     assertEquals(updated.systemPrompt, created.systemPrompt);
-    assertEquals(updated.defaultModel, created.defaultModel);
 
     // updatedAt advanced; createdAt untouched.
     assertEquals(updated.createdAt, created.createdAt);

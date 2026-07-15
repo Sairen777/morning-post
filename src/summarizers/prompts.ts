@@ -62,6 +62,19 @@ export function buildDiscussionPrompt(
 }
 
 
+export function buildVisionAnalysisPrompt(): SummaryRuleset {
+  return {
+    systemPrompt: [
+      "Analyze the supplied indexed images for a digest summarizer.",
+      "Return a JSON array only. Every entry must have exactly two fields: \"i\" (an integer item index) and \"description\" (a plain string).",
+      "Include exactly one entry for every submitted item index, with no duplicates, omissions, extra indexes, or extra fields.",
+      "Describe visible facts and any readable OCR. State uncertainty instead of inventing details.",
+      "For albums, preserve input order and label observations as Image 1, Image 2, and so on.",
+    ].join(" "),
+    includeMedia: true,
+  };
+}
+
 // Routes items to the appropriate ruleset. When `kind` is provided, it is used
 // directly. When omitted, falls back to `meta.isGroup` inference — the legacy
 // path for the CLI until feeds are DB-backed.

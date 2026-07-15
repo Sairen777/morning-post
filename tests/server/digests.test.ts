@@ -15,6 +15,7 @@ import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
 import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
 import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
 import { createDigestRun, finishDigestRun, startDigestRunFeed, finishDigestRunFeed } from "../../src/repositories/digest-run-repository.ts";
+import type { runForUser as runForUserType } from "../../src/services/orchestrator.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const periodStartMs = 1_700_000_000_000;
@@ -522,5 +523,42 @@ Deno.test("GET /digests/runs/:id hides another user's run", async () => {
       headers: { cookie: user1Cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(ownResponse.status, 200);
+  });
+});
+
+Deno.test("POST /digests/run forwards the entrypoint summarizer instance", async () => {
+  await withTestDb(async (database) => {
+    const sharedSummarizer = new FakeSummarizer([]);
+    let receivedSummarizer: SummarizerService | undefined;
+    const runForUser: typeof runForUserType = (_database, userId, period, dependencies = {}) => {
+      receivedSummarizer = dependencies.summarizer;
+      return Promise.resolve({
+        digest: {
+          id: crypto.randomUUID(),
+          userId,
+          periodStartMs: period.startMs,
+          periodEndMs: period.endMs,
+          status: "complete" as const,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        sections: [],
+        groups: [],
+      });
+    };
+    const app = buildApp(database, {
+      digests: { summarizer: sharedSummarizer, runForUser },
+    });
+    const cookie = await login(app, "digests-run-injection@example.com").catch(async () => {
+      await register(app, "digests-run-injection@example.com");
+      return await login(app, "digests-run-injection@example.com");
+    });
+
+    const response = await app.request("/digests/run", {
+      ...jsonRequest("POST", { periodStartMs, periodEndMs }),
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(response.status, 200);
+    assertEquals(receivedSummarizer, sharedSummarizer);
   });
 });

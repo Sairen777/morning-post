@@ -21,7 +21,8 @@
         "localhost:5432",
         "localhost:1234",
         "127.0.0.1:1234",
-        "generativelanguage.googleapis.com"
+        "generativelanguage.googleapis.com",
+        "api.deepseek.com"
       ],
       "env": [
         "DATABASE_URL",
@@ -33,10 +34,12 @@
         "TELEGRAM_API_ID",
         "TELEGRAM_API_HASH",
         "TELEGRAM_SESSION",
-        "GEMINI_API_KEY",
-        "LOCAL_API",
+        "SUMMARIZER_API_KEY",
         "SUMMARIZER_MODEL",
         "SUMMARIZER_BASE_URL",
+        "VISION_MODEL",
+        "VISION_BASE_URL",
+        "VISION_API_KEY",
         "ALLOWED_ORIGINS",
         "TRUSTED_PROXY_COUNT",
         "MAX_REQUEST_BODY_BYTES",
@@ -125,9 +128,8 @@
         "127.0.0.1:3000",
         "127.0.0.1:5432",
         "localhost:5432",
-        "localhost:1234",
-        "127.0.0.1:1234",
-        "generativelanguage.googleapis.com"
+        "generativelanguage.googleapis.com",
+        "api.deepseek.com"
       ],
       "env": [
         "DATABASE_URL",
@@ -138,10 +140,13 @@
         "TELEGRAM_API_ID",
         "TELEGRAM_API_HASH",
         "TELEGRAM_SESSION",
-        "GEMINI_API_KEY",
-        "LOCAL_API",
+        "SUMMARIZER_API_KEY",
         "SUMMARIZER_MODEL",
         "SUMMARIZER_BASE_URL",
+        "VISION_MODEL",
+        "VISION_BASE_URL",
+        "VISION_API_KEY",
+        "ALLOW_REMOTE_SUMMARIZATION",
         "CONNECTOR_TIMEOUT_MS",
         "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
         "SUMMARIZER_MAX_ITEMS_PER_CHUNK",

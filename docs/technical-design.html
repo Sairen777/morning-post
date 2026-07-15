@@ -365,7 +365,7 @@
             <li>Deno tasks grant broad network, filesystem, environment, system, and FFI permissions.</li>
             <li>Rate limiting is process-local and trusts request forwarding headers without an app-level trusted-proxy policy.</li>
             <li>Digest scheduling is single-process: <code>Deno.cron</code> plus an in-memory <code>runningUsers</code> set.</li>
-            <li>Summarization sends all selected items/media in one request with no hard context or payload cap.</li>
+            <li>Summarization is a provider boundary with deployment-wide text and vision endpoints, deterministic text/item/image caps, and run-local vision fallback behavior.</li>
             <li>Telegram/media artifacts are written locally with no TTL, quota, or object-storage lifecycle.</li>
           </ul>
         </div>
@@ -393,7 +393,7 @@
   Browser["Browser\nSolidStart SPA"] -->|credentials: include| API["Deno + Hono API"]
   API -->|Drizzle/postgres.js| DB[("PostgreSQL")]
   API -->|MTProto / connector APIs| Telegram["Telegram"]
-  API -->|/chat/completions| LLM["OpenAI-compatible summarizer\nGemini by default or LOCAL_API"]
+  API -->|/chat/completions| LLM["OpenAI-compatible text + vision providers\nconfigured deployment-wide"]
   API -->|read/write media| Media[("Local media dirs\nmedia/, telegram_media/")]
   Scheduler["Deno scheduler"] --> API
 
@@ -409,7 +409,7 @@
             <li><strong>Browser → API:</strong> cookie-authenticated requests. Origin guard middleware on unsafe requests validates <code>Origin</code> or <code>Referer</code> against the configured <code>ALLOWED_ORIGINS</code>. Security headers include HSTS, frame denial (<code>DENY</code>), and <code>nosniff</code>. Body size limited by <code>MAX_REQUEST_BODY_BYTES</code>.</li>
             <li><strong>API → PostgreSQL:</strong> persistence for sensitive metadata and encrypted credentials. <code>DB_SSL_MODE</code> configures TLS (default <code>disable</code> for local loopback; <code>require</code> or <code>verify-full</code> for remote). Pool size, idle timeout, and connect timeout are explicitly configured from env vars.</li>
             <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
-            <li><strong>API → summarizer provider:</strong> message text, prompt text, and selected media leave the app to the configured OpenAI-compatible endpoint. <code>ALLOW_REMOTE_SUMMARIZATION</code> (default <code>false</code>) controls non-loopback providers; loopback endpoints are always allowed. Payloads are chunked with caps on text bytes, item count, and image bytes.</li>
+            <li><strong>API → summarizer provider:</strong> message text, prompt text, and selected media leave the app to the configured OpenAI-compatible text and vision endpoints. <code>ALLOW_REMOTE_SUMMARIZATION</code> (default <code>false</code>) controls non-loopback providers; loopback endpoints are always allowed. Same-model requests are multimodal; distinct endpoints use vision analysis followed by text summarization. Text, item, and image-byte caps apply, with <code>[IMAGE_OMITTED]</code> and run-local <code>[IMAGE_ANALYSIS_UNAVAILABLE]</code> fallback markers.</li>
             <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), per-period cleanup, and weekly TTL sweep (<code>MEDIA_TTL_MS</code>).</li>
           </ul>
         </div>
@@ -746,7 +746,7 @@
   loop each successful feed without summary
     O->>DB: start digest_run_feed(stage=summarization)
     O->>G: summarize feed-period items
-    G->>G: send prompt + item text/media to configured provider
+    G->>G: route same-model media directly or analyze with vision, then summarize text
     O->>DB: upsert summary
     O->>DB: finish digest_run_feed
   end
@@ -797,9 +797,9 @@
           </tr>
             <td><span class="badge high">S2</span></td>
             <td>Summarization is a privacy boundary, not an internal call.</td>
-            <td><code>OpenAICompatibleSummarizerService</code> sends system prompt plus item text/media to <code>${baseUrl}/chat/completions</code>. Default hosted endpoint is Gemini-compatible unless <code>LOCAL_API=true</code>.</td>
+            <td><code>OpenAICompatibleSummarizerService</code> sends prompts and bounded item text/media to configured OpenAI-compatible endpoints. Same-model media is direct multimodal input; distinct endpoints perform indexed vision analysis before text summarization.</td>
             <td>Expose a deployment decision: hosted provider allowed vs local-only. Document provider retention terms outside code, add per-user/source “do not send media/text to hosted LLM” policy if needed, and log provider/model selection without message content.</td>
-            <td><strong>Remediated.</strong> <code>ALLOW_REMOTE_SUMMARIZATION</code> env var (default <code>false</code>) controls remote summarizer access. Loopback endpoints allowed unconditionally; non-loopback throws configuration error unless the flag is <code>true</code>. See <code>src/summarizers/openai-compatible-summarizer.ts</code>. Tests cover both branches.</td>
+            <td><strong>Remediated.</strong> <code>SUMMARIZER_MODEL</code>/<code>SUMMARIZER_BASE_URL</code> and <code>VISION_MODEL</code>/<code>VISION_BASE_URL</code> are required deployment-wide settings; same-model endpoint inheritance is explicit. <code>ALLOW_REMOTE_SUMMARIZATION</code> (default <code>false</code>) controls non-loopback access, with one sanitized run-local vision fallback log. See <code>src/config.ts</code>, <code>src/summarizers/openai-compatible-client.ts</code>, and <code>src/summarizers/openai-compatible-summarizer.ts</code>.</td>
           </tr>
           <tr>
             <td><span class="badge high">S3</span></td>
@@ -889,7 +889,7 @@
             <td>Summarization has no hard context, item, image, or byte cap.</td>
             <td><code>buildContentParts()</code> contains a warning that 300+ group messages may overflow context, but still sends all selected messages/media in a single provider request.</td>
             <td>Introduce a summarization budget: text token/byte cap, image count cap, chunked map-reduce summarization for long threads, and explicit “truncated due to budget” metadata.</td>
-            <td><strong>Remediated.</strong> Deterministic sequential chunking with <code>maxTextBytesPerChunk</code> (120k), <code>maxItemsPerChunk</code> (50), <code>maxImageBytes</code> (1M). Oversize images become <code>[IMAGE_OMITTED]</code>; oversize individual item text truncated. Multi-chunk merge via bounded requests; empty/all-filtered input makes zero provider calls. See <code>src/summarizers/openai-compatible-summarizer.ts</code>. Tests in <code>tests/summarizer.test.ts</code>.</td>
+            <td><strong>Remediated.</strong> Deterministic sequential chunking with <code>maxTextBytesPerChunk</code> (120k), <code>maxItemsPerChunk</code> (50), and <code>maxImageBytes</code> (1M). Oversize/unreadable images become <code>[IMAGE_OMITTED]</code>; distinct vision analysis uses strict indexed JSON and text-only summaries; same-model 400/415/422 falls back for the current run. Multi-chunk results use one terminal text-only merge. See <code>src/summarizers/openai-compatible-summarizer.ts</code>. Tests in <code>tests/summarizer.test.ts</code>.</td>
           </tr>
           <tr>
             <td><span class="badge high">P3</span></td>
@@ -1058,7 +1058,7 @@
         <strong>Documentation status:</strong> This HTML document reflects the current implemented persistence, digest-run, API, web architecture, and production-hardening state observed in the repository. See <span class="path">ARCHITECTURE.md</span> for new sections on session lifecycle, database connectivity, rate limiting, scheduling, connector batching, summarizer budgets, media lifecycle, and cursor pagination.
       </div>
       <div class="callout">
-        <strong>Explicit deferrals:</strong> KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for media, per-user/per-feed model override, and automatic feed theme classification are not implemented. The <code>KeyProvider</code> seam and local media lifecycle are sufficient for the current single-host deployment; see <span class="path">ARCHITECTURE.md</span> → Deferred items.
+        <strong>Explicit deferrals:</strong> KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for media, and automatic feed theme classification are not implemented. Deployment-wide text/vision provider configuration and the local media lifecycle are implemented; see <span class="path">ARCHITECTURE.md</span> → Deferred items.
       </div>
     </section>
   </main>

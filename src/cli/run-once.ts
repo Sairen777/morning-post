@@ -1,10 +1,10 @@
+import { getSummarizerRuntimeConfig, resolveAllowRemoteSummarization } from "../config.ts";
 import { createTelegramClient } from "../connectors/telegram/telegram-client.ts";
 import { TelegramConnector } from "../connectors/telegram/telegram-connector.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
 import { Pipeline } from "../pipeline/pipeline.ts";
 import type { SummaryPoint } from "../summarizers/summarizer.types.ts";
 import { sanitizeErrorForOps } from "../server/error-sanitizer.ts";
-
 function printSummary(feedExternalId: string, summary: SummaryPoint[]): void {
   console.log(`\n=== ${feedExternalId} ===\n`);
   for (const point of summary) {
@@ -22,11 +22,16 @@ try {
   const now = Date.now();
   const from = now - 7 * 24 * 60 * 60 * 1000;
   const to = now - 5 * 24 * 60 * 60 * 1000;
-
+  const models = getSummarizerRuntimeConfig();
+  const allowRemoteSummarization = resolveAllowRemoteSummarization();
+  const summarizer = new OpenAICompatibleSummarizerService({
+    models,
+    allowRemoteSummarization,
+  });
   const tgClient = await createTelegramClient();
   const pipeline = new Pipeline(
     new TelegramConnector(tgClient),
-    new OpenAICompatibleSummarizerService(),
+    summarizer,
   );
 
   const results = await pipeline.run(from, to);

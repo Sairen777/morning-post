@@ -93,7 +93,6 @@ function userInput(email: string): CreateUserInput {
     passwordHash: "$argon2id$fakehash",
     systemPrompt: "Summarize tersely.",
     defaultLanguage: "en",
-    defaultModel: "gpt-4o-mini",
   };
 }
 

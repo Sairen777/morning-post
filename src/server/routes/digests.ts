@@ -18,6 +18,7 @@ import {
 } from "../middleware/require-auth.ts";
 import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
 import type { runForUser as runForUserType } from "../../services/orchestrator.ts";
+import type { SummarizerService } from "../../summarizers/summarizer.types.ts";
 import { validate } from "../validate.ts";
 import { NotFoundError } from "../errors.ts";
 import { parseLimit } from "../cursor.ts";
@@ -54,6 +55,8 @@ function parseDigestId(rawId: string): { id: string; markdown: boolean } {
 
 export interface DigestRouteOptions {
   trustedProxyCount?: number;
+  summarizer?: SummarizerService;
+  runForUser?: typeof runForUserType;
 }
 
 export function buildDigestRoutes(
@@ -94,13 +97,19 @@ export function buildDigestRoutes(
     }
 
     let runForUser: typeof runForUserType;
-    try {
-      // Deliberately lazy: orchestrator and Telegram connectors are used only by this mutation.
-      ({ runForUser } = await import("../../services/orchestrator.ts"));
-    } catch (error) {
-      throw new Error("Failed to load digest orchestrator", { cause: error });
+    if (options.runForUser) {
+      runForUser = options.runForUser;
+    } else {
+      try {
+        // Deliberately lazy: orchestrator and Telegram connectors are used only by this mutation.
+        ({ runForUser } = await import("../../services/orchestrator.ts"));
+      } catch (error) {
+        throw new Error("Failed to load digest orchestrator", { cause: error });
+      }
     }
-    const digest = await runForUser(database, context.var.userId, { startMs, endMs });
+    const digest = await runForUser(database, context.var.userId, { startMs, endMs }, {
+      summarizer: options.summarizer,
+    });
     return context.json(digest, 200);
   });
 

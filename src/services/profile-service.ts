@@ -21,8 +21,7 @@ const updateProfileSchema = z.object({
     `systemPrompt must be at most ${SYSTEM_PROMPT_MAX_LENGTH} characters`,
   ).optional(),
   defaultLanguage: nullableTrimmedString.optional(),
-  defaultModel: nullableTrimmedString.optional(),
-});
+}).strict();
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 

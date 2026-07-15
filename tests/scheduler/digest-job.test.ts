@@ -8,6 +8,7 @@ import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.
 import { clearDigestJobStateForTesting, computeDigestPeriod, DEFAULT_DIGEST_CRON, MEDIA_HOUSEKEEPING_CRON, runDigestTick, scheduleDigestJob, scheduleMediaHousekeeping } from "../../src/scheduler/digest-job.ts";
 import { bootServer } from "../../src/server/main.ts";
 import type { Scheduler } from "../../src/scheduler/scheduler.ts";
+import type { SummarizerService } from "../../src/summarizers/summarizer.types.ts";
 
 class FakeScheduler implements Scheduler {
   jobs: Array<{ name: string; cron: string; handler: () => Promise<void> | void }> = [];
@@ -24,7 +25,6 @@ function userInput(email: string): CreateUserInput {
     passwordHash: "$argon2id$fakehash",
     systemPrompt: "Summarize tersely.",
     defaultLanguage: "en",
-    defaultModel: "gpt-4o-mini",
   };
 }
 
@@ -129,6 +129,37 @@ Deno.test("scheduleDigestJob registers the default cron and handler", async () =
   });
 });
 
+Deno.test("runDigestTick forwards the shared summarizer to scheduled execution", async () => {
+  clearDigestJobStateForTesting();
+  await withTestDb(async (database) => {
+    const sharedSummarizer = {} as SummarizerService;
+    let receivedSummarizer: SummarizerService | undefined;
+    const user = await createUser(database, userInput("scheduler-shared-summarizer@example.com"));
+    await runDigestTick(database, {
+      summarizer: sharedSummarizer,
+      now: () => 1_500,
+      runForUser: (_database, userId, period, dependencies = {}) => {
+        receivedSummarizer = dependencies.summarizer;
+        return Promise.resolve({
+          digest: {
+            id: "x",
+            userId,
+            periodStartMs: period.startMs,
+            periodEndMs: period.endMs,
+            status: "complete" as const,
+            createdAt: 0,
+            updatedAt: 0,
+          },
+          sections: [],
+          groups: [],
+        });
+      },
+    });
+    assertEquals(user.id.length > 0, true);
+    assertEquals(receivedSummarizer, sharedSummarizer);
+  });
+});
+
 Deno.test("scheduleMediaHousekeeping registers the weekly Sunday cron", () => {
   const scheduler = new FakeScheduler();
   scheduleMediaHousekeeping(scheduler);
@@ -174,6 +205,7 @@ Deno.test("bootServer injects scheduler and serve without startup side effects",
 
       database,
       scheduler,
+      summarizer: { summarize: async () => [] },
       config: {
         databaseUrl: "postgres://localhost/test",
         port: 31_001,

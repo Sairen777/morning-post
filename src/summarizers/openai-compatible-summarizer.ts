@@ -1,6 +1,14 @@
 import { jsonrepair } from "jsonrepair";
 import type { NormalizedItem } from "../connectors/connector.types.ts";
 import { ConnectorId } from "../constants.ts";
+import {
+  getSummarizerRuntimeConfig,
+  resolveAllowRemoteSummarization,
+  type SummarizerRuntimeConfig,
+} from "../config.ts";
+import { sanitizeErrorForOps } from "../server/error-sanitizer.ts";
+import { OpenAICompatibleChatClient, ModelApiError } from "./openai-compatible-client.ts";
+import { buildVisionAnalysisPrompt } from "./prompts.ts";
 import type {
   ContentPart,
   ImagePart,
@@ -12,67 +20,38 @@ import type {
 } from "./summarizer.types.ts";
 import { isEmojiOnly } from "../utils/text.ts";
 
-const DEFAULTS = Deno.env.get("LOCAL_API") === "true"
-  ? {
-    model: "gemma-4-e4b-uncensored-hauhaucs-aggressive",
-    // LM Studio
-    baseUrl: "http://localhost:1234/v1",
-    apiKey: undefined as string | undefined,
-  }
-  : {
-    model: "gemini-2.5-flash-lite",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    apiKey: Deno.env.get("GEMINI_API_KEY"),
-  };
-
-/**
- * Default config-resolved values for summarization limits.
- * These mirror the defaults in src/config.ts.
- */
 const DEFAULT_MAX_TEXT_BYTES_PER_CHUNK = 120_000;
 const DEFAULT_MAX_ITEMS_PER_CHUNK = 50;
 const DEFAULT_MAX_IMAGE_BYTES = 1_000_000;
 
-export function resolveOpenAICompatibleSummarizerModel(model?: string | null): string {
-  return model ?? Deno.env.get("SUMMARIZER_MODEL") ?? DEFAULTS.model;
+export interface OpenAICompatibleSummarizerOptions {
+  models?: SummarizerRuntimeConfig;
+  retryBaseDelayMs?: number;
+  maxTextBytesPerChunk?: number;
+  maxItemsPerChunk?: number;
+  maxImageBytes?: number;
+  allowRemoteSummarization?: boolean;
 }
 
-export function resolveAllowRemoteSummarization(): boolean {
-  const val = Deno.env.get("ALLOW_REMOTE_SUMMARIZATION");
-  if (val === undefined) return false;
-  return val === "true" || val === "1";
+interface VisionRunState {
+  available: boolean;
 }
 
-function isLoopbackUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname === "localhost" ||
-      parsed.hostname === "127.0.0.1" ||
-      parsed.hostname === "::1";
-  } catch {
-    return false;
-  }
+interface ImageEntry {
+  index: number;
+  imageNumber: number;
+  part: ImagePart;
 }
 
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) {
-    return Promise.reject(new DOMException("Aborted", "AbortError"));
-  }
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
+interface IndexedChunkContent {
+  textParts: TextPart[];
+  itemIndexByTextPart: Array<number | undefined>;
+  multimodalParts: ContentPart[];
+  visionParts: ContentPart[];
+  indexedItems: NormalizedItem[];
+  imageEntries: ImageEntry[];
 }
 
-/**
- * Partition items into chunks respecting maxItemsPerChunk and maxTextBytesPerChunk.
- * Items whose text alone exceeds the text budget are truncated at the budget
- * (their index is preserved); they start a new chunk as a single-item chunk.
- */
 function partitionItems(
   items: NormalizedItem[],
   maxItems: number,
@@ -85,245 +64,251 @@ function partitionItems(
   for (const item of items) {
     const textLen = item.text ? item.text.length : 0;
     const effectiveLen = Math.min(textLen, maxTextBytes);
-
-    // Start a new chunk if the current one is full — but never start empty
     if (current.length > 0 && (current.length >= maxItems || currentBytes + effectiveLen > maxTextBytes)) {
       chunks.push(current);
       current = [];
       currentBytes = 0;
     }
-
     current.push(item);
     currentBytes += effectiveLen;
   }
 
-  if (current.length > 0) {
-    chunks.push(current);
-  }
-
+  if (current.length > 0) chunks.push(current);
   return chunks;
 }
 
+function encodeBytesAsBase64(bytes: Uint8Array): string {
+  const binaryChunks: string[] = [];
+  const chunkSize = 32_768;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binaryChunks.push(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)));
+  }
+  return btoa(binaryChunks.join(""));
+}
+
 export class OpenAICompatibleSummarizerService implements SummarizerService {
-  constructor(
-    private model: string = resolveOpenAICompatibleSummarizerModel(),
-    private baseUrl: string = Deno.env.get("SUMMARIZER_BASE_URL") ??
-      DEFAULTS.baseUrl,
-    private apiKey: string | undefined = DEFAULTS.apiKey,
-    private retryBaseDelayMs: number = 1000,
-    private maxTextBytesPerChunk: number = DEFAULT_MAX_TEXT_BYTES_PER_CHUNK,
-    private maxItemsPerChunk: number = DEFAULT_MAX_ITEMS_PER_CHUNK,
-    private maxImageBytes: number = DEFAULT_MAX_IMAGE_BYTES,
-    private allowRemoteSummarization: boolean = resolveAllowRemoteSummarization(),
-  ) {}
+  private readonly models: SummarizerRuntimeConfig;
+  private readonly summarizerClient: OpenAICompatibleChatClient;
+  private readonly visionClient: OpenAICompatibleChatClient;
+  private readonly retryBaseDelayMs: number;
+  private readonly maxTextBytesPerChunk: number;
+  private readonly maxItemsPerChunk: number;
+  private readonly maxImageBytes: number;
+
+  constructor(options: OpenAICompatibleSummarizerOptions = {}) {
+    this.models = options.models ?? getSummarizerRuntimeConfig();
+    const allowRemoteSummarization = resolveAllowRemoteSummarization(options.allowRemoteSummarization);
+    this.retryBaseDelayMs = options.retryBaseDelayMs ?? 1000;
+    this.maxTextBytesPerChunk = options.maxTextBytesPerChunk ?? DEFAULT_MAX_TEXT_BYTES_PER_CHUNK;
+    this.maxItemsPerChunk = options.maxItemsPerChunk ?? DEFAULT_MAX_ITEMS_PER_CHUNK;
+    this.maxImageBytes = options.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
+    this.summarizerClient = new OpenAICompatibleChatClient(this.models.summarizer, {
+      retryBaseDelayMs: this.retryBaseDelayMs,
+      allowRemote: allowRemoteSummarization,
+    });
+    this.visionClient = new OpenAICompatibleChatClient(this.models.vision, {
+      retryBaseDelayMs: this.retryBaseDelayMs,
+      allowRemote: allowRemoteSummarization,
+    });
+  }
 
   public async summarize(
     items: NormalizedItem[],
     rules: SummaryRuleset,
     options: SummarizeOptions = {},
   ): Promise<SummaryPoint[]> {
-    const maxTextBytesPerChunk = options.maxTextBytesPerChunk ?? this.maxTextBytesPerChunk;
-    const maxItemsPerChunk = options.maxItemsPerChunk ?? this.maxItemsPerChunk;
-    const maxImageBytes = options.maxImageBytes ?? this.maxImageBytes;
-    const signal = options.signal;
-    const allowRemote = options.allowRemoteSummarization ?? this.allowRemoteSummarization;
-
-    // Remote URL validation: only loopback is allowed without explicit opt-in.
-    if (!isLoopbackUrl(this.baseUrl) && !allowRemote) {
-      throw new Error(
-        `Remote summarizer base URL "${this.baseUrl}" requires ALLOW_REMOTE_SUMMARIZATION=true`,
-      );
-    }
-
-    return this.summarizeInternal(items, rules, {
-      ...options,
-      maxTextBytesPerChunk,
-      maxItemsPerChunk,
-      maxImageBytes,
-      signal,
-    });
+    const state: VisionRunState = { available: true };
+    return await this.summarizeInternal(items, rules, {
+      maxTextBytesPerChunk: options.maxTextBytesPerChunk ?? this.maxTextBytesPerChunk,
+      maxItemsPerChunk: options.maxItemsPerChunk ?? this.maxItemsPerChunk,
+      maxImageBytes: options.maxImageBytes ?? this.maxImageBytes,
+      signal: options.signal,
+    }, state);
   }
 
-  /**
-   * Internal summarization that skips remote-URL validation (used by merge).
-   */
   private async summarizeInternal(
     items: NormalizedItem[],
     rules: SummaryRuleset,
-    options: Required<Pick<SummarizeOptions, "maxTextBytesPerChunk" | "maxItemsPerChunk" | "maxImageBytes">> &
-      Pick<SummarizeOptions, "model" | "signal">,
+    options: {
+      maxTextBytesPerChunk: number;
+      maxItemsPerChunk: number;
+      maxImageBytes: number;
+      signal?: AbortSignal;
+    },
+    state: VisionRunState,
   ): Promise<SummaryPoint[]> {
-    const maxTextBytes = options.maxTextBytesPerChunk;
-    const maxItems = options.maxItemsPerChunk;
-    const maxImageBytes = options.maxImageBytes;
-    const signal = options.signal;
-
-    // Filter emoji-only / empty-text items (same logic as buildContentParts filtering)
     const filtered = items.filter((item) => {
       const hasPhoto = item.media?.type === "photo" || item.media?.type === "album";
       if (!item.text.trim() && !hasPhoto) return false;
       if (isEmojiOnly(item.text) && !hasPhoto) return false;
       return true;
     });
+    if (filtered.length === 0) return [];
 
-    if (filtered.length === 0) {
-      return [];
-    }
-
-    // Partition into chunks
-    const chunks = partitionItems(filtered, maxItems, maxTextBytes);
-
-    // Process each chunk sequentially
+    const chunks = partitionItems(filtered, options.maxItemsPerChunk, options.maxTextBytesPerChunk);
     const chunkResults: SummaryPoint[][] = [];
     for (const chunk of chunks) {
-      const result = await this.processChunk(chunk, rules, {
-        maxTextBytesPerChunk: maxTextBytes,
-        maxImageBytes,
-        model: options.model,
-        signal,
-      });
-      chunkResults.push(result);
+      chunkResults.push(await this.processChunk(chunk, rules, options, state));
     }
+    if (chunkResults.length === 1) return chunkResults[0];
 
-    if (chunkResults.length === 1) {
-      return chunkResults[0];
-    }
-
-    // Merge multiple chunk results
-    return this.mergeChunkResults(chunkResults, rules, {
-      maxTextBytesPerChunk: maxTextBytes,
-      maxItemsPerChunk: maxItems,
-      maxImageBytes: 0,
-      model: options.model,
-      signal,
-    });
+    return await this.mergeChunkResults(
+      chunkResults,
+      rules,
+      {
+        maxTextBytesPerChunk: options.maxTextBytesPerChunk,
+        signal: options.signal,
+      },
+    );
   }
 
-  /**
-   * Build content parts and make one API call for a single chunk.
-   */
   private async processChunk(
     items: NormalizedItem[],
     rules: SummaryRuleset,
     options: {
       maxTextBytesPerChunk: number;
+      maxItemsPerChunk: number;
       maxImageBytes: number;
-      model?: string;
       signal?: AbortSignal;
     },
+    state: VisionRunState,
   ): Promise<SummaryPoint[]> {
-    const { parts, indexedItems } = await this.buildContentParts(
+    const content = await this.buildContentParts(
       items,
       rules,
       options.maxTextBytesPerChunk,
       options.maxImageBytes,
     );
-
-    return this.callApiWithRetry(parts, indexedItems, rules, options.model, options.signal);
-  }
-
-  /**
-   * Make the API call with retry logic, signal support, and Retry-After parsing.
-   */
-  private async callApiWithRetry(
-    parts: ContentPart[] | string,
-    indexedItems: NormalizedItem[],
-    rules: SummaryRuleset,
-    model?: string,
-    signal?: AbortSignal,
-  ): Promise<SummaryPoint[]> {
-    const body = JSON.stringify({
-      model: model ?? this.model,
-      stream: false,
-      messages: [
-        { role: "system", content: rules.systemPrompt },
-        { role: "user", content: parts },
-      ],
-    });
-
-    const maxRetries = 3;
-    let lastError: Error | null = null;
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      if (signal?.aborted) {
-        throw new DOMException("Aborted", "AbortError");
-      }
-
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.apiKey && { Authorization: `Bearer ${this.apiKey}` }),
-        },
-        body,
-        signal,
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const raw = data.choices[0].message.content as string;
-        return this.parsePoints(raw, indexedItems);
-      }
-
-      let bodyText = "";
-      try {
-        bodyText = await response.text();
-      } catch {
-        // ignore
-      }
-
-      const retryable = response.status === 429 || response.status === 503;
-      lastError = new Error(
-        `Summarizer API ${response.status} — ${bodyText.slice(0, 300)}`,
-      );
-
-      if (retryable && attempt < maxRetries - 1) {
-        // Parse optional Retry-After header, bounded by same overall backoff cap
-        let retryAfterMs = Math.pow(2, attempt) * this.retryBaseDelayMs;
-        const retryAfterHeader = response.headers.get("Retry-After");
-        if (retryAfterHeader) {
-          const parsed = parseInt(retryAfterHeader, 10);
-          if (!isNaN(parsed) && parsed > 0) {
-            retryAfterMs = Math.min(parsed * 1000, 30_000); // clamp to 30s
-          }
-        }
-
-        await delay(retryAfterMs, signal);
-        continue;
-      }
-
-      throw lastError;
+    if (content.imageEntries.length === 0) {
+      return await this.summarizeTextParts(content.textParts, content.indexedItems, rules, options.signal);
     }
 
-    throw lastError ?? new Error("Summarizer API: unexpected retry exhaustion");
+    const affectedIndexes = [...new Set(content.imageEntries.map((entry) => entry.index))];
+    if (!rules.includeMedia || !state.available) {
+      return await this.summarizeUnavailableImages(
+        content,
+        affectedIndexes,
+        rules,
+        options.signal,
+      );
+    }
+
+    if (this.models.sameModel) {
+      try {
+        const raw = await this.summarizerClient.complete(
+          rules.systemPrompt,
+          content.multimodalParts,
+          options.signal,
+        );
+        return this.parsePoints(raw, content.indexedItems);
+      } catch (error) {
+        if (!(error instanceof ModelApiError) || ![400, 415, 422].includes(error.status)) {
+          throw error;
+        }
+        this.markVisionUnavailable(state, error);
+        return await this.summarizeUnavailableImages(
+          content,
+          affectedIndexes,
+          rules,
+          options.signal,
+        );
+      }
+    }
+
+    try {
+      const visionRaw = await this.visionClient.complete(
+        buildVisionAnalysisPrompt().systemPrompt,
+        content.visionParts,
+        options.signal,
+      );
+      const descriptions = this.parseVisionDescriptions(visionRaw, affectedIndexes);
+      const describedTextParts = this.addVisionDescriptions(
+        content.textParts,
+        content.itemIndexByTextPart,
+        affectedIndexes,
+        descriptions,
+      );
+      return await this.summarizeTextParts(describedTextParts, content.indexedItems, rules, options.signal);
+    } catch (error) {
+      if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+        throw error;
+      }
+      this.markVisionUnavailable(state, error);
+      return await this.summarizeUnavailableImages(
+        content,
+        affectedIndexes,
+        rules,
+        options.signal,
+      );
+    }
   }
 
-  /**
-   * Merge multiple chunk results into a single SummaryPoint[].
-   * Creates synthetic NormalizedItems from the chunk summaries, then
-   * summarizes them (no images). If the merge input exceeds chunk budgets,
-   * it is further partitioned and merged sequentially.
-   */
+  private async summarizeUnavailableImages(
+    content: IndexedChunkContent,
+    affectedIndexes: number[],
+    rules: SummaryRuleset,
+    signal?: AbortSignal,
+  ): Promise<SummaryPoint[]> {
+    const unavailableTextParts = content.textParts.map((part, partIndex) => {
+      const index = content.itemIndexByTextPart[partIndex];
+      if (index === undefined || !affectedIndexes.includes(index)) return part;
+      return { type: "text" as const, text: `${part.text}\n[IMAGE_ANALYSIS_UNAVAILABLE]` };
+    });
+    return await this.summarizeTextParts(unavailableTextParts, content.indexedItems, rules, signal);
+  }
+
+  private async summarizeTextParts(
+    textParts: TextPart[],
+    indexedItems: NormalizedItem[],
+    rules: SummaryRuleset,
+    signal?: AbortSignal,
+  ): Promise<SummaryPoint[]> {
+    const content = textParts.map((part) => part.text).join("\n\n");
+    const raw = await this.summarizerClient.complete(rules.systemPrompt, content, signal);
+    return this.parsePoints(raw, indexedItems);
+  }
+
+  private addVisionDescriptions(
+    textParts: TextPart[],
+    itemIndexByTextPart: Array<number | undefined>,
+    affectedIndexes: number[],
+    descriptions: Map<number, string>,
+  ): TextPart[] {
+    return textParts.map((part, partIndex) => {
+      const index = itemIndexByTextPart[partIndex];
+      if (index === undefined || !affectedIndexes.includes(index)) return part;
+      return {
+        type: "text" as const,
+        text: `${part.text}\n[IMAGE_ANALYSIS]\n${descriptions.get(index)}\n[/IMAGE_ANALYSIS]`,
+      };
+    });
+  }
+
+  private markVisionUnavailable(state: VisionRunState, error: unknown): void {
+    if (!state.available) return;
+    state.available = false;
+    console.error(
+      "[summarization] vision analysis unavailable for this run:",
+      sanitizeErrorForOps(error),
+    );
+  }
+
   private async mergeChunkResults(
     chunkResults: SummaryPoint[][],
     rules: SummaryRuleset,
     options: {
       maxTextBytesPerChunk: number;
-      maxItemsPerChunk: number;
-      maxImageBytes: number;
-      model?: string;
       signal?: AbortSignal;
     },
   ): Promise<SummaryPoint[]> {
-    // Build synthetic items from chunk results
     const mergeItems: NormalizedItem[] = [];
-    for (let chunkIdx = 0; chunkIdx < chunkResults.length; chunkIdx++) {
-      for (let pointIdx = 0; pointIdx < chunkResults[chunkIdx].length; pointIdx++) {
-        const point = chunkResults[chunkIdx][pointIdx];
+    for (let chunkIndex = 0; chunkIndex < chunkResults.length; chunkIndex++) {
+      for (let pointIndex = 0; pointIndex < chunkResults[chunkIndex].length; pointIndex++) {
+        const point = chunkResults[chunkIndex][pointIndex];
         mergeItems.push({
           connectorId: ConnectorId.Telegram,
-          feedExternalId: point.channel ?? `merge-chunk-${chunkIdx}`,
-          externalId: `merge-${chunkIdx}-${pointIdx}`,
+          feedExternalId: point.channel ?? `merge-chunk-${chunkIndex}`,
+          externalId: `merge-${chunkIndex}-${pointIndex}`,
           date: point.date ? new Date(point.date).getTime() : Date.now(),
           title: null,
           text: point.text,
@@ -332,15 +317,12 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         });
       }
     }
-
-    // No images in merge
-    const mergeRules: SummaryRuleset = {
-      ...rules,
-      includeMedia: false,
-    };
-
-    // Recurse through summarization (skips remote URL check since we call the internal method)
-    return this.summarizeInternal(mergeItems, mergeRules, options);
+    if (mergeItems.length === 0) return [];
+    const mergeTextParts = mergeItems.map((mergeItem, index) => ({
+      type: "text" as const,
+      text: `[${index}]\n${mergeItem.text.slice(0, options.maxTextBytesPerChunk)}`,
+    }));
+    return await this.summarizeTextParts(mergeTextParts, mergeItems, rules, options.signal);
   }
 
   private async buildContentParts(
@@ -348,148 +330,131 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     rules: SummaryRuleset,
     maxTextBytesPerChunk: number,
     maxImageBytes: number,
-  ): Promise<{
-    parts: ContentPart[] | string;
-    indexedItems: NormalizedItem[];
-  }> {
+  ): Promise<IndexedChunkContent> {
     const showAuthors = rules.showAuthors ?? false;
     const includeMedia = rules.includeMedia ?? true;
-    const parts: ContentPart[] = [];
+    const textParts: TextPart[] = [];
+    const itemIndexByTextPart: Array<number | undefined> = [];
+    const multimodalParts: ContentPart[] = [];
+    const visionParts: ContentPart[] = [];
     const indexedItems: NormalizedItem[] = [];
+    const imageEntries: ImageEntry[] = [];
 
     for (const item of items) {
-      const hasPhoto = item.media?.type === "photo" ||
-        item.media?.type === "album";
+      const hasPhoto = item.media?.type === "photo" || item.media?.type === "album";
       if (!item.text.trim() && !hasPhoto) continue;
       if (isEmojiOnly(item.text) && !hasPhoto) continue;
 
-      const i = indexedItems.length;
+      const index = indexedItems.length;
       indexedItems.push(item);
-
-      // Truncate oversize item text to the per-item cap
       const itemText = item.text.length > maxTextBytesPerChunk
         ? item.text.slice(0, maxTextBytesPerChunk)
         : item.text;
+      const header = showAuthors ? `[${index}] ${item.author ?? "Unknown"}` : `[${index}]`;
+      const textPart = { type: "text" as const, text: `${header}\n${itemText}` };
+      textParts.push(textPart);
+      itemIndexByTextPart.push(index);
+      multimodalParts.push(textPart);
 
-      const header = showAuthors
-        ? `[${i}] ${item.author ?? "Unknown"}`
-        : `[${i}]`;
-      parts.push({ type: "text", text: `${header}\n${itemText}` });
-
-      if (includeMedia) {
-        if (item.media?.type === "photo") {
-          const omitted = await this.maybeAppendImage(item.media.localPath, maxImageBytes, parts);
-          if (omitted) {
-            parts.push({ type: "text", text: `[IMAGE_OMITTED]` });
-          }
-        } else if (item.media?.type === "album") {
-          for (const localPath of item.media.localPaths) {
-            const omitted = await this.maybeAppendImage(localPath, maxImageBytes, parts);
-            if (omitted) {
-              parts.push({ type: "text", text: `[IMAGE_OMITTED]` });
-            }
-          }
+      if (!includeMedia) continue;
+      const localPaths = item.media?.type === "photo"
+        ? [item.media.localPath]
+        : item.media?.type === "album"
+        ? item.media.localPaths
+        : [];
+      let imageNumber = 0;
+      const itemVisionParts: ContentPart[] = [];
+      for (const localPath of localPaths) {
+        imageNumber++;
+        const imagePart = await this.loadImagePart(localPath, maxImageBytes);
+        if (!imagePart) {
+          const omittedPart = { type: "text" as const, text: "[IMAGE_OMITTED]" };
+          textParts.push(omittedPart);
+          itemIndexByTextPart.push(undefined);
+          multimodalParts.push(omittedPart);
+          continue;
         }
+        const imageLabel = {
+          type: "text" as const,
+          text: `Item [${index}], Image ${imageNumber}`,
+        };
+        multimodalParts.push(imagePart);
+        itemVisionParts.push(imageLabel, imagePart);
+        imageEntries.push({ index, imageNumber, part: imagePart });
+      }
+      if (itemVisionParts.length > 0) {
+        visionParts.push(textPart, ...itemVisionParts);
       }
     }
 
-    // No images? collapse to a plain string to avoid the {"type":"text","text":...}
-    // wrapper overhead on every message.
-    const hasAnyImage = parts.some((p) => p.type === "image_url");
-    if (!hasAnyImage) {
-      const text = parts.map((p) => (p as TextPart).text).join("\n\n");
-      return { parts: text, indexedItems };
-    }
-
-    return { parts, indexedItems };
+    return { textParts, itemIndexByTextPart, multimodalParts, visionParts, indexedItems, imageEntries };
   }
 
-  /**
-   * Check image file size against maxImageBytes and either append the image
-   * part or skip. Returns true if the image was skipped (omitted).
-   */
-  private async maybeAppendImage(
-    localPath: string,
-    maxImageBytes: number,
-    parts: ContentPart[],
-  ): Promise<boolean> {
-    if (maxImageBytes > 0) {
-      try {
+  private async loadImagePart(localPath: string, maxImageBytes: number): Promise<ImagePart | null> {
+    try {
+      if (maxImageBytes > 0) {
         const stat = await Deno.stat(localPath);
-        if (stat.size > maxImageBytes) {
-          return true; // caller inserts [IMAGE_OMITTED]
-        }
-      } catch {
-        return true; // can't stat, omit
+        if (stat.size > maxImageBytes) return null;
       }
+      const bytes = await Deno.readFile(localPath);
+      if (maxImageBytes > 0 && bytes.length > maxImageBytes) return null;
+      const b64 = encodeBytesAsBase64(bytes);
+      const extension = localPath.toLowerCase().split(".").pop();
+      const mimeType = extension === "png"
+        ? "image/png"
+        : extension === "webp"
+        ? "image/webp"
+        : extension === "gif"
+        ? "image/gif"
+        : extension === "avif"
+        ? "image/avif"
+        : "image/jpeg";
+      return {
+        type: "image_url",
+        image_url: { url: `data:${mimeType};base64,${b64}` },
+      };
+    } catch {
+      return null;
     }
-    parts.push(await this.imagePartFromPath(localPath));
-    return false;
   }
 
-  private parsePoints(
-    raw: string,
-    indexedItems: NormalizedItem[],
-  ): SummaryPoint[] {
-    // Strip <think>...</think> reasoning tokens (Qwen3, DeepSeek-R1, etc.)
+  private cleanJsonResponse(raw: string): string {
     let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-
-    // Strip markdown code fences (```json / ```) that some models wrap output in.
-    // jsonrepair handles inner JSON quirks but fences confuse it.
     const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenceMatch) {
-      cleaned = fenceMatch[1].trim();
-    }
-
-    if (!cleaned) {
-      throw new Error(
-        `Summarizer returned empty response. Raw: ${raw.slice(0, 200)}`,
-      );
-    }
-
-    let json: string;
+    if (fenceMatch) cleaned = fenceMatch[1].trim();
+    if (!cleaned) throw new Error("Summarizer returned empty response");
     try {
-      json = jsonrepair(cleaned);
+      return jsonrepair(cleaned);
     } catch {
-      throw new Error(
-        `jsonrepair failed on summarizer output: ${cleaned.slice(0, 200)}`,
-      );
+      throw new Error(`jsonrepair failed on model output: ${cleaned.slice(0, 200)}`);
     }
+  }
 
-    let parsed: Array<{ t: string; i?: number }>;
+  private parsePoints(raw: string, indexedItems: NormalizedItem[]): SummaryPoint[] {
+    let parsed: Array<{ t: string; i?: number | string }>;
+    const cleaned = this.cleanJsonResponse(raw);
     try {
-      parsed = JSON.parse(json) as Array<{ t: string; i?: number }>;
+      parsed = JSON.parse(cleaned) as Array<{ t: string; i?: number | string }>;
     } catch {
-      throw new Error(
-        `Summarizer returned unparseable JSON after repair. Cleaned: ${cleaned.slice(0, 200)}`,
-      );
+      throw new Error(`Summarizer returned unparseable JSON after repair. Cleaned: ${cleaned.slice(0, 200)}`);
     }
-
     if (!Array.isArray(parsed)) {
-      throw new Error(
-        `Summarizer returned non-array: ${JSON.stringify(parsed).slice(0, 200)}`,
-      );
+      throw new Error(`Summarizer returned non-array: ${JSON.stringify(parsed).slice(0, 200)}`);
     }
-
-    for (let idx = 0; idx < parsed.length; idx++) {
-      const el = parsed[idx];
-      if (typeof el !== "object" || el === null) {
-        throw new Error(
-          `Summarizer returned non-object at index ${idx}: ${JSON.stringify(el)}`,
-        );
+    for (let index = 0; index < parsed.length; index++) {
+      const element = parsed[index];
+      if (typeof element !== "object" || element === null) {
+        throw new Error(`Summarizer returned non-object at index ${index}`);
       }
-      if (typeof el.t !== "string") {
-        throw new Error(
-          `Summarizer returned element without string "t" at index ${idx}: ${JSON.stringify(el).slice(0, 100)}`,
-        );
+      if (typeof element.t !== "string") {
+        throw new Error(`Summarizer returned element without string "t" at index ${index}`);
       }
     }
-
-    return parsed.map((p) => {
-      const idx = typeof p.i === "number" ? p.i : typeof p.i === "string" ? Number(p.i) : NaN;
-      const item = Number.isFinite(idx) && idx >= 0 ? indexedItems[idx] : undefined;
+    return parsed.map((point) => {
+      const index = typeof point.i === "number" ? point.i : typeof point.i === "string" ? Number(point.i) : NaN;
+      const item = Number.isFinite(index) && index >= 0 ? indexedItems[index] : undefined;
       return {
-        text: p.t,
+        text: point.t,
         sourceUrl: item?.url ?? null,
         ...(item && {
           channel: item.feedExternalId,
@@ -506,12 +471,44 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     });
   }
 
-  private async imagePartFromPath(localPath: string): Promise<ImagePart> {
-    const bytes = await Deno.readFile(localPath);
-    const b64 = btoa(String.fromCharCode(...bytes));
-    return {
-      type: "image_url",
-      image_url: { url: `data:image/jpeg;base64,${b64}` },
-    };
+  private parseVisionDescriptions(raw: string, expectedIndexes: number[]): Map<number, string> {
+    const cleaned = this.cleanJsonResponse(raw);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      throw new Error("vision response validation failed: unparseable JSON");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error("vision response validation failed: expected array");
+    }
+    const expected = new Set(expectedIndexes);
+    const descriptions = new Map<number, string>();
+    for (const element of parsed) {
+      if (typeof element !== "object" || element === null) {
+        throw new Error(`vision response validation failed: invalid entry count=${parsed.length}`);
+      }
+      const keys = Object.keys(element);
+      if (keys.length !== 2 || !keys.includes("i") || !keys.includes("description")) {
+        throw new Error(`vision response validation failed: unexpected fields count=${parsed.length}`);
+      }
+      const entry = element as { i: unknown; description: unknown };
+      if (typeof entry.i !== "number" || !Number.isInteger(entry.i) || !expected.has(entry.i)) {
+        throw new Error(`vision response validation failed: invalid index count=${parsed.length}`);
+      }
+      if (typeof entry.description !== "string" || entry.description.trim() === "") {
+        throw new Error(`vision response validation failed: blank description index=${entry.i}`);
+      }
+      if (descriptions.has(entry.i)) {
+        throw new Error(`vision response validation failed: duplicate index=${entry.i}`);
+      }
+      descriptions.set(entry.i, entry.description.trim());
+    }
+    if (descriptions.size !== expected.size) {
+      throw new Error(
+        `vision response validation failed: expected=${expected.size} received=${descriptions.size}`,
+      );
+    }
+    return descriptions;
   }
 }

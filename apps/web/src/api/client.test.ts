@@ -32,7 +32,7 @@ describe("updateCurrentUser", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ id: "u1", name: "Test", email: "t@t.com", systemPrompt: "", defaultLanguage: null, defaultModel: null, createdAt: 0, updatedAt: 0 }), { status: 200 }),
+          new Response(JSON.stringify({ id: "u1", name: "Test", email: "t@t.com", systemPrompt: "", defaultLanguage: null, createdAt: 0, updatedAt: 0 }), { status: 200 }),
         );
       }) as typeof fetch;
       await updateCurrentUser({ name: "New Name", defaultLanguage: null });

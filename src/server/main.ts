@@ -1,10 +1,17 @@
-import { getConfig, resolveServerHostname, type Config } from "../config.ts";
+import {
+  getConfig,
+  getSummarizerRuntimeConfig,
+  resolveAllowRemoteSummarization,
+  resolveServerHostname,
+  type Config,
+} from "../config.ts";
+import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
+import type { SummarizerService } from "../summarizers/summarizer.types.ts";
 import { database as defaultDatabase } from "../db/client.ts";
 import type { Database } from "../db/client.ts";
 import { scheduleDigestJob, scheduleMediaHousekeeping } from "../scheduler/digest-job.ts";
 import { DenoCronScheduler, type Scheduler } from "../scheduler/scheduler.ts";
 import { buildApp } from "./app.ts";
-
 type ServerRequestHandler = (request: Request) => Response | Promise<Response>;
 type ServerServeFunction = (
   options: { hostname: string; port: number },
@@ -17,6 +24,7 @@ export interface ServerBootDependencies {
   database?: Database;
   scheduler?: Scheduler;
   serve?: ServerServeFunction;
+  summarizer?: SummarizerService;
   log?: (message: string) => void;
 }
 
@@ -24,9 +32,14 @@ export function bootServer(dependencies: ServerBootDependencies = {}): void {
   const config = dependencies.config ?? getConfig();
   const serverHostname = resolveServerHostname(dependencies.serverHostname);
   const database = dependencies.database ?? defaultDatabase;
-  const app = buildApp(database);
+  const summarizer = dependencies.summarizer ?? new OpenAICompatibleSummarizerService({
+    models: getSummarizerRuntimeConfig(),
+    allowRemoteSummarization: resolveAllowRemoteSummarization(config.allowRemoteSummarization),
+  });
   const scheduler = dependencies.scheduler ?? new DenoCronScheduler();
+  const app = buildApp(database, { digests: { summarizer } });
   scheduleDigestJob(scheduler, database, {
+    summarizer,
     schedulerLeaseMs: config.schedulerLeaseMs,
     digestRunStaleAfterMs: config.digestRunStaleAfterMs,
   });

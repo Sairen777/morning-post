@@ -17,7 +17,6 @@ const userRowSchema = z.object({
   passwordHash: z.string(),
   systemPrompt: z.string(),
   defaultLanguage: z.string().nullable(),
-  defaultModel: z.string().nullable(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -30,7 +29,6 @@ export interface CreateUserInput {
   passwordHash: string;
   systemPrompt: string;
   defaultLanguage?: string | null;
-  defaultModel?: string | null;
 }
 
 export type UpdateUserInput = Partial<{
@@ -39,7 +37,6 @@ export type UpdateUserInput = Partial<{
   passwordHash: string;
   systemPrompt: string;
   defaultLanguage: string | null;
-  defaultModel: string | null;
 }>;
 
 
@@ -61,7 +58,6 @@ export async function createUser(
         passwordHash: input.passwordHash,
         systemPrompt: input.systemPrompt,
         defaultLanguage: input.defaultLanguage ?? null,
-        defaultModel: input.defaultModel ?? null,
         createdAt: now,
         updatedAt: now,
       })

@@ -1,5 +1,22 @@
 export type DatabaseSslMode = "disable" | "require" | "verify-full";
 
+export interface ModelEndpointConfig {
+  model: string;
+  baseUrl: string;
+  apiKey?: string;
+}
+
+export interface SummarizerRuntimeConfig {
+  summarizer: ModelEndpointConfig;
+  vision: ModelEndpointConfig;
+  sameModel: boolean;
+}
+
+export interface SummarizerRuntimeConfigOverrides {
+  summarizer?: Partial<ModelEndpointConfig>;
+  vision?: Partial<ModelEndpointConfig>;
+}
+
 export interface Config {
   databaseUrl: string;
   port: number;
@@ -98,6 +115,94 @@ function booleanSetting(name: string, envName: string, override: boolean | undef
   if (normalized === "true") return true;
   if (normalized === "false") return false;
   throw invalidConfig(name, "expected true or false");
+}
+
+function normalizeEndpointRoot(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function requiredStringSetting(
+  name: string,
+  override: string | undefined,
+): string {
+  const raw = override ?? Deno.env.get(name);
+  const value = raw?.trim() ?? "";
+  if (value === "") {
+    throw invalidConfig(name, "expected a non-empty value");
+  }
+  return value;
+}
+
+function optionalStringSetting(
+  name: string,
+  override: string | undefined,
+): { value: string | undefined; explicitlyConfigured: boolean } {
+  const raw = override ?? Deno.env.get(name);
+  const value = raw?.trim() ?? "";
+  return {
+    value: value === "" ? undefined : value,
+    explicitlyConfigured: value !== "",
+  };
+}
+
+export function getSummarizerRuntimeConfig(
+  overrides: SummarizerRuntimeConfigOverrides = {},
+): SummarizerRuntimeConfig {
+  const summarizerModel = requiredStringSetting("SUMMARIZER_MODEL", overrides.summarizer?.model);
+  const summarizerBaseUrl = normalizeEndpointRoot(
+    requiredStringSetting("SUMMARIZER_BASE_URL", overrides.summarizer?.baseUrl),
+  );
+  const summarizerApiKey = optionalStringSetting(
+    "SUMMARIZER_API_KEY",
+    overrides.summarizer?.apiKey,
+  ).value;
+  const visionModel = requiredStringSetting("VISION_MODEL", overrides.vision?.model);
+  const visionBaseUrlSetting = optionalStringSetting("VISION_BASE_URL", overrides.vision?.baseUrl);
+  const visionApiKeySetting = optionalStringSetting("VISION_API_KEY", overrides.vision?.apiKey);
+  const sameModel = summarizerModel === visionModel;
+
+  if (sameModel) {
+    if (
+      visionBaseUrlSetting.value !== undefined &&
+      normalizeEndpointRoot(visionBaseUrlSetting.value) !== summarizerBaseUrl
+    ) {
+      throw invalidConfig(
+        "VISION_BASE_URL",
+        "must match SUMMARIZER_BASE_URL when SUMMARIZER_MODEL and VISION_MODEL match",
+      );
+    }
+    if (
+      visionApiKeySetting.value !== undefined &&
+      visionApiKeySetting.value !== summarizerApiKey
+    ) {
+      throw invalidConfig(
+        "VISION_API_KEY",
+        "must match SUMMARIZER_API_KEY when SUMMARIZER_MODEL and VISION_MODEL match",
+      );
+    }
+  } else if (visionBaseUrlSetting.value === undefined) {
+    throw invalidConfig("VISION_BASE_URL", "expected a non-empty value");
+  }
+
+  return {
+    summarizer: {
+      model: summarizerModel,
+      baseUrl: summarizerBaseUrl,
+      ...(summarizerApiKey === undefined ? {} : { apiKey: summarizerApiKey }),
+    },
+    vision: {
+      model: visionModel,
+      baseUrl: normalizeEndpointRoot(visionBaseUrlSetting.value ?? summarizerBaseUrl),
+      ...(sameModel
+        ? summarizerApiKey === undefined ? {} : { apiKey: summarizerApiKey }
+        : visionApiKeySetting.value === undefined ? {} : { apiKey: visionApiKeySetting.value }),
+    },
+    sameModel,
+  };
+}
+
+export function resolveAllowRemoteSummarization(override?: boolean): boolean {
+  return booleanSetting("ALLOW_REMOTE_SUMMARIZATION", "ALLOW_REMOTE_SUMMARIZATION", override, false);
 }
 
 function originsSetting(override: string[] | undefined): string[] {

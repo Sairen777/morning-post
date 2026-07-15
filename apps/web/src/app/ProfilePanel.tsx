@@ -8,7 +8,6 @@ interface ProfilePanelProps {
     name?: string;
     systemPrompt?: string;
     defaultLanguage?: string | null;
-    defaultModel?: string | null;
   }) => Promise<PublicUser>;
   onSaved: (user: PublicUser) => void;
   onAuthError: () => void;
@@ -19,9 +18,6 @@ export default function ProfilePanel(props: ProfilePanelProps) {
   const [systemPrompt, setSystemPrompt] = createSignal(props.user.systemPrompt);
   const [defaultLanguage, setDefaultLanguage] = createSignal(
     props.user.defaultLanguage ?? "",
-  );
-  const [defaultModel, setDefaultModel] = createSignal(
-    props.user.defaultModel ?? "",
   );
   const [error, setError] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
@@ -40,7 +36,6 @@ export default function ProfilePanel(props: ProfilePanelProps) {
         defaultLanguage: defaultLanguage().trim() === ""
           ? null
           : defaultLanguage(),
-        defaultModel: defaultModel().trim() === "" ? null : defaultModel(),
       });
       props.onSaved(updatedUser);
       setSaved(true);
@@ -84,18 +79,6 @@ export default function ProfilePanel(props: ProfilePanelProps) {
             />
             <div class="hint">
               e.g. English, Spanish. Leave blank for auto-detection.
-            </div>
-          </div>
-          <div class="form-group">
-            <label for="profile-model">Default model</label>
-            <input
-              id="profile-model"
-              type="text"
-              value={defaultModel()}
-              onInput={(e) => setDefaultModel(e.currentTarget.value)}
-            />
-            <div class="hint">
-              AI model for summarization. Leave blank for default.
             </div>
           </div>
         </div>

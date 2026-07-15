@@ -38,7 +38,6 @@ function userInput(email: string): CreateUserInput {
     passwordHash: "$argon2id$fakehash",
     systemPrompt: "Focus on important product changes.",
     defaultLanguage: "Ukrainian",
-    defaultModel: "model-x",
   };
 }
 
@@ -106,7 +105,7 @@ Deno.test("composeSummaryRuleset layers base, user, feed, and kind prompts in or
   assertEquals(rules.systemPrompt.includes('Write all "t" values in English.'), true);
 });
 
-Deno.test("summarizeFeedPeriod composes prompt layers and passes the user model override", async () => {
+Deno.test("summarizeFeedPeriod composes prompt layers and passes the run signal without a per-user model override", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(database, "summarize-compose@example.com");
     await upsertItems(database, feed.id, [normalizedItem()], 1);
@@ -124,7 +123,8 @@ Deno.test("summarizeFeedPeriod composes prompt layers and passes the user model 
     assertEquals(summary.feedNameSnapshot, feed.name);
     assertEquals(summary.generatedAt, 99);
     assertEquals(summarizer.calls.length, 1);
-    assertEquals(summarizer.calls[0].options?.model, "model-x");
+    assertEquals(summarizer.calls[0].options?.signal?.aborted, false);
+    assertEquals("model" in (summarizer.calls[0].options ?? {}), false);
     assertEquals(summarizer.calls[0].items.length, 1);
     const systemPrompt = summarizer.calls[0].rules.systemPrompt;
     assertEquals(systemPrompt.includes(DEFAULT_SYSTEM_PROMPT), true);

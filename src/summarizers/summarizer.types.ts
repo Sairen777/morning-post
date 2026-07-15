@@ -15,7 +15,6 @@ export interface SummaryPoint {
 }
 
 export interface SummarizeOptions {
-  model?: string;
   /** AbortSignal for cancellation through retries, backoff, and merge */
   signal?: AbortSignal;
   /** Max text bytes per chunk; default resolved from config (120_000) */
@@ -24,8 +23,6 @@ export interface SummarizeOptions {
   maxItemsPerChunk?: number;
   /** Max bytes for a single image payload; larger images are omitted with [IMAGE_OMITTED] */
   maxImageBytes?: number;
-  /** Allow summarization via remote (non-loopback) URL */
-  allowRemoteSummarization?: boolean;
 }
 
 

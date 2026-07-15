@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import { render } from "@solidjs/testing-library";
 import StatusBadge from "../app/StatusBadge";
 import FormatTime from "../app/FormatTime";
+import ProfilePanel from "../app/ProfilePanel";
 
 describe("StatusBadge", () => {
   it("renders complete status", () => {
@@ -34,5 +35,31 @@ describe("FormatTime", () => {
     const time = container.querySelector("time");
     expect(time).not.toBeNull();
     expect(time?.getAttribute("dateTime")).toBe(new Date(ms).toISOString());
+  });
+});
+
+describe("ProfilePanel", () => {
+  it("does not render a model selector", () => {
+    const user = {
+      id: "user-1",
+      name: "Ada",
+      email: "ada@example.com",
+      systemPrompt: "Summarize plainly.",
+      defaultLanguage: null,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const { container } = render(() => (
+      <ProfilePanel
+        user={user}
+        onSave={() => Promise.resolve(user)}
+        onSaved={() => {}}
+        onAuthError={() => {}}
+      />
+    ));
+    expect(container.querySelector("#profile-model")).toBeNull();
+    expect(container.querySelector("#profile-name")).not.toBeNull();
+    expect(container.querySelector("#profile-language")).not.toBeNull();
+    expect(container.querySelector("#profile-prompt")).not.toBeNull();
   });
 });
