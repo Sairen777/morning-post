@@ -54,6 +54,7 @@ export function buildConnectorRoutes(
   dependencies: ConnectorRouteDependencies = {},
 ): Hono<{ Variables: AuthVariables }> {
   const routes = new Hono<{ Variables: AuthVariables }>();
+  routes.use("*", requireAuth(database));
   let telegramLoginSessionManager = dependencies.telegramLoginSessionManager;
   let telegramLoginSessionManagerLoader: Promise<TelegramLoginSessionManager> | undefined;
   const trustedProxyCount = dependencies.trustedProxyCount ?? getConfig().trustedProxyCount;

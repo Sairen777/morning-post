@@ -57,6 +57,10 @@ export async function consumeRateLimit(
   }
 
   const allowed = count <= limit;
+  // Cleanup is opportunistic; never let maintenance affect a rejected request.
+  if (!allowed) {
+    return false;
+  }
   await database.execute(sql`
     with expired as (
       select bucket_key
