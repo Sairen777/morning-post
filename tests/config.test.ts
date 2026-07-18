@@ -263,15 +263,17 @@ Deno.test("summarizer runtime resolver validates and normalizes provider setting
   const previous = new Map(keys.map((key) => [key, Deno.env.get(key)]));
   try {
     for (const key of keys) Deno.env.delete(key);
-    for (
-      const key of ["SUMMARIZER_MODEL", "SUMMARIZER_BASE_URL", "VISION_MODEL"]
-    ) {
-      Deno.env.set("SUMMARIZER_MODEL", "summary");
-      Deno.env.set("SUMMARIZER_BASE_URL", "http://localhost:1234/v1");
-      Deno.env.set("VISION_MODEL", "vision");
-      Deno.env.delete(key);
-      assertThrows(() => getSummarizerRuntimeConfig(), Error, `Invalid ${key}`);
-    }
+    assertEquals(getSummarizerRuntimeConfig(), {
+      summarizer: {
+        model: "local-model",
+        baseUrl: "http://127.0.0.1:1234/v1",
+      },
+      vision: {
+        model: "local-model",
+        baseUrl: "http://127.0.0.1:1234/v1",
+      },
+      sameModel: true,
+    });
 
     const requiredValues = {
       SUMMARIZER_MODEL: "summary",

@@ -306,7 +306,7 @@
     <header class="hero">
       <p class="eyebrow">Morning Post · Technical Design Documentation</p>
       <h1>Current architecture, security posture, and scalability review</h1>
-      <p class="lede">This document captures the repository architecture as implemented on 2026-07-09 and records the security and scalability review decisions for the current Deno/Hono API, SolidStart web UI, PostgreSQL persistence layer, Telegram connector, and OpenAI-compatible summarization pipeline.</p>
+      <p class="lede">This document captures the repository architecture as implemented on 2026-07-17 and records the security and scalability decisions for the current Deno/Hono API, SolidStart web UI, PostgreSQL persistence layer, Telegram and Substack connectors, and OpenAI-compatible summarization pipeline.</p>
       <p class="diagram-note">Diagrams are embedded as Mermaid source and intentionally do not load a CDN; this keeps the file offline and self-contained. Render with a local Mermaid tool if a graphical version is needed.</p>
       <div class="meta-grid" aria-label="document metadata">
         <div class="card">
@@ -317,7 +317,7 @@
         <div class="card">
           <div class="card-title">Primary assets</div>
           <strong>Credentials, sessions, messages</strong>
-          <p>Telegram session strings, session cookies, user prompts, message text/media, summaries, and digest history.</p>
+          <p>Telegram session strings, imported Substack session-cookie values, Morning Post session cookies, user prompts, message/post text and media, summaries, and digest history.</p>
         </div>
         <div class="card">
           <div class="card-title">Main risk</div>
@@ -393,13 +393,14 @@
   Browser["Browser\nSolidStart SPA"] -->|credentials: include| API["Deno + Hono API"]
   API -->|Drizzle/postgres.js| DB[("PostgreSQL")]
   API -->|MTProto / connector APIs| Telegram["Telegram"]
+  API -->|public archive + authenticated post APIs| Substack["Substack publications"]
   API -->|/chat/completions| LLM["OpenAI-compatible text + vision providers\nconfigured deployment-wide"]
   API -->|read/write media| Media[("Local media dirs\nmedia/, telegram_media/")]
   Scheduler["Deno scheduler"] --> API
 
   classDef external fill:#fbeccf,stroke:#8a5a10,color:#342107;
   classDef storage fill:#e5efe6,stroke:#20603d,color:#0e2818;
-  class Telegram,LLM external;
+  class Telegram,Substack,LLM external;
   class DB,Media storage;</pre>
 
       <div class="two-col">
@@ -409,6 +410,7 @@
             <li><strong>Browser → API:</strong> cookie-authenticated requests. Origin guard middleware on unsafe requests validates <code>Origin</code> or <code>Referer</code> against the configured <code>ALLOWED_ORIGINS</code>. Security headers include HSTS, frame denial (<code>DENY</code>), and <code>nosniff</code>. Body size limited by <code>MAX_REQUEST_BODY_BYTES</code>.</li>
             <li><strong>API → PostgreSQL:</strong> persistence for sensitive metadata and encrypted credentials. <code>DB_SSL_MODE</code> configures TLS (default <code>disable</code> for local loopback; <code>require</code> or <code>verify-full</code> for remote). Pool size, idle timeout, and connect timeout are explicitly configured from env vars.</li>
             <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
+            <li><strong>API → Substack:</strong> users explicitly import <code>substack.sid</code> and optionally <code>connect.sid</code>; Morning Post never accepts a Substack password or raw cookie header. Archive discovery is unauthenticated. Paid/full post retrieval sends the minimum cookie header only to the fixed <code>https://substack.com</code> origin. The integration replays an unsupported browser session and may conflict with Substack terms; the UI discloses that risk before connection.</li>
             <li><strong>API → summarizer provider:</strong> message text, prompt text, and selected media leave the app to the configured OpenAI-compatible text and vision endpoints. <code>ALLOW_REMOTE_SUMMARIZATION</code> (default <code>false</code>) controls non-loopback providers; loopback endpoints are always allowed. Same-model requests are multimodal; distinct endpoints use vision analysis followed by text summarization. Text, item, and image-byte caps apply, with <code>[IMAGE_OMITTED]</code> and run-local <code>[IMAGE_ANALYSIS_UNAVAILABLE]</code> fallback markers.</li>
             <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), per-period cleanup, and weekly TTL sweep (<code>MEDIA_TTL_MS</code>).</li>
           </ul>
@@ -418,8 +420,8 @@
           <table>
             <thead><tr><th>Entry point</th><th>Purpose</th><th>Observed permission posture</th></tr></thead>
             <tbody>
-              <tr><td><code>deno task dev:api</code></td><td>Watched API server</td><td>Named <code>-P=api</code> set with scoped network, env, read, write, and FFI</td></tr>
-              <tr><td><code>deno task start</code></td><td>Production API server (local)</td><td>Named <code>-P=api</code> set; production deployments use <code>scripts/production-start.template.sh</code> with explicit <code>--allow-net</code></td></tr>
+              <tr><td><code>deno task dev:api</code></td><td>Watched API server</td><td>Named <code>-P=api</code> set. Network access is unrestricted because custom publication domains resolve to dynamic IPs; the archive transport validates global-unicast DNS answers and pins the chosen IP to the TCP connection before TLS.</td></tr>
+              <tr><td><code>deno task start</code></td><td>Production API server (local)</td><td>Named <code>-P=api</code> set; production deployments use <code>scripts/production-start.template.sh</code> with unrestricted network access and the same IP-pinned archive transport boundary.</td></tr>
               <tr><td><code>deno task dev:cli</code></td><td>One-shot CLI pipeline</td><td>Named <code>-P=cli</code> set with scoped permissions</td></tr>
             </tbody>
           </table>
@@ -700,7 +702,7 @@
 
     <section id="flows">
       <div class="section-kicker">Main flows</div>
-      <h2>Authentication and digest generation are the two load-bearing flows.</h2>
+      <h2>Authentication, Substack onboarding, and digest generation are the load-bearing flows.</h2>
 
       <h3>Authentication and session flow</h3>
       <pre class="mermaid">sequenceDiagram
@@ -719,6 +721,24 @@
   B->>A: GET /auth/me with cookie
   A->>D: lookup non-expired token hash
   A-->>B: explicit PublicUser projection</pre>
+
+      <h3>Substack connection and publication flow</h3>
+      <pre class="mermaid">sequenceDiagram
+  participant B as Browser
+  participant A as Hono API
+  participant S as Substack
+  participant D as PostgreSQL
+
+  B->>A: POST /connectors/substack/session {substackSessionId, connectSessionId?}
+  A->>S: GET substack.com/api/v1/user-settings with minimum cookie header
+  S-->>A: validated Substack user
+  A->>D: envelope-encrypt cookies; upsert one Substack source
+  A-->>B: {source} without credentials
+  B->>A: POST /connectors/substack/publications {publicationUrl}
+  A->>A: normalize URL; resolve and reject non-global addresses
+  A->>S: IP-pinned HTTPS GET /api/v1/archive without cookies
+  A->>D: create or revive canonical publication feed
+  A-->>B: {source,feed}</pre>
 
       <h3>Digest generation flow</h3>
       <pre class="mermaid">sequenceDiagram
@@ -759,8 +779,8 @@
           <p>A connector creation failure records a failed connector-stage run feed. Per-feed ingestion and summarization failures are caught and recorded; successful feeds still contribute to a partial digest.</p>
         </div>
         <div class="card">
-          <div class="card-title">Source batching and deadlines</div>
-          <p>When two or more feeds share a source, <code>ingestFeedsForSource()</code> calls <code>getNormalizedData</code> once with all feed external IDs and a union window, then filters results per feed. Connector methods accept an optional <code>AbortSignal</code> for deadline enforcement via <code>CONNECTOR_TIMEOUT_MS</code>.</p>
+          <div class="card-title">Connector-specific ingestion and bounded deadlines</div>
+          <p>Telegram handles use source batching through <code>ingestFeedsForSource()</code>. Substack handles use <code>ingestFeedsIndividually()</code> with default concurrency four, one deadline per publication, and per-feed failure isolation. Feed-ingestion deadlines race connector reads and use post-await abort guards to prevent late item persistence. Substack onboarding races only the remote session validation or publication probe; a commit gate atomically cancels that deadline before starting the credential or feed database mutation, which the route then awaits normally. The response therefore cannot report a connector timeout while its database write continues in the background.</p>
         </div>
       </div>
     </section>
@@ -778,6 +798,8 @@
           <tr><td>Session token storage</td><td>Raw 256-bit token goes only to cookie; database stores SHA-256 hash.</td><td>A session table leak does not directly yield replayable cookies.</td></tr>
           <tr><td>Cookie flags</td><td><code>httpOnly: true</code>, <code>secure: true</code>, <code>sameSite: "Lax"</code>, <code>path: "/"</code>.</td><td>Protects the token from JavaScript read access and normal cross-site form posts.</td></tr>
           <tr><td>Credential encryption</td><td>Per-call random data key, AES-256-GCM, owner AAD, wrapped data key, <code>KeyProvider</code> seam.</td><td>A database or backup leak alone should not expose connector credentials.</td></tr>
+          <tr><td>Substack credential minimization</td><td>Strict schemas accept only <code>substack.sid</code> and optional <code>connect.sid</code> values; the web clears local secret state after submission; API responses expose only public source state.</td><td>Avoids password custody, raw-cookie ingestion, and accidental credential echoing.</td></tr>
+          <tr><td>Substack SSRF boundary</td><td>Publication URLs require HTTPS domains without credentials, ports, or IP literals. A and AAAA answers must all be global unicast. Each request and redirect connects to the validated IP literal, then uses the original hostname for TLS SNI and certificate verification.</td><td>Closes DNS-rebinding TOCTOU while supporting arbitrary custom publication domains under unrestricted API network permission.</td></tr>
           <tr><td>Ownership scoping</td><td>Repositories generally take <code>userId</code> and include ownership filters; route handlers use <code>requireAuth</code>.</td><td>Prevents cross-user object access at the persistence layer.</td></tr>
           <tr><td>Input validation</td><td>Zod schemas validate bodies, params, row projections, JSON columns, and summary points.</td><td>Protects service logic from malformed inputs and schema drift.</td></tr>
           <tr><td>Error responses</td><td>Known <code>AppError</code> types return structured errors; unknown failures return generic 500s.</td><td>Reduces accidental stack/SQL leakage through HTTP.</td></tr>
@@ -790,16 +812,16 @@
         <tbody>
           <tr>
             <td><span class="badge critical">S1</span></td>
-            <td>Deno runtime permissions are broad for API, CLI, tests, and capture tasks.</td>
-            <td><code>deno.json</code> grants unscoped <code>--allow-net</code>, <code>--allow-env</code>, <code>--allow-read</code>, <code>--allow-write</code>, <code>--allow-sys</code>, and often <code>--allow-ffi</code>.</td>
-            <td>Split dev/test/prod task profiles. Scope network hosts, readable paths, writable paths, and allowed env names. Keep FFI only where native packages require it.</td>
-            <td><strong>Remediated.</strong> Named Deno 2.5+ permission sets: <code>api</code>, <code>migrate</code>, <code>test</code>, and <code>cli</code>. Each scopes network, env, read, write, and FFI to the minimum required hosts, paths, and env names. Production template at <code>scripts/production-start.template.sh</code> requires explicit <code>--allow-net</code> per deployment. Tests in <code>deno.json</code> and <code>tests/server/security-audit.test.ts</code>.</td>
+            <td>Deno runtime permissions must balance least privilege with dynamic Substack destinations.</td>
+            <td><code>test</code>, <code>cli</code>, migration, and generation profiles remain scoped. The API and production launcher require unrestricted network access for arbitrary custom publication domains and their resolved IPs.</td>
+            <td>Keep non-network permissions scoped. Treat the IP-pinned archive transport as the enforcement boundary for user-controlled destinations; never replace it with ordinary <code>fetch()</code> after a separate DNS check.</td>
+            <td><strong>Remediated with an explicit exception.</strong> Named permission sets scope env, read, write, and FFI. API network access is intentionally unrestricted; <code>requestPinnedHttps()</code> connects only to prevalidated global-unicast IP literals and retains the domain for TLS SNI/certificate verification. The production template documents this boundary. Tests cover private-address rejection, pinned TCP destination, redirects, framing, encoding, and byte limits.</td>
           </tr>
             <td><span class="badge high">S2</span></td>
             <td>Summarization is a privacy boundary, not an internal call.</td>
             <td><code>OpenAICompatibleSummarizerService</code> sends prompts and bounded item text/media to configured OpenAI-compatible endpoints. Same-model media is direct multimodal input; distinct endpoints perform indexed vision analysis before text summarization.</td>
             <td>Expose a deployment decision: hosted provider allowed vs local-only. Document provider retention terms outside code, add per-user/source “do not send media/text to hosted LLM” policy if needed, and log provider/model selection without message content.</td>
-            <td><strong>Remediated.</strong> <code>SUMMARIZER_MODEL</code>/<code>SUMMARIZER_BASE_URL</code> and <code>VISION_MODEL</code>/<code>VISION_BASE_URL</code> are required deployment-wide settings; same-model endpoint inheritance is explicit. <code>ALLOW_REMOTE_SUMMARIZATION</code> (default <code>false</code>) controls non-loopback access, with one sanitized run-local vision fallback log. See <code>src/config.ts</code>, <code>src/summarizers/openai-compatible-client.ts</code>, and <code>src/summarizers/openai-compatible-summarizer.ts</code>.</td>
+            <td><strong>Remediated.</strong> <code>SUMMARIZER_MODEL</code> defaults to <code>local-model</code>, <code>SUMMARIZER_BASE_URL</code> defaults to <code>http://127.0.0.1:1234/v1</code>, and the vision model inherits the resolved summarizer model when omitted. Explicit environment or constructor settings take precedence, while explicitly blank required values are rejected. This lets non-summarization routes boot without provider configuration and keeps the default endpoint local. An explicitly distinct vision model still requires <code>VISION_BASE_URL</code>. <code>ALLOW_REMOTE_SUMMARIZATION</code> defaults to <code>false</code>. See <code>src/config.ts</code>, <code>src/summarizers/openai-compatible-client.ts</code>, and <code>src/summarizers/openai-compatible-summarizer.ts</code>.</td>
           </tr>
           <tr>
             <td><span class="badge high">S3</span></td>

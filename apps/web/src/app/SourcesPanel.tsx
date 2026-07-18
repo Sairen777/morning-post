@@ -277,6 +277,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                 </div>
 
                 {/* Discover feeds */}
+                <Show when={source.connectorId !== "Substack"}>
                 <div style="margin-top: 0.5rem;">
                   <button
                     onClick={() => handleDiscover(source.id)}
@@ -313,6 +314,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                   </Show>
                 </div>
 
+                </Show>
                 {/* Disconnect */}
                 <div style="margin-top: 0.75rem;">
                   <button

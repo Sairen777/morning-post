@@ -11,6 +11,13 @@ import {
 } from "../../src/connectors/telegram/login-session.ts";
 import { CredentialCipher } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
+import { ConnectorId } from "../../src/constants.ts";
+import type { PublicFeed } from "../../src/repositories/feed-repository.ts";
+import type { PublicSource } from "../../src/repositories/source-repository.ts";
+import type {
+  SubstackPublicationServiceLike,
+  SubstackSessionServiceLike,
+} from "../../src/server/routes/connectors.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const MASTER_KEY_BYTES = new Uint8Array(32).fill(61);
@@ -156,5 +163,91 @@ Deno.test("telegram login start and 2fa routes are rate limited", async () => {
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "3.3.3.3" },
     });
     assertEquals(secondTwoFactor.status, 429);
+  });
+});
+
+Deno.test("Substack session and publication routes use separate rate-limit buckets", async () => {
+  await withTestDb(async (database: Database) => {
+    const now = 1_000;
+    const source: PublicSource = {
+      id: "00000000-0000-4000-8000-000000000311",
+      userId: "00000000-0000-4000-8000-000000000312",
+      connectorId: ConnectorId.Substack,
+      position: null,
+      enabled: true,
+      connected: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const feed: PublicFeed = {
+      id: "00000000-0000-4000-8000-000000000313",
+      sourceId: source.id,
+      externalId: "https://example.substack.com",
+      name: "Example",
+      kind: "news",
+      customPrompt: null,
+      position: null,
+      enabled: true,
+      deletedAt: null,
+      lastFetchedPeriodEndMs: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const sessionService: SubstackSessionServiceLike = {
+      connect: (_userId) => Promise.resolve(source),
+    };
+    const publicationService: SubstackPublicationServiceLike = {
+      add: () => Promise.resolve({ source, feed }),
+    };
+    const app = buildApp(database, {
+      connectors: {
+        substackSessionService: sessionService,
+        substackPublicationService: publicationService,
+        substackSessionRateLimiter: createRateLimitMiddleware({
+          database,
+          bucket: "substack-session-test",
+          limit: 1,
+          windowMs: 60_000,
+          now: () => now,
+        }),
+        substackPublicationRateLimiter: createRateLimitMiddleware({
+          database,
+          bucket: "substack-publication-test",
+          limit: 1,
+          windowMs: 60_000,
+          now: () => now,
+        }),
+      },
+    });
+    await register(app, "substack-connector-limit@example.com");
+    const cookie = await login(app, "substack-connector-limit@example.com");
+    const headers = {
+      "content-type": "application/json",
+      cookie,
+      Origin: "http://127.0.0.1:5173",
+      "x-forwarded-for": "4.4.4.4",
+    };
+
+    const firstSession = await app.request("/connectors/substack/session", {
+      ...jsonRequest("POST", { substackSessionId: "s%3Asubstack.signature" }),
+      headers,
+    });
+    assertEquals(firstSession.status, 200);
+    const secondSession = await app.request("/connectors/substack/session", {
+      ...jsonRequest("POST", { substackSessionId: "s%3Asubstack.signature" }),
+      headers,
+    });
+    assertEquals(secondSession.status, 429);
+
+    const firstPublication = await app.request("/connectors/substack/publications", {
+      ...jsonRequest("POST", { publicationUrl: "https://example.substack.com" }),
+      headers,
+    });
+    assertEquals(firstPublication.status, 201);
+    const secondPublication = await app.request("/connectors/substack/publications", {
+      ...jsonRequest("POST", { publicationUrl: "https://example.substack.com" }),
+      headers,
+    });
+    assertEquals(secondPublication.status, 429);
   });
 });

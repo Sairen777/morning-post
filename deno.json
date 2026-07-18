@@ -11,19 +11,13 @@
     "zod": "npm:zod@3.24.4",
     "hash-wasm": "npm:hash-wasm@4.12.0",
     "@std/assert": "jsr:@std/assert@1.0.19",
+    "ipaddr.js": "npm:ipaddr.js@2.4.0",
+    "html-to-text": "npm:html-to-text@10.0.0",
     "@std/encoding": "jsr:@std/encoding@1.0.7"
   },
   "permissions": {
     "api": {
-      "net": [
-        "127.0.0.1:3000",
-        "127.0.0.1:5432",
-        "localhost:5432",
-        "localhost:1234",
-        "127.0.0.1:1234",
-        "generativelanguage.googleapis.com",
-        "api.deepseek.com"
-      ],
+      "net": true,
       "env": [
         "DATABASE_URL",
         "PGTARGETSESSIONATTRS",

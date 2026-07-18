@@ -9,7 +9,7 @@ import { createOrReviveFeed, findFeedById, type PublicFeed } from "../../src/rep
 import { listItemsForFeedInWindow } from "../../src/repositories/item-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
-import { computeIngestionWindow, ingestFeed, ingestFeedsForSource, type IngestFeedError, type IngestFeedResult, type IngestFeedsForSourceResult } from "../../src/services/ingestion-service.ts";
+import { computeIngestionWindow, ingestFeed, ingestFeedsForSource, ingestFeedsIndividually, type IngestFeedError, type IngestFeedResult } from "../../src/services/ingestion-service.ts";
 
 function userInput(email: string): CreateUserInput {
   return {
@@ -20,6 +20,7 @@ function userInput(email: string): CreateUserInput {
     defaultLanguage: "en",
   };
 }
+
 
 function credentialCipher(): CredentialCipher {
   return new CredentialCipher(new EnvMasterKeyProvider(new Uint8Array(32).fill(29)));
@@ -196,6 +197,29 @@ async function createTwoFeeds(
   return { userId: user.id, feed1, feed2 };
 }
 
+async function createFourFeeds(
+  database: Database,
+  email: string,
+): Promise<{ userId: string; feeds: PublicFeed[] }> {
+  const user = await createUser(database, userInput(email));
+  const source = await createSource(database, {
+    userId: user.id,
+    connectorId: ConnectorId.Telegram,
+    credentials: await encryptedCredentials(user.id),
+  });
+  const feeds: PublicFeed[] = [];
+  for (let index = 1; index <= 4; index += 1) {
+    feeds.push(await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: source.id,
+      externalId: `channel:${index}`,
+      name: `Channel ${index}`,
+      kind: "news",
+    }));
+  }
+  return { userId: user.id, feeds };
+}
+
 Deno.test("ingestFeedsForSource calls connector once for multiple feeds", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(database, "batch-one-call@example.com");
@@ -294,7 +318,7 @@ Deno.test("ingestFeedsForSource returns empty results for empty connector data",
   });
 });
 
-Deno.test("ingestFeedsForSource passes abort signal to connector", async () => {
+Deno.test("ingestFeedsForSource passes abort signal to connector", () => {
   const controller = new AbortController();
   controller.abort();
   const connector = new FakeConnector([{}]);
@@ -304,4 +328,75 @@ Deno.test("ingestFeedsForSource passes abort signal to connector", async () => {
   assertEquals(connector.calls.length, 1);
   assertEquals(connector.calls[0].signal, controller.signal);
   assert(connector.calls[0].signal?.aborted);
+});
+
+Deno.test("ingestFeedsIndividually isolates failures, aborts deadlines, and bounds concurrency", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feeds } = await createFourFeeds(database, "individual-ingestion@example.com");
+    let activeCalls = 0;
+    let maxActiveCalls = 0;
+    const calls: string[] = [];
+    const connector: Connector<unknown> = {
+      getRawData: () => Promise.resolve({}),
+      getNormalizedData: (_from, _to, feedExternalIds, _signal) => {
+        const externalId = feedExternalIds?.[0] ?? "";
+        calls.push(externalId);
+        activeCalls += 1;
+        maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
+        const finish = () => {
+          activeCalls -= 1;
+          return {
+            [externalId]: [normalizedItem({
+              feedExternalId: externalId,
+              externalId: `item:${externalId}`,
+              text: externalId,
+            })],
+          };
+        };
+        if (externalId === "channel:1") {
+          return Promise.resolve().then(finish);
+        }
+        if (externalId === "channel:2") {
+          return Promise.withResolvers<NormalizedData>().promise;
+        }
+        if (externalId === "channel:3") {
+          activeCalls -= 1;
+          return Promise.reject(new Error("ordinary connector failure"));
+        }
+        return Promise.resolve().then(finish);
+      },
+    };
+
+    const result = await ingestFeedsIndividually(database, userId, feeds, connector, {
+      window: { from: 0, to: 1_800_000_000_000 },
+      fetchedAt: 123,
+      connectorTimeoutMs: 20,
+      concurrency: 2,
+    });
+
+    assertEquals(maxActiveCalls, 2);
+    assertEquals(calls, ["channel:1", "channel:2", "channel:3", "channel:4"]);
+    assertEquals(result.feedResults.map((entry) => entry.feedId), feeds.map((feed) => feed.id));
+    assertEquals(result.feedResults[0], {
+      feedId: feeds[0].id,
+      window: { from: 0, to: 1_800_000_000_000 },
+      itemCount: 1,
+    });
+    assertEquals((result.feedResults[1] as IngestFeedError).error, "connector deadline exceeded");
+    assertEquals((result.feedResults[2] as IngestFeedError).error, "ordinary connector failure");
+    assertEquals((result.feedResults[3] as IngestFeedResult).itemCount, 1);
+
+    const healthyFeed = await findFeedById(database, feeds[0].id, userId);
+    assertEquals(healthyFeed?.lastFetchedPeriodEndMs, 1_800_000_000_000);
+    assertEquals((await listItemsForFeedInWindow(database, feeds[0].id, 0, 1_800_000_000_000)).length, 1);
+    const hungFeed = await findFeedById(database, feeds[1].id, userId);
+    assertEquals(hungFeed?.lastFetchedPeriodEndMs, null);
+    assertEquals(await listItemsForFeedInWindow(database, feeds[1].id, 0, 1_800_000_000_000), []);
+    const failedFeed = await findFeedById(database, feeds[2].id, userId);
+    assertEquals(failedFeed?.lastFetchedPeriodEndMs, null);
+    assertEquals(await listItemsForFeedInWindow(database, feeds[2].id, 0, 1_800_000_000_000), []);
+    const queuedFeed = await findFeedById(database, feeds[3].id, userId);
+    assertEquals(queuedFeed?.lastFetchedPeriodEndMs, 1_800_000_000_000);
+    assertEquals((await listItemsForFeedInWindow(database, feeds[3].id, 0, 1_800_000_000_000)).length, 1);
+  });
 });

@@ -1,5 +1,6 @@
 import { assertEquals, assertExists, assertThrows } from "@std/assert";
 import type { Database } from "../../src/db/client.ts";
+import { withTestDb } from "../../src/db/testing.ts";
 import { bootServer } from "../../src/server/main.ts";
 import type { Scheduler } from "../../src/scheduler/scheduler.ts";
 
@@ -46,7 +47,7 @@ Deno.test("bootServer registers jobs and serves health without startup side effe
       serverHostname: " 192.0.2.20 ",
       database: {} as Database,
       scheduler,
-      summarizer: { summarize: async () => [] },
+      summarizer: { summarize: () => Promise.resolve([]) },
       config: {
         databaseUrl: "postgres://unused",
         port: 31_001,
@@ -95,6 +96,72 @@ Deno.test("bootServer registers jobs and serves health without startup side effe
   );
   assertEquals(response.status, 200);
   assertEquals(await response.json(), { ok: true });
+});
+
+Deno.test("bootServer serves registration without model environment variables", async () => {
+  await withTestDb(async (database) => {
+    const scheduler = new FakeScheduler();
+    let requestHandler:
+      | ((request: Request) => Response | Promise<Response>)
+      | undefined;
+    const previousModelEnvironment = new Map(
+      MODEL_ENV_KEYS.map((key) => [key, Deno.env.get(key)]),
+    );
+    try {
+      for (const key of MODEL_ENV_KEYS) Deno.env.delete(key);
+      bootServer({
+        database,
+        scheduler,
+        config: {
+          databaseUrl: "postgres://unused",
+          port: 31_002,
+          allowedOrigins: ["http://127.0.0.1:5173"],
+          trustedProxyCount: 0,
+          maxRequestBodyBytes: 1_000,
+          databasePoolMax: 1,
+          databaseIdleTimeoutSeconds: 1,
+          databaseConnectTimeoutSeconds: 1,
+          databaseSslMode: "disable",
+          allowRemoteSummarization: false,
+          connectorTimeoutMs: 1,
+          summarizerTextBytesPerChunk: 1,
+          summarizerMaxItemsPerChunk: 1,
+          summarizerMaxImageBytes: 1,
+          summarizerTimeoutMs: 1,
+          summarizationConcurrency: 1,
+          mediaTtlMs: 1,
+          mediaQuotaBytes: 1,
+          digestRunStaleAfterMs: 1,
+          schedulerLeaseMs: 1,
+        },
+        serve: (_options, handler) => {
+          requestHandler = handler;
+        },
+        log: () => {},
+      });
+      assertExists(requestHandler);
+      const response = await requestHandler(
+        new Request("http://127.0.0.1:31002/auth/register", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "http://127.0.0.1:5173",
+          },
+          body: JSON.stringify({
+            name: "Ada Lovelace",
+            email: "boot-register@example.com",
+            password: "analytical-engine-1843",
+          }),
+        }),
+      );
+      assertEquals(response.status, 201);
+    } finally {
+      for (const [key, value] of previousModelEnvironment) {
+        if (value === undefined) Deno.env.delete(key);
+        else Deno.env.set(key, value);
+      }
+    }
+  });
 });
 
 Deno.test("bootServer rejects invalid model configuration before serving", () => {

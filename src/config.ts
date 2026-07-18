@@ -62,6 +62,8 @@ const DEFAULT_MEDIA_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MEDIA_QUOTA_BYTES = 500 * 1024 * 1024;
 const DEFAULT_DIGEST_RUN_STALE_AFTER_MS = 15 * 60 * 1_000;
 const DEFAULT_SCHEDULER_LEASE_MS = 90_000;
+const DEFAULT_SUMMARIZER_MODEL = "local-model";
+const DEFAULT_SUMMARIZER_BASE_URL = "http://127.0.0.1:1234/v1";
 
 function invalidConfig(name: string, message: string): Error {
   return new Error(`Invalid ${name}: ${message}`);
@@ -124,9 +126,13 @@ function normalizeEndpointRoot(value: string): string {
 function requiredStringSetting(
   name: string,
   override: string | undefined,
+  fallback: string,
 ): string {
   const raw = override ?? Deno.env.get(name);
-  const value = raw?.trim() ?? "";
+  if (raw === undefined) {
+    return fallback;
+  }
+  const value = raw.trim();
   if (value === "") {
     throw invalidConfig(name, "expected a non-empty value");
   }
@@ -148,27 +154,32 @@ function optionalStringSetting(
 export function getSummarizerRuntimeConfig(
   overrides: SummarizerRuntimeConfigOverrides = {},
 ): SummarizerRuntimeConfig {
-  const summarizerModel = requiredStringSetting("SUMMARIZER_MODEL", overrides.summarizer?.model);
+  const summarizerModel = requiredStringSetting(
+    "SUMMARIZER_MODEL",
+    overrides.summarizer?.model,
+    DEFAULT_SUMMARIZER_MODEL,
+  );
   const summarizerBaseUrl = normalizeEndpointRoot(
-    requiredStringSetting("SUMMARIZER_BASE_URL", overrides.summarizer?.baseUrl),
+    requiredStringSetting(
+      "SUMMARIZER_BASE_URL",
+      overrides.summarizer?.baseUrl,
+      DEFAULT_SUMMARIZER_BASE_URL,
+    ),
   );
   const summarizerApiKey = optionalStringSetting(
     "SUMMARIZER_API_KEY",
     overrides.summarizer?.apiKey,
   ).value;
-  const visionModel = requiredStringSetting("VISION_MODEL", overrides.vision?.model);
+  const visionModel = requiredStringSetting("VISION_MODEL", overrides.vision?.model, summarizerModel);
   const visionBaseUrlSetting = optionalStringSetting("VISION_BASE_URL", overrides.vision?.baseUrl);
   const visionApiKeySetting = optionalStringSetting("VISION_API_KEY", overrides.vision?.apiKey);
   const sameModel = summarizerModel === visionModel;
 
   if (sameModel) {
-    if (
-      visionBaseUrlSetting.value !== undefined &&
-      normalizeEndpointRoot(visionBaseUrlSetting.value) !== summarizerBaseUrl
-    ) {
+    if (visionBaseUrlSetting.explicitlyConfigured) {
       throw invalidConfig(
         "VISION_BASE_URL",
-        "must match SUMMARIZER_BASE_URL when SUMMARIZER_MODEL and VISION_MODEL match",
+        "must be omitted when SUMMARIZER_MODEL and VISION_MODEL match",
       );
     }
     if (

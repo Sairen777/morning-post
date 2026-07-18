@@ -41,6 +41,7 @@ import FeedsPanel from "./FeedsPanel";
 import DigestsPanel from "./DigestsPanel";
 import DigestRunsPanel from "./DigestRunsPanel";
 import TelegramConnectPanel from "./TelegramConnectPanel";
+import SubstackConnectPanel from "./SubstackConnectPanel";
 import ProfilePanel from "./ProfilePanel";
 
 interface DashboardProps {
@@ -296,6 +297,18 @@ export default function Dashboard(props: DashboardProps) {
     props.onLogout();
   };
 
+  const handleSubstackConnected = async () => {
+    await refreshSources();
+    await refreshFeeds();
+  };
+
+  const handleSubstackPublicationAdded = async () => {
+    const substackSourceId = sources().find((source) => source.connectorId === "Substack")?.id;
+    await refreshSources();
+    await refreshFeeds();
+    if (substackSourceId) await refreshSourceFeedsIfLoaded(substackSourceId);
+  };
+
   const tabLabel = (tab: TabId, label: string) => (
     <button
       onClick={() => setActiveTab(tab)}
@@ -359,6 +372,12 @@ export default function Dashboard(props: DashboardProps) {
         <TelegramConnectPanel
           sources={sources()}
           onConnected={handleTelegramConnected}
+          onAuthError={props.onAuthError}
+        />
+        <SubstackConnectPanel
+          sources={sources()}
+          onConnected={handleSubstackConnected}
+          onPublicationAdded={handleSubstackPublicationAdded}
           onAuthError={props.onAuthError}
         />
       </Show>

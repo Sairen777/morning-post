@@ -127,6 +127,35 @@ Deno.test("GET /sources/:id/available-feeds returns discovery results and dispos
   });
 });
 
+Deno.test("generic discovery and subscription reject Substack sources", async () => {
+  await withTestDb(async (database) => {
+    const discoveryFactory = new FakeFeedDiscoveryFactory([]);
+    const app = buildApp(database, { feeds: { discoveryFactory } });
+    const { user, cookie } = await registerAndLogin(app, "substack-feed-guard@example.com");
+    const source = await createOwnedSource(database, user.id, ConnectorId.Substack);
+
+    const discovery = await app.request(`/sources/${source.id}/available-feeds`, {
+      headers: { cookie },
+    });
+    assertEquals(discovery.status, 409);
+    assertEquals(discoveryFactory.createdFor, []);
+
+    const subscribe = await app.request(`/sources/${source.id}/feeds`, {
+      ...jsonRequest("POST", {
+        externalId: "client-controlled",
+        name: "Bypass",
+        kind: "news",
+      }),
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
+    });
+    assertEquals(subscribe.status, 409);
+  });
+});
+
 Deno.test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);

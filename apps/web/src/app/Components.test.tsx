@@ -4,6 +4,7 @@ import { render } from "@solidjs/testing-library";
 import StatusBadge from "../app/StatusBadge";
 import FormatTime from "../app/FormatTime";
 import ProfilePanel from "../app/ProfilePanel";
+import SourcesPanel from "../app/SourcesPanel";
 
 describe("StatusBadge", () => {
   it("renders complete status", () => {
@@ -61,5 +62,46 @@ describe("ProfilePanel", () => {
     expect(container.querySelector("#profile-name")).not.toBeNull();
     expect(container.querySelector("#profile-language")).not.toBeNull();
     expect(container.querySelector("#profile-prompt")).not.toBeNull();
+  });
+});
+
+describe("SourcesPanel", () => {
+  const source = {
+    id: "source-1",
+    userId: "user-1",
+    connectorId: "Substack",
+    position: null,
+    enabled: true,
+    connected: true,
+    createdAt: 0,
+    updatedAt: 0,
+  } as const;
+
+  it("hides Discover feeds for Substack but keeps it for Telegram", () => {
+    const props = {
+      sources: [source],
+      feeds: [],
+      availableFeeds: {},
+      sourceFeeds: {},
+      onToggleSource: () => Promise.resolve(),
+      onUpdateSourcePosition: () => Promise.resolve(),
+      onDisconnectSource: () => Promise.resolve({
+        source,
+        revokeTelegramSession: false,
+        message: "Disconnected",
+      }),
+      onDiscoverFeeds: () => Promise.resolve([]),
+      onLoadSourceFeeds: () => Promise.resolve([]),
+      onSubscribe: () => Promise.resolve(),
+      onAuthError: () => {},
+    };
+    const substack = render(() => <SourcesPanel {...props} />);
+    expect(substack.container.textContent).not.toContain("Discover feeds");
+    substack.unmount();
+
+    const telegram = render(() => (
+      <SourcesPanel {...props} sources={[{ ...source, connectorId: "Telegram" }]} />
+    ));
+    expect(telegram.container.textContent).toContain("Discover feeds");
   });
 });

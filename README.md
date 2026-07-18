@@ -75,9 +75,10 @@ createdb morningpost_test
 
 ### Environment
 
-Copy `.env.example` to `.env.production.local` and fill in every value. Deno
-tasks load this file with `--env-file=.env.production.local`; do not commit the
-copied file because it contains deployment credentials. The minimum set:
+Copy `.env.example` to `.env.production.local` and configure the values needed
+by the integrations you use. Deno tasks load this file with
+`--env-file=.env.production.local`; do not commit the copied file because it
+contains deployment credentials. The main settings are:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
@@ -86,11 +87,11 @@ copied file because it contains deployment credentials. The minimum set:
 | `CREDENTIAL_MASTER_KEY` | 32-byte base64 key for credential encryption. Generate: `openssl rand -base64 32` | (required) |
 | `TELEGRAM_API_ID` | Telegram API ID from [my.telegram.org/apps](https://my.telegram.org/apps) | (required for Telegram) |
 | `TELEGRAM_API_HASH` | Telegram API hash (same page) | (required for Telegram) |
-| `SUMMARIZER_MODEL` | Required deployment-wide text summarization model | (required) |
-| `SUMMARIZER_BASE_URL` | Required OpenAI-compatible text endpoint root | (required) |
+| `SUMMARIZER_MODEL` | Deployment-wide text summarization model | `local-model` |
+| `SUMMARIZER_BASE_URL` | OpenAI-compatible text endpoint root | `http://127.0.0.1:1234/v1` |
 | `SUMMARIZER_API_KEY` | Optional bearer token for the text provider | (optional) |
-| `VISION_MODEL` | Required deployment-wide vision model | (required) |
-| `VISION_BASE_URL` | Vision endpoint root when distinct; inherited from the text endpoint when omitted | (optional for same-model routing) |
+| `VISION_MODEL` | Deployment-wide vision model | resolved `SUMMARIZER_MODEL` |
+| `VISION_BASE_URL` | Vision endpoint root when distinct; inherited from the text endpoint for same-model routing | (required only for an explicitly distinct vision model) |
 | `VISION_API_KEY` | Optional bearer token for the vision provider; inherited for same-model routing | (optional) |
 | `PORT` | API server port | `3000` |
 | `SERVER_HOSTNAME` | API listener hostname; explicit server overrides take precedence, then this value, then the built-in default | `127.0.0.1` |

@@ -11,6 +11,10 @@ import type {
   PublicFeed,
   PublicSource,
   PublicUser,
+  SubstackPublicationInput,
+  SubstackPublicationResponse,
+  SubstackSessionInput,
+  SubstackSessionResponse,
   TelegramLoginSessionStatus,
   TelegramLoginStart,
 } from "./types.ts";
@@ -124,6 +128,25 @@ export function submitTelegramTwoFactorAuthentication(
       body: JSON.stringify(input),
     },
   );
+}
+
+// Substack
+export function connectSubstackSession(
+  input: SubstackSessionInput,
+): Promise<SubstackSessionResponse> {
+  return apiRequest<SubstackSessionResponse>("/connectors/substack/session", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function addSubstackPublication(
+  input: SubstackPublicationInput,
+): Promise<SubstackPublicationResponse> {
+  return apiRequest<SubstackPublicationResponse>("/connectors/substack/publications", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 // Sources

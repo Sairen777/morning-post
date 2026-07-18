@@ -1,4 +1,5 @@
 import type { AvailableFeed, Connector } from "../connectors/connector.types.ts";
+import { telegramCredentialSchema } from "../connectors/credential-schemas.ts";
 import { ConnectorId } from "../constants.ts";
 import { CredentialCipher } from "../crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../crypto/key-provider.ts";
@@ -56,7 +57,8 @@ export class DefaultFeedDiscoveryFactory implements FeedDiscoveryFactory {
     } catch (error) {
       throw new Error("Failed to load Telegram feed discovery connector", { cause: error });
     }
-    const client = await createClientFromSession(credentials.sessionString);
+    const telegramCredentials = telegramCredentialSchema.parse(credentials);
+    const client = await createClientFromSession(telegramCredentials.sessionString);
     return {
       connector: new TelegramConnector(client),
       dispose: async () => await client.disconnect(),
@@ -74,6 +76,9 @@ export async function discoverFeeds(
   if (!source) {
     throw new NotFoundError("source not found");
   }
+  if (source.connectorId === ConnectorId.Substack) {
+    throw new ConflictError("Substack publications must be added through the Substack connector");
+  }
 
   const handle = await discoveryFactory.create(source, userId);
   try {
@@ -90,6 +95,13 @@ export async function subscribeFeed(
   database: Database,
   input: CreateOrReviveFeedInput,
 ): Promise<PublicFeed> {
+  const source = await findSourceById(database, input.sourceId, input.userId);
+  if (!source) {
+    throw new NotFoundError("source not found");
+  }
+  if (source.connectorId === ConnectorId.Substack) {
+    throw new ConflictError("Substack publications must be added through the Substack connector");
+  }
   return await createOrReviveFeed(database, input);
 }
 

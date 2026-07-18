@@ -14,7 +14,7 @@ import { listFeedsForUser, type PublicFeed } from "../repositories/feed-reposito
 import { listSourcesForUser, type PublicSource } from "../repositories/source-repository.ts";
 import { summarizeErrorForOps } from "../server/error-sanitizer.ts";
 import { assembleDigestForPeriod, buildDigestViewForPeriod, type AssembleDigestDependencies, type DigestView } from "./digest-service.ts";
-import { ingestFeed, ingestFeedsForSource, type IngestFeedError } from "./ingestion-service.ts";
+import { ingestFeed, ingestFeedsForSource, ingestFeedsIndividually, type IngestFeedError } from "./ingestion-service.ts";
 
 export interface DigestPeriod {
   startMs: number;
@@ -125,7 +125,71 @@ async function ingestUserFeeds(
     }
 
     try {
-      if (feedsNeedingIngestion.length === 1) {
+      if (handle.ingestionMode === "individual") {
+        const feedRunMap = new Map<string, { id: string }>();
+        for (const feed of feedsNeedingIngestion) {
+          const feedRunInput: CreateDigestRunFeedInput = {
+            runId: runContext.digestRunId,
+            sourceId: source.id,
+            connectorId: source.connectorId,
+            feedId: feed.id,
+            feedExternalId: feed.externalId,
+            feedName: feed.name,
+            stage: "ingestion",
+            status: "running",
+          };
+          const feedRun = await startDigestRunFeed(database, feedRunInput, runContext.now());
+          feedRunMap.set(feed.id, feedRun);
+        }
+
+        try {
+          const feedWindows = new Map<string, { from: number; to: number }>();
+          for (const feed of feedsNeedingIngestion) {
+            feedWindows.set(feed.id, {
+              from: feed.lastFetchedPeriodEndMs === null ? period.startMs : feed.lastFetchedPeriodEndMs + 1,
+              to: period.endMs,
+            });
+          }
+
+          const individualResult = await ingestFeedsIndividually(
+            database,
+            userId,
+            feedsNeedingIngestion,
+            handle.connector,
+            { feedWindows, fetchedAt: now() },
+          );
+
+          for (const result of individualResult.feedResults) {
+            const feedRun = feedRunMap.get(result.feedId);
+            if (!feedRun) continue;
+
+            if ("error" in result) {
+              hadFailure = true;
+              await finishDigestRunFeed(database, feedRun.id, {
+                status: "failed",
+                errorMessage: result.error,
+              }, runContext.now());
+            } else {
+              await finishDigestRunFeed(database, feedRun.id, {
+                status: "complete",
+                itemCount: result.itemCount,
+              }, runContext.now());
+              successfulFeedIds.push(result.feedId);
+            }
+          }
+        } catch (error) {
+          hadFailure = true;
+          for (const feed of feedsNeedingIngestion) {
+            const feedRun = feedRunMap.get(feed.id);
+            if (feedRun) {
+              await finishDigestRunFeed(database, feedRun.id, {
+                status: "failed",
+                errorMessage: summarizeErrorForOps(error),
+              }, runContext.now());
+            }
+          }
+        }
+      } else if (feedsNeedingIngestion.length === 1) {
         const feed = feedsNeedingIngestion[0];
         const feedRunInput: CreateDigestRunFeedInput = {
           runId: runContext.digestRunId,

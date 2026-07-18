@@ -91,6 +91,24 @@ export interface ApiErrorBody {
 
 export type ConnectorId = "Telegram" | "Substack" | "YouTube" | "Reddit" | "X" | "RSS";
 
+export interface SubstackSessionInput {
+  substackSessionId: string;
+  connectSessionId?: string;
+}
+
+export interface SubstackSessionResponse {
+  source: PublicSource;
+}
+
+export interface SubstackPublicationInput {
+  publicationUrl: string;
+}
+
+export interface SubstackPublicationResponse {
+  source: PublicSource;
+  feed: PublicFeed;
+}
+
 export type TelegramLoginStatus = "pending" | "needs_2fa" | "complete" | "error" | "expired";
 
 export interface TelegramLoginStart {

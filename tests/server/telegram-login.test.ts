@@ -2,6 +2,7 @@ import { assert, assertEquals, assertExists } from "@std/assert"
 import type { Hono } from "@hono/hono";
 import { and, eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
+import { telegramCredentialSchema } from "../../src/connectors/credential-schemas.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
@@ -154,7 +155,7 @@ async function encryptedTelegramSessionString(
   const source = await findSourceByConnectorId(database, userId, ConnectorId.Telegram);
   assertExists(source);
   const credentials = await getDecryptedCredentials(database, source.id, userId, credentialCipher);
-  return credentials.sessionString;
+  return telegramCredentialSchema.parse(credentials).sessionString;
 }
 
 async function encryptTelegramCredentials(

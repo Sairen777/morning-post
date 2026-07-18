@@ -270,3 +270,39 @@ Deno.test("source check constraint rejects enabled source with null credentials"
     );
   });
 });
+
+Deno.test("Substack credential schema is strict and validates named cookie values", () => {
+  const schema = credentialSchemaFor(ConnectorId.Substack);
+  const credentials = {
+    substackSessionId: "s%3Asubstack.signature",
+    connectSessionId: "s%3Aconnect.signature",
+  };
+  assertEquals(schema.parse(credentials), credentials);
+  assertEquals(schema.safeParse({ ...credentials, rawCookieHeader: "secret=extra" }).success, false);
+  assertEquals(schema.safeParse({ substackSessionId: "line\nbreak" }).success, false);
+  assertEquals(schema.safeParse({ substackSessionId: "" }).success, false);
+});
+
+Deno.test("source repository decrypts Substack credentials only in the owner context", async () => {
+  await withTestDb(async (database) => {
+    const cipher = generateCipher();
+    const user = await createUser(database, userInput("substack-credentials@example.com"));
+    const credentials = credentialSchemaFor(ConnectorId.Substack).parse({
+      substackSessionId: "s%3Asubstack.signature",
+    });
+    const encrypted = await cipher.encrypt(JSON.stringify(credentials), {
+      userId: user.id,
+      connectorId: ConnectorId.Substack,
+    });
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Substack,
+      credentials: encrypted,
+    });
+
+    assertEquals(
+      await getDecryptedCredentials(database, source.id, user.id, cipher),
+      credentials,
+    );
+  });
+});

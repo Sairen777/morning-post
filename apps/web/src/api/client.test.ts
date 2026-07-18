@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   ApiClientError,
   updateCurrentUser,
@@ -12,6 +12,8 @@ import {
   listDigestRuns,
   getDigestRunDetail,
   deleteDigest,
+  connectSubstackSession,
+  addSubstackPublication,
 } from "../api/client";
 
 describe("ApiClientError", () => {
@@ -241,5 +243,57 @@ describe("deleteDigest", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+ 
+describe("Substack connector API", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("posts the structured session credentials without accepting a raw Cookie header", async () => {
+    const calls: Array<[string, RequestInit?]> = [];
+    globalThis.fetch = ((url: string, options?: RequestInit) => {
+      calls.push([url, options]);
+      return Promise.resolve(new Response(JSON.stringify({
+        source: { id: "source-1", connectorId: "Substack", connected: true },
+      }), { status: 200 }));
+    }) as typeof fetch;
+
+    const result = await connectSubstackSession({
+      substackSessionId: "sid-value",
+      connectSessionId: "connect-value",
+    });
+
+    expect(calls[0][0]).toBe("/connectors/substack/session");
+    expect(calls[0][1]?.method).toBe("POST");
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      substackSessionId: "sid-value",
+      connectSessionId: "connect-value",
+    });
+    expect(calls[0][1]?.headers).not.toHaveProperty("Cookie");
+    expect(result.source.id).toBe("source-1");
+  });
+
+  it("posts a publication URL and returns source plus feed", async () => {
+    const calls: Array<[string, RequestInit?]> = [];
+    globalThis.fetch = ((url: string, options?: RequestInit) => {
+      calls.push([url, options]);
+      return Promise.resolve(new Response(JSON.stringify({
+        source: { id: "source-1", connectorId: "Substack", connected: true },
+        feed: { id: "feed-1", sourceId: "source-1", externalId: "https://example.com" },
+      }), { status: 201 }));
+    }) as typeof fetch;
+
+    const result = await addSubstackPublication({ publicationUrl: "https://example.com/articles/hello" });
+
+    expect(calls[0][0]).toBe("/connectors/substack/publications");
+    expect(calls[0][1]?.method).toBe("POST");
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      publicationUrl: "https://example.com/articles/hello",
+    });
+    expect(result.feed.id).toBe("feed-1");
   });
 });

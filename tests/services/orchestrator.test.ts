@@ -63,13 +63,16 @@ class FakeSummarizer implements SummarizerService {
 
 class FakeConnectorFactory implements ConnectorFactoryLike {
   readonly disposeCalls: string[] = [];
+  readonly forSourceCalls: string[] = [];
 
   constructor(
     readonly connectorsBySourceId: Record<string, FakeConnector>,
     readonly failingSourceIds: Set<string> = new Set(),
+    readonly ingestionModesBySourceId: Record<string, "batch" | "individual"> = {},
   ) {}
 
   forSource(source: PublicSource, _userId: string): Promise<ConnectorHandle<unknown>> {
+    this.forSourceCalls.push(source.id);
     if (this.failingSourceIds.has(source.id)) {
       throw new ConflictError("source is disconnected");
     }
@@ -79,12 +82,14 @@ class FakeConnectorFactory implements ConnectorFactoryLike {
     }
     return Promise.resolve({
       connector,
+      ingestionMode: this.ingestionModesBySourceId[source.id] ?? "batch",
       dispose: () => {
         this.disposeCalls.push(source.id);
       },
     });
   }
 }
+
 
 function userInput(email: string): CreateUserInput {
   return {
@@ -281,7 +286,7 @@ Deno.test("runForUser batches multiple feeds from the same source", async () => 
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput("batch-same-source@example.com"));
     const setup1 = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "Feed One");
-    const feed2 = await createOrReviveFeed(database, {
+    await createOrReviveFeed(database, {
       userId: user.id,
       sourceId: setup1.source.id,
       externalId: "channel:2",
@@ -317,7 +322,7 @@ Deno.test("runForUser connector failure marks all pending feeds failed when batc
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput("batch-connector-fail@example.com"));
     const setup1 = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "Feed One");
-    const feed2 = await createOrReviveFeed(database, {
+    await createOrReviveFeed(database, {
       userId: user.id,
       sourceId: setup1.source.id,
       externalId: "channel:2",
@@ -350,5 +355,40 @@ Deno.test("runForUser connector failure marks all pending feeds failed when batc
     // Both feeds should have failed ingestion-stage rows
     const failedRows = feedRows.filter((r) => r.stage === "ingestion" && r.status === "failed");
     assertEquals(failedRows.length, 2);
+  });
+});
+
+Deno.test("runForUser uses one individual handle and requests each feed separately", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("individual-orchestrator@example.com"));
+    const setup1 = await createSourceAndFeed(database, user.id, ConnectorId.Telegram, 1, "channel:1", "Feed One");
+    await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: setup1.source.id,
+      externalId: "channel:2",
+      name: "Feed Two",
+      kind: "news",
+    });
+    const connector = new FakeConnector({
+      "channel:1": [normalizedItem("channel:1", "1", "item one")],
+      "channel:2": [normalizedItem("channel:2", "2", "item two")],
+    });
+    const connectorFactory = new FakeConnectorFactory(
+      { [setup1.source.id]: connector },
+      new Set(),
+      { [setup1.source.id]: "individual" },
+    );
+    const summarizer = new FakeSummarizer([[{ text: "sum", sourceUrl: null }]]);
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => 205,
+    });
+
+    assertEquals(view.digest.status, "complete");
+    assertEquals(connectorFactory.forSourceCalls, [setup1.source.id]);
+    assertEquals(connector.calls.length, 2);
+    assertEquals(connector.calls.map((call) => call.feedExternalIds), [["channel:1"], ["channel:2"]]);
   });
 });

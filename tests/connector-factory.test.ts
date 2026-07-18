@@ -1,6 +1,11 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { ConnectorId } from "../src/constants.ts";
-import { ConnectorFactory, type TelegramClientFactory, type TelegramClientHandle } from "../src/connectors/connector-factory.ts";
+import {
+  ConnectorFactory,
+  type SubstackClientFactory,
+  type TelegramClientFactory,
+  type TelegramClientHandle,
+} from "../src/connectors/connector-factory.ts";
 import { CredentialCipher, type EncryptedBlob } from "../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../src/crypto/key-provider.ts";
 import type { Database } from "../src/db/client.ts";
@@ -8,6 +13,7 @@ import { withTestDb } from "../src/db/testing.ts";
 import { createSource, deleteSourceCredentials } from "../src/repositories/source-repository.ts";
 import { createUser, type CreateUserInput } from "../src/repositories/user-repository.ts";
 import { ConflictError, NotFoundError } from "../src/server/errors.ts";
+import type { SubstackPostReader } from "../src/connectors/substack/substack-connector.ts";
 
 class FakeTelegramClientFactory implements TelegramClientFactory {
   readonly sessions: string[] = [];
@@ -21,6 +27,17 @@ class FakeTelegramClientFactory implements TelegramClientFactory {
       },
     } as unknown as TelegramClientHandle;
     return Promise.resolve(client);
+  }
+}
+
+class FakeSubstackClientFactory implements SubstackClientFactory {
+  readonly credentials: Array<{ substackSessionId: string; connectSessionId?: string }> = [];
+
+  createClient(
+    credentials: { substackSessionId: string; connectSessionId?: string },
+  ): Promise<SubstackPostReader> {
+    this.credentials.push(credentials);
+    return Promise.resolve({ getPostById: () => Promise.resolve(null) });
   }
 }
 
@@ -49,6 +66,16 @@ async function encryptedCredentials(
   });
 }
 
+async function encryptedSubstackCredentials(
+  userId: string,
+  connectorId = ConnectorId.Substack,
+): Promise<EncryptedBlob> {
+  return await credentialCipher().encrypt(JSON.stringify({
+    substackSessionId: "s%3Asubstack.signature",
+    connectSessionId: "s%3Aconnect.signature",
+  }), { userId, connectorId });
+}
+
 async function createUserAndSource(
   database: Database,
   email: string,
@@ -75,9 +102,36 @@ Deno.test("ConnectorFactory builds a Telegram connector from encrypted credentia
     const handle = await factory.forSource(source, user.id);
     assertEquals(typeof handle.connector.getNormalizedData, "function");
     assertEquals(fakeTelegramClientFactory.sessions, ["telegram-session"]);
+    assertEquals(handle.ingestionMode, "batch");
 
     await handle.dispose?.();
     assertEquals(fakeTelegramClientFactory.disconnectCount, 1);
+  });
+});
+
+Deno.test("ConnectorFactory builds an individual Substack connector from encrypted credentials", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("substack-factory@example.com"));
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Substack,
+      credentials: await encryptedSubstackCredentials(user.id),
+    });
+    const substackClientFactory = new FakeSubstackClientFactory();
+    const factory = new ConnectorFactory(database, {
+      credentialCipher: credentialCipher(),
+      telegramClientFactory: new FakeTelegramClientFactory(),
+      substackClientFactory,
+      substackPublicationReader: () => Promise.resolve({ origin: "https://example.com", items: [] }),
+    });
+
+    const handle = await factory.forSource(source, user.id);
+    assertEquals(handle.ingestionMode, "individual");
+    assertEquals(handle.dispose, undefined);
+    assertEquals(substackClientFactory.credentials, [{
+      substackSessionId: "s%3Asubstack.signature",
+      connectSessionId: "s%3Aconnect.signature",
+    }]);
   });
 });
 

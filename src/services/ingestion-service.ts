@@ -20,6 +20,9 @@ export interface IngestFeedOptions {
   fetchedAt?: number;
   /** Per-feed window overrides keyed by feed id. Overrides `window` and cursor-based computation for the specified feeds. */
   feedWindows?: Map<string, IngestionWindow>;
+  signal?: AbortSignal;
+  connectorTimeoutMs?: number;
+  concurrency?: number;
 }
 
 export interface IngestFeedResult {
@@ -61,13 +64,30 @@ export async function ingestFeed(
   options: IngestFeedOptions = {},
 ): Promise<IngestFeedResult> {
   const window = computeIngestionWindow(feed, options);
-  const normalizedData = await connector.getNormalizedData(window.from, window.to, [feed.externalId]);
+  const normalizedData = await connector.getNormalizedData(
+    window.from,
+    window.to,
+    [feed.externalId],
+    options.signal,
+  );
+  if (options.signal?.aborted) {
+    throw new IngestionAbortError();
+  }
   const normalizedItems = validateFeedItems(feed, normalizedData[feed.externalId] ?? []);
+  if (options.signal?.aborted) {
+    throw new IngestionAbortError();
+  }
   const fetchedAt = options.fetchedAt ?? options.now?.() ?? Date.now();
 
   await database.transaction(async (transaction) => {
     const transactionalDatabase = transaction as Database;
+    if (options.signal?.aborted) {
+      throw new IngestionAbortError();
+    }
     await upsertItems(transactionalDatabase, feed.id, normalizedItems, fetchedAt);
+    if (options.signal?.aborted) {
+      throw new IngestionAbortError();
+    }
     await setLastFetched(transactionalDatabase, feed.id, userId, window.to);
   });
 
@@ -165,4 +185,82 @@ export async function ingestFeedsForSource(
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function ingestFeedsIndividually(
+  database: Database,
+  userId: string,
+  feeds: PublicFeed[],
+  connector: Connector<unknown>,
+  options: IngestFeedOptions = {},
+): Promise<IngestFeedsForSourceResult> {
+  const connectorTimeoutMs = options.connectorTimeoutMs ?? getConfig().connectorTimeoutMs;
+  const concurrency = options.concurrency ?? 4;
+  if (!Number.isInteger(connectorTimeoutMs) || connectorTimeoutMs <= 0) {
+    throw new Error("connectorTimeoutMs must be a positive integer");
+  }
+  if (!Number.isInteger(concurrency) || concurrency <= 0) {
+    throw new Error("concurrency must be a positive integer");
+  }
+
+  const feedResults: Array<IngestFeedResult | IngestFeedError | undefined> = Array.from(
+    { length: feeds.length },
+    () => undefined,
+  );
+  let nextFeedIndex = 0;
+
+  const ingestOne = async (feed: PublicFeed): Promise<IngestFeedResult | IngestFeedError> => {
+    const controller = new AbortController();
+    let deadlineExceeded = false;
+    const deadline = Promise.withResolvers<never>();
+    const timer = setTimeout(() => {
+      deadlineExceeded = true;
+      controller.abort();
+      deadline.reject(new IngestionAbortError());
+    }, connectorTimeoutMs);
+    const parentAbortHandler = options.signal
+      ? () => controller.abort()
+      : undefined;
+    if (options.signal && parentAbortHandler) {
+      if (options.signal.aborted) {
+        controller.abort();
+      } else {
+        options.signal.addEventListener("abort", parentAbortHandler, { once: true });
+      }
+    }
+
+    try {
+      const window = options.feedWindows?.get(feed.id) ?? options.window ?? computeIngestionWindow(feed, options);
+      const ingestion = ingestFeed(database, userId, feed, connector, {
+        ...options,
+        window,
+        signal: controller.signal,
+      });
+      return await Promise.race([ingestion, deadline.promise]);
+    } catch (error) {
+      return {
+        feedId: feed.id,
+        error: deadlineExceeded ? "connector deadline exceeded" : error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      clearTimeout(timer);
+      if (options.signal && parentAbortHandler) {
+        options.signal.removeEventListener("abort", parentAbortHandler);
+      }
+    }
+  };
+
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextFeedIndex;
+      nextFeedIndex += 1;
+      if (index >= feeds.length) return;
+      feedResults[index] = await ingestOne(feeds[index]);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, feeds.length) }, () => worker()),
+  );
+  return { feedResults: feedResults as Array<IngestFeedResult | IngestFeedError> };
 }
