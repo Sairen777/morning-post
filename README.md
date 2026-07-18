@@ -203,7 +203,15 @@ and verify the digest appears with status `complete`.
 | `npm run web:test` | Frontend unit/component tests (Vitest, 14 tests) |
 | `npm run web:typecheck` | TypeScript type checking |
 | `npm run web:build` | Production build |
-| `npm run web:e2e` | E2E smoke test (starts backend + frontend, registers, runs digest) |
+| `npm run web:e2e` | E2E smoke test with dedicated backend/frontend processes and an isolated database |
+
+The E2E command never reuses the development servers or databases. It serves
+the API on `127.0.0.1:3100`, the web app on `127.0.0.1:5174`, and derives a
+database ending in `_e2e` from `TEST_DATABASE_URL` (or `DATABASE_URL` when no
+test URL is configured). Set `E2E_DATABASE_URL` to override that derivation; its
+database name must end in `_e2e` and must differ from both configured backend
+databases. The runner migrates and truncates only the isolated E2E database
+before startup, then truncates it again during teardown.
 
 **Verify in the database** after a browser smoke run:
 

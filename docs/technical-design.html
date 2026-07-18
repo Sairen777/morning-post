@@ -484,6 +484,20 @@
               backend.</td>
           </tr>
           <tr>
+            <td>Browser E2E</td>
+            <td><code>npm run web:e2e</code> starts non-reusable API and web
+              processes on ports <code>3100</code> and <code>5174</code>. The
+              API derives a database ending in <code>_e2e</code> from
+              <code>TEST_DATABASE_URL</code>, unless
+              <code>E2E_DATABASE_URL</code> supplies an explicit isolated
+              database. Guards reject either configured development or backend
+              test database. The E2E database is migrated and truncated before
+              startup and truncated again in global teardown.</td>
+            <td>The browser suite passes while development data is unchanged,
+              and the isolated E2E database contains no users after
+              teardown.</td>
+          </tr>
+          <tr>
             <td>Production listener permissions</td>
             <td><code>SERVER_HOSTNAME</code> must exactly match the
               <code>&lt;listener&gt;</code> host passed to

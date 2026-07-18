@@ -9,8 +9,9 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: 1,
   reporter: "list",
+  globalTeardown: "./e2e/global-teardown.ts",
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: "http://127.0.0.1:5174",
     trace: "on-first-retry",
   },
   projects: [
@@ -22,18 +23,21 @@ export default defineConfig({
   webServer: [
     {
       cwd: "../..",
-      command:
-        "deno task db:migrate && deno task start",
-      url: "http://127.0.0.1:3000/health",
-      reuseExistingServer: !process.env.CI,
+      command: "deno task e2e:api",
+      url: "http://127.0.0.1:3100/health",
+      reuseExistingServer: false,
       timeout: 15_000,
     },
     {
       cwd: "../..",
-      command: "npm --workspace apps/web run dev",
-      url: "http://127.0.0.1:5173",
-      reuseExistingServer: !process.env.CI,
+      command: "npm --workspace apps/web run e2e:server",
+      url: "http://127.0.0.1:5174",
+      reuseExistingServer: false,
       timeout: 15_000,
+      env: {
+        WEB_PORT: "5174",
+        BACKEND_ORIGIN: "http://127.0.0.1:3100",
+      },
     },
   ],
 });

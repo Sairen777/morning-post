@@ -6,6 +6,7 @@
   },
   "scripts": {
     "dev": "vinxi dev --port 5173",
+    "e2e:server": "vinxi dev --port 5174",
     "build": "vinxi build",
     "preview": "vinxi preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",

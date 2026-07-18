@@ -86,6 +86,7 @@
     "test": {
       "net": [
         "127.0.0.1:3000",
+        "127.0.0.1:3100",
         "127.0.0.1:5432",
         "localhost:5432",
         "localhost:1234",
@@ -189,6 +190,8 @@
     "db:migrate": "deno run -P=migrate --env-file=.env.production.local src/db/migrate.ts",
     "dev:api": "deno run -P=api --unstable-cron --watch --env-file=.env.production.local src/server/main.ts",
     "start": "deno run -P=api --unstable-cron --env-file=.env.production.local src/server/main.ts",
+    "e2e:api": "deno run -P=test --unstable-cron --env-file=.env.production.local scripts/e2e-environment.ts start-api",
+    "e2e:db:cleanup": "deno run -P=test --env-file=.env.production.local scripts/e2e-environment.ts cleanup",
     "test": "deno test -P=test --env-file=.env.production.local tests/",
     "capture-fixtures": "deno run -P=cli --allow-write=./tests/fixtures --env-file=.env.production.local scripts/capture-fixtures.ts"
   },
