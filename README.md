@@ -200,10 +200,16 @@ and verify the digest appears with status `complete`.
 | Command | What it does |
 | --- | --- |
 | `deno task test` | Full backend test suite |
+| `deno task db:cleanup` | Destructively truncate every public table in the loopback development database from `DATABASE_URL` |
 | `npm run web:test` | Frontend unit/component tests (Vitest, 14 tests) |
 | `npm run web:typecheck` | TypeScript type checking |
 | `npm run web:build` | Production build |
 | `npm run web:e2e` | E2E smoke test with dedicated backend/frontend processes and an isolated database |
+
+`deno task db:cleanup` clears all application data from the local development
+database while preserving its schema and applied migration records. It refuses
+non-loopback hosts, PostgreSQL system databases, and database names ending in
+`_test` or `_e2e`. This command is destructive and cannot be undone.
 
 The E2E command never reuses the development servers or databases. It serves
 the API on `127.0.0.1:3100`, the web app on `127.0.0.1:5174`, and derives a

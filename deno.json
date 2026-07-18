@@ -83,6 +83,17 @@
         "./.env.production.local"
       ]
     },
+    "databaseCleanup": {
+      "net": ["127.0.0.1", "localhost"],
+      "env": ["DATABASE_URL"],
+      "read": [
+        "./src",
+        "./node_modules",
+        "./deno.json",
+        "./package.json",
+        "./.env.production.local"
+      ]
+    },
     "test": {
       "net": [
         "127.0.0.1:3000",
@@ -188,6 +199,7 @@
     "dev:cli": "deno run -P=cli --watch --env-file=.env.production.local src/cli/run-once.ts",
     "db:generate": "deno run -P=generate --env-file=.env.production.local npm:drizzle-kit@0.31 generate",
     "db:migrate": "deno run -P=migrate --env-file=.env.production.local src/db/migrate.ts",
+    "db:cleanup": "deno run -P=databaseCleanup --env-file=.env.production.local src/db/cleanup.ts",
     "dev:api": "deno run -P=api --unstable-cron --watch --env-file=.env.production.local src/server/main.ts",
     "start": "deno run -P=api --unstable-cron --env-file=.env.production.local src/server/main.ts",
     "e2e:api": "deno run -P=test --unstable-cron --env-file=.env.production.local scripts/e2e-environment.ts start-api",

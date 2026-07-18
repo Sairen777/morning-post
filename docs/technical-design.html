@@ -484,6 +484,18 @@
               backend.</td>
           </tr>
           <tr>
+            <td>Local database cleanup</td>
+            <td><code>deno task db:cleanup</code> truncates every public table
+              in the development database selected by
+              <code>DATABASE_URL</code>, resets identities, and preserves the
+              schema and migration history. The command has loopback-only
+              network permission and rejects PostgreSQL system databases plus
+              names ending in <code>_test</code> or <code>_e2e</code>.</td>
+            <td>All development application rows are removed without allowing
+              the destructive command to connect to a remote, test, or E2E
+              database.</td>
+          </tr>
+          <tr>
             <td>Browser E2E</td>
             <td><code>npm run web:e2e</code> starts non-reusable API and web
               processes on ports <code>3100</code> and <code>5174</code>. The

@@ -1,3 +1,4 @@
+import { truncatePublicTables } from "../src/db/cleanup.ts";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
@@ -137,20 +138,7 @@ async function resetE2eDatabase(url: string): Promise<void> {
   try {
     const database = drizzle(client);
     await migrate(database, { migrationsFolder: "./drizzle" });
-    const tables = await client<{ tablename: string }[]>`
-      select tablename
-      from pg_tables
-      where schemaname = 'public'
-      order by tablename
-    `;
-    if (tables.length > 0) {
-      const tableNames = tables.map(({ tablename }) =>
-        `"${tablename.replaceAll('"', '""')}"`
-      ).join(", ");
-      await client.unsafe(
-        `truncate table ${tableNames} restart identity cascade`,
-      );
-    }
+    await truncatePublicTables(client);
   } finally {
     await client.end();
   }
