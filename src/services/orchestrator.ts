@@ -4,17 +4,36 @@ import type { Database } from "../db/client.ts";
 import type { DigestRunTrigger } from "../db/schema/digest-run.ts";
 import {
   createDigestRun,
-  finishDigestRun,
-  startDigestRunFeed,
-  finishDigestRunFeed,
   type CreateDigestRunFeedInput,
+  finishDigestRun,
+  finishDigestRunFeed,
+  startDigestRunFeed,
 } from "../repositories/digest-run-repository.ts";
-import { setDigestStatus, upsertDigestForPeriod } from "../repositories/digest-repository.ts";
-import { listFeedsForUser, type PublicFeed } from "../repositories/feed-repository.ts";
-import { listSourcesForUser, type PublicSource } from "../repositories/source-repository.ts";
+import {
+  setDigestStatus,
+  upsertDigestForPeriod,
+} from "../repositories/digest-repository.ts";
+import {
+  listFeedsForUser,
+  type PublicFeed,
+} from "../repositories/feed-repository.ts";
+import {
+  listSourcesForUser,
+  type PublicSource,
+} from "../repositories/source-repository.ts";
 import { summarizeErrorForOps } from "../server/error-sanitizer.ts";
-import { assembleDigestForPeriod, buildDigestViewForPeriod, type AssembleDigestDependencies, type DigestView } from "./digest-service.ts";
-import { ingestFeed, ingestFeedsForSource, ingestFeedsIndividually, type IngestFeedError } from "./ingestion-service.ts";
+import {
+  type AssembleDigestDependencies,
+  assembleDigestForPeriod,
+  buildDigestViewForPeriod,
+  type DigestView,
+} from "./digest-service.ts";
+import {
+  ingestFeed,
+  type IngestFeedError,
+  ingestFeedsForSource,
+  ingestFeedsIndividually,
+} from "./ingestion-service.ts";
 
 export interface DigestPeriod {
   startMs: number;
@@ -32,7 +51,11 @@ function activeFeeds(feeds: PublicFeed[]): PublicFeed[] {
 }
 
 function activeSources(sources: PublicSource[]): Map<string, PublicSource> {
-  return new Map(sources.filter((source) => source.enabled).map((source) => [source.id, source]));
+  return new Map(
+    sources.filter((source) => source.enabled).map((
+      source,
+    ) => [source.id, source]),
+  );
 }
 
 function groupFeedsBySource(feeds: PublicFeed[]): Map<string, PublicFeed[]> {
@@ -45,8 +68,12 @@ function groupFeedsBySource(feeds: PublicFeed[]): Map<string, PublicFeed[]> {
   return groupedFeeds;
 }
 
-function alreadyIngestedForPeriod(feed: PublicFeed, period: DigestPeriod): boolean {
-  return feed.lastFetchedPeriodEndMs !== null && feed.lastFetchedPeriodEndMs >= period.endMs;
+function alreadyIngestedForPeriod(
+  feed: PublicFeed,
+  period: DigestPeriod,
+): boolean {
+  return feed.lastFetchedPeriodEndMs !== null &&
+    feed.lastFetchedPeriodEndMs >= period.endMs;
 }
 
 interface RunContext {
@@ -76,7 +103,10 @@ async function ingestUserFeeds(
   database: Database,
   userId: string,
   period: DigestPeriod,
-  plan: { sourcesById: Map<string, PublicSource>; feedsBySourceId: Map<string, PublicFeed[]> },
+  plan: {
+    sourcesById: Map<string, PublicSource>;
+    feedsBySourceId: Map<string, PublicFeed[]>;
+  },
   connectorFactory: ConnectorFactoryLike | undefined,
   now: () => number,
   runContext: RunContext,
@@ -116,7 +146,11 @@ async function ingestUserFeeds(
         stage: "connector",
         status: "failed",
       };
-      const feedRun = await startDigestRunFeed(database, feedRunInput, runContext.now());
+      const feedRun = await startDigestRunFeed(
+        database,
+        feedRunInput,
+        runContext.now(),
+      );
       await finishDigestRunFeed(database, feedRun.id, {
         status: "failed",
         errorMessage: summarizeErrorForOps(error),
@@ -138,7 +172,11 @@ async function ingestUserFeeds(
             stage: "ingestion",
             status: "running",
           };
-          const feedRun = await startDigestRunFeed(database, feedRunInput, runContext.now());
+          const feedRun = await startDigestRunFeed(
+            database,
+            feedRunInput,
+            runContext.now(),
+          );
           feedRunMap.set(feed.id, feedRun);
         }
 
@@ -146,7 +184,9 @@ async function ingestUserFeeds(
           const feedWindows = new Map<string, { from: number; to: number }>();
           for (const feed of feedsNeedingIngestion) {
             feedWindows.set(feed.id, {
-              from: feed.lastFetchedPeriodEndMs === null ? period.startMs : feed.lastFetchedPeriodEndMs + 1,
+              from: feed.lastFetchedPeriodEndMs === null
+                ? period.startMs
+                : feed.lastFetchedPeriodEndMs + 1,
               to: period.endMs,
             });
           }
@@ -201,15 +241,27 @@ async function ingestUserFeeds(
           stage: "ingestion",
           status: "running",
         };
-        const feedRun = await startDigestRunFeed(database, feedRunInput, runContext.now());
+        const feedRun = await startDigestRunFeed(
+          database,
+          feedRunInput,
+          runContext.now(),
+        );
         try {
-          const result = await ingestFeed(database, userId, feed, handle.connector, {
-            window: {
-              from: feed.lastFetchedPeriodEndMs === null ? period.startMs : feed.lastFetchedPeriodEndMs + 1,
-              to: period.endMs,
+          const result = await ingestFeed(
+            database,
+            userId,
+            feed,
+            handle.connector,
+            {
+              window: {
+                from: feed.lastFetchedPeriodEndMs === null
+                  ? period.startMs
+                  : feed.lastFetchedPeriodEndMs + 1,
+                to: period.endMs,
+              },
+              fetchedAt: now(),
             },
-            fetchedAt: now(),
-          });
+          );
           await finishDigestRunFeed(database, feedRun.id, {
             status: "complete",
             itemCount: result.itemCount,
@@ -236,7 +288,11 @@ async function ingestUserFeeds(
             stage: "ingestion",
             status: "running",
           };
-          const feedRun = await startDigestRunFeed(database, feedRunInput, runContext.now());
+          const feedRun = await startDigestRunFeed(
+            database,
+            feedRunInput,
+            runContext.now(),
+          );
           feedRunMap.set(feed.id, feedRun);
         }
 
@@ -244,7 +300,9 @@ async function ingestUserFeeds(
           const feedWindows = new Map<string, { from: number; to: number }>();
           for (const feed of feedsNeedingIngestion) {
             feedWindows.set(feed.id, {
-              from: feed.lastFetchedPeriodEndMs === null ? period.startMs : feed.lastFetchedPeriodEndMs + 1,
+              from: feed.lastFetchedPeriodEndMs === null
+                ? period.startMs
+                : feed.lastFetchedPeriodEndMs + 1,
               to: period.endMs,
             });
           }
@@ -312,13 +370,19 @@ async function assembleRunDigest(
     sourceConnectorIdsBySourceId.set(source.id, source.connectorId);
   }
 
-  return await assembleDigestForPeriod(database, userId, period.startMs, period.endMs, {
-    ...dependencies,
-    feedIds: successfulFeedIds,
-    runId: runContext.digestRunId,
-    sourceConnectorIdsBySourceId,
-    feeds,
-  });
+  return await assembleDigestForPeriod(
+    database,
+    userId,
+    period.startMs,
+    period.endMs,
+    {
+      ...dependencies,
+      feedIds: successfulFeedIds,
+      runId: runContext.digestRunId,
+      sourceConnectorIdsBySourceId,
+      feeds,
+    },
+  );
 }
 
 async function finalizeRunDigestStatus(
@@ -329,34 +393,31 @@ async function finalizeRunDigestStatus(
   now: () => number,
 ): Promise<DigestView> {
   if (hadFailure && digestView.digest.status !== "failed") {
-    const digest = await setDigestStatus(database, digestView.digest.id, userId, "failed", now());
+    const digest = await setDigestStatus(
+      database,
+      digestView.digest.id,
+      userId,
+      "failed",
+      now(),
+    );
     return await buildDigestViewForPeriod(database, digest);
   }
   return digestView;
 }
 
-export async function runForUser(
+async function executeDigestRun(
   database: Database,
+  digestRunId: string,
   userId: string,
   period: DigestPeriod,
-  dependencies: OrchestratorDependencies = {},
+  dependencies: OrchestratorDependencies,
+  now: () => number,
 ): Promise<DigestView> {
-  const now = dependencies.now ?? Date.now;
-  const trigger = dependencies.trigger ?? "manual";
-
-  const digestRun = await createDigestRun(database, {
-    userId,
-    trigger,
-    periodStartMs: period.startMs,
-    periodEndMs: period.endMs,
-    status: "running",
-  }, now());
-
   const plan = await loadEnabledUserFeedPlan(database, userId);
   const allFeeds = [...plan.feedsBySourceId.values()].flat();
 
   const runContext: RunContext = {
-    digestRunId: digestRun.id,
+    digestRunId,
     period,
     now,
   };
@@ -398,8 +459,10 @@ export async function runForUser(
     digestView = await buildDigestViewForPeriod(database, fallbackDigest);
   }
 
-  const summarizationHadFailure = !assemblyFailed && digestView.digest.status === "failed";
-  const overallHadFailure = ingestionResult.hadFailure || assemblyFailed || summarizationHadFailure;
+  const summarizationHadFailure = !assemblyFailed &&
+    digestView.digest.status === "failed";
+  const overallHadFailure = ingestionResult.hadFailure || assemblyFailed ||
+    summarizationHadFailure;
 
   let runStatus: "complete" | "partial" | "failed";
   if (assemblyFailed) {
@@ -410,7 +473,7 @@ export async function runForUser(
     runStatus = "partial";
   }
 
-  await finishDigestRun(database, digestRun.id, {
+  await finishDigestRun(database, digestRunId, {
     digestId: digestView.digest.id || null,
     status: runStatus,
     errorMessage: assemblyFailed ? summarizeErrorForOps(assemblyError) : null,
@@ -423,4 +486,43 @@ export async function runForUser(
     overallHadFailure,
     now,
   );
+}
+
+export async function runForUser(
+  database: Database,
+  userId: string,
+  period: DigestPeriod,
+  dependencies: OrchestratorDependencies = {},
+): Promise<DigestView> {
+  const now = dependencies.now ?? Date.now;
+  const trigger = dependencies.trigger ?? "manual";
+
+  const digestRun = await createDigestRun(database, {
+    userId,
+    trigger,
+    periodStartMs: period.startMs,
+    periodEndMs: period.endMs,
+    status: "running",
+  }, now());
+
+  try {
+    return await executeDigestRun(
+      database,
+      digestRun.id,
+      userId,
+      period,
+      dependencies,
+      now,
+    );
+  } catch (error) {
+    try {
+      await finishDigestRun(database, digestRun.id, {
+        status: "failed",
+        errorMessage: summarizeErrorForOps(error),
+      }, now());
+    } catch {
+      // Preserve the operational failure when the best-effort run transition also fails.
+    }
+    throw error;
+  }
 }

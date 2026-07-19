@@ -202,6 +202,92 @@ Deno.test("source repository finds, updates, and orders public source rows", asy
   });
 });
 
+Deno.test("source paid-post title preference defaults false and updates only owned Substack sources", async () => {
+  await withTestDb(async (database) => {
+    const cipher = generateCipher();
+    const owner = await createUser(
+      database,
+      userInput("paid-titles-owner@example.com"),
+    );
+    const other = await createUser(
+      database,
+      userInput("paid-titles-other@example.com"),
+    );
+    const source = await createSource(database, {
+      userId: owner.id,
+      connectorId: ConnectorId.Substack,
+      credentials: await encryptedTelegramCredentials(
+        cipher,
+        owner.id,
+        ConnectorId.Substack,
+      ),
+    });
+
+    assertEquals(source.showPaidPostTitles, false);
+    assertEquals(
+      (await findSourceById(database, source.id, owner.id))
+        ?.showPaidPostTitles,
+      false,
+    );
+
+    const enabled = await updateSource(database, source.id, owner.id, {
+      showPaidPostTitles: true,
+    });
+    assertEquals(enabled.showPaidPostTitles, true);
+    assertEquals(
+      (await listSourcesForUser(database, owner.id))[0].showPaidPostTitles,
+      true,
+    );
+
+    await assertRejects(
+      () =>
+        updateSource(database, source.id, other.id, {
+          showPaidPostTitles: false,
+        }),
+      NotFoundError,
+    );
+    assertEquals(
+      (await findSourceById(database, source.id, owner.id))
+        ?.showPaidPostTitles,
+      true,
+    );
+
+    const disabled = await updateSource(database, source.id, owner.id, {
+      showPaidPostTitles: false,
+    });
+    assertEquals(disabled.showPaidPostTitles, false);
+  });
+});
+
+Deno.test("source repository rejects paid-post title preference for non-Substack sources", async () => {
+  await withTestDb(async (database) => {
+    const cipher = generateCipher();
+    const user = await createUser(
+      database,
+      userInput("paid-titles-telegram@example.com"),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedTelegramCredentials(cipher, user.id),
+    });
+
+    await assertRejects(
+      () =>
+        updateSource(database, source.id, user.id, {
+          showPaidPostTitles: true,
+        }),
+      ValidationError,
+      "only valid for Substack",
+    );
+    assertEquals(
+      (await findSourceById(database, source.id, user.id))
+        ?.showPaidPostTitles,
+      false,
+    );
+  });
+});
+
 Deno.test("getDecryptedCredentials rejects non-owners as not found", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();

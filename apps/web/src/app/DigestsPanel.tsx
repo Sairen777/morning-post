@@ -3,6 +3,18 @@ import type { DigestSection, DigestView, PublicDigest } from "../api/types";
 import StatusBadge from "./StatusBadge";
 import FormatTime from "./FormatTime";
 
+function safeHttpUrl(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function DigestSectionView(props: { section: DigestSection }) {
   const articleContent = () => {
     const content = props.section.content;
@@ -311,6 +323,38 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                 </section>
               )}
             </For>
+            <Show when={view().paidPosts.length > 0}>
+              <section class="paid-posts" aria-labelledby="paid-posts-title">
+                <h3 id="paid-posts-title">Paid posts</h3>
+                <p class="hint">
+                  Inaccessible paid posts are never summarized. When enabled,
+                  linked titles appear at the end of each digest so the reader
+                  can decide whether to subscribe.
+                </p>
+                <ul class="paid-post-list">
+                  <For each={view().paidPosts}>
+                    {(post) => (
+                      <li>
+                        <Show
+                          when={safeHttpUrl(post.sourceUrl)}
+                          fallback={post.title}
+                        >
+                          {(sourceUrl) => (
+                            <a
+                              href={sourceUrl()}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              {post.title}
+                            </a>
+                          )}
+                        </Show>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </section>
+            </Show>
           </div>
         )}
       </Show>

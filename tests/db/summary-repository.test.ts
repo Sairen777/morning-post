@@ -17,7 +17,10 @@ import {
   summaryPointSchema,
   upsertSummaryForPeriod,
 } from "../../src/repositories/summary-repository.ts";
-import { createSource } from "../../src/repositories/source-repository.ts";
+import {
+  createSource,
+  updateSource,
+} from "../../src/repositories/source-repository.ts";
 import {
   createUser,
   type CreateUserInput,
@@ -41,22 +44,27 @@ function credentialCipher(): CredentialCipher {
   );
 }
 
-async function encryptedCredentials(userId: string): Promise<EncryptedBlob> {
+async function encryptedCredentials(
+  userId: string,
+  connectorId = ConnectorId.Telegram,
+): Promise<EncryptedBlob> {
   return await credentialCipher().encrypt(
     JSON.stringify({ sessionString: "telegram-session" }),
-    {
-      userId,
-      connectorId: ConnectorId.Telegram,
-    },
+    { userId, connectorId },
   );
 }
 
-async function createFeed(database: Database, email: string, position = 1) {
+async function createFeed(
+  database: Database,
+  email: string,
+  position = 1,
+  connectorId = ConnectorId.Telegram,
+) {
   const user = await createUser(database, userInput(email));
   const source = await createSource(database, {
     userId: user.id,
-    connectorId: ConnectorId.Telegram,
-    credentials: await encryptedCredentials(user.id),
+    connectorId,
+    credentials: await encryptedCredentials(user.id, connectorId),
     position,
   });
   const feed = await createOrReviveFeed(database, {
@@ -138,6 +146,59 @@ Deno.test("summary repository round-trips article content", async () => {
       ))?.content,
       articlesContent,
     );
+  });
+});
+
+Deno.test("summary repository round-trips paid articles and projects the source title preference", async () => {
+  await withTestDb(async (database) => {
+    const { user, source, feed } = await createFeed(
+      database,
+      "summary-paid-articles@example.com",
+      1,
+      ConnectorId.Substack,
+    );
+    await updateSource(database, source.id, user.id, {
+      showPaidPostTitles: true,
+    });
+    const paidContent = {
+      kind: "articles" as const,
+      articles: [{
+        sourceExternalId: "paid-post-1",
+        title: "Paid title",
+        sourceUrl: "https://example.substack.com/p/paid-post-1",
+        publishedAt: 1_700_000_200_000,
+        contentAccess: "paid" as const,
+        points: [],
+      }],
+    };
+
+    const stored = await upsertSummaryForPeriod(database, {
+      feedId: feed.id,
+      periodStartMs,
+      periodEndMs,
+      content: paidContent,
+      feedNameSnapshot: feed.name,
+    });
+
+    assertEquals(stored.content, paidContent);
+    assertEquals(
+      (await findSummaryForFeedPeriod(
+        database,
+        feed.id,
+        periodStartMs,
+        periodEndMs,
+      ))?.content,
+      paidContent,
+    );
+    const listed = await listSummariesForUserPeriod(
+      database,
+      user.id,
+      periodStartMs,
+      periodEndMs,
+    );
+    assertEquals(listed.length, 1);
+    assertEquals(listed[0].showPaidPostTitles, true);
+    assertEquals(listed[0].content, paidContent);
   });
 });
 

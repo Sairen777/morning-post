@@ -18,7 +18,10 @@ import {
 import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { createDigestRun } from "../../src/repositories/digest-run-repository.ts";
 import { upsertSummaryForPeriod } from "../../src/repositories/summary-repository.ts";
-import { createSource } from "../../src/repositories/source-repository.ts";
+import {
+  createSource,
+  updateSource,
+} from "../../src/repositories/source-repository.ts";
 import {
   createUser,
   type CreateUserInput,
@@ -1097,6 +1100,187 @@ Deno.test("renderDigestMarkdown displays an explicit empty article collection", 
   });
 });
 
+Deno.test("assembleDigestForPeriod partitions paid posts by source preference while preserving section and paid ordering", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("digest-service-paid-partition@example.com"),
+    );
+    const sourceId = await createSourceForUser(
+      database,
+      user.id,
+      ConnectorId.Substack,
+      1,
+    );
+    const paidOnlyFeed = await createFeedForSource(
+      database,
+      user.id,
+      sourceId,
+      1,
+      "https://paid-only.substack.com",
+      "Paid only",
+    );
+    const emptyFeed = await createFeedForSource(
+      database,
+      user.id,
+      sourceId,
+      2,
+      "https://empty-paid.substack.com",
+      "Genuinely empty",
+    );
+    const mixedFeed = await createFeedForSource(
+      database,
+      user.id,
+      sourceId,
+      3,
+      "https://mixed-paid.substack.com",
+      "Mixed",
+    );
+    await upsertSummaryForPeriod(database, {
+      feedId: paidOnlyFeed.id,
+      periodStartMs,
+      periodEndMs,
+      feedNameSnapshot: paidOnlyFeed.name,
+      content: {
+        kind: "articles",
+        articles: [
+          {
+            sourceExternalId: "paid-1",
+            title: "First paid",
+            sourceUrl: "https://paid-only.substack.com/p/first) draft",
+            publishedAt: periodStartMs + 1,
+            contentAccess: "paid",
+            points: [],
+          },
+          {
+            sourceExternalId: "paid-2",
+            title: "Unsafe ] paid",
+            sourceUrl: "javascript:alert(1)",
+            publishedAt: periodStartMs + 2,
+            contentAccess: "paid",
+            points: [],
+          },
+        ],
+      },
+    });
+    await upsertSummaryForPeriod(database, {
+      feedId: emptyFeed.id,
+      periodStartMs,
+      periodEndMs,
+      feedNameSnapshot: emptyFeed.name,
+      content: { kind: "articles", articles: [] },
+    });
+    await upsertSummaryForPeriod(database, {
+      feedId: mixedFeed.id,
+      periodStartMs,
+      periodEndMs,
+      feedNameSnapshot: mixedFeed.name,
+      content: {
+        kind: "articles",
+        articles: [
+          {
+            sourceExternalId: "free",
+            title: "Free article",
+            sourceUrl: null,
+            publishedAt: periodStartMs + 3,
+            contentAccess: "full",
+            points: [{ text: "Free point", sourceUrl: null }],
+          },
+          {
+            sourceExternalId: "paid-3",
+            title: "Third paid",
+            sourceUrl: null,
+            publishedAt: periodStartMs + 4,
+            contentAccess: "paid",
+            points: [],
+          },
+        ],
+      },
+    });
+
+    const optedOutView = await assembleDigestForPeriod(
+      database,
+      user.id,
+      periodStartMs,
+      periodEndMs,
+    );
+    assertEquals(optedOutView.paidPosts, []);
+    assertEquals(optedOutView.sections.map((section) => section.feedName), [
+      "Genuinely empty",
+      "Mixed",
+    ]);
+    assertEquals(
+      renderDigestMarkdown(optedOutView).includes("First paid"),
+      false,
+    );
+
+    await updateSource(database, sourceId, user.id, {
+      showPaidPostTitles: true,
+    });
+
+    const view = await assembleDigestForPeriod(
+      database,
+      user.id,
+      periodStartMs,
+      periodEndMs,
+    );
+
+    assertEquals(view.sections.map((section) => section.feedName), [
+      "Genuinely empty",
+      "Mixed",
+    ]);
+    assertEquals(view.sections[0].content, {
+      kind: "articles",
+      articles: [],
+    });
+    assertEquals(view.sections[1].content, {
+      kind: "articles",
+      articles: [{
+        sourceExternalId: "free",
+        title: "Free article",
+        sourceUrl: null,
+        publishedAt: periodStartMs + 3,
+        contentAccess: "full",
+        points: [{ text: "Free point", sourceUrl: null }],
+      }],
+    });
+    assertEquals(view.paidPosts, [
+      {
+        title: "First paid",
+        sourceUrl: "https://paid-only.substack.com/p/first) draft",
+        publishedAt: periodStartMs + 1,
+      },
+      {
+        title: "Unsafe ] paid",
+        sourceUrl: "javascript:alert(1)",
+        publishedAt: periodStartMs + 2,
+      },
+      {
+        title: "Third paid",
+        sourceUrl: null,
+        publishedAt: periodStartMs + 4,
+      },
+    ]);
+
+    const markdown = renderDigestMarkdown(view);
+    const paidHeading = markdown.indexOf("## Paid posts");
+    const firstPaid = markdown.indexOf(
+      "- [First paid](<https://paid-only.substack.com/p/first)%20draft>)",
+    );
+    const unsafePaid = markdown.indexOf("- Unsafe \\] paid");
+    const thirdPaid = markdown.indexOf("- Third paid");
+    assertEquals(
+      paidHeading > markdown.indexOf("Free point") &&
+        paidHeading < firstPaid && firstPaid < unsafePaid &&
+        unsafePaid < thirdPaid,
+      true,
+    );
+    assertEquals(markdown.includes("javascript:alert"), false);
+    assertEquals(markdown.includes("Paid only"), false);
+    assertEquals(markdown.includes("### Genuinely empty"), true);
+    assertEquals(markdown.includes("No articles."), true);
+  });
+});
 Deno.test("assembleDigestForPeriod records cancellation as a feed failure without persisting a section", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(

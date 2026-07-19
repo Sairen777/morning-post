@@ -14,6 +14,7 @@ export interface PublicSource {
   connectorId: string;
   position: number | null;
   enabled: boolean;
+  showPaidPostTitles: boolean;
   connected: boolean;
   createdAt: number;
   updatedAt: number;
@@ -71,7 +72,7 @@ export interface ArticleSummary {
   title: string;
   sourceUrl: string | null;
   publishedAt: number;
-  contentAccess: "full" | "preview";
+  contentAccess: "full" | "preview" | "paid";
   points: SummaryPoint[];
 }
 
@@ -96,11 +97,17 @@ export interface DigestSourceGroup {
   connectorId: string;
   sections: DigestSection[];
 }
+export interface PaidPost {
+  title: string;
+  sourceUrl: string | null;
+  publishedAt: number;
+}
 
 export interface DigestView {
   digest: PublicDigest;
   sections: DigestSection[];
   groups: DigestSourceGroup[];
+  paidPosts: PaidPost[];
 }
 
 export interface ApiErrorBody {

@@ -1,13 +1,23 @@
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
-import { credentialSchemaFor, type ConnectorCredentials } from "../connectors/credential-schemas.ts";
-import { type CredentialCipher, type EncryptedBlob } from "../crypto/credential-cipher.ts";
+import { ConnectorId } from "../constants.ts";
+import {
+  type ConnectorCredentials,
+  credentialSchemaFor,
+} from "../connectors/credential-schemas.ts";
+import {
+  type CredentialCipher,
+  type EncryptedBlob,
+} from "../crypto/credential-cipher.ts";
 import type { Database } from "../db/client.ts";
 import { feeds } from "../db/schema/feed.ts";
 import { sources } from "../db/schema/source.ts";
-import { ConflictError, NotFoundError, ValidationError } from "../server/errors.ts";
+import {
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+} from "../server/errors.ts";
 import { isUniqueViolation } from "../db/errors.ts";
-
 
 const encryptedBlobSchema = z.object({
   v: z.number(),
@@ -22,6 +32,7 @@ const publicSourceRowSchema = z.object({
   connectorId: z.string(),
   position: z.number().nullable(),
   enabled: z.boolean(),
+  showPaidPostTitles: z.boolean(),
   connected: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
@@ -32,7 +43,9 @@ const sourceWithCredentialsRowSchema = publicSourceRowSchema.extend({
 });
 
 export type PublicSource = z.infer<typeof publicSourceRowSchema>;
-export type SourceWithCredentials = z.infer<typeof sourceWithCredentialsRowSchema>;
+export type SourceWithCredentials = z.infer<
+  typeof sourceWithCredentialsRowSchema
+>;
 
 export interface CreateSourceInput {
   userId: string;
@@ -45,6 +58,7 @@ export interface CreateSourceInput {
 export type UpdateSourceInput = Partial<{
   position: number | null;
   enabled: boolean;
+  showPaidPostTitles: boolean;
   credentials: EncryptedBlob | null;
 }>;
 
@@ -54,7 +68,6 @@ export interface UpsertSourceCredentialsInput {
   credentials: EncryptedBlob;
 }
 
-
 /** Internal projection: includes credentials so parsePublicSource can compute `connected`. Callers MUST pass through parsePublicSource. */
 function selectableColumns() {
   return {
@@ -63,6 +76,7 @@ function selectableColumns() {
     connectorId: sources.connectorId,
     position: sources.position,
     enabled: sources.enabled,
+    showPaidPostTitles: sources.showPaidPostTitles,
     credentials: sources.credentials,
     createdAt: sources.createdAt,
     updatedAt: sources.updatedAt,
@@ -76,7 +90,9 @@ function parsePublicSource(row: Record<string, unknown>): PublicSource {
   });
 }
 
-function parseSourceWithCredentials(row: Record<string, unknown>): SourceWithCredentials {
+function parseSourceWithCredentials(
+  row: Record<string, unknown>,
+): SourceWithCredentials {
   return sourceWithCredentialsRowSchema.parse({
     ...row,
     connected: row.credentials != null,
@@ -158,7 +174,9 @@ export async function findSourceByConnectorId(
   const rows = await database
     .select(selectableColumns())
     .from(sources)
-    .where(and(eq(sources.userId, userId), eq(sources.connectorId, connectorId)))
+    .where(
+      and(eq(sources.userId, userId), eq(sources.connectorId, connectorId)),
+    )
     .limit(1);
   return rows[0] ? parsePublicSource(rows[0]) : null;
 }
@@ -202,14 +220,35 @@ export async function updateSource(
     updatedAt: Date.now(),
   };
   if (partial.enabled === true && partial.credentials === null) {
-    throw new ConflictError("source must be reconnected before it can be enabled");
+    throw new ConflictError(
+      "source must be reconnected before it can be enabled",
+    );
   }
   if (partial.credentials !== undefined && partial.credentials !== null) {
     updates.credentials = encryptedBlobSchema.parse(partial.credentials);
   }
+  if (Object.hasOwn(partial, "showPaidPostTitles")) {
+    const existingSource = await findOwnedSourceWithCredentials(
+      database,
+      id,
+      userId,
+    );
+    if (!existingSource) {
+      throw new NotFoundError("source not found");
+    }
+    if (existingSource.connectorId !== ConnectorId.Substack) {
+      throw new ValidationError(
+        "showPaidPostTitles is only valid for Substack sources",
+      );
+    }
+  }
 
   const updatePredicate = partial.enabled === true
-    ? and(eq(sources.id, id), eq(sources.userId, userId), isNotNull(sources.credentials))
+    ? and(
+      eq(sources.id, id),
+      eq(sources.userId, userId),
+      isNotNull(sources.credentials),
+    )
     : and(eq(sources.id, id), eq(sources.userId, userId));
 
   try {
@@ -220,12 +259,18 @@ export async function updateSource(
       .returning(selectableColumns());
     if (!rows[0]) {
       if (partial.enabled === true) {
-        const existingSource = await findOwnedSourceWithCredentials(database, id, userId);
+        const existingSource = await findOwnedSourceWithCredentials(
+          database,
+          id,
+          userId,
+        );
         if (!existingSource) {
           throw new NotFoundError("source not found");
         }
         if (existingSource.credentials === null) {
-          throw new ConflictError("source must be reconnected before it can be enabled");
+          throw new ConflictError(
+            "source must be reconnected before it can be enabled",
+          );
         }
       }
       throw new NotFoundError("source not found");
@@ -300,7 +345,9 @@ export async function getDecryptedCredentials(
     throw new ValidationError("source credentials plaintext is not valid JSON");
   }
 
-  const credentialResult = credentialSchemaFor(row.connectorId).safeParse(decoded);
+  const credentialResult = credentialSchemaFor(row.connectorId).safeParse(
+    decoded,
+  );
   if (!credentialResult.success) {
     throw new ValidationError("invalid source credential shape");
   }

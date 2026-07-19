@@ -2,18 +2,39 @@ import { assertEquals } from "@std/assert";
 import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
-import { createUser, type CreateUserInput, type User } from "../../src/repositories/user-repository.ts";
-import { DigestRunAlreadyRunningError, listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
+import {
+  createUser,
+  type CreateUserInput,
+  type User,
+} from "../../src/repositories/user-repository.ts";
+import {
+  DigestRunAlreadyRunningError,
+  listDigestRunsForUser,
+} from "../../src/repositories/digest-run-repository.ts";
 import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
-import { clearDigestJobStateForTesting, computeDigestPeriod, DEFAULT_DIGEST_CRON, MEDIA_HOUSEKEEPING_CRON, runDigestTick, scheduleDigestJob, scheduleMediaHousekeeping } from "../../src/scheduler/digest-job.ts";
+import {
+  clearDigestJobStateForTesting,
+  computeDigestPeriod,
+  DEFAULT_DIGEST_CRON,
+  MEDIA_HOUSEKEEPING_CRON,
+  runDigestTick,
+  scheduleDigestJob,
+  scheduleMediaHousekeeping,
+} from "../../src/scheduler/digest-job.ts";
 import { bootServer } from "../../src/server/main.ts";
 import type { Scheduler } from "../../src/scheduler/scheduler.ts";
 import type { SummarizerService } from "../../src/summarizers/summarizer.types.ts";
 
 class FakeScheduler implements Scheduler {
-  jobs: Array<{ name: string; cron: string; handler: () => Promise<void> | void }> = [];
+  jobs: Array<
+    { name: string; cron: string; handler: () => Promise<void> | void }
+  > = [];
 
-  schedule(name: string, cron: string, handler: () => Promise<void> | void): void {
+  schedule(
+    name: string,
+    cron: string,
+    handler: () => Promise<void> | void,
+  ): void {
     this.jobs.push({ name, cron, handler });
   }
 }
@@ -30,8 +51,14 @@ function userInput(email: string): CreateUserInput {
 
 Deno.test("computeDigestPeriod starts from latest digest end or default cadence", async () => {
   await withTestDb(async (database: Database) => {
-    const firstUser = await createUser(database, userInput("scheduler-first@example.com"));
-    const secondUser = await createUser(database, userInput("scheduler-second@example.com"));
+    const firstUser = await createUser(
+      database,
+      userInput("scheduler-first@example.com"),
+    );
+    const secondUser = await createUser(
+      database,
+      userInput("scheduler-second@example.com"),
+    );
     await upsertDigestForPeriod(database, {
       userId: secondUser.id,
       periodStartMs: 100,
@@ -39,17 +66,28 @@ Deno.test("computeDigestPeriod starts from latest digest end or default cadence"
       status: "complete",
     }, 10);
 
-    assertEquals(await computeDigestPeriod(database, firstUser.id, 1_000, 100), { startMs: 901, endMs: 1_000 });
-    assertEquals(await computeDigestPeriod(database, secondUser.id, 1_000, 100), { startMs: 201, endMs: 1_000 });
+    assertEquals(
+      await computeDigestPeriod(database, firstUser.id, 1_000, 100),
+      { startMs: 901, endMs: 1_000 },
+    );
+    assertEquals(
+      await computeDigestPeriod(database, secondUser.id, 1_000, 100),
+      { startMs: 201, endMs: 1_000 },
+    );
   });
 });
 
 Deno.test("runDigestTick triggers one run per user and isolates errors", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
-    const firstUser = await createUser(database, userInput("scheduler-run-first@example.com"));
+    const firstUser = await createUser(
+      database,
+      userInput("scheduler-run-first@example.com"),
+    );
     await createUser(database, userInput("scheduler-run-second@example.com"));
-    const calls: Array<{ userId: string; period: { startMs: number; endMs: number } }> = [];
+    const calls: Array<
+      { userId: string; period: { startMs: number; endMs: number } }
+    > = [];
     const errors: string[] = [];
 
     await runDigestTick(database, {
@@ -58,9 +96,24 @@ Deno.test("runDigestTick triggers one run per user and isolates errors", async (
       runForUser: (_database, userId, period) => {
         calls.push({ userId, period });
         if (userId === firstUser.id) {
-          throw new Error("provider failed sk-scheduler-secret at https://scheduler-user:scheduler-pass@example.com");
+          throw new Error(
+            "provider failed sk-scheduler-secret at https://scheduler-user:scheduler-pass@example.com",
+          );
         }
-        return Promise.resolve({ digest: { id: "x", userId, periodStartMs: period.startMs, periodEndMs: period.endMs, status: "complete", createdAt: 0, updatedAt: 0 }, sections: [], groups: [] });
+        return Promise.resolve({
+          digest: {
+            id: "x",
+            userId,
+            periodStartMs: period.startMs,
+            periodEndMs: period.endMs,
+            status: "complete",
+            createdAt: 0,
+            updatedAt: 0,
+          },
+          sections: [],
+          groups: [],
+          paidPosts: [],
+        });
       },
     });
 
@@ -78,7 +131,10 @@ Deno.test("runDigestTick triggers one run per user and isolates errors", async (
 Deno.test("runDigestTick skips users that are already running", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
-    const user = await createUser(database, userInput("scheduler-overlap@example.com"));
+    const user = await createUser(
+      database,
+      userInput("scheduler-overlap@example.com"),
+    );
     const gate = Promise.withResolvers<void>();
     let calls = 0;
 
@@ -87,14 +143,40 @@ Deno.test("runDigestTick skips users that are already running", async () => {
       runForUser: async () => {
         calls += 1;
         await gate.promise;
-        return { digest: { id: "x", userId: user.id, periodStartMs: 0, periodEndMs: 0, status: "complete", createdAt: 0, updatedAt: 0 }, sections: [], groups: [] };
+        return {
+          digest: {
+            id: "x",
+            userId: user.id,
+            periodStartMs: 0,
+            periodEndMs: 0,
+            status: "complete",
+            createdAt: 0,
+            updatedAt: 0,
+          },
+          sections: [],
+          groups: [],
+          paidPosts: [],
+        };
       },
     });
     const secondTick = runDigestTick(database, {
       now: () => 1_000,
       runForUser: () => {
         calls += 1;
-        return Promise.resolve({ digest: { id: "x", userId: user.id, periodStartMs: 0, periodEndMs: 0, status: "complete", createdAt: 0, updatedAt: 0 }, sections: [], groups: [] });
+        return Promise.resolve({
+          digest: {
+            id: "x",
+            userId: user.id,
+            periodStartMs: 0,
+            periodEndMs: 0,
+            status: "complete",
+            createdAt: 0,
+            updatedAt: 0,
+          },
+          sections: [],
+          groups: [],
+          paidPosts: [],
+        });
       },
     });
 
@@ -115,7 +197,20 @@ Deno.test("scheduleDigestJob registers the default cron and handler", async () =
       now: () => 1_000,
       runForUser: (_database, userId) => {
         calls.push(userId);
-        return Promise.resolve({ digest: { id: "x", userId, periodStartMs: 0, periodEndMs: 0, status: "complete", createdAt: 0, updatedAt: 0 }, sections: [], groups: [] });
+        return Promise.resolve({
+          digest: {
+            id: "x",
+            userId,
+            periodStartMs: 0,
+            periodEndMs: 0,
+            status: "complete",
+            createdAt: 0,
+            updatedAt: 0,
+          },
+          sections: [],
+          groups: [],
+          paidPosts: [],
+        });
       },
     });
 
@@ -134,7 +229,10 @@ Deno.test("runDigestTick forwards the shared summarizer to scheduled execution",
   await withTestDb(async (database) => {
     const sharedSummarizer = {} as SummarizerService;
     let receivedSummarizer: SummarizerService | undefined;
-    const user = await createUser(database, userInput("scheduler-shared-summarizer@example.com"));
+    const user = await createUser(
+      database,
+      userInput("scheduler-shared-summarizer@example.com"),
+    );
     await runDigestTick(database, {
       summarizer: sharedSummarizer,
       now: () => 1_500,
@@ -152,6 +250,7 @@ Deno.test("runDigestTick forwards the shared summarizer to scheduled execution",
           },
           sections: [],
           groups: [],
+          paidPosts: [],
         });
       },
     });
@@ -187,7 +286,9 @@ Deno.test("scheduleDigestJob skips digest work when the lease is held by another
       },
       runForUser: () => {
         runCalls++;
-        return Promise.reject(new Error("losing worker must not run digest work"));
+        return Promise.reject(
+          new Error("losing worker must not run digest work"),
+        );
       },
     });
 
@@ -202,7 +303,6 @@ Deno.test("bootServer injects scheduler and serve without startup side effects",
     const scheduler = new FakeScheduler();
     let served = 0;
     bootServer({
-
       database,
       scheduler,
       summarizer: { summarize: async () => [] },
@@ -241,7 +341,10 @@ Deno.test("leader tick recovers stale runs before processing users", async () =>
   await withTestDb(async (database: Database) => {
     const scheduler = new FakeScheduler();
     const events: string[] = [];
-    const user = await createUser(database, userInput("scheduler-recovery-order@example.com"));
+    const user = await createUser(
+      database,
+      userInput("scheduler-recovery-order@example.com"),
+    );
     scheduleDigestJob(scheduler, database, {
       now: () => 4_000,
       ownerId: "worker-leader",
@@ -256,9 +359,18 @@ Deno.test("leader tick recovers stale runs before processing users", async () =>
       runForUser: (_database, userId) => {
         events.push(`run:${userId}`);
         return Promise.resolve({
-          digest: { id: "x", userId, periodStartMs: 0, periodEndMs: 0, status: "complete" as const, createdAt: 0, updatedAt: 0 },
+          digest: {
+            id: "x",
+            userId,
+            periodStartMs: 0,
+            periodEndMs: 0,
+            status: "complete" as const,
+            createdAt: 0,
+            updatedAt: 0,
+          },
           sections: [],
           groups: [],
+          paidPosts: [],
         });
       },
     });
@@ -270,8 +382,14 @@ Deno.test("leader tick recovers stale runs before processing users", async () =>
 Deno.test("scheduler skips an already-running user without logging a tick failure", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
-    await createUser(database, userInput("scheduler-conflict-first@example.com"));
-    await createUser(database, userInput("scheduler-conflict-second@example.com"));
+    await createUser(
+      database,
+      userInput("scheduler-conflict-first@example.com"),
+    );
+    await createUser(
+      database,
+      userInput("scheduler-conflict-second@example.com"),
+    );
     const errors: string[] = [];
     let calls = 0;
     await runDigestTick(database, {
@@ -279,11 +397,22 @@ Deno.test("scheduler skips an already-running user without logging a tick failur
       logError: (message) => errors.push(message),
       runForUser: (_database, userId, period) => {
         calls++;
-        if (calls === 1) return Promise.reject(new DigestRunAlreadyRunningError());
+        if (calls === 1) {
+          return Promise.reject(new DigestRunAlreadyRunningError());
+        }
         return Promise.resolve({
-          digest: { id: "x", userId, periodStartMs: period.startMs, periodEndMs: period.endMs, status: "complete" as const, createdAt: 0, updatedAt: 0 },
+          digest: {
+            id: "x",
+            userId,
+            periodStartMs: period.startMs,
+            periodEndMs: period.endMs,
+            status: "complete" as const,
+            createdAt: 0,
+            updatedAt: 0,
+          },
           sections: [],
           groups: [],
+          paidPosts: [],
         });
       },
     });
@@ -296,27 +425,49 @@ Deno.test("runDigestTick pages users and respects bounded concurrency", async ()
   await withTestDb(async (database: Database) => {
     const users: User[] = [];
     for (let i = 0; i < 5; i++) {
-      users.push(await createUser(database, userInput(`scheduler-page-${i}@example.com`)));
+      users.push(
+        await createUser(
+          database,
+          userInput(`scheduler-page-${i}@example.com`),
+        ),
+      );
     }
 
     const calledUserIds = new Set<string>();
     let inFlight = 0;
     let maximumInFlight = 0;
 
-    const fakeRunForUser = async (_database: Database, userId: string, _period: { startMs: number; endMs: number }) => {
+    const fakeRunForUser = async (
+      _database: Database,
+      userId: string,
+      _period: { startMs: number; endMs: number },
+    ) => {
       calledUserIds.add(userId);
       inFlight++;
       maximumInFlight = Math.max(maximumInFlight, inFlight);
       await new Promise((r) => setTimeout(r, 5));
       inFlight--;
       return {
-        digest: { id: "fake", userId, periodStartMs: 1, periodEndMs: 2, status: "complete" as const, createdAt: 1, updatedAt: 1 },
+        digest: {
+          id: "fake",
+          userId,
+          periodStartMs: 1,
+          periodEndMs: 2,
+          status: "complete" as const,
+          createdAt: 1,
+          updatedAt: 1,
+        },
         sections: [],
         groups: [],
+        paidPosts: [],
       };
     };
 
-    await runDigestTick(database, { runForUser: fakeRunForUser, userPageSize: 2, userConcurrency: 2 });
+    await runDigestTick(database, {
+      runForUser: fakeRunForUser,
+      userPageSize: 2,
+      userConcurrency: 2,
+    });
 
     assertEquals(calledUserIds.size, 5);
     assertEquals(maximumInFlight <= 2, true);
@@ -326,7 +477,10 @@ Deno.test("runDigestTick pages users and respects bounded concurrency", async ()
 Deno.test("runDigestTick creates scheduled digest run records", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
-    const user = await createUser(database, userInput("scheduler-run-scheduled@example.com"));
+    const user = await createUser(
+      database,
+      userInput("scheduler-run-scheduled@example.com"),
+    );
 
     await runDigestTick(database, {
       now: () => 1_000,

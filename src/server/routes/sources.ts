@@ -7,10 +7,7 @@ import {
   listSourcesForUser,
   updateSource,
 } from "../../repositories/source-repository.ts";
-import {
-  type AuthVariables,
-  requireAuth,
-} from "../middleware/require-auth.ts";
+import { type AuthVariables, requireAuth } from "../middleware/require-auth.ts";
 import { validate } from "../validate.ts";
 
 const sourceParamsSchema = z.object({
@@ -20,10 +17,11 @@ const sourceParamsSchema = z.object({
 const POSTGRES_INTEGER_MIN = -2_147_483_648;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
-
 const updateSourceBodySchema = z.object({
-  position: z.number().int().min(POSTGRES_INTEGER_MIN).max(POSTGRES_INTEGER_MAX).nullable().optional(),
+  position: z.number().int().min(POSTGRES_INTEGER_MIN).max(POSTGRES_INTEGER_MAX)
+    .nullable().optional(),
   enabled: z.boolean().optional(),
+  showPaidPostTitles: z.boolean().optional(),
 }).strict();
 
 function disconnectMessage(connectorId: string): string {
@@ -33,7 +31,9 @@ function disconnectMessage(connectorId: string): string {
   return "Source disconnected.";
 }
 
-export function buildSourceRoutes(database: Database): Hono<{ Variables: AuthVariables }> {
+export function buildSourceRoutes(
+  database: Database,
+): Hono<{ Variables: AuthVariables }> {
   const routes = new Hono<{ Variables: AuthVariables }>();
 
   routes.use("*", requireAuth(database));
@@ -47,13 +47,22 @@ export function buildSourceRoutes(database: Database): Hono<{ Variables: AuthVar
     const { id } = validate(sourceParamsSchema, context.req.param());
     const body = await context.req.json();
     const updates = validate(updateSourceBodySchema, body);
-    const source = await updateSource(database, id, context.var.userId, updates);
+    const source = await updateSource(
+      database,
+      id,
+      context.var.userId,
+      updates,
+    );
     return context.json(source, 200);
   });
 
   routes.delete("/:id", async (context) => {
     const { id } = validate(sourceParamsSchema, context.req.param());
-    const source = await deleteSourceCredentials(database, id, context.var.userId);
+    const source = await deleteSourceCredentials(
+      database,
+      id,
+      context.var.userId,
+    );
     const revokeTelegramSession = source.connectorId === ConnectorId.Telegram;
     return context.json({
       source,

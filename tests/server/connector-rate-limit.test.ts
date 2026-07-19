@@ -226,6 +226,7 @@ Deno.test("Substack session, publication, and discovery routes use separate rate
       connectorId: ConnectorId.Substack,
       position: null,
       enabled: true,
+      showPaidPostTitles: false,
       connected: true,
       createdAt: now,
       updatedAt: now,

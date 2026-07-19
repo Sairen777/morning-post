@@ -1,17 +1,18 @@
-import { createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, For, Show } from "solid-js";
 import type { AvailableFeed, PublicFeed, PublicSource } from "../api/types";
 import {
   addSubstackPublication,
   ApiClientError,
   connectSubstackSession,
   listSubstackPublications,
+  updateSource,
 } from "../api/client";
-
 interface SubstackConnectPanelProps {
   sources: PublicSource[];
   feeds: PublicFeed[];
   onConnected: () => Promise<void>;
   onPublicationAdded: () => Promise<void>;
+  onSourceUpdated?: () => Promise<void>;
   onAuthError: () => void;
 }
 
@@ -58,6 +59,22 @@ export default function SubstackConnectPanel(props: SubstackConnectPanelProps) {
   const [discoveryError, setDiscoveryError] = createSignal<string | null>(null);
   const [addingExternalIds, setAddingExternalIds] = createSignal<string[]>([]);
   const [addedExternalIds, setAddedExternalIds] = createSignal<string[]>([]);
+  const [paidTitlesEnabled, setPaidTitlesEnabled] = createSignal(
+    props.sources.find(
+      (source) => source.connectorId === "Substack" && source.connected,
+    )?.showPaidPostTitles === true,
+  );
+  const [paidTitlesSourceId, setPaidTitlesSourceId] = createSignal<
+    string | null
+  >(null);
+  const [paidTitlesSaveState, setPaidTitlesSaveState] = createSignal<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [paidTitlesError, setPaidTitlesError] = createSignal<string | null>(
+    null,
+  );
+  let paidTitlesSaveGeneration = 0;
+
   let publicationAccountGeneration = 0;
 
   const connectedSource = () =>
@@ -74,6 +91,56 @@ export default function SubstackConnectPanel(props: SubstackConnectPanelProps) {
         feed.sourceId === sourceId && feed.externalId === publication.externalId
       )
     ) || addedExternalIds().includes(publication.externalId);
+  };
+
+  createEffect(() => {
+    const source = connectedSource();
+    if (!source) {
+      setPaidTitlesSourceId(null);
+      setPaidTitlesEnabled(false);
+      return;
+    }
+    if (
+      paidTitlesSaveState() !== "saving" &&
+      paidTitlesSourceId() !== source.id
+    ) {
+      setPaidTitlesSourceId(source.id);
+      setPaidTitlesEnabled(source.showPaidPostTitles === true);
+      setPaidTitlesSaveState("idle");
+      setPaidTitlesError(null);
+    }
+  });
+
+  const handlePaidTitlesChange = async (event: Event) => {
+    const source = connectedSource();
+    if (!source || paidTitlesSaveState() === "saving") return;
+
+    const previousValue = paidTitlesEnabled();
+    const nextValue = (event.currentTarget as HTMLInputElement).checked;
+    const saveGeneration = ++paidTitlesSaveGeneration;
+    setPaidTitlesEnabled(nextValue);
+    setPaidTitlesError(null);
+    setPaidTitlesSaveState("saving");
+
+    try {
+      const updated = await updateSource(source.id, {
+        showPaidPostTitles: nextValue,
+      });
+      if (saveGeneration !== paidTitlesSaveGeneration) return;
+      setPaidTitlesEnabled(updated.showPaidPostTitles === true);
+      await props.onSourceUpdated?.();
+      setPaidTitlesSaveState("saved");
+    } catch (err: unknown) {
+      if (saveGeneration !== paidTitlesSaveGeneration) return;
+      setPaidTitlesEnabled(previousValue);
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      }
+      setPaidTitlesError(
+        safeError(err, "Digest preference could not be saved."),
+      );
+      setPaidTitlesSaveState("error");
+    }
   };
   const resetDiscovery = () => {
     publicationAccountGeneration += 1;
@@ -378,6 +445,41 @@ export default function SubstackConnectPanel(props: SubstackConnectPanelProps) {
                 : "Add publication"}
             </button>
           </form>
+        </section>
+        <section
+          class="substack-preferences"
+          aria-labelledby="substack-preferences-title"
+          aria-busy={paidTitlesSaveState() === "saving"}
+        >
+          <h3 id="substack-preferences-title">Digest preferences</h3>
+          <p class="hint">
+            Inaccessible paid posts are never summarized. When enabled, linked
+            titles appear at the end of each digest so the reader can decide
+            whether to subscribe.
+          </p>
+          <label class="toggle" for="substack-paid-post-titles">
+            <input
+              id="substack-paid-post-titles"
+              type="checkbox"
+              checked={paidTitlesEnabled()}
+              disabled={paidTitlesSaveState() === "saving"}
+              onChange={handlePaidTitlesChange}
+            />
+            <span>Show paid post titles</span>
+          </label>
+          <Show when={paidTitlesSaveState() === "saving"}>
+            <p class="hint" role="status" aria-live="polite">
+              Saving digest preference…
+            </p>
+          </Show>
+          <Show when={paidTitlesSaveState() === "saved"}>
+            <p class="hint" role="status" aria-live="polite">
+              Digest preference saved.
+            </p>
+          </Show>
+          <Show when={paidTitlesError()}>
+            <p class="error" role="alert">{paidTitlesError()}</p>
+          </Show>
         </section>
       </Show>
 

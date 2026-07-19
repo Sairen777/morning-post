@@ -94,6 +94,16 @@ one aggregate. Substack summarizes each article independently, preserves source
 order and metadata, then wraps the results in the tagged `SummaryContent`
 contract.
 
+For Substack, an item is an **inaccessible paid post** only when both
+`NormalizedItem.meta.audience === "only_paid"` and
+`NormalizedItem.meta.contentAccess === "preview"`. The orchestration layer does
+not send such an item to the summarizer or make any model call for it. Instead
+it persists an article summary with the available source metadata,
+`contentAccess: "paid"`, and `points: []`. A paid article whose full content is
+available, and a free article represented by a preview, continue through normal
+article summarization. This classification does not imply that Morning Post can
+read the paid body or subscribe the user to the publication.
+
 The low-level service implements `SummarizerService` in
 `src/summarizers/summarizer.types.ts`.
 
@@ -149,6 +159,15 @@ Takes the summarizer output and formats/delivers it:
 - builds markdown file to deliver via web service
 - …etc for RSS or other views
 
+Digest presentation partitions inaccessible-paid article summaries from regular
+sections. `DigestView` always contains a `paidPosts` array; paid articles never
+appear in its ordinary sections. When the owning Substack source has opted in,
+their available titles are projected into `paidPosts` in stable digest/article
+order. A section containing only paid articles is omitted, while a genuinely
+empty article section remains present. The Markdown API output and web digest
+append a final title-only **Paid posts** section; they neither render
+preview/body text nor claim access to it.
+
 Readable date formatting happens here.
 
 ### 4. Persistence layer _(planned)_
@@ -160,7 +179,9 @@ summaries. No ORM/DB is chosen yet; the field-level model lives in `ROADMAP.md`
 - **User** directly owns its summarization `systemPrompt` (one editable field —
   no separate profile or tag entities) and many **Source** rows (one per
   connector, holding that connector's credentials, with a `position` that sets
-  the primary digest order).
+  the primary digest order). Substack sources also own `showPaidPostTitles`, a
+  presentation preference that defaults to `false`; only that authenticated
+  user's owned Substack source may be updated.
 - A **Source** has many **Feed** rows — the individual subscriptions (channel,
   dialogue, subreddit, RSS URL), each with an optional within-source `position`.
   A **Feed** has cached **Item** rows and immutable **Summary** rows.
@@ -188,6 +209,11 @@ rewritten, so an `updatedAt` would only echo it and contradict immutability. The
 (`Feed.deletedAt`); `Summary` rows are never deleted or rewritten. Each summary
 snapshots `feedNameSnapshot` at generation time so digests still render after a
 feed is renamed upstream or removed.
+
+Paid-title projection is likewise derived at read time rather than frozen into
+the digest. Changing an owned Substack source's `showPaidPostTitles` setting
+therefore re-renders historical digests from their immutable paid article
+summaries without re-ingestion, re-summarization, or a new model call.
 
 #### Credentials &amp; secrets
 
@@ -273,6 +299,11 @@ Migration `0013_wandering_silver_fox` renames the historical `points` column to
 `{ "kind": "aggregate", "points":
 … }`. Reads and writes validate the strict
 tagged union at the repository boundary.
+
+Migration `0014_cynical_malice` adds the non-null
+`sources.show_paid_post_titles` boolean column with database default `false`.
+The public `Source` projection exposes it as `showPaidPostTitles`; mutation is
+restricted to an owned Substack source.
 
 #### Prompt layering
 
@@ -360,6 +391,13 @@ runs per user. `createDigestRun` surfaces a typed conflict result; manual
 `/digests/run` returns a controlled error, and the scheduler skips the user and
 continues. See `src/repositories/digest-run-repository.ts`.
 
+**In-process run finalization.** `runForUser` owns an outer lifecycle boundary
+after creating the run row. Any unexpected exception escaping plan loading,
+ingestion, assembly, or final view construction makes a best-effort transition
+of that exact run to `failed` with a sanitized error before the original error
+is rethrown. This prevents ordinary application failures from occupying the
+active-run uniqueness slot.
+
 **Stale-run recovery.** `recoverStaleDigestRuns(database, now,
 staleAfterMs)`
 updates `running` rows older than the threshold to `failed`, storing a redacted
@@ -369,7 +407,8 @@ unique index prevents duplicate work after recovery. See
 
 Configuration: `DIGEST_RUN_STALE_AFTER_MS` (default 15 minutes) and
 `SCHEDULER_LEASE_MS` (default 90 seconds). {/* Tests:
-tests/scheduler/digest-job.test.ts, tests/db/digest-run-repository.test.ts */}
+tests/services/orchestrator.test.ts, tests/scheduler/digest-job.test.ts,
+tests/db/digest-run-repository.test.ts */}
 
 ### 9. Connector batching and deadlines
 

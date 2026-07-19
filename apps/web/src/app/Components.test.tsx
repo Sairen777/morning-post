@@ -1,5 +1,5 @@
 /** @jsxImportSource solid-js */
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render } from "@solidjs/testing-library";
 import StatusBadge from "../app/StatusBadge";
 import FormatTime from "../app/FormatTime";
@@ -72,6 +72,7 @@ describe("SourcesPanel", () => {
     connectorId: "Substack",
     position: null,
     enabled: true,
+    showPaidPostTitles: false,
     connected: true,
     createdAt: 0,
     updatedAt: 0,
@@ -85,11 +86,12 @@ describe("SourcesPanel", () => {
       sourceFeeds: {},
       onToggleSource: () => Promise.resolve(),
       onUpdateSourcePosition: () => Promise.resolve(),
-      onDisconnectSource: () => Promise.resolve({
-        source,
-        revokeTelegramSession: false,
-        message: "Disconnected",
-      }),
+      onDisconnectSource: () =>
+        Promise.resolve({
+          source,
+          revokeTelegramSession: false,
+          message: "Disconnected",
+        }),
       onDiscoverFeeds: () => Promise.resolve([]),
       onLoadSourceFeeds: () => Promise.resolve([]),
       onSubscribe: () => Promise.resolve(),
@@ -100,7 +102,10 @@ describe("SourcesPanel", () => {
     substack.unmount();
 
     const telegram = render(() => (
-      <SourcesPanel {...props} sources={[{ ...source, connectorId: "Telegram" }]} />
+      <SourcesPanel
+        {...props}
+        sources={[{ ...source, connectorId: "Telegram" }]}
+      />
     ));
     expect(telegram.container.textContent).toContain("Discover feeds");
   });

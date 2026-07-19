@@ -764,6 +764,7 @@ Deno.test("POST /digests/run forwards the entrypoint summarizer instance", async
         },
         sections: [],
         groups: [],
+        paidPosts: [],
       });
     };
     const app = buildApp(database, {

@@ -81,6 +81,7 @@ const sampleView: DigestView = {
       ],
     },
   ],
+  paidPosts: [],
 };
 
 describe("DigestDetail rendering", () => {
@@ -225,6 +226,7 @@ function makeDigestsPanelProps(
         digest: sampleDigests[0],
         sections: [],
         groups: [],
+        paidPosts: [],
       }),
     onDeleteDigest: overrides.onDeleteDigest ?? noopOnDeleteDigest,
     onAuthError: noopOnAuthError,
@@ -241,6 +243,7 @@ describe("DigestsPanel ordinal numbering", () => {
             digest: sampleDigests[0],
             sections: [],
             groups: [],
+            paidPosts: [],
           })}
         onDeleteDigest={noopOnDeleteDigest}
         onAuthError={noopOnAuthError}
@@ -309,6 +312,7 @@ describe("DigestsPanel Load more", () => {
       digest: sampleDigests[0],
       sections: [],
       groups: [],
+      paidPosts: [],
     });
   const noopDelete = async (_id: string) => {};
   const noopAuth = () => {};
@@ -588,6 +592,7 @@ const mixedContentView = {
       ],
     },
   ],
+  paidPosts: [],
 } as unknown as DigestView;
 
 describe("DigestsPanel tagged digest content", () => {
@@ -641,5 +646,73 @@ describe("DigestsPanel tagged digest content", () => {
     expect(getByText("No articles available.")).toBeDefined();
     expect(getByText("(removed)")).toBeDefined();
     expect(container.querySelectorAll("article time")).toHaveLength(2);
+  });
+  it("does not show a paid-post list when the digest has none", async () => {
+    const { getByRole, queryByRole } = render(() => (
+      <DigestsPanel
+        digests={[sampleDigests[0]]}
+        onSelectDigest={() => Promise.resolve(sampleView)}
+        onDeleteDigest={noopOnDeleteDigest}
+        onAuthError={noopOnAuthError}
+      />
+    ));
+
+    getByRole("button", { name: /#1/ }).click();
+    await waitFor(() =>
+      expect(getByRole("heading", { name: "Active Feed" })).toBeDefined()
+    );
+    expect(queryByRole("heading", { name: "Paid posts" })).toBeNull();
+  });
+
+  it("shows linked and plain paid titles after all normal digest content", async () => {
+    const view: DigestView = {
+      ...sampleView,
+      paidPosts: [
+        {
+          title: "Linked paid title",
+          sourceUrl: "https://example.substack.com/p/linked",
+          publishedAt: 1_704_240_000_000,
+        },
+        {
+          title: "Plain paid title",
+          sourceUrl: null,
+          publishedAt: 1_704_326_400_000,
+        },
+        {
+          title: "Unsafe paid title",
+          sourceUrl: "javascript:alert(document.domain)",
+          publishedAt: 1_704_412_800_000,
+        },
+      ],
+    };
+    const { getByRole, getByText, queryByText, container } = render(() => (
+      <DigestsPanel
+        digests={[sampleDigests[0]]}
+        onSelectDigest={() => Promise.resolve(view)}
+        onDeleteDigest={noopOnDeleteDigest}
+        onAuthError={noopOnAuthError}
+      />
+    ));
+
+    getByRole("button", { name: /#1/ }).click();
+    await waitFor(() =>
+      expect(getByRole("heading", { name: "Paid posts" })).toBeDefined()
+    );
+
+    const linkedTitle = getByRole("link", { name: "Linked paid title" });
+    expect(linkedTitle.getAttribute("href")).toBe(
+      "https://example.substack.com/p/linked",
+    );
+    expect(getByText("Plain paid title").tagName).not.toBe("A");
+    expect(getByText("Unsafe paid title").tagName).not.toBe("A");
+    const lastNormalContent = getByText("historical bullet");
+    const paidHeading = getByRole("heading", { name: "Paid posts" });
+    expect(
+      lastNormalContent.compareDocumentPosition(paidHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(queryByText("Preview")).toBeNull();
+    expect(queryByText("No points available for this article.")).toBeNull();
+    expect(container.querySelector(".paid-posts article")).toBeNull();
   });
 });

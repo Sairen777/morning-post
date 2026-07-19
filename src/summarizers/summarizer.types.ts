@@ -25,7 +25,7 @@ export interface ArticleSummary {
   title: string;
   sourceUrl: string | null;
   publishedAt: number;
-  contentAccess: "full" | "preview";
+  contentAccess: "full" | "preview" | "paid";
   points: SummaryPoint[];
 }
 

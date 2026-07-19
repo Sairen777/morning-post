@@ -20,6 +20,31 @@ const digest = {
   updatedAt: 1_704_153_600_000,
 };
 
+const sources = [
+  {
+    id: "telegram-source",
+    userId: user.id,
+    connectorId: "Telegram",
+    position: 0,
+    enabled: true,
+    showPaidPostTitles: false,
+    connected: true,
+    createdAt: 1_704_067_200_000,
+    updatedAt: 1_704_067_200_000,
+  },
+  {
+    id: "substack-source",
+    userId: user.id,
+    connectorId: "Substack",
+    position: 1,
+    enabled: true,
+    showPaidPostTitles: true,
+    connected: true,
+    createdAt: 1_704_067_200_000,
+    updatedAt: 1_704_067_200_000,
+  },
+];
+
 const mixedDigestView = {
   digest,
   sections: [],
@@ -85,6 +110,15 @@ const mixedDigestView = {
       ],
     },
   ],
+  paidPosts: [
+    {
+      title: "Subscriber-only dispatch",
+      sourceUrl: "https://example.com/paid-dispatch",
+      publishedAt: 1_704_153_600_000,
+      preview: "Paid post preview must not render",
+      body: "Paid post body must not render",
+    },
+  ],
 };
 
 test("renders mixed digest content without crossing article boundaries", async ({ page }) => {
@@ -95,7 +129,7 @@ test("renders mixed digest content without crossing article boundaries", async (
       return;
     }
     if (url.pathname === "/sources") {
-      await route.fulfill({ json: [] });
+      await route.fulfill({ json: sources });
       return;
     }
     if (url.pathname === "/feeds") {
@@ -147,4 +181,20 @@ test("renders mixed digest content without crossing article boundaries", async (
   await expect(telegramSection.locator("li")).toContainText(
     "Telegram point stays in the flat feed list",
   );
+
+  const paidPosts = page.locator("section.paid-posts");
+  const paidPostLink = paidPosts.getByRole("link", {
+    name: "Subscriber-only dispatch",
+  });
+  await expect(paidPostLink).toHaveAttribute(
+    "href",
+    "https://example.com/paid-dispatch",
+  );
+  await expect(paidPosts).not.toContainText(
+    "Paid post preview must not render",
+  );
+  await expect(paidPosts).not.toContainText("Paid post body must not render");
+  await expect(
+    page.locator("section.digest-section, section.paid-posts").last(),
+  ).toHaveClass(/paid-posts/);
 });

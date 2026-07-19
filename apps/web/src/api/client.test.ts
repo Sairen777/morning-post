@@ -15,6 +15,7 @@ import {
   submitTelegramTwoFactorAuthentication,
   unsubscribeFeed,
   updateCurrentUser,
+  updateSource,
 } from "../api/client";
 
 describe("ApiClientError", () => {
@@ -56,6 +57,44 @@ describe("updateCurrentUser", () => {
       expect(JSON.parse(opts?.body as string)).toEqual({
         name: "New Name",
         defaultLanguage: null,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("updateSource", () => {
+  it("sends the paid-title preference in a PATCH body", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      const fetchCalls: Array<[string, RequestInit?]> = [];
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        fetchCalls.push([url, opts]);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "source-1",
+              userId: "user-1",
+              connectorId: "Substack",
+              position: null,
+              enabled: true,
+              showPaidPostTitles: true,
+              connected: true,
+              createdAt: 0,
+              updatedAt: 0,
+            }),
+            { status: 200 },
+          ),
+        );
+      }) as typeof fetch;
+
+      await updateSource("source-1", { showPaidPostTitles: true });
+
+      expect(fetchCalls[0][0]).toBe("/sources/source-1");
+      expect(fetchCalls[0][1]?.method).toBe("PATCH");
+      expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({
+        showPaidPostTitles: true,
       });
     } finally {
       globalThis.fetch = originalFetch;

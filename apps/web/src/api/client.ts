@@ -162,7 +162,11 @@ export function listSources(): Promise<PublicSource[]> {
 
 export function updateSource(
   id: string,
-  input: { enabled?: boolean; position?: number | null },
+  input: {
+    enabled?: boolean;
+    position?: number | null;
+    showPaidPostTitles?: boolean;
+  },
 ): Promise<PublicSource> {
   return apiRequest<PublicSource>(`/sources/${id}`, {
     method: "PATCH",

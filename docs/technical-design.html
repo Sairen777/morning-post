@@ -788,6 +788,7 @@
     text connector_id
     jsonb credentials
     boolean enabled
+    boolean show_paid_post_titles
   }
   feeds {
     uuid id PK
@@ -848,7 +849,7 @@
             <tr>
               <td>Source</td>
               <td>Credentials are sensitive connector-account bearer material.</td>
-              <td><code>credentials</code> is encrypted JSONB; public source projection exposes <code>connected</code>, not ciphertext.</td>
+              <td><code>credentials</code> is encrypted JSONB; public source projection exposes <code>connected</code>, not ciphertext. Substack sources also expose <code>showPaidPostTitles</code>, a per-source presentation preference that defaults to <code>false</code> and can be changed only through the authenticated owner's Substack source. Migration <code>0014_cynical_malice</code> adds the non-null <code>show_paid_post_titles</code> column with database default <code>false</code>.</td>
             </tr>
             <tr>
               <td>Feed</td>
@@ -873,7 +874,7 @@
             <tr>
               <td>Digest run</td>
               <td>Operational state for observability, partial failures, and retries.</td>
-              <td>Run and per-feed rows track stages, status, item counts, timing, and sanitized error message.</td>
+              <td>Run and per-feed rows track stages, status, item counts, timing, and sanitized error messages. An outer <code>runForUser()</code> lifecycle boundary finalizes unexpected in-process failures before rethrowing the original error.</td>
             </tr>
           </tbody>
         </table>
@@ -953,7 +954,11 @@
     O->>O: choose strategy from connectorId
     alt Substack
       loop each ordered article
-        O->>G: summarize exactly one article in article mode
+        alt meta.audience == only_paid and meta.contentAccess == preview
+          O->>O: persist contentAccess=paid and points=[]; do not call model
+        else accessible paid full or free preview
+          O->>G: summarize exactly one article in article mode
+        end
       end
       O->>O: build articles content with source metadata
     else Telegram or another connector
@@ -966,12 +971,14 @@
   O->>DB: set digest status; finish digest_run
   O-->>S: derived DigestView</pre>
 
-        <p>Digest views expose the same <code>SummaryContent</code> discriminated union used by persistence. Aggregate sections remain a flat list of points. Article sections preserve source order and carry the source external ID, title, optional HTTP(S) URL, publication timestamp, full/preview access marker, and nested points. Markdown and the web client render one feed heading followed by semantic article headings, never one flattened Substack list.</p>
+        <p>For Substack, an item is an <strong>inaccessible paid post</strong> exactly when <code>NormalizedItem.meta.audience === "only_paid"</code> and <code>NormalizedItem.meta.contentAccess === "preview"</code>. The orchestration layer never sends that item to the summarizer and makes no model call for it; it persists the available article metadata with <code>contentAccess: "paid"</code> and <code>points: []</code>. Accessible paid-full articles and free previews still follow normal article summarization. This representation records a title that Substack exposed; it does not mean Morning Post can read the paid body or automatically subscribe the user.</p>
+
+        <p>Every <code>DigestView</code> includes <code>paidPosts</code>. Digest projection partitions paid articles out of ordinary sections, preserving stable digest/article order for title projection only when the owning Substack source has <code>showPaidPostTitles</code> enabled. A section containing only paid articles is omitted, but a genuinely empty article section remains. Because this partition is derived at read time from immutable summaries and the source's current setting, toggling the opt-in re-renders historical digests without re-ingestion, re-summarization, or a model call. The Markdown API representation and web digest append a final title-only <strong>Paid posts</strong> section; paid articles never appear in regular sections and no preview or body text is rendered.</p>
 
         <div class="risk-grid">
           <div class="card">
             <div class="card-title">Current failure isolation</div>
-            <p>A connector creation failure records a failed connector-stage run feed. Per-feed ingestion and summarization failures are caught and recorded; successful feeds still contribute to a partial digest.</p>
+            <p>A connector creation failure records a failed connector-stage run feed. Per-feed ingestion and summarization failures are caught and recorded; successful feeds still contribute to a partial digest. If an unexpected error escapes those boundaries after the run row exists, <code>runForUser()</code> makes a best-effort transition of that exact run to <code>failed</code> with sanitized error text, then preserves and rethrows the original error.</p>
           </div>
           <div class="card">
             <div
@@ -1217,7 +1224,7 @@
               <td>In-flight digest runs have no crash recovery state transition.</td>
               <td><code>runForUser()</code> creates <code>digest_runs.status = running</code> and marks finished at the end. A process crash between those points leaves running rows.</td>
               <td>On startup or scheduler tick, mark stale <code>running</code> runs older than a threshold as failed/stale, then retry based on period and idempotent upserts.</td>
-              <td><strong>Remediated.</strong> <code>recoverStaleDigestRuns()</code> updates <code>running</code> rows older than <code>DIGEST_RUN_STALE_AFTER_MS</code> (default 15 min) to <code>failed</code> with redacted error text. Runs at start of each leader tick. Partial unique index on <code>digest_runs(userId) WHERE status='running'</code> prevents duplicates post-recovery. See <code>src/repositories/digest-run-repository.ts</code>. Tests in <code>tests/db/digest-run-repository.test.ts</code>.</td>
+              <td><strong>Remediated.</strong> <code>runForUser()</code> immediately finalizes unexpected in-process failures as <code>failed</code> without masking the original error. For process death or a database outage during finalization, <code>recoverStaleDigestRuns()</code> updates <code>running</code> rows older than <code>DIGEST_RUN_STALE_AFTER_MS</code> (default 15 min) to <code>failed</code> with redacted error text at the start of each leader tick. The partial unique index on <code>digest_runs(userId) WHERE status='running'</code> prevents duplicate active work. See <code>src/services/orchestrator.ts</code> and <code>src/repositories/digest-run-repository.ts</code>. Tests in <code>tests/services/orchestrator.test.ts</code> and <code>tests/db/digest-run-repository.test.ts</code>.</td>
             </tr>
             <tr>
               <td><span class="badge high">P5</span></td>

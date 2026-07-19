@@ -370,6 +370,104 @@ Deno.test("summarizeFeedPeriod keeps Substack articles isolated, ordered, and ta
   });
 });
 
+Deno.test("summarizeFeedPeriod excludes inaccessible paid previews from model calls and persists paid article metadata", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(
+      database,
+      "summarize-substack-paid-preview@example.com",
+      null,
+      ConnectorId.Substack,
+    );
+    await upsertItems(database, feed.id, [
+      normalizedItem({
+        connectorId: ConnectorId.Substack,
+        externalId: "article:paid-preview",
+        title: "Paid preview",
+        text: "Teaser that must not reach the model",
+        url: "https://writer.substack.com/p/paid-preview",
+        meta: { audience: "only_paid", contentAccess: "preview" },
+      }),
+      normalizedItem({
+        connectorId: ConnectorId.Substack,
+        externalId: "article:paid-full",
+        date: periodStartMs + 1,
+        title: "Paid full",
+        text: "Accessible paid body",
+        url: "https://writer.substack.com/p/paid-full",
+        meta: { audience: "only_paid", contentAccess: "full" },
+      }),
+      normalizedItem({
+        connectorId: ConnectorId.Substack,
+        externalId: "article:free-preview",
+        date: periodStartMs + 2,
+        title: "Free preview",
+        text: "Accessible free preview body",
+        url: "https://writer.substack.com/p/free-preview",
+        meta: { audience: "everyone", contentAccess: "preview" },
+      }),
+    ], 1);
+    const summarizer = new FakeSummarizer([
+      [{ text: "Paid full point", sourceUrl: null }],
+      [{ text: "Free preview point", sourceUrl: null }],
+    ]);
+
+    const summary = await summarizeFeedPeriod(
+      database,
+      user.id,
+      feed.id,
+      periodStartMs,
+      periodEndMs,
+      { summarizer, now: () => 36 },
+    );
+
+    assertEquals(
+      summarizer.calls.map((call) => call.items.map((item) => item.externalId)),
+      [["article:paid-full"], ["article:free-preview"]],
+    );
+    assertEquals(
+      summarizer.calls.map((call) => call.options?.summaryMode),
+      ["article", "article"],
+    );
+    assertEquals(summary.content, {
+      kind: "articles",
+      articles: [
+        {
+          sourceExternalId: "article:paid-preview",
+          title: "Paid preview",
+          sourceUrl: "https://writer.substack.com/p/paid-preview",
+          publishedAt: periodStartMs,
+          contentAccess: "paid",
+          points: [],
+        },
+        {
+          sourceExternalId: "article:paid-full",
+          title: "Paid full",
+          sourceUrl: "https://writer.substack.com/p/paid-full",
+          publishedAt: periodStartMs + 1,
+          contentAccess: "full",
+          points: [{ text: "Paid full point", sourceUrl: null }],
+        },
+        {
+          sourceExternalId: "article:free-preview",
+          title: "Free preview",
+          sourceUrl: "https://writer.substack.com/p/free-preview",
+          publishedAt: periodStartMs + 2,
+          contentAccess: "preview",
+          points: [{ text: "Free preview point", sourceUrl: null }],
+        },
+      ],
+    });
+    assertEquals(
+      (await findSummaryForFeedPeriod(
+        database,
+        feed.id,
+        periodStartMs,
+        periodEndMs,
+      ))?.content,
+      summary.content,
+    );
+  });
+});
 Deno.test("summarizeFeedPeriod rejects a nonempty Substack article with no points and persists nothing", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(

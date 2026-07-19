@@ -10,6 +10,7 @@ const connectedSource: PublicSource = {
   connectorId: "Substack",
   position: null,
   enabled: true,
+  showPaidPostTitles: false,
   connected: true,
   createdAt: 0,
   updatedAt: 0,
@@ -217,6 +218,119 @@ describe("SubstackConnectPanel", () => {
       screen.getByRole("button", { name: /connect substack/i }),
     );
     await waitFor(() => expect(onAuthError).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows the saved paid-title preference unchecked or checked", () => {
+    const unchecked = render(() => (
+      <SubstackConnectPanel
+        sources={[connectedSource]}
+        feeds={[]}
+        onConnected={() => Promise.resolve()}
+        onPublicationAdded={() => Promise.resolve()}
+        onAuthError={() => {}}
+      />
+    ));
+    expect(
+      screen.getByRole("checkbox", { name: "Show paid post titles" }),
+    ).not.toBeChecked();
+    unchecked.unmount();
+
+    render(() => (
+      <SubstackConnectPanel
+        sources={[{ ...connectedSource, showPaidPostTitles: true }]}
+        feeds={[]}
+        onConnected={() => Promise.resolve()}
+        onPublicationAdded={() => Promise.resolve()}
+        onAuthError={() => {}}
+      />
+    ));
+    expect(
+      screen.getByRole("checkbox", { name: "Show paid post titles" }),
+    ).toBeChecked();
+  });
+
+  it("saves the paid-title preference immediately and refreshes after success", async () => {
+    const response = createDeferred<Response>();
+    const onSourceUpdated = vi.fn(() => Promise.resolve());
+    const requests: Array<[string, RequestInit | undefined]> = [];
+    globalThis.fetch = vi.fn((input, init) => {
+      requests.push([String(input), init]);
+      return response.promise;
+    }) as typeof fetch;
+    render(() => (
+      <SubstackConnectPanel
+        sources={[connectedSource]}
+        feeds={[]}
+        onConnected={() => Promise.resolve()}
+        onPublicationAdded={() => Promise.resolve()}
+        onSourceUpdated={onSourceUpdated}
+        onAuthError={() => {}}
+      />
+    ));
+
+    const checkbox = screen.getByRole("checkbox", {
+      name: "Show paid post titles",
+    });
+    await fireEvent.click(checkbox);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0][0]).toBe("/sources/source-1");
+    expect(requests[0][1]?.method).toBe("PATCH");
+    expect(JSON.parse(requests[0][1]?.body as string)).toEqual({
+      showPaidPostTitles: true,
+    });
+    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Saving digest preference",
+    );
+    expect(onSourceUpdated).not.toHaveBeenCalled();
+
+    response.resolve(
+      new Response(
+        JSON.stringify({ ...connectedSource, showPaidPostTitles: true }),
+        { status: 200 },
+      ),
+    );
+    await waitFor(() => expect(onSourceUpdated).toHaveBeenCalledTimes(1));
+    expect(checkbox).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Digest preference saved",
+    );
+  });
+
+  it("rolls back a failed paid-title change and reports authentication failures", async () => {
+    const onAuthError = vi.fn();
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: { code: "UNAUTHORIZED", message: "Sign in again" },
+          }),
+          { status: 401 },
+        ),
+      )
+    ) as typeof fetch;
+    render(() => (
+      <SubstackConnectPanel
+        sources={[connectedSource]}
+        feeds={[]}
+        onConnected={() => Promise.resolve()}
+        onPublicationAdded={() => Promise.resolve()}
+        onAuthError={onAuthError}
+      />
+    ));
+
+    const checkbox = screen.getByRole("checkbox", {
+      name: "Show paid post titles",
+    });
+    await fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    await waitFor(() => expect(onAuthError).toHaveBeenCalledTimes(1));
+    expect(checkbox).not.toBeChecked();
+    expect(checkbox).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Sign in again");
   });
 
   it("only renders publication onboarding for a connected Substack source", () => {

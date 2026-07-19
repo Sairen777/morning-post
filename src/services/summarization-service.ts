@@ -130,6 +130,13 @@ export async function cleanupExpiredMedia(
   }
 }
 
+function isInaccessiblePaidPost(
+  payload: Parameters<SummarizerService["summarize"]>[0][number],
+): boolean {
+  return payload.meta?.audience === "only_paid" &&
+    payload.meta?.contentAccess === "preview";
+}
+
 export async function summarizeOwnedFeedPeriod(
   database: Database,
   input: OwnedSummarizeFeedPeriodInput,
@@ -181,15 +188,18 @@ export async function summarizeOwnedFeedPeriod(
       for (const item of items) {
         controller.signal.throwIfAborted();
         const payload = item.payload;
+        const inaccessiblePaidPost = isInaccessiblePaidPost(payload);
         const hasText = payload.text.trim().length > 0;
-        const points = hasText
+        const points = inaccessiblePaidPost
+          ? []
+          : hasText
           ? await summarizer.summarize([payload], rules, {
             signal: controller.signal,
             summaryMode: "article",
           })
           : [];
         controller.signal.throwIfAborted();
-        if (hasText && points.length === 0) {
+        if (!inaccessiblePaidPost && hasText && points.length === 0) {
           throw new Error(
             `Summarizer returned no points for nonempty article ${payload.externalId}`,
           );
@@ -199,7 +209,9 @@ export async function summarizeOwnedFeedPeriod(
           title: payload.title?.trim() || "Untitled article",
           sourceUrl: payload.url,
           publishedAt: payload.date,
-          contentAccess: payload.meta?.contentAccess === "preview"
+          contentAccess: inaccessiblePaidPost
+            ? "paid"
+            : payload.meta?.contentAccess === "preview"
             ? "preview"
             : "full",
           points,

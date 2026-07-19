@@ -46,10 +46,17 @@ export interface DigestSourceGroup {
   sections: DigestSection[];
 }
 
+export interface PaidPost {
+  title: string;
+  sourceUrl: string | null;
+  publishedAt: number;
+}
+
 export interface DigestView {
   digest: PublicDigest;
   sections: DigestSection[];
   groups: DigestSourceGroup[];
+  paidPosts: PaidPost[];
 }
 
 export interface AssembleDigestDependencies
@@ -61,17 +68,44 @@ export interface AssembleDigestDependencies
   summarizationConcurrency?: number;
 }
 
-function toDigestSections(
+function toDigestContent(
   userPeriodSummaries: UserPeriodSummary[],
-): DigestSection[] {
-  return userPeriodSummaries.map((summary) => ({
-    sourceId: summary.sourceId,
-    connectorId: summary.connectorId,
-    feedId: summary.feedId,
-    feedName: summary.feedNameSnapshot,
-    feedRemoved: summary.feedDeletedAt !== null,
-    content: summary.content,
-  }));
+): { sections: DigestSection[]; paidPosts: PaidPost[] } {
+  const sections: DigestSection[] = [];
+  const paidPosts: PaidPost[] = [];
+
+  for (const summary of userPeriodSummaries) {
+    let content = summary.content;
+    if (content.kind === "articles") {
+      const articles = content.articles.filter((article) => {
+        if (article.contentAccess !== "paid") {
+          return true;
+        }
+        if (summary.showPaidPostTitles) {
+          paidPosts.push({
+            title: article.title,
+            sourceUrl: article.sourceUrl,
+            publishedAt: article.publishedAt,
+          });
+        }
+        return false;
+      });
+      if (content.articles.length > 0 && articles.length === 0) {
+        continue;
+      }
+      content = { kind: "articles", articles };
+    }
+    sections.push({
+      sourceId: summary.sourceId,
+      connectorId: summary.connectorId,
+      feedId: summary.feedId,
+      feedName: summary.feedNameSnapshot,
+      feedRemoved: summary.feedDeletedAt !== null,
+      content,
+    });
+  }
+
+  return { sections, paidPosts };
 }
 
 function groupDigestSections(sections: DigestSection[]): DigestSourceGroup[] {
@@ -121,11 +155,12 @@ export async function buildDigestViewForPeriod(
     digest.periodStartMs,
     digest.periodEndMs,
   );
-  const sections = toDigestSections(userPeriodSummaries);
+  const { sections, paidPosts } = toDigestContent(userPeriodSummaries);
   return {
     digest,
     sections,
     groups: groupDigestSections(sections),
+    paidPosts,
   };
 }
 
@@ -296,6 +331,9 @@ function safeMarkdownLinkDestination(value: string | null): string | null {
     return null;
   }
 }
+function escapeMarkdownTitle(value: string): string {
+  return value.replace(/\s+/g, " ").trim().replace(/[\\[\]]/g, "\\$&");
+}
 
 export function renderDigestMarkdown(view: DigestView): string {
   const lines = [
@@ -326,8 +364,7 @@ export function renderDigestMarkdown(view: DigestView): string {
       } else {
         for (const article of section.content.articles) {
           lines.push("");
-          const articleTitle = article.title.replace(/\s+/g, " ").trim()
-            .replace(/[\\[\]]/g, "\\$&");
+          const articleTitle = escapeMarkdownTitle(article.title);
           const sourceUrl = safeMarkdownLinkDestination(article.sourceUrl);
           lines.push(
             sourceUrl
@@ -349,6 +386,20 @@ export function renderDigestMarkdown(view: DigestView): string {
       }
       lines.push("");
     }
+  }
+
+  if (view.paidPosts.length > 0) {
+    lines.push("## Paid posts", "");
+    for (const paidPost of view.paidPosts) {
+      const title = escapeMarkdownTitle(paidPost.title);
+      const sourceUrl = safeMarkdownLinkDestination(paidPost.sourceUrl);
+      lines.push(sourceUrl ? `- [${title}](<${sourceUrl}>)` : `- ${title}`);
+    }
+    lines.push(
+      "",
+      "These posts were not summarized because their full text is unavailable.",
+      "",
+    );
   }
 
   return lines.join("\n").trimEnd() + "\n";

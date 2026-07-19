@@ -1,14 +1,23 @@
-import { assert, assertEquals, assertExists } from "@std/assert"
+import { assert, assertEquals, assertExists } from "@std/assert";
 import type { Hono } from "@hono/hono";
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
-import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
+import {
+  CredentialCipher,
+  type EncryptedBlob,
+} from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { sources } from "../../src/db/schema/source.ts";
 import { withTestDb } from "../../src/db/testing.ts";
-import { createOrReviveFeed, listFeedsForUser } from "../../src/repositories/feed-repository.ts";
-import { createSource, findSourceById } from "../../src/repositories/source-repository.ts";
+import {
+  createOrReviveFeed,
+  listFeedsForUser,
+} from "../../src/repositories/feed-repository.ts";
+import {
+  createSource,
+  findSourceById,
+} from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 
 const PASSWORD = "analytical-engine-1843";
@@ -25,10 +34,16 @@ function buildCredentialCipher(): CredentialCipher {
   return new CredentialCipher(new EnvMasterKeyProvider(MASTER_KEY_BYTES));
 }
 
-function jsonRequest(method: "POST" | "PATCH" | "DELETE", body?: unknown): RequestInit {
+function jsonRequest(
+  method: "POST" | "PATCH" | "DELETE",
+  body?: unknown,
+): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
+    headers: {
+      "content-type": "application/json",
+      Origin: "http://127.0.0.1:5173",
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   };
 }
@@ -84,14 +99,22 @@ async function createEncryptedSource(
   credentialCipher: CredentialCipher,
   userId: string,
   connectorId: ConnectorId,
-  options: { position?: number | null; enabled?: boolean } = {},
+  options: {
+    position?: number | null;
+    enabled?: boolean;
+  } = {},
 ) {
   return await createSource(database, {
     userId,
     connectorId,
-    credentials: await encryptCredentials(credentialCipher, userId, connectorId, {
-      sessionString: `${connectorId}-session`,
-    }),
+    credentials: await encryptCredentials(
+      credentialCipher,
+      userId,
+      connectorId,
+      {
+        sessionString: `${connectorId}-session`,
+      },
+    ),
     position: options.position,
     enabled: options.enabled,
   });
@@ -101,8 +124,14 @@ Deno.test("GET /sources returns only the caller sources ordered by position then
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "sources-list@example.com");
-    const { user: otherUser } = await registerAndLogin(app, "sources-other@example.com");
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "sources-list@example.com",
+    );
+    const { user: otherUser } = await registerAndLogin(
+      app,
+      "sources-other@example.com",
+    );
 
     const firstTiedSource = await createEncryptedSource(
       database,
@@ -125,13 +154,25 @@ Deno.test("GET /sources returns only the caller sources ordered by position then
       ConnectorId.Substack,
       { position: 3 },
     );
-    await createEncryptedSource(database, credentialCipher, otherUser.id, ConnectorId.YouTube, {
-      position: 0,
-    });
+    await createEncryptedSource(
+      database,
+      credentialCipher,
+      otherUser.id,
+      ConnectorId.YouTube,
+      {
+        position: 0,
+      },
+    );
 
-    await database.update(sources).set({ createdAt: 10, updatedAt: 10 }).where(eq(sources.id, firstTiedSource.id));
-    await database.update(sources).set({ createdAt: 20, updatedAt: 20 }).where(eq(sources.id, secondTiedSource.id));
-    await database.update(sources).set({ createdAt: 30, updatedAt: 30 }).where(eq(sources.id, trailingSource.id));
+    await database.update(sources).set({ createdAt: 10, updatedAt: 10 }).where(
+      eq(sources.id, firstTiedSource.id),
+    );
+    await database.update(sources).set({ createdAt: 20, updatedAt: 20 }).where(
+      eq(sources.id, secondTiedSource.id),
+    );
+    await database.update(sources).set({ createdAt: 30, updatedAt: 30 }).where(
+      eq(sources.id, trailingSource.id),
+    );
 
     const response = await app.request("/sources", { headers: { cookie } });
     assertEquals(response.status, 200);
@@ -142,9 +183,20 @@ Deno.test("GET /sources returns only the caller sources ordered by position then
       secondTiedSource.id,
       trailingSource.id,
     ]);
-    assertEquals(json.every((source: Record<string, unknown>) => !("credentials" in source)), true);
-    assertEquals(json.every((source: { connected: boolean }) => source.connected === true), true);
-    assertEquals(json.every((source: { userId: string }) => source.userId === user.id), true);
+    assertEquals(
+      json.every((source: Record<string, unknown>) =>
+        !("credentials" in source)
+      ),
+      true,
+    );
+    assertEquals(
+      json.every((source: { connected: boolean }) => source.connected === true),
+      true,
+    );
+    assertEquals(
+      json.every((source: { userId: string }) => source.userId === user.id),
+      true,
+    );
   });
 });
 
@@ -152,15 +204,28 @@ Deno.test("PATCH /sources/:id updates position and enabled", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "sources-patch@example.com");
-    const source = await createEncryptedSource(database, credentialCipher, user.id, ConnectorId.Telegram, {
-      position: 4,
-      enabled: true,
-    });
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "sources-patch@example.com",
+    );
+    const source = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
+      {
+        position: 4,
+        enabled: true,
+      },
+    );
 
     const response = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { position: 1, enabled: false }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
     });
     assertEquals(response.status, 200);
     const json = await response.json();
@@ -173,6 +238,85 @@ Deno.test("PATCH /sources/:id updates position and enabled", async () => {
     assertExists(stored);
     assertEquals(stored.position, 1);
     assertEquals(stored.enabled, false);
+    assertEquals(stored.showPaidPostTitles, false);
+  });
+});
+
+Deno.test("PATCH /sources/:id validates and persists Substack paid-post title preferences", async () => {
+  await withTestDb(async (database: Database) => {
+    const credentialCipher = buildCredentialCipher();
+    const app = buildApp(database);
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "sources-paid-titles@example.com",
+    );
+    const substack = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Substack,
+    );
+    const telegram = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
+    );
+
+    const enabledResponse = await app.request(`/sources/${substack.id}`, {
+      ...jsonRequest("PATCH", { showPaidPostTitles: true }),
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
+    });
+    assertEquals(enabledResponse.status, 200);
+    assertEquals((await enabledResponse.json()).showPaidPostTitles, true);
+    assertEquals(
+      (await findSourceById(database, substack.id, user.id))
+        ?.showPaidPostTitles,
+      true,
+    );
+
+    const disabledResponse = await app.request(`/sources/${substack.id}`, {
+      ...jsonRequest("PATCH", { showPaidPostTitles: false }),
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
+    });
+    assertEquals(disabledResponse.status, 200);
+    assertEquals((await disabledResponse.json()).showPaidPostTitles, false);
+
+    const wrongConnectorResponse = await app.request(
+      `/sources/${telegram.id}`,
+      {
+        ...jsonRequest("PATCH", { showPaidPostTitles: true }),
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          Origin: "http://127.0.0.1:5173",
+        },
+      },
+    );
+    assertEquals(wrongConnectorResponse.status, 422);
+
+    const invalidResponse = await app.request(`/sources/${substack.id}`, {
+      ...jsonRequest("PATCH", { showPaidPostTitles: "yes" }),
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
+    });
+    assertEquals(invalidResponse.status, 422);
+    assertEquals(
+      (await findSourceById(database, substack.id, user.id))
+        ?.showPaidPostTitles,
+      false,
+    );
   });
 });
 
@@ -180,15 +324,33 @@ Deno.test("sources routes keep users scoped to their own rows", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user: userA, cookie } = await registerAndLogin(app, "sources-owner-a@example.com");
-    const { user: userB } = await registerAndLogin(app, "sources-owner-b@example.com");
+    const { user: userA, cookie } = await registerAndLogin(
+      app,
+      "sources-owner-a@example.com",
+    );
+    const { user: userB } = await registerAndLogin(
+      app,
+      "sources-owner-b@example.com",
+    );
 
-    await createEncryptedSource(database, credentialCipher, userA.id, ConnectorId.Telegram, {
-      position: 1,
-    });
-    const userBSource = await createEncryptedSource(database, credentialCipher, userB.id, ConnectorId.RSS, {
-      position: 2,
-    });
+    await createEncryptedSource(
+      database,
+      credentialCipher,
+      userA.id,
+      ConnectorId.Telegram,
+      {
+        position: 1,
+      },
+    );
+    const userBSource = await createEncryptedSource(
+      database,
+      credentialCipher,
+      userB.id,
+      ConnectorId.RSS,
+      {
+        position: 2,
+      },
+    );
 
     const listResponse = await app.request("/sources", { headers: { cookie } });
     assertEquals(listResponse.status, 200);
@@ -199,7 +361,11 @@ Deno.test("sources routes keep users scoped to their own rows", async () => {
 
     const patchResponse = await app.request(`/sources/${userBSource.id}`, {
       ...jsonRequest("PATCH", { enabled: false }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
     });
     assertEquals(patchResponse.status, 404);
 
@@ -214,11 +380,18 @@ Deno.test("sources routes keep users scoped to their own rows", async () => {
 Deno.test("sources routes reject invalid UUID parameters with 422", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const { cookie } = await registerAndLogin(app, "sources-invalid-uuid@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "sources-invalid-uuid@example.com",
+    );
 
     const patchResponse = await app.request("/sources/not-a-uuid", {
       ...jsonRequest("PATCH", { enabled: false }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
     });
     assertEquals(patchResponse.status, 422);
 
@@ -234,12 +407,24 @@ Deno.test("PATCH /sources/:id rejects unsupported fields", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "sources-extra-field@example.com");
-    const source = await createEncryptedSource(database, credentialCipher, user.id, ConnectorId.Telegram);
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "sources-extra-field@example.com",
+    );
+    const source = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
+    );
 
     const response = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { connectorId: "rss" }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
     });
     assertEquals(response.status, 422);
   });
@@ -249,18 +434,34 @@ Deno.test("PATCH /sources/:id rejects positions outside the PostgreSQL integer r
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "sources-position-range@example.com");
-    const source = await createEncryptedSource(database, credentialCipher, user.id, ConnectorId.Telegram);
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "sources-position-range@example.com",
+    );
+    const source = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
+    );
 
     const tooLargeResponse = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { position: 2_147_483_648 }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
     });
     assertEquals(tooLargeResponse.status, 422);
 
     const tooSmallResponse = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { position: -2_147_483_649 }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
     });
     assertEquals(tooSmallResponse.status, 422);
   });
@@ -270,11 +471,20 @@ Deno.test("DELETE /sources/:id disconnects telegram sources and preserves the ro
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "sources-disconnect-telegram@example.com");
-    const source = await createEncryptedSource(database, credentialCipher, user.id, ConnectorId.Telegram, {
-      position: 2,
-      enabled: true,
-    });
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "sources-disconnect-telegram@example.com",
+    );
+    const source = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
+      {
+        position: 2,
+        enabled: true,
+      },
+    );
     const feed = await createOrReviveFeed(database, {
       userId: user.id,
       sourceId: source.id,
@@ -308,7 +518,9 @@ Deno.test("DELETE /sources/:id disconnects telegram sources and preserves the ro
 
     const activeFeeds = await listFeedsForUser(database, user.id);
     assertEquals(activeFeeds.length, 0);
-    const historicalFeeds = await listFeedsForUser(database, user.id, { includeDeleted: true });
+    const historicalFeeds = await listFeedsForUser(database, user.id, {
+      includeDeleted: true,
+    });
     assertEquals(historicalFeeds.length, 1);
     assertEquals(historicalFeeds[0].id, feed.id);
     assertExists(historicalFeeds[0].deletedAt);
@@ -328,10 +540,19 @@ Deno.test("PATCH /sources/:id rejects re-enabling a disconnected source", async 
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "sources-reenable-disconnected@example.com");
-    const source = await createEncryptedSource(database, credentialCipher, user.id, ConnectorId.Telegram, {
-      enabled: true,
-    });
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "sources-reenable-disconnected@example.com",
+    );
+    const source = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
+      {
+        enabled: true,
+      },
+    );
 
     const deleteResponse = await app.request(`/sources/${source.id}`, {
       method: "DELETE",
@@ -341,11 +562,18 @@ Deno.test("PATCH /sources/:id rejects re-enabling a disconnected source", async 
 
     const patchResponse = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { enabled: true }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
     });
     assertEquals(patchResponse.status, 409);
     const patchJson = await patchResponse.json();
-    assertEquals(patchJson.error.message, "source must be reconnected before it can be enabled");
+    assertEquals(
+      patchJson.error.message,
+      "source must be reconnected before it can be enabled",
+    );
 
     const stored = await findSourceById(database, source.id, user.id);
     assertExists(stored);
@@ -357,8 +585,16 @@ Deno.test("DELETE /sources/:id returns revokeTelegramSession false for non-teleg
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "sources-disconnect-rss@example.com");
-    const source = await createEncryptedSource(database, credentialCipher, user.id, ConnectorId.RSS);
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "sources-disconnect-rss@example.com",
+    );
+    const source = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.RSS,
+    );
 
     const response = await app.request(`/sources/${source.id}`, {
       method: "DELETE",
@@ -379,15 +615,25 @@ Deno.test("sources routes require authentication", async () => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
     const { user } = await registerAndLogin(app, "sources-no-auth@example.com");
-    const source = await createEncryptedSource(database, credentialCipher, user.id, ConnectorId.Telegram);
+    const source = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
+    );
 
     const getResponse = await app.request("/sources");
     assertEquals(getResponse.status, 401);
 
-    const patchResponse = await app.request(`/sources/${source.id}`, jsonRequest("PATCH", { enabled: false }));
+    const patchResponse = await app.request(
+      `/sources/${source.id}`,
+      jsonRequest("PATCH", { enabled: false }),
+    );
     assertEquals(patchResponse.status, 401);
 
-    const deleteResponse = await app.request(`/sources/${source.id}`, { method: "DELETE" });
+    const deleteResponse = await app.request(`/sources/${source.id}`, {
+      method: "DELETE",
+    });
     assertEquals(deleteResponse.status, 401);
   });
 });

@@ -379,6 +379,12 @@ button:focus-visible {
   cursor: pointer;
 }
 
+.toggle input {
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
 .section-title {
   margin: 1.5rem 0 0.75rem;
   padding-bottom: 0.35rem;
@@ -477,6 +483,46 @@ button:focus-visible {
   margin-top: 1.5rem;
   padding-top: 1.25rem;
   border-top: 1px solid var(--border);
+}
+
+.substack-preferences {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.substack-preferences h3 {
+  margin-bottom: 0.25rem;
+}
+
+.substack-preferences .hint {
+  margin: 0 0 0.75rem;
+}
+
+.paid-posts {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.paid-posts h3 {
+  margin-bottom: 0.25rem;
+}
+
+.paid-posts .hint {
+  margin: 0 0 0.75rem;
+}
+
+.paid-post-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.paid-post-list li {
+  margin-bottom: 0.35rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 @media (max-width: 640px) {

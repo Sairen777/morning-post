@@ -345,6 +345,10 @@ export default function Dashboard(props: DashboardProps) {
     await refreshFeeds();
   };
 
+  const handleSubstackSourceUpdated = async () => {
+    await refreshSources();
+  };
+
   const handleSubstackPublicationAdded = async () => {
     const substackSourceId = sources().find((source) =>
       source.connectorId === "Substack"
@@ -424,6 +428,7 @@ export default function Dashboard(props: DashboardProps) {
           feeds={feeds()}
           onConnected={handleSubstackConnected}
           onPublicationAdded={handleSubstackPublicationAdded}
+          onSourceUpdated={handleSubstackSourceUpdated}
           onAuthError={props.onAuthError}
         />
       </Show>

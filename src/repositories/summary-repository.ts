@@ -24,7 +24,7 @@ const articleSummarySchema = z.object({
   title: z.string(),
   sourceUrl: z.string().nullable(),
   publishedAt: z.number().int().nonnegative(),
-  contentAccess: z.enum(["full", "preview"]),
+  contentAccess: z.enum(["full", "preview", "paid"]),
   points: z.array(summaryPointSchema),
 }).strict();
 
@@ -51,6 +51,7 @@ const publicSummarySchema = z.object({
 const userPeriodSummarySchema = publicSummarySchema.extend({
   sourceId: z.string().uuid(),
   connectorId: z.string(),
+  showPaidPostTitles: z.boolean(),
   sourcePosition: z.number().nullable(),
   feedPosition: z.number().nullable(),
   feedDeletedAt: z.number().nullable(),
@@ -164,6 +165,7 @@ export async function listSummariesForUserPeriod(
       generatedAt: summaries.generatedAt,
       connectorId: sources.connectorId,
       sourceId: feeds.sourceId,
+      showPaidPostTitles: sources.showPaidPostTitles,
       sourcePosition: sources.position,
       feedPosition: feeds.position,
       feedDeletedAt: feeds.deletedAt,

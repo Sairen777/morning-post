@@ -10,6 +10,7 @@ const source: PublicSource = {
   connectorId: "Substack",
   position: null,
   enabled: true,
+  showPaidPostTitles: false,
   connected: true,
   createdAt: 0,
   updatedAt: 0,
