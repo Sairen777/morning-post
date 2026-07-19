@@ -1,4 +1,7 @@
-import type { FeedKind, NormalizedItem } from "../connectors/connector.types.ts";
+import type {
+  FeedKind,
+  NormalizedItem,
+} from "../connectors/connector.types.ts";
 import type { SummaryRuleset } from "./summarizer.types.ts";
 
 export interface PromptOptions {
@@ -60,13 +63,28 @@ export function buildDiscussionPrompt(
     includeMedia: false,
   };
 }
-
+export function buildArticlePrompt(
+  options: PromptOptions = {},
+): SummaryRuleset {
+  const parts = [
+    "You are a concise article summarizer.",
+    "Summarize the supplied nonempty article; never omit it as noise.",
+    "The article title is context only. Do not generate or repeat a heading or title in the summary.",
+    INDEX_INSTRUCTION,
+  ];
+  return {
+    systemPrompt: withTrailingRules(parts, options),
+    showAuthors: false,
+    includeMedia: true,
+    showTitle: true,
+  };
+}
 
 export function buildVisionAnalysisPrompt(): SummaryRuleset {
   return {
     systemPrompt: [
       "Analyze the supplied indexed images for a digest summarizer.",
-      "Return a JSON array only. Every entry must have exactly two fields: \"i\" (an integer item index) and \"description\" (a plain string).",
+      'Return a JSON array only. Every entry must have exactly two fields: "i" (an integer item index) and "description" (a plain string).',
       "Include exactly one entry for every submitted item index, with no duplicates, omissions, extra indexes, or extra fields.",
       "Describe visible facts and any readable OCR. State uncertainty instead of inventing details.",
       "For albums, preserve input order and label observations as Image 1, Image 2, and so on.",
@@ -83,9 +101,7 @@ export function selectRuleset(
   kind?: FeedKind,
 ): SummaryRuleset {
   if (kind !== undefined) {
-    return kind === "discussion"
-      ? buildDiscussionPrompt()
-      : buildNewsPrompt();
+    return kind === "discussion" ? buildDiscussionPrompt() : buildNewsPrompt();
   }
   const isGroup = items[0]?.meta?.isGroup === true;
   return isGroup ? buildDiscussionPrompt() : buildNewsPrompt();

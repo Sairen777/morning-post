@@ -26,7 +26,7 @@ export default defineConfig({
       command: "deno task e2e:api",
       url: "http://127.0.0.1:3100/health",
       reuseExistingServer: false,
-      timeout: 15_000,
+      timeout: 30_000,
     },
     {
       cwd: "../..",

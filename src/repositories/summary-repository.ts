@@ -5,21 +5,45 @@ import { feeds } from "../db/schema/feed.ts";
 import { summaries } from "../db/schema/summary.ts";
 import { sources } from "../db/schema/source.ts";
 import { NotFoundError } from "../server/errors.ts";
-import type { SummaryPoint } from "../summarizers/summarizer.types.ts";
+import type { SummaryContent } from "../summarizers/summarizer.types.ts";
 
 export const summaryPointSchema = z.object({
   text: z.string(),
   sourceUrl: z.string().nullable(),
   channel: z.string().optional(),
   date: z.string().optional(),
-});
+}).strict();
+
+const aggregateSummaryContentSchema = z.object({
+  kind: z.literal("aggregate"),
+  points: z.array(summaryPointSchema),
+}).strict();
+
+const articleSummarySchema = z.object({
+  sourceExternalId: z.string(),
+  title: z.string(),
+  sourceUrl: z.string().nullable(),
+  publishedAt: z.number().int().nonnegative(),
+  contentAccess: z.enum(["full", "preview"]),
+  points: z.array(summaryPointSchema),
+}).strict();
+
+const articleSummaryContentSchema = z.object({
+  kind: z.literal("articles"),
+  articles: z.array(articleSummarySchema),
+}).strict();
+
+export const summaryContentSchema = z.discriminatedUnion("kind", [
+  aggregateSummaryContentSchema,
+  articleSummaryContentSchema,
+]);
 
 const publicSummarySchema = z.object({
   id: z.string().uuid(),
   feedId: z.string().uuid(),
   periodStartMs: z.number(),
   periodEndMs: z.number(),
-  points: z.array(summaryPointSchema),
+  content: summaryContentSchema,
   feedNameSnapshot: z.string(),
   generatedAt: z.number(),
 });
@@ -41,7 +65,7 @@ export interface UpsertSummaryForPeriodInput {
   feedId: string;
   periodStartMs: number;
   periodEndMs: number;
-  points: SummaryPoint[];
+  content: SummaryContent;
   feedNameSnapshot: string;
 }
 
@@ -58,21 +82,25 @@ export async function upsertSummaryForPeriod(
   input: UpsertSummaryForPeriodInput,
   generatedAt = Date.now(),
 ): Promise<PublicSummary> {
-  const points = z.array(summaryPointSchema).parse(input.points);
+  const content = summaryContentSchema.parse(input.content);
   const rows = await database
     .insert(summaries)
     .values({
       feedId: input.feedId,
       periodStartMs: input.periodStartMs,
       periodEndMs: input.periodEndMs,
-      points,
+      content,
       feedNameSnapshot: input.feedNameSnapshot,
       generatedAt,
     })
     .onConflictDoUpdate({
-      target: [summaries.feedId, summaries.periodStartMs, summaries.periodEndMs],
+      target: [
+        summaries.feedId,
+        summaries.periodStartMs,
+        summaries.periodEndMs,
+      ],
       set: {
-        points,
+        content,
         feedNameSnapshot: input.feedNameSnapshot,
         generatedAt,
       },
@@ -131,7 +159,7 @@ export async function listSummariesForUserPeriod(
       feedId: summaries.feedId,
       periodStartMs: summaries.periodStartMs,
       periodEndMs: summaries.periodEndMs,
-      points: summaries.points,
+      content: summaries.content,
       feedNameSnapshot: summaries.feedNameSnapshot,
       generatedAt: summaries.generatedAt,
       connectorId: sources.connectorId,

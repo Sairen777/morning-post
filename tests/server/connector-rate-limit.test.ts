@@ -5,9 +5,9 @@ import { buildApp } from "../../src/server/app.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
 import {
-  TelegramLoginSessionManager,
   type TelegramLoginClient,
   type TelegramLoginClientFactory,
+  TelegramLoginSessionManager,
 } from "../../src/connectors/telegram/login-session.ts";
 import { CredentialCipher } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -15,6 +15,7 @@ import { ConnectorId } from "../../src/constants.ts";
 import type { PublicFeed } from "../../src/repositories/feed-repository.ts";
 import type { PublicSource } from "../../src/repositories/source-repository.ts";
 import type {
+  SubstackPublicationDiscoveryServiceLike,
   SubstackPublicationServiceLike,
   SubstackSessionServiceLike,
 } from "../../src/server/routes/connectors.ts";
@@ -30,7 +31,10 @@ function buildCredentialCipher(): CredentialCipher {
 function jsonRequest(method: "POST", body?: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
+    headers: {
+      "content-type": "application/json",
+      Origin: "http://127.0.0.1:5173",
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   };
 }
@@ -90,7 +94,9 @@ class FakeTelegramLoginClient implements TelegramLoginClient {
   async signInUserWithQrCode(
     _credentials: { apiId: number; apiHash: string },
     callbacks: {
-      qrCode(code: { token: { toString(encoding: "base64url"): string } }): Promise<void>;
+      qrCode(
+        code: { token: { toString(encoding: "base64url"): string } },
+      ): Promise<void>;
       password(): Promise<string>;
       onError(error: unknown): Promise<boolean>;
     },
@@ -101,7 +107,9 @@ class FakeTelegramLoginClient implements TelegramLoginClient {
     }
     const password = await callbacks.password();
     if (password !== TWO_FACTOR_AUTHENTICATION_PASSWORD) {
-      await callbacks.onError(new Error("invalid two-factor authentication password"));
+      await callbacks.onError(
+        new Error("invalid two-factor authentication password"),
+      );
       throw new Error("invalid two-factor authentication password");
     }
   }
@@ -140,33 +148,76 @@ Deno.test("telegram login start and 2fa routes are rate limited", async () => {
     const cookie = await login(app, "connector-limit@example.com");
 
     clientFactory.queueClient("approval");
-    const firstStart = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "1.1.1.1" } });
+    const firstStart = await app.request("/connectors/telegram/login", {
+      method: "POST",
+      headers: {
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+        "x-forwarded-for": "1.1.1.1",
+      },
+    });
     assertEquals(firstStart.status, 201);
-    const secondStart = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "1.1.1.1" } });
+    const secondStart = await app.request("/connectors/telegram/login", {
+      method: "POST",
+      headers: {
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+        "x-forwarded-for": "1.1.1.1",
+      },
+    });
     assertEquals(secondStart.status, 429);
 
     now += 60_001;
     clientFactory.queueClient("two-factor-authentication");
-    const startTwoFactor = await app.request("/connectors/telegram/login", { method: "POST", headers: { cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "2.2.2.2" } });
+    const startTwoFactor = await app.request("/connectors/telegram/login", {
+      method: "POST",
+      headers: {
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+        "x-forwarded-for": "2.2.2.2",
+      },
+    });
     assertEquals(startTwoFactor.status, 201);
     const startTwoFactorJson = await startTwoFactor.json();
     const loginSessionId = String(startTwoFactorJson.loginSessionId);
-    await app.request(`/connectors/telegram/login/${loginSessionId}`, { headers: { cookie } });
+    await app.request(`/connectors/telegram/login/${loginSessionId}`, {
+      headers: { cookie },
+    });
 
-    const firstTwoFactor = await app.request(`/connectors/telegram/login/${loginSessionId}/2fa`, {
-      ...jsonRequest("POST", { password: TWO_FACTOR_AUTHENTICATION_PASSWORD }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "3.3.3.3" },
-    });
+    const firstTwoFactor = await app.request(
+      `/connectors/telegram/login/${loginSessionId}/2fa`,
+      {
+        ...jsonRequest("POST", {
+          password: TWO_FACTOR_AUTHENTICATION_PASSWORD,
+        }),
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          Origin: "http://127.0.0.1:5173",
+          "x-forwarded-for": "3.3.3.3",
+        },
+      },
+    );
     assertEquals(firstTwoFactor.status, 200);
-    const secondTwoFactor = await app.request(`/connectors/telegram/login/${loginSessionId}/2fa`, {
-      ...jsonRequest("POST", { password: TWO_FACTOR_AUTHENTICATION_PASSWORD }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173", "x-forwarded-for": "3.3.3.3" },
-    });
+    const secondTwoFactor = await app.request(
+      `/connectors/telegram/login/${loginSessionId}/2fa`,
+      {
+        ...jsonRequest("POST", {
+          password: TWO_FACTOR_AUTHENTICATION_PASSWORD,
+        }),
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          Origin: "http://127.0.0.1:5173",
+          "x-forwarded-for": "3.3.3.3",
+        },
+      },
+    );
     assertEquals(secondTwoFactor.status, 429);
   });
 });
 
-Deno.test("Substack session and publication routes use separate rate-limit buckets", async () => {
+Deno.test("Substack session, publication, and discovery routes use separate rate-limit buckets", async () => {
   await withTestDb(async (database: Database) => {
     const now = 1_000;
     const source: PublicSource = {
@@ -199,10 +250,19 @@ Deno.test("Substack session and publication routes use separate rate-limit bucke
     const publicationService: SubstackPublicationServiceLike = {
       add: () => Promise.resolve({ source, feed }),
     };
+    const discoveryService: SubstackPublicationDiscoveryServiceLike = {
+      list: () =>
+        Promise.resolve([{
+          externalId: "https://example.substack.com",
+          name: "Example",
+          kind: "news",
+        }]),
+    };
     const app = buildApp(database, {
       connectors: {
         substackSessionService: sessionService,
         substackPublicationService: publicationService,
+        substackPublicationDiscoveryService: discoveryService,
         substackSessionRateLimiter: createRateLimitMiddleware({
           database,
           bucket: "substack-session-test",
@@ -213,6 +273,13 @@ Deno.test("Substack session and publication routes use separate rate-limit bucke
         substackPublicationRateLimiter: createRateLimitMiddleware({
           database,
           bucket: "substack-publication-test",
+          limit: 1,
+          windowMs: 60_000,
+          now: () => now,
+        }),
+        substackPublicationDiscoveryRateLimiter: createRateLimitMiddleware({
+          database,
+          bucket: "substack-publication-discovery-test",
           limit: 1,
           windowMs: 60_000,
           now: () => now,
@@ -229,25 +296,56 @@ Deno.test("Substack session and publication routes use separate rate-limit bucke
     };
 
     const firstSession = await app.request("/connectors/substack/session", {
-      ...jsonRequest("POST", { substackSessionId: "s%3Asubstack.signature" }),
+      ...jsonRequest("POST", {
+        substackSessionId: "s%3Asubstack.signature",
+        connectSessionId: "s%3Aconnect.signature",
+      }),
       headers,
     });
     assertEquals(firstSession.status, 200);
     const secondSession = await app.request("/connectors/substack/session", {
-      ...jsonRequest("POST", { substackSessionId: "s%3Asubstack.signature" }),
+      ...jsonRequest("POST", {
+        substackSessionId: "s%3Asubstack.signature",
+        connectSessionId: "s%3Aconnect.signature",
+      }),
       headers,
     });
     assertEquals(secondSession.status, 429);
 
-    const firstPublication = await app.request("/connectors/substack/publications", {
-      ...jsonRequest("POST", { publicationUrl: "https://example.substack.com" }),
-      headers,
-    });
+    const firstPublication = await app.request(
+      "/connectors/substack/publications",
+      {
+        ...jsonRequest("POST", {
+          publicationUrl: "https://example.substack.com",
+        }),
+        headers,
+      },
+    );
     assertEquals(firstPublication.status, 201);
-    const secondPublication = await app.request("/connectors/substack/publications", {
-      ...jsonRequest("POST", { publicationUrl: "https://example.substack.com" }),
-      headers,
-    });
+    const secondPublication = await app.request(
+      "/connectors/substack/publications",
+      {
+        ...jsonRequest("POST", {
+          publicationUrl: "https://example.substack.com",
+        }),
+        headers,
+      },
+    );
     assertEquals(secondPublication.status, 429);
+
+    const firstDiscovery = await app.request(
+      "/connectors/substack/publications",
+      {
+        headers,
+      },
+    );
+    assertEquals(firstDiscovery.status, 200);
+    const secondDiscovery = await app.request(
+      "/connectors/substack/publications",
+      {
+        headers,
+      },
+    );
+    assertEquals(secondDiscovery.status, 429);
   });
 });

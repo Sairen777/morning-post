@@ -1,20 +1,31 @@
 import type { Database } from "../db/client.ts";
-import { findFeedById, type PublicFeed } from "../repositories/feed-repository.ts";
-import { listItemsForFeedInWindow, listMediaPathsForFeedWindow } from "../repositories/item-repository.ts";
+import {
+  findFeedById,
+  type PublicFeed,
+} from "../repositories/feed-repository.ts";
+import {
+  listItemsForFeedInWindow,
+  listMediaPathsForFeedWindow,
+} from "../repositories/item-repository.ts";
 import {
   assertFeedOwned,
   findSummaryForFeedPeriod,
-  upsertSummaryForPeriod,
   type PublicSummary,
+  upsertSummaryForPeriod,
 } from "../repositories/summary-repository.ts";
 import { findUserById, type User } from "../repositories/user-repository.ts";
+import { findSourceById } from "../repositories/source-repository.ts";
 import { NotFoundError } from "../server/errors.ts";
 import { sanitizeErrorForOps } from "../server/error-sanitizer.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
 import { composeSummaryRuleset } from "../summarizers/compose-prompt.ts";
-import type { SummarizerService } from "../summarizers/summarizer.types.ts";
+import type {
+  ArticleSummary,
+  SummarizerService,
+  SummaryContent,
+} from "../summarizers/summarizer.types.ts";
 import { getConfig } from "../config.ts";
-import { CONNECTORS_MEDIA_DIR } from "../constants.ts";
+import { ConnectorId, CONNECTORS_MEDIA_DIR } from "../constants.ts";
 
 export interface SummarizeFeedPeriodDependencies {
   summarizer?: SummarizerService;
@@ -26,6 +37,7 @@ export interface SummarizeFeedPeriodDependencies {
 export interface OwnedSummarizeFeedPeriodInput {
   user: User;
   feed: PublicFeed;
+  connectorId: ConnectorId;
   periodStartMs: number;
   periodEndMs: number;
 }
@@ -40,7 +52,12 @@ export async function cleanupFeedMedia(
   periodStartMs: number,
   periodEndMs: number,
 ): Promise<void> {
-  const paths = await listMediaPathsForFeedWindow(database, feedId, periodStartMs, periodEndMs);
+  const paths = await listMediaPathsForFeedWindow(
+    database,
+    feedId,
+    periodStartMs,
+    periodEndMs,
+  );
   for (const filePath of paths) {
     try {
       await Deno.remove(filePath);
@@ -72,7 +89,11 @@ export async function cleanupExpiredMedia(
     await cleanupExpiredMediaInDir(dir, now, ttlMs);
   }
 
-  async function cleanupExpiredMediaInDir(dir: string, now: number, ttlMs: number): Promise<void> {
+  async function cleanupExpiredMediaInDir(
+    dir: string,
+    now: number,
+    ttlMs: number,
+  ): Promise<void> {
     let entries: Deno.DirEntry[];
     try {
       entries = [...Deno.readDirSync(dir)];
@@ -114,14 +135,19 @@ export async function summarizeOwnedFeedPeriod(
   input: OwnedSummarizeFeedPeriodInput,
   dependencies: SummarizeFeedPeriodDependencies = {},
 ): Promise<PublicSummary> {
-  const summarizer = dependencies.summarizer ?? new OpenAICompatibleSummarizerService();
+  dependencies.signal?.throwIfAborted();
+  const summarizer = dependencies.summarizer ??
+    new OpenAICompatibleSummarizerService();
   const nowFn = dependencies.now ?? Date.now;
   const timeoutMs = dependencies.timeoutMs ?? getConfig().summarizerTimeoutMs;
 
   // Build an abort controller: timeout + optional parent signal
   const controller = new AbortController();
   const timer = setTimeout(
-    () => controller.abort(new DOMException("Summarizer timed out", "TimeoutError")),
+    () =>
+      controller.abort(
+        new DOMException("Summarizer timed out", "TimeoutError"),
+      ),
     timeoutMs,
   );
   const onParentAbort = () => controller.abort(dependencies.signal?.reason);
@@ -129,17 +155,63 @@ export async function summarizeOwnedFeedPeriod(
     if (dependencies.signal.aborted) {
       controller.abort(dependencies.signal.reason);
     } else {
-      dependencies.signal.addEventListener("abort", onParentAbort, { once: true });
+      dependencies.signal.addEventListener("abort", onParentAbort, {
+        once: true,
+      });
     }
   }
 
   try {
-    const items = await listItemsForFeedInWindow(database, input.feed.id, input.periodStartMs, input.periodEndMs);
-    const points = items.length === 0
-      ? []
-      : await summarizer.summarize(
+    const items = await listItemsForFeedInWindow(
+      database,
+      input.feed.id,
+      input.periodStartMs,
+      input.periodEndMs,
+    );
+    let content: SummaryContent;
+    if (input.connectorId === ConnectorId.Substack) {
+      const rules = composeSummaryRuleset({
+        connectorId: input.connectorId,
+        kind: input.feed.kind,
+        systemPrompt: input.user.systemPrompt,
+        customPrompt: input.feed.customPrompt,
+        language: input.user.defaultLanguage,
+      });
+      const articles: ArticleSummary[] = [];
+      for (const item of items) {
+        controller.signal.throwIfAborted();
+        const payload = item.payload;
+        const hasText = payload.text.trim().length > 0;
+        const points = hasText
+          ? await summarizer.summarize([payload], rules, {
+            signal: controller.signal,
+            summaryMode: "article",
+          })
+          : [];
+        controller.signal.throwIfAborted();
+        if (hasText && points.length === 0) {
+          throw new Error(
+            `Summarizer returned no points for nonempty article ${payload.externalId}`,
+          );
+        }
+        articles.push({
+          sourceExternalId: payload.externalId,
+          title: payload.title?.trim() || "Untitled article",
+          sourceUrl: payload.url,
+          publishedAt: payload.date,
+          contentAccess: payload.meta?.contentAccess === "preview"
+            ? "preview"
+            : "full",
+          points,
+        });
+      }
+      content = { kind: "articles", articles };
+      controller.signal.throwIfAborted();
+    } else {
+      const points = items.length === 0 ? [] : await summarizer.summarize(
         items.map((item) => item.payload),
         composeSummaryRuleset({
+          connectorId: input.connectorId,
           kind: input.feed.kind,
           systemPrompt: input.user.systemPrompt,
           customPrompt: input.feed.customPrompt,
@@ -147,6 +219,11 @@ export async function summarizeOwnedFeedPeriod(
         }),
         { signal: controller.signal },
       );
+      controller.signal.throwIfAborted();
+      content = { kind: "aggregate", points };
+    }
+
+    controller.signal.throwIfAborted();
 
     const result = await upsertSummaryForPeriod(
       database,
@@ -154,14 +231,19 @@ export async function summarizeOwnedFeedPeriod(
         feedId: input.feed.id,
         periodStartMs: input.periodStartMs,
         periodEndMs: input.periodEndMs,
-        points,
+        content,
         feedNameSnapshot: input.feed.name,
       },
       nowFn(),
     );
 
     // Best-effort media cleanup after successful summarization
-    await cleanupFeedMedia(database, input.feed.id, input.periodStartMs, input.periodEndMs).catch(
+    await cleanupFeedMedia(
+      database,
+      input.feed.id,
+      input.periodStartMs,
+      input.periodEndMs,
+    ).catch(
       (err: unknown) => {
         console.warn(
           "[summarization] media cleanup error (non-fatal):",
@@ -197,8 +279,22 @@ export async function summarizeFeedPeriod(
   if (!user) {
     throw new NotFoundError("user not found");
   }
+  const source = await findSourceById(database, feed.sourceId, userId);
+  if (!source) {
+    throw new NotFoundError("source not found");
+  }
 
-  return await summarizeOwnedFeedPeriod(database, { user, feed, periodStartMs, periodEndMs }, dependencies);
+  return await summarizeOwnedFeedPeriod(
+    database,
+    {
+      user,
+      feed,
+      connectorId: source.connectorId as ConnectorId,
+      periodStartMs,
+      periodEndMs,
+    },
+    dependencies,
+  );
 }
 
 export async function getOrSummarizeFeedPeriod(
@@ -210,9 +306,21 @@ export async function getOrSummarizeFeedPeriod(
   dependencies: SummarizeFeedPeriodDependencies = {},
 ): Promise<PublicSummary> {
   await assertFeedOwned(database, feedId, userId);
-  const existingSummary = await findSummaryForFeedPeriod(database, feedId, periodStartMs, periodEndMs);
+  const existingSummary = await findSummaryForFeedPeriod(
+    database,
+    feedId,
+    periodStartMs,
+    periodEndMs,
+  );
   if (existingSummary) {
     return existingSummary;
   }
-  return await summarizeFeedPeriod(database, userId, feedId, periodStartMs, periodEndMs, dependencies);
+  return await summarizeFeedPeriod(
+    database,
+    userId,
+    feedId,
+    periodStartMs,
+    periodEndMs,
+    dependencies,
+  );
 }

@@ -1,23 +1,35 @@
-import { listFeedsForUser, type PublicFeed } from "../repositories/feed-repository.ts";
+import { ConnectorId } from "../constants.ts";
+import {
+  listFeedsForUser,
+  type PublicFeed,
+} from "../repositories/feed-repository.ts";
 import {
   findDigestById,
   listDigestsForUser,
-  setDigestStatus,
   type PublicDigest,
+  setDigestStatus,
   upsertDigestForPeriod,
 } from "../repositories/digest-repository.ts";
-import { listSummariesForFeedPeriods, listSummariesForUserPeriod, type UserPeriodSummary } from "../repositories/summary-repository.ts";
+import {
+  listSummariesForFeedPeriods,
+  listSummariesForUserPeriod,
+  type UserPeriodSummary,
+} from "../repositories/summary-repository.ts";
 import { findUserById } from "../repositories/user-repository.ts";
-import { summarizeOwnedFeedPeriod, type SummarizeFeedPeriodDependencies } from "./summarization-service.ts";
+import {
+  type SummarizeFeedPeriodDependencies,
+  summarizeOwnedFeedPeriod,
+} from "./summarization-service.ts";
 import type { Database } from "../db/client.ts";
 import {
-  startDigestRunFeed,
-  finishDigestRunFeed,
   type CreateDigestRunFeedInput,
+  finishDigestRunFeed,
+  startDigestRunFeed,
 } from "../repositories/digest-run-repository.ts";
 import { listSourcesForUser } from "../repositories/source-repository.ts";
 import { summarizeErrorForOps } from "../server/error-sanitizer.ts";
 import { NotFoundError } from "../server/errors.ts";
+import type { SummaryContent } from "../summarizers/summarizer.types.ts";
 
 export interface DigestSection {
   sourceId: string;
@@ -25,7 +37,7 @@ export interface DigestSection {
   feedId: string;
   feedName: string;
   feedRemoved: boolean;
-  points: UserPeriodSummary["points"];
+  content: SummaryContent;
 }
 
 export interface DigestSourceGroup {
@@ -40,7 +52,8 @@ export interface DigestView {
   groups: DigestSourceGroup[];
 }
 
-export interface AssembleDigestDependencies extends SummarizeFeedPeriodDependencies {
+export interface AssembleDigestDependencies
+  extends SummarizeFeedPeriodDependencies {
   feedIds?: string[];
   runId?: string;
   sourceConnectorIdsBySourceId?: Map<string, string>;
@@ -48,14 +61,16 @@ export interface AssembleDigestDependencies extends SummarizeFeedPeriodDependenc
   summarizationConcurrency?: number;
 }
 
-function toDigestSections(userPeriodSummaries: UserPeriodSummary[]): DigestSection[] {
+function toDigestSections(
+  userPeriodSummaries: UserPeriodSummary[],
+): DigestSection[] {
   return userPeriodSummaries.map((summary) => ({
     sourceId: summary.sourceId,
     connectorId: summary.connectorId,
     feedId: summary.feedId,
     feedName: summary.feedNameSnapshot,
     feedRemoved: summary.feedDeletedAt !== null,
-    points: summary.points,
+    content: summary.content,
   }));
 }
 
@@ -75,10 +90,25 @@ function groupDigestSections(sections: DigestSection[]): DigestSourceGroup[] {
   }
   return groups;
 }
+function requireConnectorId(value: string | undefined): ConnectorId {
+  switch (value) {
+    case ConnectorId.Telegram:
+    case ConnectorId.Substack:
+    case ConnectorId.YouTube:
+    case ConnectorId.Reddit:
+    case ConnectorId.X:
+    case ConnectorId.RSS:
+      return value;
+    default:
+      throw new Error("connector id missing or invalid for feed source");
+  }
+}
 
 function activeFeeds(feeds: PublicFeed[], feedIds?: string[]): PublicFeed[] {
   const selectedFeedIds = feedIds === undefined ? null : new Set(feedIds);
-  return feeds.filter((feed) => feed.enabled && (selectedFeedIds === null || selectedFeedIds.has(feed.id)));
+  return feeds.filter((feed) =>
+    feed.enabled && (selectedFeedIds === null || selectedFeedIds.has(feed.id))
+  );
 }
 
 export async function buildDigestViewForPeriod(
@@ -157,32 +187,41 @@ export async function assembleDigestForPeriod(
     status: "pending",
   });
 
-  const rawFeeds = dependencies.feeds ?? await listFeedsForUser(database, userId);
+  const rawFeeds = dependencies.feeds ??
+    await listFeedsForUser(database, userId);
   const feeds = activeFeeds(rawFeeds, dependencies.feedIds);
 
   const summariesByFeedId = new Map(
-    (await listSummariesForFeedPeriods(database, feeds.map((feed) => feed.id), periodStartMs, periodEndMs))
+    (await listSummariesForFeedPeriods(
+      database,
+      feeds.map((feed) => feed.id),
+      periodStartMs,
+      periodEndMs,
+    ))
       .map((summary) => [summary.feedId, summary] as const),
   );
 
   let sourceConnectorIdsBySourceId = dependencies.sourceConnectorIdsBySourceId;
-  if (dependencies.runId && !sourceConnectorIdsBySourceId) {
+  if (!sourceConnectorIdsBySourceId) {
     const sources = await listSourcesForUser(database, userId);
-    sourceConnectorIdsBySourceId = new Map(sources.map((source) => [source.id, source.connectorId]));
+    sourceConnectorIdsBySourceId = new Map(
+      sources.map((source) => [source.id, source.connectorId]),
+    );
   }
 
   let hadFailure = false;
-  const feedsToSummarize = feeds.filter((feed) => !summariesByFeedId.has(feed.id));
+  const feedsToSummarize = feeds.filter((feed) =>
+    !summariesByFeedId.has(feed.id)
+  );
   const concurrency = dependencies.summarizationConcurrency ?? 2;
 
   await runBounded(feedsToSummarize, concurrency, async (feed) => {
     let feedRunId: string | undefined;
     try {
-      if (dependencies.runId && sourceConnectorIdsBySourceId) {
-        const connectorId = sourceConnectorIdsBySourceId.get(feed.sourceId);
-        if (!connectorId) {
-          throw new Error("connector id missing for feed source");
-        }
+      const connectorId = requireConnectorId(
+        sourceConnectorIdsBySourceId.get(feed.sourceId),
+      );
+      if (dependencies.runId) {
         const feedRunInput: CreateDigestRunFeedInput = {
           runId: dependencies.runId,
           sourceId: feed.sourceId,
@@ -199,7 +238,7 @@ export async function assembleDigestForPeriod(
 
       await summarizeOwnedFeedPeriod(
         database,
-        { user, feed, periodStartMs, periodEndMs },
+        { user, feed, connectorId, periodStartMs, periodEndMs },
         dependencies,
       );
       if (feedRunId) {
@@ -216,11 +255,19 @@ export async function assembleDigestForPeriod(
     }
   });
 
-  digest = await setDigestStatus(database, digest.id, userId, hadFailure ? "failed" : "complete");
+  digest = await setDigestStatus(
+    database,
+    digest.id,
+    userId,
+    hadFailure ? "failed" : "complete",
+  );
   return await buildDigestViewForPeriod(database, digest);
 }
 
-export async function listDigestViewsForUser(database: Database, userId: string): Promise<PublicDigest[]> {
+export async function listDigestViewsForUser(
+  database: Database,
+  userId: string,
+): Promise<PublicDigest[]> {
   return await listDigestsForUser(database, userId);
 }
 
@@ -235,9 +282,26 @@ function formatDigestMoment(value: number): string {
   });
 }
 
+function safeMarkdownLinkDestination(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    return url.href.replaceAll(">", "%3E");
+  } catch {
+    return null;
+  }
+}
+
 export function renderDigestMarkdown(view: DigestView): string {
   const lines = [
-    `# Digest ${formatDigestMoment(view.digest.periodStartMs)} \u2192 ${formatDigestMoment(view.digest.periodEndMs)}`,
+    `# Digest ${formatDigestMoment(view.digest.periodStartMs)} \u2192 ${
+      formatDigestMoment(view.digest.periodEndMs)
+    }`,
     `Status: ${view.digest.status}`,
     "",
   ];
@@ -246,12 +310,41 @@ export function renderDigestMarkdown(view: DigestView): string {
     lines.push(`## ${group.connectorId}`);
     lines.push("");
     for (const section of group.sections) {
-      lines.push(`### ${section.feedName}${section.feedRemoved ? " (removed)" : ""}`);
-      if (section.points.length === 0) {
-        lines.push("- Nothing to report.");
+      lines.push(
+        `### ${section.feedName}${section.feedRemoved ? " (removed)" : ""}`,
+      );
+      if (section.content.kind === "aggregate") {
+        if (section.content.points.length === 0) {
+          lines.push("- Nothing to report.");
+        } else {
+          for (const point of section.content.points) {
+            lines.push(`- ${point.text}`);
+          }
+        }
+      } else if (section.content.articles.length === 0) {
+        lines.push("No articles.");
       } else {
-        for (const point of section.points) {
-          lines.push(`- ${point.text}`);
+        for (const article of section.content.articles) {
+          lines.push("");
+          const articleTitle = article.title.replace(/\s+/g, " ").trim()
+            .replace(/[\\[\]]/g, "\\$&");
+          const sourceUrl = safeMarkdownLinkDestination(article.sourceUrl);
+          lines.push(
+            sourceUrl
+              ? `#### [${articleTitle}](<${sourceUrl}>)`
+              : `#### ${articleTitle}`,
+          );
+          if (article.contentAccess === "preview") {
+            lines.push("Preview");
+          }
+          lines.push(`Published: ${formatDigestMoment(article.publishedAt)}`);
+          if (article.points.length === 0) {
+            lines.push("- Nothing to report.");
+          } else {
+            for (const point of article.points) {
+              lines.push(`- ${point.text}`);
+            }
+          }
         }
       }
       lines.push("");

@@ -7,18 +7,19 @@ import {
   type SubstackCredentials,
   substackCredentialSchema,
 } from "../../connectors/credential-schemas.ts";
+import type { AvailableFeed } from "../../connectors/connector.types.ts";
 import type { PublicFeed } from "../../repositories/feed-repository.ts";
 import type { PublicSource } from "../../repositories/source-repository.ts";
 import {
-  SubstackPublicationService,
   type SubstackPublicationResult,
+  SubstackPublicationService,
 } from "../../services/substack-publication-service.ts";
+import {
+  SubstackPublicationDiscoveryService,
+} from "../../services/substack-publication-discovery-service.ts";
 import { SubstackSessionService } from "../../services/substack-session-service.ts";
 import type { ConnectorCommit } from "../../services/connector-commit.ts";
-import {
-  type AuthVariables,
-  requireAuth,
-} from "../middleware/require-auth.ts";
+import { type AuthVariables, requireAuth } from "../middleware/require-auth.ts";
 import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
 import { validate } from "../validate.ts";
 
@@ -48,10 +49,14 @@ export interface SubstackPublicationServiceLike {
     publicationUrl: string,
     signal?: AbortSignal,
     commitOperation?: ConnectorCommit,
-  ): Promise<SubstackPublicationResult | { source: PublicSource; feed: PublicFeed }>;
+  ): Promise<
+    SubstackPublicationResult | { source: PublicSource; feed: PublicFeed }
+  >;
 }
 
-
+export interface SubstackPublicationDiscoveryServiceLike {
+  list(userId: string, signal?: AbortSignal): Promise<AvailableFeed[]>;
+}
 
 export type ConnectorDeadlineScheduler = (
   onDeadline: () => void,
@@ -64,8 +69,10 @@ export interface ConnectorRouteDependencies {
   telegramTwoFactorRateLimiter?: MiddlewareHandler;
   substackSessionService?: SubstackSessionServiceLike;
   substackPublicationService?: SubstackPublicationServiceLike;
+  substackPublicationDiscoveryService?: SubstackPublicationDiscoveryServiceLike;
   substackSessionRateLimiter?: MiddlewareHandler;
   substackPublicationRateLimiter?: MiddlewareHandler;
+  substackPublicationDiscoveryRateLimiter?: MiddlewareHandler;
   connectorTimeoutMs?: number;
   scheduleConnectorDeadline?: ConnectorDeadlineScheduler;
   trustedProxyCount?: number;
@@ -76,7 +83,10 @@ const CONNECTOR_RATE_LIMIT = {
   windowMs: 5 * 60_000,
 };
 
-function defaultTelegramLoginRateLimiter(database: Database, trustedProxyCount: number): MiddlewareHandler {
+function defaultTelegramLoginRateLimiter(
+  database: Database,
+  trustedProxyCount: number,
+): MiddlewareHandler {
   return createRateLimitMiddleware({
     database,
     bucket: "telegram-login",
@@ -85,7 +95,10 @@ function defaultTelegramLoginRateLimiter(database: Database, trustedProxyCount: 
   });
 }
 
-function defaultTelegramTwoFactorRateLimiter(database: Database, trustedProxyCount: number): MiddlewareHandler {
+function defaultTelegramTwoFactorRateLimiter(
+  database: Database,
+  trustedProxyCount: number,
+): MiddlewareHandler {
   return createRateLimitMiddleware({
     database,
     bucket: "telegram-two-factor",
@@ -117,7 +130,22 @@ function defaultSubstackPublicationRateLimiter(
   });
 }
 
-const scheduleConnectorDeadline: ConnectorDeadlineScheduler = (onDeadline, timeoutMs) => {
+function defaultSubstackPublicationDiscoveryRateLimiter(
+  database: Database,
+  trustedProxyCount: number,
+): MiddlewareHandler {
+  return createRateLimitMiddleware({
+    database,
+    bucket: "substack-publication-discovery",
+    trustedProxyCount,
+    ...CONNECTOR_RATE_LIMIT,
+  });
+}
+
+const scheduleConnectorDeadline: ConnectorDeadlineScheduler = (
+  onDeadline,
+  timeoutMs,
+) => {
   const timer = setTimeout(onDeadline, timeoutMs);
   return () => clearTimeout(timer);
 };
@@ -126,7 +154,10 @@ async function withConnectorDeadline<T>(
   requestSignal: AbortSignal,
   timeoutMs: number,
   scheduleDeadline: ConnectorDeadlineScheduler,
-  operation: (signal: AbortSignal, commitOperation: ConnectorCommit) => Promise<T>,
+  operation: (
+    signal: AbortSignal,
+    commitOperation: ConnectorCommit,
+  ) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
   const deadline = Promise.withResolvers<never>();
@@ -165,7 +196,6 @@ async function withConnectorDeadline<T>(
   }
 }
 
-
 export function buildConnectorRoutes(
   database: Database,
   dependencies: ConnectorRouteDependencies = {},
@@ -173,23 +203,39 @@ export function buildConnectorRoutes(
   const routes = new Hono<{ Variables: AuthVariables }>();
   routes.use("*", requireAuth(database));
   let telegramLoginSessionManager = dependencies.telegramLoginSessionManager;
-  let telegramLoginSessionManagerLoader: Promise<TelegramLoginSessionManager> | undefined;
+  let telegramLoginSessionManagerLoader:
+    | Promise<TelegramLoginSessionManager>
+    | undefined;
   let substackSessionService = dependencies.substackSessionService;
   let substackPublicationService = dependencies.substackPublicationService;
-  const trustedProxyCount = dependencies.trustedProxyCount ?? getConfig().trustedProxyCount;
+  let substackPublicationDiscoveryService =
+    dependencies.substackPublicationDiscoveryService;
+  const trustedProxyCount = dependencies.trustedProxyCount ??
+    getConfig().trustedProxyCount;
   const telegramLoginRateLimiter = dependencies.telegramLoginRateLimiter ??
     defaultTelegramLoginRateLimiter(database, trustedProxyCount);
-  const telegramTwoFactorRateLimiter = dependencies.telegramTwoFactorRateLimiter ??
-    defaultTelegramTwoFactorRateLimiter(database, trustedProxyCount);
+  const telegramTwoFactorRateLimiter =
+    dependencies.telegramTwoFactorRateLimiter ??
+      defaultTelegramTwoFactorRateLimiter(database, trustedProxyCount);
   const substackSessionRateLimiter = dependencies.substackSessionRateLimiter ??
     defaultSubstackSessionRateLimiter(database, trustedProxyCount);
-  const substackPublicationRateLimiter = dependencies.substackPublicationRateLimiter ??
-    defaultSubstackPublicationRateLimiter(database, trustedProxyCount);
-  const connectorTimeoutMs = dependencies.connectorTimeoutMs ?? getConfig().connectorTimeoutMs;
+  const substackPublicationRateLimiter =
+    dependencies.substackPublicationRateLimiter ??
+      defaultSubstackPublicationRateLimiter(database, trustedProxyCount);
+  const substackPublicationDiscoveryRateLimiter =
+    dependencies.substackPublicationDiscoveryRateLimiter ??
+      defaultSubstackPublicationDiscoveryRateLimiter(
+        database,
+        trustedProxyCount,
+      );
+  const connectorTimeoutMs = dependencies.connectorTimeoutMs ??
+    getConfig().connectorTimeoutMs;
   const connectorDeadlineScheduler = dependencies.scheduleConnectorDeadline ??
     scheduleConnectorDeadline;
 
-  async function getTelegramLoginSessionManager(): Promise<TelegramLoginSessionManager> {
+  async function getTelegramLoginSessionManager(): Promise<
+    TelegramLoginSessionManager
+  > {
     if (telegramLoginSessionManager === undefined) {
       telegramLoginSessionManagerLoader ??= (async () => {
         try {
@@ -199,7 +245,9 @@ export function buildConnectorRoutes(
           );
           return createDefaultTelegramLoginSessionManager(database);
         } catch (error) {
-          throw new Error("Failed to load Telegram login session manager", { cause: error });
+          throw new Error("Failed to load Telegram login session manager", {
+            cause: error,
+          });
         }
       })();
       telegramLoginSessionManager = await telegramLoginSessionManagerLoader;
@@ -217,6 +265,12 @@ export function buildConnectorRoutes(
     return substackPublicationService;
   }
 
+  function getSubstackPublicationDiscoveryService(): SubstackPublicationDiscoveryServiceLike {
+    substackPublicationDiscoveryService ??=
+      new SubstackPublicationDiscoveryService(database);
+    return substackPublicationDiscoveryService;
+  }
+
   routes.post("/telegram/login", telegramLoginRateLimiter, async (context) => {
     const manager = await getTelegramLoginSessionManager();
     const result = await manager.startLogin(context.var.userId);
@@ -230,49 +284,87 @@ export function buildConnectorRoutes(
     return context.json(status, 200);
   });
 
-  routes.post("/telegram/login/:id/2fa", telegramTwoFactorRateLimiter, async (context) => {
-    const { id } = validate(loginSessionParamsSchema, context.req.param());
-    const body = await context.req.json();
-    const { password } = validate(twoFactorAuthenticationBodySchema, body);
-    const manager = await getTelegramLoginSessionManager();
-    const status = await manager.submitTwoFactorAuthentication(
-      id,
-      context.var.userId,
-      password,
-    );
-    return context.json(status, status.status === "complete" || status.status === "error" ? 200 : 202);
-  });
+  routes.post(
+    "/telegram/login/:id/2fa",
+    telegramTwoFactorRateLimiter,
+    async (context) => {
+      const { id } = validate(loginSessionParamsSchema, context.req.param());
+      const body = await context.req.json();
+      const { password } = validate(twoFactorAuthenticationBodySchema, body);
+      const manager = await getTelegramLoginSessionManager();
+      const status = await manager.submitTwoFactorAuthentication(
+        id,
+        context.var.userId,
+        password,
+      );
+      return context.json(
+        status,
+        status.status === "complete" || status.status === "error" ? 200 : 202,
+      );
+    },
+  );
 
-  routes.post("/substack/session", substackSessionRateLimiter, async (context) => {
-    const body = await context.req.json();
-    const credentials = validate(substackCredentialSchema, body);
-    const source = await withConnectorDeadline(
-      context.req.raw.signal,
-      connectorTimeoutMs,
-      connectorDeadlineScheduler,
-      (signal, commitOperation) =>
-        getSubstackSessionService().connect(context.var.userId, credentials, signal, commitOperation),
-    );
-    return context.json({ source }, 200);
-  });
+  routes.post(
+    "/substack/session",
+    substackSessionRateLimiter,
+    async (context) => {
+      const body = await context.req.json();
+      const credentials = validate(substackCredentialSchema, body);
+      const source = await withConnectorDeadline(
+        context.req.raw.signal,
+        connectorTimeoutMs,
+        connectorDeadlineScheduler,
+        (signal, commitOperation) =>
+          getSubstackSessionService().connect(
+            context.var.userId,
+            credentials,
+            signal,
+            commitOperation,
+          ),
+      );
+      return context.json({ source }, 200);
+    },
+  );
 
-  routes.post("/substack/publications", substackPublicationRateLimiter, async (context) => {
-    const body = await context.req.json();
-    const { publicationUrl } = validate(publicationBodySchema, body);
-    const result = await withConnectorDeadline(
-      context.req.raw.signal,
-      connectorTimeoutMs,
-      connectorDeadlineScheduler,
-      (signal, commitOperation) =>
-        getSubstackPublicationService().add(
-          context.var.userId,
-          publicationUrl,
-          signal,
-          commitOperation,
-        ),
-    );
-    return context.json(result, 201);
-  });
+  routes.get(
+    "/substack/publications",
+    substackPublicationDiscoveryRateLimiter,
+    async (context) => {
+      const publications = await withConnectorDeadline(
+        context.req.raw.signal,
+        connectorTimeoutMs,
+        connectorDeadlineScheduler,
+        (signal) =>
+          getSubstackPublicationDiscoveryService().list(
+            context.var.userId,
+            signal,
+          ),
+      );
+      return context.json(publications, 200);
+    },
+  );
+
+  routes.post(
+    "/substack/publications",
+    substackPublicationRateLimiter,
+    async (context) => {
+      const body = await context.req.json();
+      const { publicationUrl } = validate(publicationBodySchema, body);
+      const result = await withConnectorDeadline(
+        context.req.raw.signal,
+        connectorTimeoutMs,
+        connectorDeadlineScheduler,
+        (signal, commitOperation) =>
+          getSubstackPublicationService().add(
+            context.var.userId,
+            publicationUrl,
+            signal,
+            commitOperation,
+          ),
+      );
+      return context.json(result, 201);
+    },
+  );
 
   return routes;
 }

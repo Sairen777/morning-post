@@ -7,13 +7,16 @@ import {
   type SummarizerRuntimeConfig,
 } from "../config.ts";
 import { sanitizeErrorForOps } from "../server/error-sanitizer.ts";
-import { OpenAICompatibleChatClient, ModelApiError } from "./openai-compatible-client.ts";
+import {
+  ModelApiError,
+  OpenAICompatibleChatClient,
+} from "./openai-compatible-client.ts";
 import { buildVisionAnalysisPrompt } from "./prompts.ts";
 import type {
   ContentPart,
   ImagePart,
-  SummarizerService,
   SummarizeOptions,
+  SummarizerService,
   SummaryPoint,
   SummaryRuleset,
   TextPart,
@@ -64,7 +67,10 @@ function partitionItems(
   for (const item of items) {
     const textLen = item.text ? item.text.length : 0;
     const effectiveLen = Math.min(textLen, maxTextBytes);
-    if (current.length > 0 && (current.length >= maxItems || currentBytes + effectiveLen > maxTextBytes)) {
+    if (
+      current.length > 0 &&
+      (current.length >= maxItems || currentBytes + effectiveLen > maxTextBytes)
+    ) {
       chunks.push(current);
       current = [];
       currentBytes = 0;
@@ -77,11 +83,52 @@ function partitionItems(
   return chunks;
 }
 
+function splitTextByUtf8Bytes(text: string, maxBytes: number): string[] {
+  if (
+    !Number.isFinite(maxBytes) || !Number.isInteger(maxBytes) || maxBytes <= 0
+  ) {
+    throw new Error(
+      "Article maxTextBytesPerChunk must be a positive finite integer",
+    );
+  }
+  const chunks: string[] = [];
+  let chunkStart = 0;
+  let chunkBytes = 0;
+  for (let index = 0; index < text.length;) {
+    const codePoint = text.codePointAt(index)!;
+    const scalarWidth = codePoint <= 0x7f
+      ? 1
+      : codePoint <= 0x7ff
+      ? 2
+      : codePoint <= 0xffff
+      ? 3
+      : 4;
+    if (scalarWidth > maxBytes) {
+      throw new Error(
+        `Article maxTextBytesPerChunk ${maxBytes} is smaller than a ${scalarWidth}-byte Unicode scalar`,
+      );
+    }
+    if (chunkBytes + scalarWidth > maxBytes) {
+      chunks.push(text.slice(chunkStart, index));
+      chunkStart = index;
+      chunkBytes = 0;
+    }
+    chunkBytes += scalarWidth;
+    index += codePoint > 0xffff ? 2 : 1;
+  }
+  if (chunkStart < text.length || text.length === 0) {
+    chunks.push(text.slice(chunkStart));
+  }
+  return chunks;
+}
+
 function encodeBytesAsBase64(bytes: Uint8Array): string {
   const binaryChunks: string[] = [];
   const chunkSize = 32_768;
   for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binaryChunks.push(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)));
+    binaryChunks.push(
+      String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)),
+    );
   }
   return btoa(binaryChunks.join(""));
 }
@@ -97,15 +144,22 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
 
   constructor(options: OpenAICompatibleSummarizerOptions = {}) {
     this.models = options.models ?? getSummarizerRuntimeConfig();
-    const allowRemoteSummarization = resolveAllowRemoteSummarization(options.allowRemoteSummarization);
+    const allowRemoteSummarization = resolveAllowRemoteSummarization(
+      options.allowRemoteSummarization,
+    );
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 1000;
-    this.maxTextBytesPerChunk = options.maxTextBytesPerChunk ?? DEFAULT_MAX_TEXT_BYTES_PER_CHUNK;
-    this.maxItemsPerChunk = options.maxItemsPerChunk ?? DEFAULT_MAX_ITEMS_PER_CHUNK;
+    this.maxTextBytesPerChunk = options.maxTextBytesPerChunk ??
+      DEFAULT_MAX_TEXT_BYTES_PER_CHUNK;
+    this.maxItemsPerChunk = options.maxItemsPerChunk ??
+      DEFAULT_MAX_ITEMS_PER_CHUNK;
     this.maxImageBytes = options.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
-    this.summarizerClient = new OpenAICompatibleChatClient(this.models.summarizer, {
-      retryBaseDelayMs: this.retryBaseDelayMs,
-      allowRemote: allowRemoteSummarization,
-    });
+    this.summarizerClient = new OpenAICompatibleChatClient(
+      this.models.summarizer,
+      {
+        retryBaseDelayMs: this.retryBaseDelayMs,
+        allowRemote: allowRemoteSummarization,
+      },
+    );
     this.visionClient = new OpenAICompatibleChatClient(this.models.vision, {
       retryBaseDelayMs: this.retryBaseDelayMs,
       allowRemote: allowRemoteSummarization,
@@ -119,10 +173,12 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
   ): Promise<SummaryPoint[]> {
     const state: VisionRunState = { available: true };
     return await this.summarizeInternal(items, rules, {
-      maxTextBytesPerChunk: options.maxTextBytesPerChunk ?? this.maxTextBytesPerChunk,
+      maxTextBytesPerChunk: options.maxTextBytesPerChunk ??
+        this.maxTextBytesPerChunk,
       maxItemsPerChunk: options.maxItemsPerChunk ?? this.maxItemsPerChunk,
       maxImageBytes: options.maxImageBytes ?? this.maxImageBytes,
       signal: options.signal,
+      summaryMode: options.summaryMode ?? "aggregate",
     }, state);
   }
 
@@ -134,18 +190,50 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       maxItemsPerChunk: number;
       maxImageBytes: number;
       signal?: AbortSignal;
+      summaryMode: "aggregate" | "article";
     },
     state: VisionRunState,
   ): Promise<SummaryPoint[]> {
+    if (options.summaryMode === "article") {
+      if (items.length !== 1) {
+        throw new Error("Article summarization requires exactly one item");
+      }
+      const item = items[0];
+      if (
+        !item.text.trim() && item.media?.type !== "photo" &&
+        item.media?.type !== "album"
+      ) return [];
+      const textChunks = splitTextByUtf8Bytes(
+        item.text,
+        options.maxTextBytesPerChunk,
+      );
+      const points: SummaryPoint[] = [];
+      for (let index = 0; index < textChunks.length; index++) {
+        const chunkItem: NormalizedItem = {
+          ...item,
+          text: textChunks[index],
+          media: index === 0 ? item.media : undefined,
+        };
+        points.push(
+          ...await this.processChunk([chunkItem], rules, options, state),
+        );
+      }
+      return points;
+    }
     const filtered = items.filter((item) => {
-      const hasPhoto = item.media?.type === "photo" || item.media?.type === "album";
+      const hasPhoto = item.media?.type === "photo" ||
+        item.media?.type === "album";
       if (!item.text.trim() && !hasPhoto) return false;
       if (isEmojiOnly(item.text) && !hasPhoto) return false;
       return true;
     });
     if (filtered.length === 0) return [];
 
-    const chunks = partitionItems(filtered, options.maxItemsPerChunk, options.maxTextBytesPerChunk);
+    const chunks = partitionItems(
+      filtered,
+      options.maxItemsPerChunk,
+      options.maxTextBytesPerChunk,
+    );
     const chunkResults: SummaryPoint[][] = [];
     for (const chunk of chunks) {
       chunkResults.push(await this.processChunk(chunk, rules, options, state));
@@ -170,6 +258,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       maxItemsPerChunk: number;
       maxImageBytes: number;
       signal?: AbortSignal;
+      summaryMode: "aggregate" | "article";
     },
     state: VisionRunState,
   ): Promise<SummaryPoint[]> {
@@ -178,12 +267,20 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       rules,
       options.maxTextBytesPerChunk,
       options.maxImageBytes,
+      options.summaryMode,
     );
     if (content.imageEntries.length === 0) {
-      return await this.summarizeTextParts(content.textParts, content.indexedItems, rules, options.signal);
+      return await this.summarizeTextParts(
+        content.textParts,
+        content.indexedItems,
+        rules,
+        options.signal,
+      );
     }
 
-    const affectedIndexes = [...new Set(content.imageEntries.map((entry) => entry.index))];
+    const affectedIndexes = [
+      ...new Set(content.imageEntries.map((entry) => entry.index)),
+    ];
     if (!rules.includeMedia || !state.available) {
       return await this.summarizeUnavailableImages(
         content,
@@ -202,7 +299,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         );
         return this.parsePoints(raw, content.indexedItems);
       } catch (error) {
-        if (!(error instanceof ModelApiError) || ![400, 415, 422].includes(error.status)) {
+        if (
+          !(error instanceof ModelApiError) ||
+          ![400, 415, 422].includes(error.status)
+        ) {
           throw error;
         }
         this.markVisionUnavailable(state, error);
@@ -221,16 +321,27 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         content.visionParts,
         options.signal,
       );
-      const descriptions = this.parseVisionDescriptions(visionRaw, affectedIndexes);
+      const descriptions = this.parseVisionDescriptions(
+        visionRaw,
+        affectedIndexes,
+      );
       const describedTextParts = this.addVisionDescriptions(
         content.textParts,
         content.itemIndexByTextPart,
         affectedIndexes,
         descriptions,
       );
-      return await this.summarizeTextParts(describedTextParts, content.indexedItems, rules, options.signal);
+      return await this.summarizeTextParts(
+        describedTextParts,
+        content.indexedItems,
+        rules,
+        options.signal,
+      );
     } catch (error) {
-      if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+      if (
+        options.signal?.aborted ||
+        (error instanceof DOMException && error.name === "AbortError")
+      ) {
         throw error;
       }
       this.markVisionUnavailable(state, error);
@@ -252,9 +363,17 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     const unavailableTextParts = content.textParts.map((part, partIndex) => {
       const index = content.itemIndexByTextPart[partIndex];
       if (index === undefined || !affectedIndexes.includes(index)) return part;
-      return { type: "text" as const, text: `${part.text}\n[IMAGE_ANALYSIS_UNAVAILABLE]` };
+      return {
+        type: "text" as const,
+        text: `${part.text}\n[IMAGE_ANALYSIS_UNAVAILABLE]`,
+      };
     });
-    return await this.summarizeTextParts(unavailableTextParts, content.indexedItems, rules, signal);
+    return await this.summarizeTextParts(
+      unavailableTextParts,
+      content.indexedItems,
+      rules,
+      signal,
+    );
   }
 
   private async summarizeTextParts(
@@ -264,7 +383,11 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     signal?: AbortSignal,
   ): Promise<SummaryPoint[]> {
     const content = textParts.map((part) => part.text).join("\n\n");
-    const raw = await this.summarizerClient.complete(rules.systemPrompt, content, signal);
+    const raw = await this.summarizerClient.complete(
+      rules.systemPrompt,
+      content,
+      signal,
+    );
     return this.parsePoints(raw, indexedItems);
   }
 
@@ -279,7 +402,9 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       if (index === undefined || !affectedIndexes.includes(index)) return part;
       return {
         type: "text" as const,
-        text: `${part.text}\n[IMAGE_ANALYSIS]\n${descriptions.get(index)}\n[/IMAGE_ANALYSIS]`,
+        text: `${part.text}\n[IMAGE_ANALYSIS]\n${
+          descriptions.get(index)
+        }\n[/IMAGE_ANALYSIS]`,
       };
     });
   }
@@ -303,7 +428,11 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
   ): Promise<SummaryPoint[]> {
     const mergeItems: NormalizedItem[] = [];
     for (let chunkIndex = 0; chunkIndex < chunkResults.length; chunkIndex++) {
-      for (let pointIndex = 0; pointIndex < chunkResults[chunkIndex].length; pointIndex++) {
+      for (
+        let pointIndex = 0;
+        pointIndex < chunkResults[chunkIndex].length;
+        pointIndex++
+      ) {
         const point = chunkResults[chunkIndex][pointIndex];
         mergeItems.push({
           connectorId: ConnectorId.Telegram,
@@ -320,9 +449,16 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     if (mergeItems.length === 0) return [];
     const mergeTextParts = mergeItems.map((mergeItem, index) => ({
       type: "text" as const,
-      text: `[${index}]\n${mergeItem.text.slice(0, options.maxTextBytesPerChunk)}`,
+      text: `[${index}]\n${
+        mergeItem.text.slice(0, options.maxTextBytesPerChunk)
+      }`,
     }));
-    return await this.summarizeTextParts(mergeTextParts, mergeItems, rules, options.signal);
+    return await this.summarizeTextParts(
+      mergeTextParts,
+      mergeItems,
+      rules,
+      options.signal,
+    );
   }
 
   private async buildContentParts(
@@ -330,6 +466,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     rules: SummaryRuleset,
     maxTextBytesPerChunk: number,
     maxImageBytes: number,
+    summaryMode: "aggregate" | "article",
   ): Promise<IndexedChunkContent> {
     const showAuthors = rules.showAuthors ?? false;
     const includeMedia = rules.includeMedia ?? true;
@@ -341,17 +478,29 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     const imageEntries: ImageEntry[] = [];
 
     for (const item of items) {
-      const hasPhoto = item.media?.type === "photo" || item.media?.type === "album";
+      const hasPhoto = item.media?.type === "photo" ||
+        item.media?.type === "album";
       if (!item.text.trim() && !hasPhoto) continue;
-      if (isEmojiOnly(item.text) && !hasPhoto) continue;
+      if (summaryMode === "aggregate" && isEmojiOnly(item.text) && !hasPhoto) {
+        continue;
+      }
 
       const index = indexedItems.length;
       indexedItems.push(item);
-      const itemText = item.text.length > maxTextBytesPerChunk
-        ? item.text.slice(0, maxTextBytesPerChunk)
-        : item.text;
-      const header = showAuthors ? `[${index}] ${item.author ?? "Unknown"}` : `[${index}]`;
-      const textPart = { type: "text" as const, text: `${header}\n${itemText}` };
+      const itemText =
+        summaryMode === "aggregate" && item.text.length > maxTextBytesPerChunk
+          ? item.text.slice(0, maxTextBytesPerChunk)
+          : item.text;
+      const headerParts = [
+        showAuthors ? `[${index}] ${item.author ?? "Unknown"}` : `[${index}]`,
+      ];
+      if (rules.showTitle && item.title?.trim()) {
+        headerParts.push(`Title: ${item.title.trim()}`);
+      }
+      const textPart = {
+        type: "text" as const,
+        text: `${headerParts.join("\n")}\n${itemText}`,
+      };
       textParts.push(textPart);
       itemIndexByTextPart.push(index);
       multimodalParts.push(textPart);
@@ -368,7 +517,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         imageNumber++;
         const imagePart = await this.loadImagePart(localPath, maxImageBytes);
         if (!imagePart) {
-          const omittedPart = { type: "text" as const, text: "[IMAGE_OMITTED]" };
+          const omittedPart = {
+            type: "text" as const,
+            text: "[IMAGE_OMITTED]",
+          };
           textParts.push(omittedPart);
           itemIndexByTextPart.push(undefined);
           multimodalParts.push(omittedPart);
@@ -387,10 +539,20 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       }
     }
 
-    return { textParts, itemIndexByTextPart, multimodalParts, visionParts, indexedItems, imageEntries };
+    return {
+      textParts,
+      itemIndexByTextPart,
+      multimodalParts,
+      visionParts,
+      indexedItems,
+      imageEntries,
+    };
   }
 
-  private async loadImagePart(localPath: string, maxImageBytes: number): Promise<ImagePart | null> {
+  private async loadImagePart(
+    localPath: string,
+    maxImageBytes: number,
+  ): Promise<ImagePart | null> {
     try {
       if (maxImageBytes > 0) {
         const stat = await Deno.stat(localPath);
@@ -426,20 +588,33 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     try {
       return jsonrepair(cleaned);
     } catch {
-      throw new Error(`jsonrepair failed on model output: ${cleaned.slice(0, 200)}`);
+      throw new Error(
+        `jsonrepair failed on model output: ${cleaned.slice(0, 200)}`,
+      );
     }
   }
 
-  private parsePoints(raw: string, indexedItems: NormalizedItem[]): SummaryPoint[] {
+  private parsePoints(
+    raw: string,
+    indexedItems: NormalizedItem[],
+  ): SummaryPoint[] {
     let parsed: Array<{ t: string; i?: number | string }>;
     const cleaned = this.cleanJsonResponse(raw);
     try {
       parsed = JSON.parse(cleaned) as Array<{ t: string; i?: number | string }>;
     } catch {
-      throw new Error(`Summarizer returned unparseable JSON after repair. Cleaned: ${cleaned.slice(0, 200)}`);
+      throw new Error(
+        `Summarizer returned unparseable JSON after repair. Cleaned: ${
+          cleaned.slice(0, 200)
+        }`,
+      );
     }
     if (!Array.isArray(parsed)) {
-      throw new Error(`Summarizer returned non-array: ${JSON.stringify(parsed).slice(0, 200)}`);
+      throw new Error(
+        `Summarizer returned non-array: ${
+          JSON.stringify(parsed).slice(0, 200)
+        }`,
+      );
     }
     for (let index = 0; index < parsed.length; index++) {
       const element = parsed[index];
@@ -447,12 +622,20 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         throw new Error(`Summarizer returned non-object at index ${index}`);
       }
       if (typeof element.t !== "string") {
-        throw new Error(`Summarizer returned element without string "t" at index ${index}`);
+        throw new Error(
+          `Summarizer returned element without string "t" at index ${index}`,
+        );
       }
     }
     return parsed.map((point) => {
-      const index = typeof point.i === "number" ? point.i : typeof point.i === "string" ? Number(point.i) : NaN;
-      const item = Number.isFinite(index) && index >= 0 ? indexedItems[index] : undefined;
+      const index = typeof point.i === "number"
+        ? point.i
+        : typeof point.i === "string"
+        ? Number(point.i)
+        : NaN;
+      const item = Number.isFinite(index) && index >= 0
+        ? indexedItems[index]
+        : undefined;
       return {
         text: point.t,
         sourceUrl: item?.url ?? null,
@@ -471,7 +654,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     });
   }
 
-  private parseVisionDescriptions(raw: string, expectedIndexes: number[]): Map<number, string> {
+  private parseVisionDescriptions(
+    raw: string,
+    expectedIndexes: number[],
+  ): Map<number, string> {
     const cleaned = this.cleanJsonResponse(raw);
     let parsed: unknown;
     try {
@@ -486,21 +672,39 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     const descriptions = new Map<number, string>();
     for (const element of parsed) {
       if (typeof element !== "object" || element === null) {
-        throw new Error(`vision response validation failed: invalid entry count=${parsed.length}`);
+        throw new Error(
+          `vision response validation failed: invalid entry count=${parsed.length}`,
+        );
       }
       const keys = Object.keys(element);
-      if (keys.length !== 2 || !keys.includes("i") || !keys.includes("description")) {
-        throw new Error(`vision response validation failed: unexpected fields count=${parsed.length}`);
+      if (
+        keys.length !== 2 || !keys.includes("i") ||
+        !keys.includes("description")
+      ) {
+        throw new Error(
+          `vision response validation failed: unexpected fields count=${parsed.length}`,
+        );
       }
       const entry = element as { i: unknown; description: unknown };
-      if (typeof entry.i !== "number" || !Number.isInteger(entry.i) || !expected.has(entry.i)) {
-        throw new Error(`vision response validation failed: invalid index count=${parsed.length}`);
+      if (
+        typeof entry.i !== "number" || !Number.isInteger(entry.i) ||
+        !expected.has(entry.i)
+      ) {
+        throw new Error(
+          `vision response validation failed: invalid index count=${parsed.length}`,
+        );
       }
-      if (typeof entry.description !== "string" || entry.description.trim() === "") {
-        throw new Error(`vision response validation failed: blank description index=${entry.i}`);
+      if (
+        typeof entry.description !== "string" || entry.description.trim() === ""
+      ) {
+        throw new Error(
+          `vision response validation failed: blank description index=${entry.i}`,
+        );
       }
       if (descriptions.has(entry.i)) {
-        throw new Error(`vision response validation failed: duplicate index=${entry.i}`);
+        throw new Error(
+          `vision response validation failed: duplicate index=${entry.i}`,
+        );
       }
       descriptions.set(entry.i, entry.description.trim());
     }

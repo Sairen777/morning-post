@@ -1,6 +1,14 @@
 import { sql } from "drizzle-orm";
-import { bigint, check, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
-import type { SummaryPoint } from "../../summarizers/summarizer.types.ts";
+import {
+  bigint,
+  check,
+  jsonb,
+  pgTable,
+  text,
+  unique,
+  uuid,
+} from "drizzle-orm/pg-core";
+import type { SummaryContent } from "../../summarizers/summarizer.types.ts";
 import { feeds } from "./feed.ts";
 
 export const summaries = pgTable(
@@ -12,13 +20,20 @@ export const summaries = pgTable(
       .references(() => feeds.id, { onDelete: "cascade" }),
     periodStartMs: bigint("period_start_ms", { mode: "number" }).notNull(),
     periodEndMs: bigint("period_end_ms", { mode: "number" }).notNull(),
-    points: jsonb("points").$type<SummaryPoint[]>().notNull(),
+    content: jsonb("content").$type<SummaryContent>().notNull(),
     feedNameSnapshot: text("feed_name_snapshot").notNull(),
     generatedAt: bigint("generated_at", { mode: "number" }).notNull(),
   },
   (table) => [
-    unique("summaries_feed_id_period_unique").on(table.feedId, table.periodStartMs, table.periodEndMs),
-    check("summaries_period_order_check", sql`${table.periodStartMs} <= ${table.periodEndMs}`),
+    unique("summaries_feed_id_period_unique").on(
+      table.feedId,
+      table.periodStartMs,
+      table.periodEndMs,
+    ),
+    check(
+      "summaries_period_order_check",
+      sql`${table.periodStartMs} <= ${table.periodEndMs}`,
+    ),
   ],
 );
 

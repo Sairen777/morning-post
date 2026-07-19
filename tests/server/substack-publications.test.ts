@@ -5,7 +5,10 @@ import { withTestDb } from "../../src/db/testing.ts";
 import type { PublicFeed } from "../../src/repositories/feed-repository.ts";
 import type { PublicSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
-import type { SubstackPublicationServiceLike } from "../../src/server/routes/connectors.ts";
+import type {
+  SubstackPublicationDiscoveryServiceLike,
+  SubstackPublicationServiceLike,
+} from "../../src/server/routes/connectors.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const ORIGIN = "http://127.0.0.1:5173";
@@ -26,15 +29,24 @@ function passRateLimit(): MiddlewareHandler {
   return async (_context, next) => await next();
 }
 
-async function registerAndLogin(app: Hono, email: string): Promise<{ userId: string; cookie: string }> {
-  const registration = await app.request("/auth/register", jsonRequest({
-    name: "Ada Lovelace",
-    email,
-    password: PASSWORD,
-  }));
+async function registerAndLogin(
+  app: Hono,
+  email: string,
+): Promise<{ userId: string; cookie: string }> {
+  const registration = await app.request(
+    "/auth/register",
+    jsonRequest({
+      name: "Ada Lovelace",
+      email,
+      password: PASSWORD,
+    }),
+  );
   assertEquals(registration.status, 201);
   const user = await registration.json();
-  const login = await app.request("/auth/login", jsonRequest({ email, password: PASSWORD }));
+  const login = await app.request(
+    "/auth/login",
+    jsonRequest({ email, password: PASSWORD }),
+  );
   assertEquals(login.status, 200);
   const setCookie = login.headers.get("set-cookie");
   assertExists(setCookie);
@@ -82,21 +94,32 @@ Deno.test("POST /connectors/substack/publications creates a canonical publicatio
         substackPublicationRateLimiter: passRateLimit(),
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { userId, cookie } = await registerAndLogin(app, "substack-publication-route@example.com");
-    const response = await app.request("/connectors/substack/publications", jsonRequest({
-      publicationUrl: "https://example.substack.com/p/article",
-    }, cookie));
+    const { userId, cookie } = await registerAndLogin(
+      app,
+      "substack-publication-route@example.com",
+    );
+    const response = await app.request(
+      "/connectors/substack/publications",
+      jsonRequest({
+        publicationUrl: "https://example.substack.com/p/article",
+      }, cookie),
+    );
     assertEquals(response.status, 201);
     const body = await response.json();
     assertEquals(body.feed.externalId, "https://newsletter.example.com");
-    assertEquals(calls, [{ userId, publicationUrl: "https://example.substack.com/p/article" }]);
+    assertEquals(calls, [{
+      userId,
+      publicationUrl: "https://example.substack.com/p/article",
+    }]);
   });
 });
 
 Deno.test("Substack publication route cancels its deadline before a deferred feed commit", async () => {
   await withTestDb(async (database) => {
     const mutationStarted = Promise.withResolvers<void>();
-    const mutation = Promise.withResolvers<{ source: PublicSource; feed: PublicFeed }>();
+    const mutation = Promise.withResolvers<
+      { source: PublicSource; feed: PublicFeed }
+    >();
     let deadlineCallback: (() => void) | undefined;
     let deadlineCancelled = false;
     const now = Date.now();
@@ -124,8 +147,9 @@ Deno.test("Substack publication route cancels its deadline before a deferred fee
       createdAt: now,
       updatedAt: now,
     };
-    const commitImmediately = async <Result>(operation: () => Promise<Result>): Promise<Result> =>
-      await operation();
+    const commitImmediately = async <Result>(
+      operation: () => Promise<Result>,
+    ): Promise<Result> => await operation();
     const service: SubstackPublicationServiceLike = {
       add: (
         userId,
@@ -158,7 +182,10 @@ Deno.test("Substack publication route cancels its deadline before a deferred fee
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(app, "substack-publication-deferred-commit@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "substack-publication-deferred-commit@example.com",
+    );
     let responseSettled = false;
     const responsePromise = Promise.resolve(app.request(
       "/connectors/substack/publications",
@@ -215,8 +242,9 @@ Deno.test("Substack publication route blocks a late feed commit after the deadli
       createdAt: now,
       updatedAt: now,
     };
-    const commitImmediately = async <Result>(operation: () => Promise<Result>): Promise<Result> =>
-      await operation();
+    const commitImmediately = async <Result>(
+      operation: () => Promise<Result>,
+    ): Promise<Result> => await operation();
     const service: SubstackPublicationServiceLike = {
       add: async (
         userId,
@@ -249,7 +277,10 @@ Deno.test("Substack publication route blocks a late feed commit after the deadli
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(app, "substack-publication-late-commit@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "substack-publication-late-commit@example.com",
+    );
     const responsePromise = Promise.resolve(app.request(
       "/connectors/substack/publications",
       jsonRequest({ publicationUrl: "https://example.substack.com" }, cookie),
@@ -279,11 +310,99 @@ Deno.test("Substack publication route rejects schema-invalid bodies", async () =
         substackPublicationRateLimiter: passRateLimit(),
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(app, "substack-publication-validation@example.com");
-    const response = await app.request("/connectors/substack/publications", jsonRequest({
-      publicationUrl: "https://example.substack.com",
-      externalId: "client-controlled",
-    }, cookie));
+    const { cookie } = await registerAndLogin(
+      app,
+      "substack-publication-validation@example.com",
+    );
+    const response = await app.request(
+      "/connectors/substack/publications",
+      jsonRequest({
+        publicationUrl: "https://example.substack.com",
+        externalId: "client-controlled",
+      }, cookie),
+    );
     assertEquals(response.status, 422);
+  });
+});
+
+Deno.test("GET /connectors/substack/publications requires auth and returns a direct array", async () => {
+  await withTestDb(async (database) => {
+    const calls: string[] = [];
+    const discoveryService: SubstackPublicationDiscoveryServiceLike = {
+      list: (userId) => {
+        calls.push(userId);
+        return Promise.resolve([{
+          externalId: "https://letter.example.com",
+          name: "Example Letter",
+          kind: "news",
+        }]);
+      },
+    };
+    const app = buildApp(database, {
+      connectors: {
+        substackPublicationDiscoveryService: discoveryService,
+        substackPublicationDiscoveryRateLimiter: passRateLimit(),
+      },
+    }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
+
+    const unauthorized = await app.request("/connectors/substack/publications");
+    assertEquals(unauthorized.status, 401);
+    assertEquals(calls, []);
+
+    const { userId, cookie } = await registerAndLogin(
+      app,
+      "substack-publication-discovery@example.com",
+    );
+    const response = await app.request("/connectors/substack/publications", {
+      headers: { cookie, Origin: ORIGIN },
+    });
+    assertEquals(response.status, 200);
+    assertEquals(await response.json(), [{
+      externalId: "https://letter.example.com",
+      name: "Example Letter",
+      kind: "news",
+    }]);
+    assertEquals(calls, [userId]);
+  });
+});
+
+Deno.test("GET /connectors/substack/publications uses the connector deadline", async () => {
+  await withTestDb(async (database) => {
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<never>();
+    let deadlineCallback: (() => void) | undefined;
+    let receivedSignal: AbortSignal | undefined;
+    const discoveryService: SubstackPublicationDiscoveryServiceLike = {
+      list: (_userId, signal) => {
+        receivedSignal = signal;
+        started.resolve();
+        return finish.promise;
+      },
+    };
+    const app = buildApp(database, {
+      connectors: {
+        substackPublicationDiscoveryService: discoveryService,
+        substackPublicationDiscoveryRateLimiter: passRateLimit(),
+        connectorTimeoutMs: 10,
+        scheduleConnectorDeadline: (onDeadline) => {
+          deadlineCallback = onDeadline;
+          return () => undefined;
+        },
+      },
+    }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
+    const { cookie } = await registerAndLogin(
+      app,
+      "substack-publication-discovery-deadline@example.com",
+    );
+    const responsePromise = Promise.resolve(app.request(
+      "/connectors/substack/publications",
+      { headers: { cookie, Origin: ORIGIN } },
+    ));
+    await started.promise;
+    assertExists(deadlineCallback);
+    deadlineCallback();
+    const response = await responsePromise;
+    assertEquals(response.status, 500);
+    assertEquals(receivedSignal?.aborted, true);
   });
 });

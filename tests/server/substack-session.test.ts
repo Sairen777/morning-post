@@ -25,15 +25,24 @@ function passRateLimit(): MiddlewareHandler {
   return async (_context, next) => await next();
 }
 
-async function registerAndLogin(app: Hono, email: string): Promise<{ userId: string; cookie: string }> {
-  const registration = await app.request("/auth/register", jsonRequest({
-    name: "Ada Lovelace",
-    email,
-    password: PASSWORD,
-  }));
+async function registerAndLogin(
+  app: Hono,
+  email: string,
+): Promise<{ userId: string; cookie: string }> {
+  const registration = await app.request(
+    "/auth/register",
+    jsonRequest({
+      name: "Ada Lovelace",
+      email,
+      password: PASSWORD,
+    }),
+  );
   assertEquals(registration.status, 201);
   const user = await registration.json();
-  const login = await app.request("/auth/login", jsonRequest({ email, password: PASSWORD }));
+  const login = await app.request(
+    "/auth/login",
+    jsonRequest({ email, password: PASSWORD }),
+  );
   assertEquals(login.status, 200);
   const setCookie = login.headers.get("set-cookie");
   assertExists(setCookie);
@@ -47,16 +56,18 @@ Deno.test("POST /connectors/substack/session validates and returns a secret-free
       connect: (userId, credentials) => {
         calls.push({ userId, credentials });
         const now = Date.now();
-        return Promise.resolve({
-          id: "00000000-0000-4000-8000-000000000111",
-          userId,
-          connectorId: ConnectorId.Substack,
-          position: null,
-          enabled: true,
-          connected: true,
-          createdAt: now,
-          updatedAt: now,
-        } satisfies PublicSource);
+        return Promise.resolve(
+          {
+            id: "00000000-0000-4000-8000-000000000111",
+            userId,
+            connectorId: ConnectorId.Substack,
+            position: null,
+            enabled: true,
+            connected: true,
+            createdAt: now,
+            updatedAt: now,
+          } satisfies PublicSource,
+        );
       },
     };
     const app = buildApp(database, {
@@ -66,11 +77,16 @@ Deno.test("POST /connectors/substack/session validates and returns a secret-free
         substackPublicationRateLimiter: passRateLimit(),
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { userId, cookie } = await registerAndLogin(app, "substack-route@example.com");
-    const response = await app.request("/connectors/substack/session", jsonRequest({
-      substackSessionId: "s%3Asubstack.signature",
-      connectSessionId: "s%3Aconnect.signature",
-    }, cookie));
+    const { userId, cookie } = await registerAndLogin(
+      app,
+      "substack-route@example.com",
+    );
+    const response = await app.request(
+      "/connectors/substack/session",
+      jsonRequest({
+        substackSessionId: "s%3Asubstack.signature",
+      }, cookie),
+    );
     assertEquals(response.status, 200);
     const body = await response.json();
     assertEquals(body.source.connectorId, ConnectorId.Substack);
@@ -79,7 +95,6 @@ Deno.test("POST /connectors/substack/session validates and returns a secret-free
       userId,
       credentials: {
         substackSessionId: "s%3Asubstack.signature",
-        connectSessionId: "s%3Aconnect.signature",
       },
     }]);
   });
@@ -103,11 +118,19 @@ Deno.test("Substack session route enforces Morning Post auth and strict body val
     );
     assertEquals(unauthenticated.status, 401);
 
-    const { cookie } = await registerAndLogin(app, "substack-route-validation@example.com");
-    const invalid = await app.request("/connectors/substack/session", jsonRequest({
-      substackSessionId: "s%3Asubstack.signature",
-      rawCookieHeader: "other=secret",
-    }, cookie));
+    const { cookie } = await registerAndLogin(
+      app,
+      "substack-route-validation@example.com",
+    );
+
+    const invalid = await app.request(
+      "/connectors/substack/session",
+      jsonRequest({
+        substackSessionId: "s%3Asubstack.signature",
+        connectSessionId: "s%3Aconnect.signature",
+        rawCookieHeader: "other=secret",
+      }, cookie),
+    );
     assertEquals(invalid.status, 422);
 
     const malformed = await app.request("/connectors/substack/session", {
@@ -136,10 +159,16 @@ Deno.test("Substack session route bounds services that ignore abort", async () =
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(app, "substack-route-timeout@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "substack-route-timeout@example.com",
+    );
     const response = await app.request(
       "/connectors/substack/session",
-      jsonRequest({ substackSessionId: "s%3Asubstack.signature" }, cookie),
+      jsonRequest({
+        substackSessionId: "s%3Asubstack.signature",
+        connectSessionId: "s%3Aconnect.signature",
+      }, cookie),
     );
     assertEquals(response.status, 500);
   });
@@ -162,8 +191,9 @@ Deno.test("Substack session route cancels its deadline before a deferred credent
       createdAt: now,
       updatedAt: now,
     };
-    const commitImmediately = async <Result>(operation: () => Promise<Result>): Promise<Result> =>
-      await operation();
+    const commitImmediately = async <Result>(
+      operation: () => Promise<Result>,
+    ): Promise<Result> => await operation();
     const service: SubstackSessionServiceLike = {
       connect: (
         userId,
@@ -196,11 +226,17 @@ Deno.test("Substack session route cancels its deadline before a deferred credent
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(app, "substack-route-deferred-commit@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "substack-route-deferred-commit@example.com",
+    );
     let responseSettled = false;
     const responsePromise = Promise.resolve(app.request(
       "/connectors/substack/session",
-      jsonRequest({ substackSessionId: "s%3Asubstack.signature" }, cookie),
+      jsonRequest({
+        substackSessionId: "s%3Asubstack.signature",
+        connectSessionId: "s%3Aconnect.signature",
+      }, cookie),
     )).then((response) => {
       responseSettled = true;
       return response;
@@ -239,8 +275,9 @@ Deno.test("Substack session route blocks a late credential commit after the dead
       createdAt: now,
       updatedAt: now,
     };
-    const commitImmediately = async <Result>(operation: () => Promise<Result>): Promise<Result> =>
-      await operation();
+    const commitImmediately = async <Result>(
+      operation: () => Promise<Result>,
+    ): Promise<Result> => await operation();
     const service: SubstackSessionServiceLike = {
       connect: async (
         userId,
@@ -273,10 +310,16 @@ Deno.test("Substack session route blocks a late credential commit after the dead
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(app, "substack-route-late-commit@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "substack-route-late-commit@example.com",
+    );
     const responsePromise = Promise.resolve(app.request(
       "/connectors/substack/session",
-      jsonRequest({ substackSessionId: "s%3Asubstack.signature" }, cookie),
+      jsonRequest({
+        substackSessionId: "s%3Asubstack.signature",
+        connectSessionId: "s%3Aconnect.signature",
+      }, cookie),
     ));
 
     await remoteValidationStarted.promise;

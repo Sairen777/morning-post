@@ -25,4 +25,12 @@ describe("Playwright environment isolation", () => {
       },
     });
   });
+
+  it("allows the API to apply pending migrations before readiness", () => {
+    const webServers = Array.isArray(config.webServer)
+      ? config.webServer
+      : [config.webServer];
+
+    expect(webServers[0]?.timeout).toBeGreaterThanOrEqual(30_000);
+  });
 });

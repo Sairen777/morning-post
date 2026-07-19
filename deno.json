@@ -71,7 +71,12 @@
     },
     "migrate": {
       "net": ["127.0.0.1:5432", "localhost:5432"],
-      "env": ["DATABASE_URL", "DB_IDLE_TIMEOUT_SECONDS", "DB_CONNECT_TIMEOUT_SECONDS", "DB_SSL_MODE"],
+      "env": [
+        "DATABASE_URL",
+        "DB_IDLE_TIMEOUT_SECONDS",
+        "DB_CONNECT_TIMEOUT_SECONDS",
+        "DB_SSL_MODE"
+      ],
       "read": [
         "./src",
         "./drizzle",
@@ -125,7 +130,7 @@
         "./telegram_media",
         "./media",
         "./.debug_logs",
-        "./.test-data",
+        "./.test-data"
       ],
       "ffi": ["./node_modules"]
     },
@@ -200,9 +205,9 @@
     "db:generate": "deno run -P=generate --env-file=.env.production.local npm:drizzle-kit@0.31 generate",
     "db:migrate": "deno run -P=migrate --env-file=.env.production.local src/db/migrate.ts",
     "db:cleanup": "deno run -P=databaseCleanup --env-file=.env.production.local src/db/cleanup.ts",
-    "dev:api": "deno run -P=api --unstable-cron --watch --env-file=.env.production.local src/server/main.ts",
-    "start": "deno run -P=api --unstable-cron --env-file=.env.production.local src/server/main.ts",
-    "e2e:api": "deno run -P=test --unstable-cron --env-file=.env.production.local scripts/e2e-environment.ts start-api",
+    "dev:api": "deno run -P=api --unstable-cron --unstable-no-legacy-abort --watch --env-file=.env.production.local src/server/main.ts",
+    "start": "deno run -P=api --unstable-cron --unstable-no-legacy-abort --env-file=.env.production.local src/server/main.ts",
+    "e2e:api": "deno run -P=test --unstable-cron --unstable-no-legacy-abort --env-file=.env.production.local scripts/e2e-environment.ts start-api",
     "e2e:db:cleanup": "deno run -P=test --env-file=.env.production.local scripts/e2e-environment.ts cleanup",
     "test": "deno test -P=test --env-file=.env.production.local tests/",
     "capture-fixtures": "deno run -P=cli --allow-write=./tests/fixtures --env-file=.env.production.local scripts/capture-fixtures.ts"

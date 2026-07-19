@@ -10,13 +10,15 @@ import {
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { createUser } from "../../src/repositories/user-repository.ts";
 import {
-  SubstackPublicationService,
   type SubstackPublicationProbe,
+  SubstackPublicationService,
 } from "../../src/services/substack-publication-service.ts";
 import { ConflictError, ValidationError } from "../../src/server/errors.ts";
 
 function cipher(): CredentialCipher {
-  return new CredentialCipher(new EnvMasterKeyProvider(new Uint8Array(32).fill(29)));
+  return new CredentialCipher(
+    new EnvMasterKeyProvider(new Uint8Array(32).fill(29)),
+  );
 }
 
 function userInput(email: string) {
@@ -29,10 +31,17 @@ function userInput(email: string) {
   };
 }
 
-async function connectedSubstackSource(database: Parameters<typeof createSource>[0], userId: string) {
-  const credentials = await cipher().encrypt(JSON.stringify({
-    substackSessionId: "s%3Asubstack.signature",
-  }), { userId, connectorId: ConnectorId.Substack });
+async function connectedSubstackSource(
+  database: Parameters<typeof createSource>[0],
+  userId: string,
+) {
+  const credentials = await cipher().encrypt(
+    JSON.stringify({
+      substackSessionId: "s%3Asubstack.signature",
+      connectSessionId: "s%3Aconnect.signature",
+    }),
+    { userId, connectorId: ConnectorId.Substack },
+  );
   return await createSource(database, {
     userId,
     connectorId: ConnectorId.Substack,
@@ -42,7 +51,10 @@ async function connectedSubstackSource(database: Parameters<typeof createSource>
 
 Deno.test("SubstackPublicationService probes then creates one canonical feed", async () => {
   await withTestDb(async (database) => {
-    const user = await createUser(database, userInput("publication-add@example.com"));
+    const user = await createUser(
+      database,
+      userInput("publication-add@example.com"),
+    );
     const source = await connectedSubstackSource(database, user.id);
     const requested: string[] = [];
     const probe: SubstackPublicationProbe = (publicationUrl) => {
@@ -61,8 +73,14 @@ Deno.test("SubstackPublicationService probes then creates one canonical feed", a
       });
     };
     const service = new SubstackPublicationService(database, probe);
-    const first = await service.add(user.id, "https://example.substack.com/feed");
-    const duplicate = await service.add(user.id, "https://newsletter.example.com/p/article");
+    const first = await service.add(
+      user.id,
+      "https://example.substack.com/feed",
+    );
+    const duplicate = await service.add(
+      user.id,
+      "https://newsletter.example.com/p/article",
+    );
     assertEquals(requested, [
       "https://example.substack.com/feed",
       "https://newsletter.example.com/p/article",
@@ -77,12 +95,16 @@ Deno.test("SubstackPublicationService probes then creates one canonical feed", a
 
 Deno.test("SubstackPublicationService accepts empty archives and revives deleted feeds", async () => {
   await withTestDb(async (database) => {
-    const user = await createUser(database, userInput("publication-revive@example.com"));
+    const user = await createUser(
+      database,
+      userInput("publication-revive@example.com"),
+    );
     const source = await connectedSubstackSource(database, user.id);
-    const probe: SubstackPublicationProbe = () => Promise.resolve({
-      origin: "https://empty.example.com",
-      items: [],
-    });
+    const probe: SubstackPublicationProbe = () =>
+      Promise.resolve({
+        origin: "https://empty.example.com",
+        items: [],
+      });
     const service = new SubstackPublicationService(database, probe);
     const created = await service.add(user.id, "https://empty.example.com");
     assertEquals(created.feed.name, "empty.example.com");
@@ -90,16 +112,26 @@ Deno.test("SubstackPublicationService accepts empty archives and revives deleted
     const revived = await service.add(user.id, "https://empty.example.com");
     assertEquals(revived.feed.id, created.feed.id);
     assertEquals(revived.feed.deletedAt, null);
-    assertEquals((await listFeedsForSource(database, source.id, user.id)).length, 1);
+    assertEquals(
+      (await listFeedsForSource(database, source.id, user.id)).length,
+      1,
+    );
   });
 });
 
 Deno.test("SubstackPublicationService requires a connected owned source and writes nothing on probe failure", async () => {
   await withTestDb(async (database) => {
-    const user = await createUser(database, userInput("publication-failure@example.com"));
-    const otherUser = await createUser(database, userInput("publication-other@example.com"));
+    const user = await createUser(
+      database,
+      userInput("publication-failure@example.com"),
+    );
+    const otherUser = await createUser(
+      database,
+      userInput("publication-other@example.com"),
+    );
     const source = await connectedSubstackSource(database, user.id);
-    const failingProbe: SubstackPublicationProbe = () => Promise.reject(new Error("private resolver details"));
+    const failingProbe: SubstackPublicationProbe = () =>
+      Promise.reject(new Error("private resolver details"));
     const service = new SubstackPublicationService(database, failingProbe);
     await assertRejects(
       () => service.add(user.id, "https://example.com"),
@@ -117,7 +149,10 @@ Deno.test("SubstackPublicationService requires a connected owned source and writ
 
 Deno.test("SubstackPublicationService does not persist after its signal is aborted", async () => {
   await withTestDb(async (database) => {
-    const user = await createUser(database, userInput("publication-aborted@example.com"));
+    const user = await createUser(
+      database,
+      userInput("publication-aborted@example.com"),
+    );
     const source = await connectedSubstackSource(database, user.id);
     const controller = new AbortController();
     const probe: SubstackPublicationProbe = () => {
@@ -129,7 +164,8 @@ Deno.test("SubstackPublicationService does not persist after its signal is abort
     };
     const service = new SubstackPublicationService(database, probe);
     await assertRejects(
-      () => service.add(user.id, "https://aborted.example.com", controller.signal),
+      () =>
+        service.add(user.id, "https://aborted.example.com", controller.signal),
       ValidationError,
       "Substack publication could not be validated",
     );

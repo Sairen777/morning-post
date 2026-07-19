@@ -143,10 +143,16 @@ export function connectSubstackSession(
 export function addSubstackPublication(
   input: SubstackPublicationInput,
 ): Promise<SubstackPublicationResponse> {
-  return apiRequest<SubstackPublicationResponse>("/connectors/substack/publications", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+  return apiRequest<SubstackPublicationResponse>(
+    "/connectors/substack/publications",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+export function listSubstackPublications(): Promise<AvailableFeed[]> {
+  return apiRequest<AvailableFeed[]>("/connectors/substack/publications");
 }
 
 // Sources
@@ -232,12 +238,18 @@ export interface DigestListParams {
   limit?: number;
 }
 
-export function listDigests(params?: DigestListParams): Promise<CursorPage<PublicDigest>> {
-  const qs = params ? "?" + new URLSearchParams(
-    Object.fromEntries(
-      Object.entries(params).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)]),
-    ),
-  ).toString() : "";
+export function listDigests(
+  params?: DigestListParams,
+): Promise<CursorPage<PublicDigest>> {
+  const qs = params
+    ? "?" + new URLSearchParams(
+      Object.fromEntries(
+        Object.entries(params).filter(([_, v]) => v !== undefined).map((
+          [k, v],
+        ) => [k, String(v)]),
+      ),
+    ).toString()
+    : "";
   return apiRequest<CursorPage<PublicDigest>>(`/digests${qs}`);
 }
 
@@ -260,12 +272,18 @@ export function runDigest(input: {
 }
 
 // Digest runs
-export function listDigestRuns(params?: DigestListParams): Promise<CursorPage<PublicDigestRun>> {
-  const qs = params ? "?" + new URLSearchParams(
-    Object.fromEntries(
-      Object.entries(params).filter(([_, v]) => v !== undefined).map(([k, v]) => [k, String(v)]),
-    ),
-  ).toString() : "";
+export function listDigestRuns(
+  params?: DigestListParams,
+): Promise<CursorPage<PublicDigestRun>> {
+  const qs = params
+    ? "?" + new URLSearchParams(
+      Object.fromEntries(
+        Object.entries(params).filter(([_, v]) => v !== undefined).map((
+          [k, v],
+        ) => [k, String(v)]),
+      ),
+    ).toString()
+    : "";
   return apiRequest<CursorPage<PublicDigestRun>>(`/digests/runs${qs}`);
 }
 

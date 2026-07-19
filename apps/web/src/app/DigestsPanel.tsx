@@ -1,7 +1,126 @@
 import { createSignal, For, Show } from "solid-js";
-import type { PublicDigest, DigestView } from "../api/types";
+import type { DigestSection, DigestView, PublicDigest } from "../api/types";
 import StatusBadge from "./StatusBadge";
 import FormatTime from "./FormatTime";
+
+function DigestSectionView(props: { section: DigestSection }) {
+  const articleContent = () => {
+    const content = props.section.content;
+    return content.kind === "articles" ? content : undefined;
+  };
+  const aggregateContent = () => {
+    const content = props.section.content;
+    return content.kind === "aggregate" ? content : undefined;
+  };
+
+  return (
+    <section class="digest-section">
+      <h4 class="digest-feed-heading">
+        {props.section.feedName}
+        <Show when={props.section.feedRemoved}>
+          <span class="feed-removed">(removed)</span>
+        </Show>
+      </h4>
+      <Show
+        when={articleContent()}
+        fallback={
+          <Show
+            when={aggregateContent()}
+            fallback={<p class="hint digest-empty">No content available.</p>}
+          >
+            {(aggregate) => (
+              <ul class="bullet-list">
+                <For each={aggregate().points}>
+                  {(point) => (
+                    <li>
+                      {point.text}
+                      <Show when={point.sourceUrl}>
+                        {" "}
+                        <a
+                          href={point.sourceUrl!}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          source
+                        </a>
+                      </Show>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            )}
+          </Show>
+        }
+      >
+        {(articles) => (
+          <Show
+            when={articles().articles.length > 0}
+            fallback={<p class="hint digest-empty">No articles available.</p>}
+          >
+            <div class="article-list">
+              <For each={articles().articles}>
+                {(article) => (
+                  <article class="digest-article">
+                    <h5 class="digest-article-heading">
+                      <Show when={article.sourceUrl} fallback={article.title}>
+                        <a
+                          href={article.sourceUrl!}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {article.title}
+                        </a>
+                      </Show>
+                    </h5>
+                    <div class="digest-article-meta">
+                      <Show when={article.contentAccess === "preview"}>
+                        <span
+                          class="digest-preview"
+                          aria-label="Preview article"
+                        >
+                          Preview
+                        </span>
+                      </Show>
+                      <FormatTime ms={article.publishedAt} />
+                    </div>
+                    <Show
+                      when={article.points.length > 0}
+                      fallback={
+                        <p class="hint digest-empty">
+                          No points available for this article.
+                        </p>
+                      }
+                    >
+                      <ul class="bullet-list article-points">
+                        <For each={article.points}>
+                          {(point) => (
+                            <li>
+                              {point.text}
+                              <Show when={point.sourceUrl}>
+                                {" "}
+                                <a
+                                  href={point.sourceUrl!}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  source
+                                </a>
+                              </Show>
+                            </li>
+                          )}
+                        </For>
+                      </ul>
+                    </Show>
+                  </article>
+                )}
+              </For>
+            </div>
+          </Show>
+        )}
+      </Show>
+    </section>
+  );
+}
 
 interface DigestsPanelProps {
   digests: PublicDigest[];
@@ -80,7 +199,9 @@ export default function DigestsPanel(props: DigestsPanelProps) {
       </div>
       <Show
         when={props.digests.length > 0}
-        fallback={<p class="hint">No digests yet. Run your first digest above.</p>}
+        fallback={
+          <p class="hint">No digests yet. Run your first digest above.</p>
+        }
       >
         <ul class="bullet-list">
           <For each={props.digests}>
@@ -102,10 +223,9 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                       border: "none",
                       padding: "0.5rem 0",
                       cursor: "pointer",
-                      color:
-                        selectedId() === digest.id
-                          ? "var(--accent)"
-                          : "inherit",
+                      color: selectedId() === digest.id
+                        ? "var(--accent)"
+                        : "inherit",
                       flex: "1",
                       "text-align": "left",
                     }}
@@ -143,6 +263,7 @@ export default function DigestsPanel(props: DigestsPanelProps) {
       <Show when={props.nextCursor}>
         <div style="text-align: center; margin-top: 1rem;">
           <button
+            type="button"
             onClick={() => props.onLoadMore?.()}
             disabled={props.loadingMore}
           >
@@ -175,7 +296,7 @@ export default function DigestsPanel(props: DigestsPanelProps) {
             </div>
             <For each={view().groups}>
               {(group) => (
-                <div class="card" style="margin-bottom: 1rem;">
+                <section class="digest-group">
                   <div class="meta-row">
                     <dt>Source</dt>
                     <dd>{group.sourceId}</dd>
@@ -185,43 +306,9 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                     <dd>{group.connectorId}</dd>
                   </div>
                   <For each={group.sections}>
-                    {(section) => (
-                      <div style="margin-top: 0.75rem;">
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: "0.5rem",
-                            "align-items": "center",
-                          }}
-                        >
-                          <strong>{section.feedName}</strong>
-                          <Show when={section.feedRemoved}>
-                            <span class="feed-removed">(removed)</span>
-                          </Show>
-                        </div>
-                        <ul class="bullet-list">
-                          <For each={section.points}>
-                            {(point) => (
-                              <li>
-                                {point.text}
-                                <Show when={point.sourceUrl}>
-                                  {" "}
-                                  <a
-                                    href={point.sourceUrl!}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  >
-                                    source
-                                  </a>
-                                </Show>
-                              </li>
-                            )}
-                          </For>
-                        </ul>
-                      </div>
-                    )}
+                    {(section) => <DigestSectionView section={section} />}
                   </For>
-                </div>
+                </section>
               )}
             </For>
           </div>

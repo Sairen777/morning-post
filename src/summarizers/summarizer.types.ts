@@ -4,6 +4,7 @@ export interface SummaryRuleset {
   systemPrompt: string;
   showAuthors?: boolean;
   includeMedia?: boolean;
+  showTitle?: boolean;
 }
 
 // Note: sourceUrl refers to the primary/first post when a bullet covers multiple posts.
@@ -14,6 +15,27 @@ export interface SummaryPoint {
   date?: string;
 }
 
+export interface AggregateSummaryContent {
+  kind: "aggregate";
+  points: SummaryPoint[];
+}
+
+export interface ArticleSummary {
+  sourceExternalId: string;
+  title: string;
+  sourceUrl: string | null;
+  publishedAt: number;
+  contentAccess: "full" | "preview";
+  points: SummaryPoint[];
+}
+
+export interface ArticleSummaryContent {
+  kind: "articles";
+  articles: ArticleSummary[];
+}
+
+export type SummaryContent = AggregateSummaryContent | ArticleSummaryContent;
+
 export interface SummarizeOptions {
   /** AbortSignal for cancellation through retries, backoff, and merge */
   signal?: AbortSignal;
@@ -23,8 +45,9 @@ export interface SummarizeOptions {
   maxItemsPerChunk?: number;
   /** Max bytes for a single image payload; larger images are omitted with [IMAGE_OMITTED] */
   maxImageBytes?: number;
+  /** Article mode requires one item and keeps chunk results article-local */
+  summaryMode?: "aggregate" | "article";
 }
-
 
 export interface SummarizerService {
   summarize(

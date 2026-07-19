@@ -58,8 +58,29 @@ export interface SummaryPoint {
   text: string;
   sourceUrl: string | null;
   channel?: string;
-  date?: number;
+  date?: string;
 }
+
+export interface AggregateSummaryContent {
+  kind: "aggregate";
+  points: SummaryPoint[];
+}
+
+export interface ArticleSummary {
+  sourceExternalId: string;
+  title: string;
+  sourceUrl: string | null;
+  publishedAt: number;
+  contentAccess: "full" | "preview";
+  points: SummaryPoint[];
+}
+
+export interface ArticleSummaryContent {
+  kind: "articles";
+  articles: ArticleSummary[];
+}
+
+export type SummaryContent = AggregateSummaryContent | ArticleSummaryContent;
 
 export interface DigestSection {
   sourceId: string;
@@ -67,7 +88,7 @@ export interface DigestSection {
   feedId: string;
   feedName: string;
   feedRemoved: boolean;
-  points: SummaryPoint[];
+  content: SummaryContent;
 }
 
 export interface DigestSourceGroup {
@@ -89,7 +110,13 @@ export interface ApiErrorBody {
   };
 }
 
-export type ConnectorId = "Telegram" | "Substack" | "YouTube" | "Reddit" | "X" | "RSS";
+export type ConnectorId =
+  | "Telegram"
+  | "Substack"
+  | "YouTube"
+  | "Reddit"
+  | "X"
+  | "RSS";
 
 export interface SubstackSessionInput {
   substackSessionId: string;
@@ -109,7 +136,12 @@ export interface SubstackPublicationResponse {
   feed: PublicFeed;
 }
 
-export type TelegramLoginStatus = "pending" | "needs_2fa" | "complete" | "error" | "expired";
+export type TelegramLoginStatus =
+  | "pending"
+  | "needs_2fa"
+  | "complete"
+  | "error"
+  | "expired";
 
 export interface TelegramLoginStart {
   loginSessionId: string;

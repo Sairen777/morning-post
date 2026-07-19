@@ -1,4 +1,5 @@
 <!-- Model: Claude Opus 4.5 -->
+
 # Morning Post — Architecture
 
 ## Overview
@@ -12,11 +13,14 @@ Data flow:
 ```
 Connector.getRawData(from, to): TRawData
   -> Connector.getNormalizedData(from, to): Record<sourceId, NormalizedItem[]>
-  -> Summarizer.summarize(items, rules): SummaryPoint[]
+  -> Summarizer.summarize(items, rules, options): SummaryPoint[]
+  -> SummarizationService: SummaryContent
 ```
 
-No intermediate adapter step. `NormalizedItem` is the single cross-layer item
-type — the connector emits it and the summarizer consumes it directly.
+`NormalizedItem` remains the single cross-layer input type: connectors emit it
+and the low-level summarizer consumes it directly. `SummaryContent` is the
+persistence and presentation contract. Its `kind` discriminant distinguishes
+aggregate points from ordered per-article summaries.
 
 All public boundaries use **epoch milliseconds** (the `number` returned by
 `Date.now()`) for timestamps. Internal types (e.g. `ChannelMessage.date`) may
@@ -77,27 +81,34 @@ external id. The field will be renamed `feedExternalId` (and `SourceSummary` →
 
 ### 2. Summarizer
 
-Accepts `NormalizedItem[]` and a `SummaryRuleset`
-(`{ systemPrompt, showAuthors?, includeMedia? }`), returns `SummaryPoint[]`. Has
-**no domain knowledge** of where items came from — the prompt and shape hints
-are fully caller-controlled.
+Accepts `NormalizedItem[]`, a `SummaryRuleset`
+(`{ systemPrompt, showAuthors?, includeMedia?, showTitle? }`), and optional
+`SummarizeOptions`. It returns `SummaryPoint[]` and has **no connector domain
+knowledge**: prompts, capability hints, and `summaryMode` are caller-controlled.
+Aggregate mode remains the default. Article mode requires exactly one item and
+keeps every request scoped to that article.
 
-Implements the `SummarizerService` interface in
+The higher-level `SummarizationService` chooses the mode from the explicit
+connector id. Telegram and other connectors summarize all feed-period items as
+one aggregate. Substack summarizes each article independently, preserves source
+order and metadata, then wraps the results in the tagged `SummaryContent`
+contract.
+
+The low-level service implements `SummarizerService` in
 `src/summarizers/summarizer.types.ts`.
 
 #### Prompts
 
 All system prompts live in `src/summarizers/prompts.ts`. Each builder
-(`buildNewsPrompt`, `buildDiscussionPrompt`, …) returns a full `SummaryRuleset`
-— prompt text plus matching `showAuthors`/`includeMedia` defaults. New
-summarization "modes" go here, not inside the summarizer service and not inlined
-in the orchestrator.
+(`buildNewsPrompt`, `buildDiscussionPrompt`, `buildArticlePrompt`, …) returns a
+full `SummaryRuleset`—prompt text plus matching capability hints. New
+summarization modes go here, not inside the provider client or orchestrator.
 
 #### Backends
 
-Current implementation: `OpenAICompatibleSummarizerService`, constructed once
-by each entry point and injected into both request and scheduled digest paths.
-The service owns two OpenAI-compatible endpoint configurations:
+Current implementation: `OpenAICompatibleSummarizerService`, constructed once by
+each entry point and injected into both request and scheduled digest paths. The
+service owns two OpenAI-compatible endpoint configurations:
 
 - `summarizer`: the text completion model and endpoint
 - `vision`: the image-analysis model and endpoint
@@ -116,15 +127,15 @@ constructor overrides before environment variables, trims values, normalizes
 endpoint roots, and requires `ALLOW_REMOTE_SUMMARIZATION=true` for non-loopback
 providers.
 
-| Env | Purpose |
-| --- | --- |
-| `SUMMARIZER_MODEL` | Required text summarization model name |
-| `SUMMARIZER_BASE_URL` | Required text OpenAI-compatible endpoint root |
-| `SUMMARIZER_API_KEY` | Optional text provider bearer token |
-| `VISION_MODEL` | Required vision model name |
-| `VISION_BASE_URL` | Vision endpoint root when distinct from the text endpoint; otherwise inherited |
-| `VISION_API_KEY` | Optional vision provider bearer token; otherwise inherited for same-model routing |
-| `ALLOW_REMOTE_SUMMARIZATION` | Allows non-loopback provider roots; defaults to `false` |
+| Env                          | Purpose                                                                           |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| `SUMMARIZER_MODEL`           | Required text summarization model name                                            |
+| `SUMMARIZER_BASE_URL`        | Required text OpenAI-compatible endpoint root                                     |
+| `SUMMARIZER_API_KEY`         | Optional text provider bearer token                                               |
+| `VISION_MODEL`               | Required vision model name                                                        |
+| `VISION_BASE_URL`            | Vision endpoint root when distinct from the text endpoint; otherwise inherited    |
+| `VISION_API_KEY`             | Optional vision provider bearer token; otherwise inherited for same-model routing |
+| `ALLOW_REMOTE_SUMMARIZATION` | Allows non-loopback provider roots; defaults to `false`                           |
 
 All system prompt text remains in `src/summarizers/prompts.ts`, including the
 vision-analysis contract. The transport is isolated in
@@ -160,8 +171,8 @@ summaries. No ORM/DB is chosen yet; the field-level model lives in `ROADMAP.md`
 The persistence model mirrors the runtime's connector-agnostic stance: one
 generic `Source`/`Feed`/`Summary` triad instead of per-connector tables.
 Connector-specific fields live in `Source.credentials` — the persistence twin of
-`NormalizedItem.meta`, and the system's most sensitive asset (see Credentials &amp;
-secrets below).
+`NormalizedItem.meta`, and the system's most sensitive asset (see Credentials
+&amp; secrets below).
 
 All cross-layer timestamps are epoch ms (`number`); periods are explicit
 `periodStartMs`/`periodEndMs` ranges, never a day string.
@@ -187,27 +198,27 @@ revoke. Plaintext storage means one DB leak = full takeover of every connected
 account.
 
 **No zero-knowledge option here.** Morning Post runs scheduled digests while the
-user is offline, so the server must decrypt and use a credential without the user
-present. That rules out client-side / end-to-end custody (the desktop-app
+user is offline, so the server must decrypt and use a credential without the
+user present. That rules out client-side / end-to-end custody (the desktop-app
 OS-keychain model): a service that acts on your behalf at 6am must hold the
 decryption capability at 6am — user-/password-derived keys can't be present then
 without caching them server-side, which restores server custody. **Per-user data
 keys therefore limit blast radius and enable per-user revocation/rotation; they
 do not make the server unable to read.** The achievable goal is not "even we
-can't read it" but: a DB/backup leak alone does not expose secrets, access can be
-revoked instantly, and we hold the least-powerful credential each connector
+can't read it" but: a DB/backup leak alone does not expose secrets, access can
+be revoked instantly, and we hold the least-powerful credential each connector
 allows — the trusted-custodian posture of any SaaS that holds your OAuth tokens.
 
-- **Encrypt at the application layer** with authenticated encryption (AES-256-GCM
-  or libsodium secretbox). The key lives **outside the DB** — env var or secrets
-  manager, never a column or the repo. This defends the realistic leak vectors
-  (stolen backups/snapshots, logical dumps, read-only SQLi); it does **not**
-  defend a full-host compromise that also yields the key. State that boundary
-  honestly rather than implying "encrypted = safe".
+- **Encrypt at the application layer** with authenticated encryption
+  (AES-256-GCM or libsodium secretbox). The key lives **outside the DB** — env
+  var or secrets manager, never a column or the repo. This defends the realistic
+  leak vectors (stolen backups/snapshots, logical dumps, read-only SQLi); it
+  does **not** defend a full-host compromise that also yields the key. State
+  that boundary honestly rather than implying "encrypted = safe".
 - **Reduce capability at the source.** Prefer the least-powerful credential a
-  connector offers (OAuth scopes, bot tokens, public/RSS access). Telegram is the
-  dangerous case precisely because a bot cannot read a user's full feed, so the
-  session is required — which is why it earns the strongest custody.
+  connector offers (OAuth scopes, bot tokens, public/RSS access). Telegram is
+  the dangerous case precisely because a bot cannot read a user's full feed, so
+  the session is required — which is why it earns the strongest custody.
 - **Never log credentials** (keep them out of `.debug_logs`), encrypt backups,
   and make "disconnect" delete the row. For Telegram, prompt the user to revoke
   the session in Telegram → Devices, since deleting your copy cannot revoke a
@@ -229,12 +240,16 @@ allows — the trusted-custodian posture of any SaaS that holds your OAuth token
 #### Scheduling, caching & lifecycle invariants
 
 - **Fetch-window cursor.** Each `Feed` records `lastFetchedPeriodEndMs`. The
-  scheduler computes the next window as `from = lastFetchedPeriodEndMs + 1,
-  to = now`; a brand-new feed falls back to a fixed lookback. The
-  `UNIQUE(Item.feedId, externalId)` constraint makes overlapping windows safe.
-- **Item upsert.** `Item` writes are `ON CONFLICT (feedId, externalId) DO
-  UPDATE payload, fetchedAt` — re-fetching an edited message refreshes the
-  cache rather than failing or silently skipping.
+  scheduler computes the next window as
+  `from = lastFetchedPeriodEndMs + 1,
+  to = now`; a brand-new feed falls back
+  to a fixed lookback. The `UNIQUE(Item.feedId, externalId)` constraint makes
+  overlapping windows safe.
+- **Item upsert.** `Item` writes are
+  `ON CONFLICT (feedId, externalId) DO
+  UPDATE payload, fetchedAt` —
+  re-fetching an edited message refreshes the cache rather than failing or
+  silently skipping.
 - **Digest scope (v1).** One `Digest` per `(user, period)`. Its sections are
   derived from the period's `Summary` rows ordered by `Source.position` (then
   `Feed.position` or name) — nothing is stored per section. Multiple named
@@ -247,42 +262,47 @@ shape at the app boundary (Zod/Valibot) on read and write — the DB does not
 enforce it. Reserve JSON for polymorphic or read-whole blobs; normalize anything
 you filter, join, sort, or aggregate on.
 
-| Column               | Storage | Why                                  |
-| -------------------- | ------- | ------------------------------------ |
+| Column               | Storage     | Why                                                                               |
+| -------------------- | ----------- | --------------------------------------------------------------------------------- |
 | `Source.credentials` | jsonb (enc) | account secrets as ciphertext; key outside the DB — see Credentials &amp; secrets |
-| `Item.payload`       | jsonb   | cached `NormalizedItem`, read whole  |
-| `Summary.points`     | jsonb   | `SummaryPoint[]`, rendered whole     |
+| `Item.payload`       | jsonb       | cached `NormalizedItem`, read whole                                               |
+| `Summary.content`    | jsonb       | tagged aggregate or per-article content                                           |
+
+Migration `0013_wandering_silver_fox` renames the historical `points` column to
+`content` and wraps every existing array as
+`{ "kind": "aggregate", "points":
+… }`. Reads and writes validate the strict
+tagged union at the repository boundary.
 
 #### Prompt layering
 
-The summarizer stays domain-agnostic; the caller composes the system prompt in
-one place by explicit layering, in order:
+The low-level summarizer stays connector-agnostic. The caller composes the
+system prompt in one place by explicit layering, in order:
 
 ```
 [base role from prompts.ts]
-[User.systemPrompt]            # the user's interests / taste (one editable field)
-[Feed.customPrompt?]           # feed-specific override
-[kind-specific instructions]   # news vs discussion vs …
+[User.systemPrompt]                 # the user's interests / taste
+[Feed.customPrompt?]                # feed-specific override
+[connector/kind-specific rules]     # aggregate news/discussion or one article
 ```
 
-The string is composed fresh per run — there is no stored hash or cache key. A
+The string is composed fresh per run—there is no stored hash or cache key. A
 feed's custom prompt is layered, not assigned an abstract "priority": LLMs honor
 position and structure, not declared precedence.
 
-The `kind`-specific layer is chosen from `Feed.kind` **passed by the caller** —
-`selectRuleset(items, kind)` — not inferred from item contents. (Today
-`selectRuleset(items)` reads `meta.isGroup`; it gains an explicit `kind`
-parameter once feeds are DB-backed, keeping `NormalizedItem` connector-agnostic.)
-
+`composeSummaryPrompt` receives the connector id and feed kind explicitly.
+Telegram retains aggregate news/discussion rules. Substack adds article rules:
+summarize every nonempty article, use its source title instead of inventing a
+heading, and never include facts from another article.
 
 ---
 
 ### 5. Session lifecycle
 
-Sessions use the `__Host-session` cookie (HttpOnly, Secure, SameSite=Lax, Path=/).
-Tokens are stable 256-bit random values; the database stores only the SHA-256
-hash. Concurrent SPA requests never invalidate one another — each token is
-valid until expiry or explicit logout.
+Sessions use the `__Host-session` cookie (HttpOnly, Secure, SameSite=Lax,
+Path=/). Tokens are stable 256-bit random values; the database stores only the
+SHA-256 hash. Concurrent SPA requests never invalidate one another — each token
+is valid until expiry or explicit logout.
 
 **Idle refresh.** `validateSessionToken` returns `ValidatedSession | null` with
 a `refreshExpiresAt` field. `requireAuth` sets a refreshed `Set-Cookie` with the
@@ -290,8 +310,8 @@ same token when the idle interval is within 7 days of expiry; the repository
 atomically extends expiry via `touchSessionIfDue()`, which is safe for
 concurrent requests. Idle sessions expire after 30 days; active use extends the
 expiry without changing the token. See `src/auth/session-service.ts` and
-`src/repositories/session-repository.ts`.
-{/* Tests: tests/server/session.test.ts, tests/server/security-audit.test.ts */}
+`src/repositories/session-repository.ts`. {/* Tests:
+tests/server/session.test.ts, tests/server/security-audit.test.ts */}
 
 ### 6. Database connectivity
 
@@ -302,14 +322,14 @@ expiry without changing the token. See `src/auth/session-service.ts` and
 default `disable` for local loopback). Production deployments set
 `DB_SSL_MODE=require` or `verify-full` and tune pool sizing for the workload.
 Invalid SSL mode values are rejected at startup. See `src/db/client.ts` and
-`src/db/testing.ts`.
-{/* Tests: focused config tests proving remote production settings require TLS */}
+`src/db/testing.ts`. {/* Tests: focused config tests proving remote production
+settings require TLS */}
 
 ### 7. Rate limiting
 
 Rate limiting is backed by the `rate_limit_buckets` PostgreSQL table with an
-atomic `INSERT ... ON CONFLICT DO UPDATE WHERE resetsAt > now` statement.
-The `consumeRateLimit` repository function returns the current count after
+atomic `INSERT ... ON CONFLICT DO UPDATE WHERE resetsAt > now` statement. The
+`consumeRateLimit` repository function returns the current count after
 consumption; delete expired rows opportunistically.
 
 `createRateLimitMiddleware` receives a `Database` instance and uses stable
@@ -319,60 +339,71 @@ keys use the client address resolved through `getConnInfo` and the configured
 `TRUSTED_PROXY_COUNT`. When `TRUSTED_PROXY_COUNT=0`, forwarded headers are
 ignored. Two independently built app instances sharing the same database share
 the same rate-limit buckets. See `src/server/middleware/rate-limit.ts` and
-`src/repositories/rate-limit-repository.ts`.
-{/* Tests: tests/server/rate-limit.test.ts, tests/db/rate-limit-repository.test.ts */}
+`src/repositories/rate-limit-repository.ts`. {/* Tests:
+tests/server/rate-limit.test.ts, tests/db/rate-limit-repository.test.ts */}
 
 ### 8. Scheduling and multi-instance coordination
 
-**Scheduler lease.** A `scheduler_leases` table with primary key `name`
-supports leader election. `tryAcquireSchedulerLease(database, "digest-job",
-ownerId, now, leaseMs)` uses an atomic insert/upsert; only the acquiring
-process calls `runDigestTick`. `Deno.cron` triggers the callback in every
-process, but the database lease makes duplicate callbacks harmless. See
-`src/scheduler/digest-job.ts`, `src/scheduler/scheduler.ts`,
-`src/server/main.ts`.
+**Scheduler lease.** A `scheduler_leases` table with primary key `name` supports
+leader election.
+`tryAcquireSchedulerLease(database, "digest-job",
+ownerId, now, leaseMs)` uses
+an atomic insert/upsert; only the acquiring process calls `runDigestTick`.
+`Deno.cron` triggers the callback in every process, but the database lease makes
+duplicate callbacks harmless. See `src/scheduler/digest-job.ts`,
+`src/scheduler/scheduler.ts`, `src/server/main.ts`.
 
-**Active-run uniqueness.** A partial unique index on `digest_runs(userId) WHERE
-status = 'running'` prevents duplicate active digest runs per user.
-`createDigestRun` surfaces a typed conflict result; manual `/digests/run`
-returns a controlled error, and the scheduler skips the user and continues. See
-`src/repositories/digest-run-repository.ts`.
+**Active-run uniqueness.** A partial unique index on
+`digest_runs(userId) WHERE
+status = 'running'` prevents duplicate active digest
+runs per user. `createDigestRun` surfaces a typed conflict result; manual
+`/digests/run` returns a controlled error, and the scheduler skips the user and
+continues. See `src/repositories/digest-run-repository.ts`.
 
 **Stale-run recovery.** `recoverStaleDigestRuns(database, now,
-staleAfterMs)` updates `running` rows older than the threshold to `failed`,
-storing a redacted error message. Recovery runs at the start of each leader
-tick. The active-run unique index prevents duplicate work after recovery. See
+staleAfterMs)`
+updates `running` rows older than the threshold to `failed`, storing a redacted
+error message. Recovery runs at the start of each leader tick. The active-run
+unique index prevents duplicate work after recovery. See
 `src/repositories/digest-run-repository.ts`.
 
 Configuration: `DIGEST_RUN_STALE_AFTER_MS` (default 15 minutes) and
-`SCHEDULER_LEASE_MS` (default 90 seconds).
-{/* Tests: tests/scheduler/digest-job.test.ts, tests/db/digest-run-repository.test.ts */}
+`SCHEDULER_LEASE_MS` (default 90 seconds). {/* Tests:
+tests/scheduler/digest-job.test.ts, tests/db/digest-run-repository.test.ts */}
 
 ### 9. Connector batching and deadlines
 
 **Source batching.** When two or more feeds need ingestion from the same source,
 `ingestFeedsForSource()` computes the union window, calls
-`getNormalizedData(from, to)` once, filters returned items per feed, and
-upserts each feed independently. A connector-level failure marks all pending
-feeds failed; per-feed errors remain isolated.
+`getNormalizedData(from, to)` once, filters returned items per feed, and upserts
+each feed independently. A connector-level failure marks all pending feeds
+failed; per-feed errors remain isolated.
 
 **Connector deadlines.** `Connector.getRawData`, `getNormalizedData`, and
 `getMessagesFromEntity` accept an optional `AbortSignal`. Ingestion creates a
 per-source deadline from `CONNECTOR_TIMEOUT_MS` (default 120 seconds), and the
 Telegram connector checks it between iterations. Connectors that do not support
-the signal still receive the deadline at the service boundary.
-{/* Tests: tests/services/ingestion-service.test.ts,
-    tests/services/orchestrator.test.ts, tests/connector.test.ts */}
+the signal still receive the deadline at the service boundary. {/* Tests:
+tests/services/ingestion-service.test.ts, tests/services/orchestrator.test.ts,
+tests/connector.test.ts */}
 
 ### 10. Summarizer budgets, chunking, privacy, and vision routing
 
-**Chunked summarization.** `OpenAICompatibleSummarizerService` packs items into
-chunks respecting `maxTextBytesPerChunk` (default 120,000), `maxItemsPerChunk`
-(default 50), and `maxImageBytes` (default 1,000,000). Items pack sequentially;
-if one item's text alone exceeds the per-item text budget, only that item's text
-is truncated while preserving its index. Oversize or unreadable images become
-`[IMAGE_OMITTED]`. Multi-chunk inputs produce one terminal text-only merge
-request; empty or all-filtered input makes zero provider calls and returns `[]`.
+**Chunked summarization.** In aggregate mode,
+`OpenAICompatibleSummarizerService` packs items sequentially into chunks
+respecting `maxTextBytesPerChunk` (default 120,000), `maxItemsPerChunk` (default
+50), and `maxImageBytes` (default 1,000,000). If one item's text exceeds the
+per-item budget, only its text is truncated while preserving its index. Oversize
+or unreadable images become `[IMAGE_OMITTED]`. Multiple aggregate chunks produce
+one terminal text-only merge request; empty or all-filtered input makes zero
+provider calls and returns `[]`.
+
+Article mode accepts exactly one item. Oversize article text is split on UTF-8
+code-point boundaries and processed sequentially; media is attached only to the
+first chunk. Chunk points are concatenated without an aggregate merge, so an
+article can never absorb another article's context. Empty article bodies make
+zero provider calls. Nonempty articles that produce zero points fail the feed
+instead of persisting a partial summary.
 
 **Vision routing.** With one model endpoint, valid images are sent directly in
 the multimodal request. With distinct text and vision endpoints, the service
@@ -386,10 +417,10 @@ run; other provider errors propagate. The next top-level summarize call retries
 vision, and each run emits at most one sanitized availability log.
 
 **Retry and timeout.** Each chunk, retry delay, and merge request receives the
-same `AbortSignal` from `SUMMARIZER_TIMEOUT_MS` (default 120s). Retries
-(3 attempts for 429/503 with exponential delay) check `signal.aborted` before
-each request. Aborts stop immediately and are handled as feed-level
-summarization failure. See `src/services/summarization-service.ts`.
+same `AbortSignal` from `SUMMARIZER_TIMEOUT_MS` (default 120s). Retries (3
+attempts for 429/503 with exponential delay) check `signal.aborted` before each
+request. Aborts stop immediately and are handled as feed-level summarization
+failure. See `src/services/summarization-service.ts`.
 
 **Remote provider opt-in.** `OpenAICompatibleSummarizerService` allows loopback
 endpoints (`localhost`, `127.0.0.1`, `::1`) unconditionally. Any non-loopback
@@ -398,17 +429,19 @@ See `src/summarizers/openai-compatible-client.ts`.
 
 **Bounded feed concurrency.** Summarization of pending feeds within a digest run
 is bounded by `SUMMARIZATION_CONCURRENCY` (default 2), using a small worker-pool
-helper. The shared `OpenAICompatibleSummarizerService` is responsible for
-per-request retries; no unbounded `Promise.all`. See `src/services/digest-service.ts`.
-{/* Tests: tests/summarizer.test.ts, tests/services/summarization-service.test.ts,
-    tests/services/digest-service.test.ts */}
+helper. Within a Substack feed, articles and their chunks are processed
+sequentially under the same abort signal. The shared
+`OpenAICompatibleSummarizerService` handles per-request retries; there is no
+unbounded `Promise.all`. See `src/services/digest-service.ts`. {/* Tests:
+tests/summarizer.test.ts, tests/services/summarization-service.test.ts,
+tests/services/digest-service.test.ts */}
 
 ### 11. Media lifecycle
 
-Telegram photo files are written under `telegram_media/<feed-key>/<message-id>.jpg`,
-preventing message-ID collisions across feeds. Per-connector media quota
-(`MEDIA_QUOTA_BYTES`, default 500 MiB) is enforced before writes by deleting
-oldest files until the new file fits.
+Telegram photo files are written under
+`telegram_media/<feed-key>/<message-id>.jpg`, preventing message-ID collisions
+across feeds. Per-connector media quota (`MEDIA_QUOTA_BYTES`, default 500 MiB)
+is enforced before writes by deleting oldest files until the new file fits.
 
 After each successful feed summarization, `cleanupFeedMedia()` deletes the
 period's media files (best-effort, never fail the digest). A weekly scheduler
@@ -416,7 +449,7 @@ housekeeping callback deletes files older than `MEDIA_TTL_MS` (default 7 days),
 including orphaned paths. See `src/connectors/telegram/telegram-connector.ts`,
 `src/repositories/item-repository.ts`, `src/services/summarization-service.ts`.
 {/* Tests: focused media lifecycle tests for quota eviction, TTL cleanup,
-    immediate cleanup success/failure */}
+immediate cleanup success/failure */}
 
 ### 12. Cursor pagination
 
@@ -426,11 +459,11 @@ oversized cursors return 422. Response shape: `{ data, nextCursor }`.
 
 `listDigestPageForUser` orders by `(periodEndMs DESC, createdAt DESC, id DESC)`;
 `listDigestRunPageForUser` by `(startedAt DESC, id DESC)`. Each fetches
-`limit + 1` to detect the terminal page. The web UI "Load more" control
-appends results, resets after a new run/delete/refresh, and disables while
-loading. See `src/server/routes/digests.ts`, `apps/web/src/api/client.ts`,
-`apps/web/src/app/Dashboard.tsx`.
-{/* Tests: tests/server/digests.test.ts, frontend unit tests */}
+`limit + 1` to detect the terminal page. The web UI "Load more" control appends
+results, resets after a new run/delete/refresh, and disables while loading. See
+`src/server/routes/digests.ts`, `apps/web/src/api/client.ts`,
+`apps/web/src/app/Dashboard.tsx`. {/* Tests: tests/server/digests.test.ts,
+frontend unit tests */}
 
 ### 13. Deferred items
 
@@ -448,6 +481,7 @@ plans:
   multi-host scaling requires it.
 - **Automatic feed theme classification.** Per-feed `customPrompt` handles
   manual steering; LLM-inferred theming is deferred.
+
 ---
 
 ## Things to Consider
@@ -471,8 +505,8 @@ plans:
 - **`Run` (job audit)**: a table recording each job execution (start/finish,
   status, error) is deferred — console/file logs suffice until there is a real
   scheduler with failure history worth mining. Re-add additively later.
-- **Connector feed-filtering**: today `getNormalizedData(from, to)` fetches every
-  dialog. Multi-user makes that wasteful — each user only wants their
+- **Connector feed-filtering**: today `getNormalizedData(from, to)` fetches
+  every dialog. Multi-user makes that wasteful — each user only wants their
   subscriptions. The interface should evolve to accept the user's subscribed
   feed external ids (constructor arg or per-call) so a fetch is scoped to one
   user's feeds. Belongs with the persistence-integration phase.

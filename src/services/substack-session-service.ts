@@ -2,7 +2,10 @@ import {
   type SubstackCredentials,
   substackCredentialSchema,
 } from "../connectors/credential-schemas.ts";
-import { SubstackSessionClient } from "../connectors/substack/session-client.ts";
+import {
+  SubstackSessionClient,
+  SubstackSessionUpstreamError,
+} from "../connectors/substack/session-client.ts";
 import { ConnectorId } from "../constants.ts";
 import { CredentialCipher } from "../crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../crypto/key-provider.ts";
@@ -12,10 +15,7 @@ import {
   upsertSourceCredentials,
 } from "../repositories/source-repository.ts";
 import { ValidationError } from "../server/errors.ts";
-import {
-  type ConnectorCommit,
-  commitImmediately,
-} from "./connector-commit.ts";
+import { commitImmediately, type ConnectorCommit } from "./connector-commit.ts";
 
 export interface SubstackSessionValidator {
   validateSession(signal?: AbortSignal): Promise<{ userId: number }>;
@@ -32,8 +32,11 @@ const defaultValidatorFactory: SubstackSessionValidatorFactory = {
 export class SubstackSessionService {
   constructor(
     private readonly database: Database,
-    private readonly validatorFactory: SubstackSessionValidatorFactory = defaultValidatorFactory,
-    private readonly credentialCipher = new CredentialCipher(new EnvMasterKeyProvider()),
+    private readonly validatorFactory: SubstackSessionValidatorFactory =
+      defaultValidatorFactory,
+    private readonly credentialCipher = new CredentialCipher(
+      new EnvMasterKeyProvider(),
+    ),
   ) {}
 
   async connect(
@@ -44,11 +47,14 @@ export class SubstackSessionService {
   ): Promise<PublicSource> {
     const parsedCredentials = substackCredentialSchema.parse(credentials);
     try {
-      await this.validatorFactory.create(parsedCredentials).validateSession(signal);
-      if (signal?.aborted) {
-        throw new Error("Substack session validation was aborted");
-      }
-    } catch {
+      await this.validatorFactory.create(parsedCredentials).validateSession(
+        signal,
+      );
+    } catch (error) {
+      if (error instanceof SubstackSessionUpstreamError) throw error;
+      throw new ValidationError("Substack session is invalid or expired");
+    }
+    if (signal?.aborted) {
       throw new ValidationError("Substack session is invalid or expired");
     }
 

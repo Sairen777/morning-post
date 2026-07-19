@@ -1,39 +1,35 @@
+import { createSignal, onMount, Show } from "solid-js";
 import {
-  createSignal,
-  Show,
-  onMount,
-} from "solid-js";
-import {
-  listSources,
-  listFeeds,
-  listDigests,
-  updateSource,
-  updateFeed,
-  listAvailableFeeds,
-  subscribeFeed,
-  runDigest,
-  getDigest,
-  deleteDigest,
-  logoutUser,
-  disconnectSource,
-  listFeedsForSource,
-  getFeed,
-  unsubscribeFeed,
-  listDigestRuns,
-  getDigestRunDetail,
-  updateCurrentUser,
   ApiClientError,
+  deleteDigest,
+  disconnectSource,
+  getDigest,
+  getDigestRunDetail,
+  getFeed,
+  listAvailableFeeds,
+  listDigestRuns,
+  listDigests,
+  listFeeds,
+  listFeedsForSource,
+  listSources,
+  logoutUser,
+  runDigest,
+  subscribeFeed,
+  unsubscribeFeed,
+  updateCurrentUser,
+  updateFeed,
+  updateSource,
 } from "../api/client";
 import type {
-  PublicUser,
-  PublicSource,
-  PublicFeed,
-  PublicDigest,
   AvailableFeed,
-  DigestView,
-  PublicDigestRun,
   DigestRunDetail,
+  DigestView,
   DisconnectSourceResponse,
+  PublicDigest,
+  PublicDigestRun,
+  PublicFeed,
+  PublicSource,
+  PublicUser,
 } from "../api/types";
 import DigestRunnerCard from "./DigestRunnerCard";
 import SourcesPanel from "./SourcesPanel";
@@ -51,7 +47,13 @@ interface DashboardProps {
   onUserUpdate: (user: PublicUser) => void;
 }
 
-type TabId = "digests" | "runs" | "connections" | "sources" | "feeds" | "profile";
+type TabId =
+  | "digests"
+  | "runs"
+  | "connections"
+  | "sources"
+  | "feeds"
+  | "profile";
 
 export default function Dashboard(props: DashboardProps) {
   const [activeTab, setActiveTab] = createSignal<TabId>("digests");
@@ -64,15 +66,23 @@ export default function Dashboard(props: DashboardProps) {
   const [availableFeeds, setAvailableFeeds] = createSignal<
     Record<string, AvailableFeed[]>
   >({});
-  const [digestCursor, setDigestCursor] = createSignal<string | undefined>(undefined);
-  const [digestRunCursor, setDigestRunCursor] = createSignal<string | undefined>(undefined);
+  const [digestCursor, setDigestCursor] = createSignal<string | undefined>(
+    undefined,
+  );
+  const [digestRunCursor, setDigestRunCursor] = createSignal<
+    string | undefined
+  >(undefined);
   const [loadingMoreDigests, setLoadingMoreDigests] = createSignal(false);
   const [loadingMoreRuns, setLoadingMoreRuns] = createSignal(false);
   const [sourceFeeds, setSourceFeeds] = createSignal<
     Record<string, PublicFeed[]>
   >({});
+  let feedRefreshGeneration = 0;
 
-  const withAuthError = <T,>(fn: () => Promise<T>, fallback: () => T): (() => Promise<T>) => {
+  const withAuthError = <T,>(
+    fn: () => Promise<T>,
+    fallback: () => T,
+  ): () => Promise<T> => {
     return async () => {
       try {
         return await fn();
@@ -90,15 +100,24 @@ export default function Dashboard(props: DashboardProps) {
     try {
       setSources(await listSources());
     } catch (err: unknown) {
-      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      }
     }
   };
 
   const refreshFeeds = async () => {
+    const requestGeneration = ++feedRefreshGeneration;
     try {
-      setFeeds(await listFeeds());
+      const refreshedFeeds = await listFeeds();
+      if (requestGeneration === feedRefreshGeneration) {
+        setFeeds(refreshedFeeds);
+      }
     } catch (err: unknown) {
-      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+      if (requestGeneration !== feedRefreshGeneration) return;
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      }
     }
   };
 
@@ -108,7 +127,9 @@ export default function Dashboard(props: DashboardProps) {
       setDigests(page.data);
       setDigestCursor(page.nextCursor);
     } catch (err: unknown) {
-      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      }
     }
   };
 
@@ -118,7 +139,9 @@ export default function Dashboard(props: DashboardProps) {
       setDigestRuns(page.data);
       setDigestRunCursor(page.nextCursor);
     } catch (err: unknown) {
-      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      }
     }
   };
 
@@ -135,7 +158,9 @@ export default function Dashboard(props: DashboardProps) {
       });
       setDigestCursor(page.nextCursor);
     } catch (err: unknown) {
-      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      }
     } finally {
       setLoadingMoreDigests(false);
     }
@@ -154,7 +179,9 @@ export default function Dashboard(props: DashboardProps) {
       });
       setDigestRunCursor(page.nextCursor);
     } catch (err: unknown) {
-      if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      }
     } finally {
       setLoadingMoreRuns(false);
     }
@@ -167,7 +194,9 @@ export default function Dashboard(props: DashboardProps) {
         const result = await listFeedsForSource(sourceId);
         setSourceFeeds((prev) => ({ ...prev, [sourceId]: result }));
       } catch (err: unknown) {
-        if (err instanceof ApiClientError && err.status === 401) props.onAuthError();
+        if (err instanceof ApiClientError && err.status === 401) {
+          props.onAuthError();
+        }
       }
     }
   };
@@ -188,12 +217,17 @@ export default function Dashboard(props: DashboardProps) {
     }
   };
 
-  const handleUpdateSourcePosition = async (id: string, position: number | null) => {
+  const handleUpdateSourcePosition = async (
+    id: string,
+    position: number | null,
+  ) => {
     await updateSource(id, { position });
     await refreshSources();
   };
 
-  const handleDisconnectSource = async (id: string): Promise<DisconnectSourceResponse> => {
+  const handleDisconnectSource = async (
+    id: string,
+  ): Promise<DisconnectSourceResponse> => {
     const result = await disconnectSource(id);
     await refreshSources();
     await refreshFeeds();
@@ -201,13 +235,17 @@ export default function Dashboard(props: DashboardProps) {
     return result;
   };
 
-  const handleDiscoverFeeds = async (sourceId: string): Promise<AvailableFeed[]> => {
+  const handleDiscoverFeeds = async (
+    sourceId: string,
+  ): Promise<AvailableFeed[]> => {
     const result = await listAvailableFeeds(sourceId);
     setAvailableFeeds((prev) => ({ ...prev, [sourceId]: result }));
     return result;
   };
 
-  const handleLoadSourceFeeds = async (sourceId: string): Promise<PublicFeed[]> => {
+  const handleLoadSourceFeeds = async (
+    sourceId: string,
+  ): Promise<PublicFeed[]> => {
     const result = await listFeedsForSource(sourceId);
     setSourceFeeds((prev) => ({ ...prev, [sourceId]: result }));
     return result;
@@ -237,7 +275,12 @@ export default function Dashboard(props: DashboardProps) {
 
   const handleUpdateFeed = async (
     id: string,
-    input: { kind?: "news" | "discussion"; customPrompt?: string | null; position?: number | null; enabled?: boolean },
+    input: {
+      kind?: "news" | "discussion";
+      customPrompt?: string | null;
+      position?: number | null;
+      enabled?: boolean;
+    },
   ) => {
     const updated = await updateFeed(id, input);
     await refreshFeeds();
@@ -303,7 +346,9 @@ export default function Dashboard(props: DashboardProps) {
   };
 
   const handleSubstackPublicationAdded = async () => {
-    const substackSourceId = sources().find((source) => source.connectorId === "Substack")?.id;
+    const substackSourceId = sources().find((source) =>
+      source.connectorId === "Substack"
+    )?.id;
     await refreshSources();
     await refreshFeeds();
     if (substackSourceId) await refreshSourceFeedsIfLoaded(substackSourceId);
@@ -376,6 +421,7 @@ export default function Dashboard(props: DashboardProps) {
         />
         <SubstackConnectPanel
           sources={sources()}
+          feeds={feeds()}
           onConnected={handleSubstackConnected}
           onPublicationAdded={handleSubstackPublicationAdded}
           onAuthError={props.onAuthError}

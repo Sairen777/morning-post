@@ -1,15 +1,18 @@
-import { assert,
-assertEquals,
-assertExists,
-assertRejects, } from "@std/assert"
+import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
-import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
+import {
+  CredentialCipher,
+  type EncryptedBlob,
+} from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { sources } from "../../src/db/schema/source.ts";
 import { credentialSchemaFor } from "../../src/connectors/credential-schemas.ts";
-import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
+import {
+  createUser,
+  type CreateUserInput,
+} from "../../src/repositories/user-repository.ts";
 import {
   createSource,
   deleteSourceCredentials,
@@ -18,7 +21,11 @@ import {
   listSourcesForUser,
   updateSource,
 } from "../../src/repositories/source-repository.ts";
-import { ConflictError, NotFoundError, ValidationError } from "../../src/server/errors.ts";
+import {
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+} from "../../src/server/errors.ts";
 
 const telegramCredentials = { sessionString: "telegram-session-secret-2.1" };
 
@@ -33,7 +40,9 @@ function userInput(email: string): CreateUserInput {
 }
 
 function generateCipher(): CredentialCipher {
-  return new CredentialCipher(new EnvMasterKeyProvider(crypto.getRandomValues(new Uint8Array(32))));
+  return new CredentialCipher(
+    new EnvMasterKeyProvider(crypto.getRandomValues(new Uint8Array(32))),
+  );
 }
 
 async function encryptedTelegramCredentials(
@@ -41,14 +50,19 @@ async function encryptedTelegramCredentials(
   userId: string,
   connectorId: ConnectorId = ConnectorId.Telegram,
 ): Promise<EncryptedBlob> {
-  const parsed = credentialSchemaFor(ConnectorId.Telegram).parse(telegramCredentials);
+  const parsed = credentialSchemaFor(ConnectorId.Telegram).parse(
+    telegramCredentials,
+  );
   return await cipher.encrypt(JSON.stringify(parsed), { userId, connectorId });
 }
 
 Deno.test("source repository encrypts at rest and decrypts with owner-bound context", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const user = await createUser(database, userInput("source-owner@example.com"));
+    const user = await createUser(
+      database,
+      userInput("source-owner@example.com"),
+    );
     const encrypted = await encryptedTelegramCredentials(cipher, user.id);
 
     const created = await createSource(database, {
@@ -70,9 +84,18 @@ Deno.test("source repository encrypts at rest and decrypts with owner-bound cont
       .limit(1);
     assertExists(rows[0]);
     assertEquals(typeof rows[0].credentials, "object");
-    assert(!JSON.stringify(rows[0].credentials).includes(telegramCredentials.sessionString));
+    assert(
+      !JSON.stringify(rows[0].credentials).includes(
+        telegramCredentials.sessionString,
+      ),
+    );
 
-    const decrypted = await getDecryptedCredentials(database, created.id, user.id, cipher);
+    const decrypted = await getDecryptedCredentials(
+      database,
+      created.id,
+      user.id,
+      cipher,
+    );
     assertEquals(decrypted, telegramCredentials);
   });
 });
@@ -80,8 +103,14 @@ Deno.test("source repository encrypts at rest and decrypts with owner-bound cont
 Deno.test("source repository enforces one connector source per user only", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const firstUser = await createUser(database, userInput("first-source@example.com"));
-    const secondUser = await createUser(database, userInput("second-source@example.com"));
+    const firstUser = await createUser(
+      database,
+      userInput("first-source@example.com"),
+    );
+    const secondUser = await createUser(
+      database,
+      userInput("second-source@example.com"),
+    );
 
     await createSource(database, {
       userId: firstUser.id,
@@ -112,7 +141,10 @@ Deno.test("source repository enforces one connector source per user only", async
 Deno.test("source repository hides credentials in public list shape", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const user = await createUser(database, userInput("list-source@example.com"));
+    const user = await createUser(
+      database,
+      userInput("list-source@example.com"),
+    );
 
     await createSource(database, {
       userId: user.id,
@@ -131,7 +163,10 @@ Deno.test("source repository hides credentials in public list shape", async () =
 Deno.test("source repository finds, updates, and orders public source rows", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const user = await createUser(database, userInput("update-source@example.com"));
+    const user = await createUser(
+      database,
+      userInput("update-source@example.com"),
+    );
     const telegram = await createSource(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
@@ -141,7 +176,11 @@ Deno.test("source repository finds, updates, and orders public source rows", asy
     const rss = await createSource(database, {
       userId: user.id,
       connectorId: ConnectorId.RSS,
-      credentials: await encryptedTelegramCredentials(cipher, user.id, ConnectorId.RSS),
+      credentials: await encryptedTelegramCredentials(
+        cipher,
+        user.id,
+        ConnectorId.RSS,
+      ),
       position: 3,
     });
 
@@ -166,8 +205,14 @@ Deno.test("source repository finds, updates, and orders public source rows", asy
 Deno.test("getDecryptedCredentials rejects non-owners as not found", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const owner = await createUser(database, userInput("credential-owner@example.com"));
-    const otherUser = await createUser(database, userInput("credential-other@example.com"));
+    const owner = await createUser(
+      database,
+      userInput("credential-owner@example.com"),
+    );
+    const otherUser = await createUser(
+      database,
+      userInput("credential-other@example.com"),
+    );
     const source = await createSource(database, {
       userId: owner.id,
       connectorId: ConnectorId.Telegram,
@@ -185,14 +230,21 @@ Deno.test("getDecryptedCredentials rejects non-owners as not found", async () =>
 Deno.test("deleteSourceCredentials disconnects by wiping credentials and disabling source", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const user = await createUser(database, userInput("disconnect-source@example.com"));
+    const user = await createUser(
+      database,
+      userInput("disconnect-source@example.com"),
+    );
     const source = await createSource(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
       credentials: await encryptedTelegramCredentials(cipher, user.id),
     });
 
-    const disconnected = await deleteSourceCredentials(database, source.id, user.id);
+    const disconnected = await deleteSourceCredentials(
+      database,
+      source.id,
+      user.id,
+    );
     assertEquals(disconnected.enabled, false);
     assert(!("credentials" in disconnected));
 
@@ -216,7 +268,10 @@ Deno.test("deleteSourceCredentials disconnects by wiping credentials and disabli
 Deno.test("getDecryptedCredentials surfaces invalid encrypted blob shape clearly", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const user = await createUser(database, userInput("invalid-blob@example.com"));
+    const user = await createUser(
+      database,
+      userInput("invalid-blob@example.com"),
+    );
     const source = await createSource(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
@@ -225,7 +280,9 @@ Deno.test("getDecryptedCredentials surfaces invalid encrypted blob shape clearly
 
     await database
       .update(sources)
-      .set({ credentials: { notAnEncryptedBlob: true } as unknown as EncryptedBlob })
+      .set({
+        credentials: { notAnEncryptedBlob: true } as unknown as EncryptedBlob,
+      })
       .where(eq(sources.id, source.id));
 
     await assertRejects(
@@ -239,8 +296,15 @@ Deno.test("getDecryptedCredentials surfaces invalid encrypted blob shape clearly
 Deno.test("getDecryptedCredentials fails when blob was encrypted for a different owner context", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const user = await createUser(database, userInput("wrong-owner@example.com"));
-    const wrongOwnerBlob = await encryptedTelegramCredentials(cipher, user.id, ConnectorId.RSS);
+    const user = await createUser(
+      database,
+      userInput("wrong-owner@example.com"),
+    );
+    const wrongOwnerBlob = await encryptedTelegramCredentials(
+      cipher,
+      user.id,
+      ConnectorId.RSS,
+    );
     const source = await createSource(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
@@ -258,7 +322,10 @@ Deno.test("getDecryptedCredentials fails when blob was encrypted for a different
 Deno.test("source check constraint rejects enabled source with null credentials", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const user = await createUser(database, userInput("source-check@example.com"));
+    const user = await createUser(
+      database,
+      userInput("source-check@example.com"),
+    );
     const source = await createSource(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
@@ -266,7 +333,9 @@ Deno.test("source check constraint rejects enabled source with null credentials"
     });
 
     await assertRejects(
-      () => database.update(sources).set({ credentials: null, enabled: true }).where(eq(sources.id, source.id)),
+      () =>
+        database.update(sources).set({ credentials: null, enabled: true })
+          .where(eq(sources.id, source.id)),
     );
   });
 });
@@ -278,17 +347,50 @@ Deno.test("Substack credential schema is strict and validates named cookie value
     connectSessionId: "s%3Aconnect.signature",
   };
   assertEquals(schema.parse(credentials), credentials);
-  assertEquals(schema.safeParse({ ...credentials, rawCookieHeader: "secret=extra" }).success, false);
-  assertEquals(schema.safeParse({ substackSessionId: "line\nbreak" }).success, false);
-  assertEquals(schema.safeParse({ substackSessionId: "" }).success, false);
+  assertEquals(
+    schema.parse({ substackSessionId: credentials.substackSessionId }),
+    { substackSessionId: credentials.substackSessionId },
+  );
+  assertEquals(
+    schema.safeParse({ ...credentials, rawCookieHeader: "secret=extra" })
+      .success,
+    false,
+  );
+  assertEquals(
+    schema.safeParse({ ...credentials, substackSessionId: "line\nbreak" })
+      .success,
+    false,
+  );
+  assertEquals(
+    schema.safeParse({ ...credentials, substackSessionId: "" }).success,
+    false,
+  );
+  assertEquals(
+    schema.safeParse({ ...credentials, connectSessionId: "line\nbreak" })
+      .success,
+    false,
+  );
+  assertEquals(
+    schema.safeParse({ ...credentials, connectSessionId: "" }).success,
+    false,
+  );
+  assertEquals(
+    schema.safeParse({ connectSessionId: credentials.connectSessionId })
+      .success,
+    false,
+  );
 });
 
 Deno.test("source repository decrypts Substack credentials only in the owner context", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
-    const user = await createUser(database, userInput("substack-credentials@example.com"));
+    const user = await createUser(
+      database,
+      userInput("substack-credentials@example.com"),
+    );
     const credentials = credentialSchemaFor(ConnectorId.Substack).parse({
       substackSessionId: "s%3Asubstack.signature",
+      connectSessionId: "s%3Aconnect.signature",
     });
     const encrypted = await cipher.encrypt(JSON.stringify(credentials), {
       userId: user.id,

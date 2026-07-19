@@ -2,19 +2,35 @@ import { assertEquals } from "@std/assert";
 import { sql } from "drizzle-orm";
 import type { Hono } from "@hono/hono";
 import { ConnectorId } from "../../src/constants.ts";
-import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
+import {
+  CredentialCipher,
+  type EncryptedBlob,
+} from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
-import { createOrReviveFeed, softDeleteFeed } from "../../src/repositories/feed-repository.ts";
+import {
+  createOrReviveFeed,
+  softDeleteFeed,
+} from "../../src/repositories/feed-repository.ts";
 import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
 import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
-import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
-import { createDigestRun, finishDigestRun, startDigestRunFeed, finishDigestRunFeed } from "../../src/repositories/digest-run-repository.ts";
+import type {
+  SummarizeOptions,
+  SummarizerService,
+  SummaryPoint,
+  SummaryRuleset,
+} from "../../src/summarizers/summarizer.types.ts";
+import {
+  createDigestRun,
+  finishDigestRun,
+  finishDigestRunFeed,
+  startDigestRunFeed,
+} from "../../src/repositories/digest-run-repository.ts";
 import type { runForUser as runForUserType } from "../../src/services/orchestrator.ts";
 
 const PASSWORD = "analytical-engine-1843";
@@ -28,7 +44,11 @@ class FakeSummarizer implements SummarizerService {
     this.#results = [...results];
   }
 
-  summarize(_items: NormalizedItem[], _rules: SummaryRuleset, _options?: SummarizeOptions): Promise<SummaryPoint[]> {
+  summarize(
+    _items: NormalizedItem[],
+    _rules: SummaryRuleset,
+    _options?: SummarizeOptions,
+  ): Promise<SummaryPoint[]> {
     const result = this.#results.shift() ?? [];
     if (result instanceof Error) {
       return Promise.reject(result);
@@ -38,20 +58,31 @@ class FakeSummarizer implements SummarizerService {
 }
 
 function credentialCipher(): CredentialCipher {
-  return new CredentialCipher(new EnvMasterKeyProvider(new Uint8Array(32).fill(53)));
+  return new CredentialCipher(
+    new EnvMasterKeyProvider(new Uint8Array(32).fill(53)),
+  );
 }
 
-async function encryptedCredentials(userId: string, connectorId: ConnectorId): Promise<EncryptedBlob> {
-  return await credentialCipher().encrypt(JSON.stringify({ sessionString: `${connectorId}-session` }), {
-    userId,
-    connectorId,
-  });
+async function encryptedCredentials(
+  userId: string,
+  connectorId: ConnectorId,
+): Promise<EncryptedBlob> {
+  return await credentialCipher().encrypt(
+    JSON.stringify({ sessionString: `${connectorId}-session` }),
+    {
+      userId,
+      connectorId,
+    },
+  );
 }
 
 function jsonRequest(method: "POST", body: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
+    headers: {
+      "content-type": "application/json",
+      Origin: "http://127.0.0.1:5173",
+    },
     body: JSON.stringify(body),
   };
 }
@@ -65,18 +96,24 @@ function extractCookie(response: Response): string {
 }
 
 async function register(app: Hono, email: string): Promise<string> {
-  const response = await app.request("/auth/register", jsonRequest("POST", {
-    name: "Ada Lovelace",
-    email,
-    password: PASSWORD,
-  }));
+  const response = await app.request(
+    "/auth/register",
+    jsonRequest("POST", {
+      name: "Ada Lovelace",
+      email,
+      password: PASSWORD,
+    }),
+  );
   assertEquals(response.status, 201);
   const json = await response.json();
   return json.id;
 }
 
 async function login(app: Hono, email: string): Promise<string> {
-  const response = await app.request("/auth/login", jsonRequest("POST", { email, password: PASSWORD }));
+  const response = await app.request(
+    "/auth/login",
+    jsonRequest("POST", { email, password: PASSWORD }),
+  );
   assertEquals(response.status, 200);
   return extractCookie(response);
 }
@@ -106,7 +143,11 @@ async function createFeed(
   });
 }
 
-function normalizedItem(feedExternalId: string, externalId: string, text: string): NormalizedItem {
+function normalizedItem(
+  feedExternalId: string,
+  externalId: string,
+  text: string,
+): NormalizedItem {
   return {
     connectorId: ConnectorId.Telegram,
     feedExternalId,
@@ -127,30 +168,85 @@ Deno.test("digest routes list and read user digests with grouped sections", asyn
     await register(app, "digests-other@example.com");
     const otherCookie = await login(app, "digests-other@example.com");
 
-    const rssFeed = await createFeed(database, ownerId, ConnectorId.RSS, 1, 1, "rss:1", "RSS Feed");
-    const telegramFeed = await createFeed(database, ownerId, ConnectorId.Telegram, 2, 1, "channel:1", "Telegram Feed");
-    await upsertItems(database, rssFeed.id, [normalizedItem(rssFeed.externalId, "1", "rss")], 1);
-    await upsertItems(database, telegramFeed.id, [normalizedItem(telegramFeed.externalId, "1", "telegram")], 1);
+    const rssFeed = await createFeed(
+      database,
+      ownerId,
+      ConnectorId.RSS,
+      1,
+      1,
+      "rss:1",
+      "RSS Feed",
+    );
+    const telegramFeed = await createFeed(
+      database,
+      ownerId,
+      ConnectorId.Telegram,
+      2,
+      1,
+      "channel:1",
+      "Telegram Feed",
+    );
+    await upsertItems(database, rssFeed.id, [
+      normalizedItem(rssFeed.externalId, "1", "rss"),
+    ], 1);
+    await upsertItems(database, telegramFeed.id, [
+      normalizedItem(telegramFeed.externalId, "1", "telegram"),
+    ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, {
-      summarizer: new FakeSummarizer([
-        [{ text: "rss bullet", sourceUrl: null }],
-        [{ text: "telegram bullet", sourceUrl: null }],
-      ]),
-      now: () => 100,
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([
+          [{ text: "rss bullet", sourceUrl: null }],
+          [{ text: "telegram bullet", sourceUrl: null }],
+        ]),
+        now: () => 100,
+      },
+    );
+
+    const listResponse = await app.request("/digests", {
+      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
     });
-
-    const listResponse = await app.request("/digests", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(listResponse.status, 200);
-    assertEquals((await listResponse.json()).data.map((entry: { id: string }) => entry.id), [digest.digest.id]);
+    assertEquals(
+      (await listResponse.json()).data.map((entry: { id: string }) => entry.id),
+      [digest.digest.id],
+    );
 
-    const getResponse = await app.request(`/digests/${digest.digest.id}`, { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
+    const getResponse = await app.request(`/digests/${digest.digest.id}`, {
+      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
+    });
     assertEquals(getResponse.status, 200);
     const getJson = await getResponse.json();
-    assertEquals(getJson.sections.map((section: { feedName: string }) => section.feedName), ["RSS Feed", "Telegram Feed"]);
-    assertEquals(getJson.groups.map((group: { connectorId: string }) => group.connectorId), [ConnectorId.RSS, ConnectorId.Telegram]);
+    assertEquals(
+      getJson.sections.map((section: { feedName: string }) => section.feedName),
+      ["RSS Feed", "Telegram Feed"],
+    );
+    assertEquals(
+      getJson.sections.map((section: { content: unknown }) => section.content),
+      [
+        {
+          kind: "aggregate",
+          points: [{ text: "rss bullet", sourceUrl: null }],
+        },
+        {
+          kind: "aggregate",
+          points: [{ text: "telegram bullet", sourceUrl: null }],
+        },
+      ],
+    );
+    assertEquals("points" in getJson.sections[0], false);
+    assertEquals(
+      getJson.groups.map((group: { connectorId: string }) => group.connectorId),
+      [ConnectorId.RSS, ConnectorId.Telegram],
+    );
 
-    const otherResponse = await app.request(`/digests/${digest.digest.id}`, { headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" } });
+    const otherResponse = await app.request(`/digests/${digest.digest.id}`, {
+      headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
+    });
     assertEquals(otherResponse.status, 404);
   });
 });
@@ -160,13 +256,32 @@ Deno.test("DELETE /digests/:id deletes an owned digest", async () => {
     const app = buildApp(database);
     const ownerId = await register(app, "digests-delete-owner@example.com");
     const ownerCookie = await login(app, "digests-delete-owner@example.com");
-    const feed = await createFeed(database, ownerId, ConnectorId.Telegram, 1, 1, "channel:delete", "Delete Feed");
-    await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "delete me")], 1);
+    const feed = await createFeed(
+      database,
+      ownerId,
+      ConnectorId.Telegram,
+      1,
+      1,
+      "channel:delete",
+      "Delete Feed",
+    );
+    await upsertItems(database, feed.id, [
+      normalizedItem(feed.externalId, "1", "delete me"),
+    ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, {
-      summarizer: new FakeSummarizer([[{ text: "delete bullet", sourceUrl: null }]]),
-      now: () => 105,
-    });
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([[{
+          text: "delete bullet",
+          sourceUrl: null,
+        }]]),
+        now: () => 105,
+      },
+    );
 
     const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
       method: "DELETE",
@@ -181,28 +296,71 @@ Deno.test("DELETE /digests/:id deletes an owned digest", async () => {
     });
     assertEquals(readResponse.status, 404);
 
-    const listResponse = await app.request("/digests", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
+    const listResponse = await app.request("/digests", {
+      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
+    });
     assertEquals(listResponse.status, 200);
     const listed = (await listResponse.json()).data;
-    assertEquals(listed.map((entry: { id: string }) => entry.id).includes(digest.digest.id), false);
-    assertEquals(await findDigestForUserPeriod(database, ownerId, periodStartMs, periodEndMs), null);
+    assertEquals(
+      listed.map((entry: { id: string }) => entry.id).includes(
+        digest.digest.id,
+      ),
+      false,
+    );
+    assertEquals(
+      await findDigestForUserPeriod(
+        database,
+        ownerId,
+        periodStartMs,
+        periodEndMs,
+      ),
+      null,
+    );
   });
 });
 
 Deno.test("DELETE /digests/:id hides another user's digest", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const ownerId = await register(app, "digests-delete-hidden-owner@example.com");
-    const ownerCookie = await login(app, "digests-delete-hidden-owner@example.com");
+    const ownerId = await register(
+      app,
+      "digests-delete-hidden-owner@example.com",
+    );
+    const ownerCookie = await login(
+      app,
+      "digests-delete-hidden-owner@example.com",
+    );
     await register(app, "digests-delete-hidden-other@example.com");
-    const otherCookie = await login(app, "digests-delete-hidden-other@example.com");
-    const feed = await createFeed(database, ownerId, ConnectorId.Telegram, 1, 1, "channel:hidden-delete", "Hidden Delete Feed");
-    await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "keep me")], 1);
+    const otherCookie = await login(
+      app,
+      "digests-delete-hidden-other@example.com",
+    );
+    const feed = await createFeed(
+      database,
+      ownerId,
+      ConnectorId.Telegram,
+      1,
+      1,
+      "channel:hidden-delete",
+      "Hidden Delete Feed",
+    );
+    await upsertItems(database, feed.id, [
+      normalizedItem(feed.externalId, "1", "keep me"),
+    ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, {
-      summarizer: new FakeSummarizer([[{ text: "kept bullet", sourceUrl: null }]]),
-      now: () => 106,
-    });
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([[{
+          text: "kept bullet",
+          sourceUrl: null,
+        }]]),
+        now: () => 106,
+      },
+    );
 
     const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
       method: "DELETE",
@@ -213,9 +371,12 @@ Deno.test("DELETE /digests/:id hides another user's digest", async () => {
     assertEquals(json.error.code, "NOT_FOUND");
     assertEquals(json.error.message, "digest not found");
 
-    const ownerReadResponse = await app.request(`/digests/${digest.digest.id}`, {
-      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
-    });
+    const ownerReadResponse = await app.request(
+      `/digests/${digest.digest.id}`,
+      {
+        headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
+      },
+    );
     assertEquals(ownerReadResponse.status, 200);
   });
 });
@@ -225,16 +386,38 @@ Deno.test("GET /digests/:id.md renders markdown for deleted historical feeds", a
     const app = buildApp(database);
     const ownerId = await register(app, "digests-markdown@example.com");
     const ownerCookie = await login(app, "digests-markdown@example.com");
-    const feed = await createFeed(database, ownerId, ConnectorId.Telegram, 1, 1, "channel:1", "Markdown Feed");
-    await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "markdown")], 1);
+    const feed = await createFeed(
+      database,
+      ownerId,
+      ConnectorId.Telegram,
+      1,
+      1,
+      "channel:1",
+      "Markdown Feed",
+    );
+    await upsertItems(database, feed.id, [
+      normalizedItem(feed.externalId, "1", "markdown"),
+    ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, {
-      summarizer: new FakeSummarizer([[{ text: "markdown bullet", sourceUrl: null }]]),
-      now: () => 110,
-    });
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([[{
+          text: "markdown bullet",
+          sourceUrl: null,
+        }]]),
+        now: () => 110,
+      },
+    );
     await softDeleteFeed(database, feed.id, ownerId);
 
-    const markdownResponse = await app.request(`/digests/${digest.digest.id}.md`, { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
+    const markdownResponse = await app.request(
+      `/digests/${digest.digest.id}.md`,
+      { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } },
+    );
     assertEquals(markdownResponse.status, 200);
     const markdown = await markdownResponse.text();
     assertEquals(markdown.includes("## Telegram"), true);
@@ -250,7 +433,10 @@ Deno.test("POST /digests/run creates an empty digest for an authenticated user w
     const cookie = await login(app, "digests-run-empty@example.com");
 
     const response = await app.request("/digests/run", {
-      ...jsonRequest("POST", { periodStartMs: 1700000000000, periodEndMs: 1700086400000 }),
+      ...jsonRequest("POST", {
+        periodStartMs: 1700000000000,
+        periodEndMs: 1700086400000,
+      }),
       headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 200);
@@ -259,7 +445,12 @@ Deno.test("POST /digests/run creates an empty digest for an authenticated user w
     assertEquals(json.sections, []);
     assertEquals(json.groups, []);
 
-    const dbDigest = await findDigestForUserPeriod(database, userId, 1700000000000, 1700086400000);
+    const dbDigest = await findDigestForUserPeriod(
+      database,
+      userId,
+      1700000000000,
+      1700086400000,
+    );
     assertEquals(dbDigest !== null, true);
     assertEquals(dbDigest!.id, json.digest.id);
   });
@@ -269,10 +460,13 @@ Deno.test("POST /digests/run requires authentication", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
 
-    const response = await app.request("/digests/run", jsonRequest("POST", {
-      periodStartMs: 1700000000000,
-      periodEndMs: 1700086400000,
-    }));
+    const response = await app.request(
+      "/digests/run",
+      jsonRequest("POST", {
+        periodStartMs: 1700000000000,
+        periodEndMs: 1700086400000,
+      }),
+    );
     assertEquals(response.status, 401);
     const json = await response.json();
     assertEquals(json.error.code, "UNAUTHORIZED");
@@ -300,7 +494,10 @@ Deno.test("POST /digests/run rejects inverted periods", async () => {
     const cookie = await login(app, "digests-run-inverted@example.com");
 
     const response = await app.request("/digests/run", {
-      ...jsonRequest("POST", { periodStartMs: 1700086400000, periodEndMs: 1700000000000 }),
+      ...jsonRequest("POST", {
+        periodStartMs: 1700086400000,
+        periodEndMs: 1700000000000,
+      }),
       headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 422);
@@ -332,7 +529,6 @@ Deno.test("POST /digests/run rate-limits repeated runs", async () => {
     });
     const json = await rateLimitResponse.json();
     assertEquals(json.error.code, "RATE_LIMITED");
-
   });
 });
 
@@ -343,7 +539,10 @@ Deno.test("POST /digests/run creates a manual digest run record", async () => {
     const cookie = await login(app, "digests-run-record@example.com");
 
     const response = await app.request("/digests/run", {
-      ...jsonRequest("POST", { periodStartMs: 1700000000000, periodEndMs: 1700086400000 }),
+      ...jsonRequest("POST", {
+        periodStartMs: 1700000000000,
+        periodEndMs: 1700086400000,
+      }),
       headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(response.status, 200);
@@ -386,7 +585,12 @@ Deno.test("GET /digests/runs returns only caller run records latest first", asyn
       periodEndMs: 2000,
       status: "complete",
     }, now - 2000);
-    await finishDigestRun(database, run1.id, { status: "complete" }, now - 1000);
+    await finishDigestRun(
+      database,
+      run1.id,
+      { status: "complete" },
+      now - 1000,
+    );
 
     const run2 = await createDigestRun(database, {
       userId: user1,
@@ -395,7 +599,12 @@ Deno.test("GET /digests/runs returns only caller run records latest first", asyn
       periodEndMs: 4000,
       status: "complete",
     }, now);
-    await finishDigestRun(database, run2.id, { status: "complete" }, now + 1000);
+    await finishDigestRun(
+      database,
+      run2.id,
+      { status: "complete" },
+      now + 1000,
+    );
 
     const user2 = await register(app, "digests-runs-other2@example.com");
     const run3 = await createDigestRun(database, {
@@ -497,9 +706,15 @@ Deno.test("GET /digests/runs/:id hides another user's run", async () => {
     const app = buildApp(database);
 
     const user1 = await register(app, "digests-run-hidden-owner@example.com");
-    const user1Cookie = await login(app, "digests-run-hidden-owner@example.com");
+    const user1Cookie = await login(
+      app,
+      "digests-run-hidden-owner@example.com",
+    );
     const _user2 = await register(app, "digests-run-hidden-other@example.com");
-    const user2Cookie = await login(app, "digests-run-hidden-other@example.com");
+    const user2Cookie = await login(
+      app,
+      "digests-run-hidden-other@example.com",
+    );
 
     const now = Date.now();
     const run = await createDigestRun(database, {
@@ -530,7 +745,12 @@ Deno.test("POST /digests/run forwards the entrypoint summarizer instance", async
   await withTestDb(async (database) => {
     const sharedSummarizer = new FakeSummarizer([]);
     let receivedSummarizer: SummarizerService | undefined;
-    const runForUser: typeof runForUserType = (_database, userId, period, dependencies = {}) => {
+    const runForUser: typeof runForUserType = (
+      _database,
+      userId,
+      period,
+      dependencies = {},
+    ) => {
       receivedSummarizer = dependencies.summarizer;
       return Promise.resolve({
         digest: {
@@ -549,10 +769,12 @@ Deno.test("POST /digests/run forwards the entrypoint summarizer instance", async
     const app = buildApp(database, {
       digests: { summarizer: sharedSummarizer, runForUser },
     });
-    const cookie = await login(app, "digests-run-injection@example.com").catch(async () => {
-      await register(app, "digests-run-injection@example.com");
-      return await login(app, "digests-run-injection@example.com");
-    });
+    const cookie = await login(app, "digests-run-injection@example.com").catch(
+      async () => {
+        await register(app, "digests-run-injection@example.com");
+        return await login(app, "digests-run-injection@example.com");
+      },
+    );
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", { periodStartMs, periodEndMs }),

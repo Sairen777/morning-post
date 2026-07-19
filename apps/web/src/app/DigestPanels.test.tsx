@@ -1,36 +1,15 @@
 /** @jsxImportSource solid-js */
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render } from "@solidjs/testing-library";
-import type { DigestView, PublicDigestRun, DigestRunDetail } from "../api/types";
+import { waitFor } from "@solidjs/testing-library";
+import type {
+  DigestRunDetail,
+  DigestView,
+  PublicDigestRun,
+} from "../api/types";
 import DigestRunsPanel from "./DigestRunsPanel";
 import DigestsPanel from "./DigestsPanel";
 import type { PublicDigest } from "../api/types";
-
-// Inline a minimal digest panel renderer for testing
-function DigestDetailTest(props: { view: DigestView }) {
-  return (
-    <div>
-      {props.view.groups.map((group) => (
-        <div>
-          <h3>{group.connectorId}</h3>
-          {group.sections.map((section) => (
-            <div>
-              <h4>
-                {section.feedName}
-                {section.feedRemoved && <span class="feed-removed"> (removed)</span>}
-              </h4>
-              <ul>
-                {section.points.map((point) => (
-                  <li>{point.text}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 const sampleView: DigestView = {
   digest: {
@@ -49,7 +28,10 @@ const sampleView: DigestView = {
       feedId: "f1",
       feedName: "Active Feed",
       feedRemoved: false,
-      points: [{ text: "bullet one", sourceUrl: null }],
+      content: {
+        kind: "aggregate",
+        points: [{ text: "bullet one", sourceUrl: null }],
+      },
     },
     {
       sourceId: "s1",
@@ -57,7 +39,13 @@ const sampleView: DigestView = {
       feedId: "f2",
       feedName: "Deleted Feed",
       feedRemoved: true,
-      points: [{ text: "historical bullet", sourceUrl: "https://example.com" }],
+      content: {
+        kind: "aggregate",
+        points: [{
+          text: "historical bullet",
+          sourceUrl: "https://example.com",
+        }],
+      },
     },
   ],
   groups: [
@@ -71,7 +59,10 @@ const sampleView: DigestView = {
           feedId: "f1",
           feedName: "Active Feed",
           feedRemoved: false,
-          points: [{ text: "bullet one", sourceUrl: null }],
+          content: {
+            kind: "aggregate",
+            points: [{ text: "bullet one", sourceUrl: null }],
+          },
         },
         {
           sourceId: "s1",
@@ -79,7 +70,13 @@ const sampleView: DigestView = {
           feedId: "f2",
           feedName: "Deleted Feed",
           feedRemoved: true,
-          points: [{ text: "historical bullet", sourceUrl: "https://example.com" }],
+          content: {
+            kind: "aggregate",
+            points: [{
+              text: "historical bullet",
+              sourceUrl: "https://example.com",
+            }],
+          },
         },
       ],
     },
@@ -87,20 +84,35 @@ const sampleView: DigestView = {
 };
 
 describe("DigestDetail rendering", () => {
-  it("renders connector group and feed names", () => {
-    const { container } = render(() => <DigestDetailTest view={sampleView} />);
-    expect(container.textContent).toContain("telegram");
+  it("renders connector group and feed names", async () => {
+    const { container, getByRole } = render(() => (
+      <DigestsPanel
+        digests={[sampleView.digest]}
+        onSelectDigest={() => Promise.resolve(sampleView)}
+        onDeleteDigest={async () => {}}
+        onAuthError={() => {}}
+      />
+    ));
+    getByRole("button", { name: /#1/ }).click();
+    await waitFor(() => expect(container.textContent).toContain("telegram"));
     expect(container.textContent).toContain("Active Feed");
     expect(container.textContent).toContain("bullet one");
   });
 
-  it("renders removed feed marker", () => {
-    const { container } = render(() => <DigestDetailTest view={sampleView} />);
-    expect(container.textContent).toContain("(removed)");
+  it("renders removed feed marker", async () => {
+    const { container, getByRole } = render(() => (
+      <DigestsPanel
+        digests={[sampleView.digest]}
+        onSelectDigest={() => Promise.resolve(sampleView)}
+        onDeleteDigest={async () => {}}
+        onAuthError={() => {}}
+      />
+    ));
+    getByRole("button", { name: /#1/ }).click();
+    await waitFor(() => expect(container.textContent).toContain("(removed)"));
     expect(container.textContent).toContain("historical bullet");
   });
 });
-
 
 const completedRun: PublicDigestRun = {
   id: "run-1",
@@ -203,14 +215,17 @@ const sampleDigests: PublicDigest[] = [
 const noopOnAuthError = () => {};
 const noopOnDeleteDigest = async (_id: string) => {};
 
-function makeDigestsPanelProps(overrides: { onDeleteDigest?: (id: string) => Promise<void> } = {}) {
+function makeDigestsPanelProps(
+  overrides: { onDeleteDigest?: (id: string) => Promise<void> } = {},
+) {
   return {
     digests: sampleDigests,
-    onSelectDigest: async () => ({
-      digest: sampleDigests[0],
-      sections: [],
-      groups: [],
-    }),
+    onSelectDigest: () =>
+      Promise.resolve({
+        digest: sampleDigests[0],
+        sections: [],
+        groups: [],
+      }),
     onDeleteDigest: overrides.onDeleteDigest ?? noopOnDeleteDigest,
     onAuthError: noopOnAuthError,
   };
@@ -221,11 +236,12 @@ describe("DigestsPanel ordinal numbering", () => {
     const { getAllByText } = render(() => (
       <DigestsPanel
         digests={sampleDigests}
-        onSelectDigest={async () => ({
-          digest: sampleDigests[0],
-          sections: [],
-          groups: [],
-        })}
+        onSelectDigest={() =>
+          Promise.resolve({
+            digest: sampleDigests[0],
+            sections: [],
+            groups: [],
+          })}
         onDeleteDigest={noopOnDeleteDigest}
         onAuthError={noopOnAuthError}
       />
@@ -247,7 +263,10 @@ describe("DigestsPanel delete button", () => {
       const { getAllByText } = render(() => (
         <DigestsPanel
           {...makeDigestsPanelProps({
-            onDeleteDigest: async (id: string) => { calledWith = id; },
+            onDeleteDigest: (digestId: string) => {
+              calledWith = digestId;
+              return Promise.resolve();
+            },
           })}
         />
       ));
@@ -268,7 +287,10 @@ describe("DigestsPanel delete button", () => {
       const { getAllByText } = render(() => (
         <DigestsPanel
           {...makeDigestsPanelProps({
-            onDeleteDigest: async () => { called = true; },
+            onDeleteDigest: () => {
+              called = true;
+              return Promise.resolve();
+            },
           })}
         />
       ));
@@ -282,7 +304,12 @@ describe("DigestsPanel delete button", () => {
 });
 
 describe("DigestsPanel Load more", () => {
-  const noopSelect = async () => ({ digest: sampleDigests[0], sections: [], groups: [] });
+  const noopSelect = () =>
+    Promise.resolve({
+      digest: sampleDigests[0],
+      sections: [],
+      groups: [],
+    });
   const noopDelete = async (_id: string) => {};
   const noopAuth = () => {};
 
@@ -320,7 +347,7 @@ describe("DigestsPanel Load more", () => {
         onDeleteDigest={noopDelete}
         onAuthError={noopAuth}
         nextCursor="abc123"
-        loadingMore={true}
+        loadingMore
       />
     ));
     const button = getByText("Loading…") as HTMLButtonElement;
@@ -336,7 +363,10 @@ describe("DigestsPanel Load more", () => {
         onDeleteDigest={noopDelete}
         onAuthError={noopAuth}
         nextCursor="abc123"
-        onLoadMore={async () => { called = true; }}
+        onLoadMore={() => {
+          called = true;
+          return Promise.resolve();
+        }}
       />
     ));
     getByText("Load more").click();
@@ -345,10 +375,11 @@ describe("DigestsPanel Load more", () => {
 });
 
 describe("DigestRunsPanel Load more", () => {
-  const noopSelect = async (id: string) => ({
-    run: completedRun,
-    feeds: [],
-  });
+  const noopSelect = (_digestId: string) =>
+    Promise.resolve({
+      run: completedRun,
+      feeds: [],
+    });
   const noopRefresh = async () => {};
   const noopAuth = () => {};
 
@@ -385,7 +416,7 @@ describe("DigestRunsPanel Load more", () => {
         onRefresh={noopRefresh}
         onAuthError={noopAuth}
         nextCursor="abc123"
-        loadingMore={true}
+        loadingMore
       />
     ));
     const button = getByText("Loading…") as HTMLButtonElement;
@@ -401,10 +432,214 @@ describe("DigestRunsPanel Load more", () => {
         onRefresh={noopRefresh}
         onAuthError={noopAuth}
         nextCursor="abc123"
-        onLoadMore={async () => { called = true; }}
+        onLoadMore={() => {
+          called = true;
+          return Promise.resolve();
+        }}
       />
     ));
     getByText("Load more").click();
     expect(called).toBe(true);
+  });
+});
+
+const mixedContentView = {
+  digest: sampleDigests[0],
+  sections: [
+    {
+      sourceId: "telegram-source",
+      connectorId: "Telegram",
+      feedId: "telegram-feed",
+      feedName: "Telegram channel",
+      feedRemoved: false,
+      content: {
+        kind: "aggregate",
+        points: [
+          { text: "Telegram stays flat", sourceUrl: "https://t.me/example" },
+        ],
+      },
+    },
+    {
+      sourceId: "substack-source",
+      connectorId: "Substack",
+      feedId: "substack-feed",
+      feedName: "Substack publication",
+      feedRemoved: false,
+      content: {
+        kind: "articles",
+        articles: [
+          {
+            sourceExternalId: "article-1",
+            title: "First article",
+            sourceUrl: "https://example.com/first",
+            publishedAt: 1_704_067_200_000,
+            contentAccess: "preview",
+            points: [
+              { text: "First article point", sourceUrl: null },
+            ],
+          },
+          {
+            sourceExternalId: "article-2",
+            title: "Second article",
+            sourceUrl: null,
+            publishedAt: 1_704_153_600_000,
+            contentAccess: "full",
+            points: [],
+          },
+        ],
+      },
+    },
+    {
+      sourceId: "substack-source",
+      connectorId: "Substack",
+      feedId: "empty-feed",
+      feedName: "Empty publication",
+      feedRemoved: false,
+      content: { kind: "articles", articles: [] },
+    },
+    {
+      sourceId: "telegram-source",
+      connectorId: "Telegram",
+      feedId: "removed-feed",
+      feedName: "Removed channel",
+      feedRemoved: true,
+      content: {
+        kind: "aggregate",
+        points: [{ text: "Historical point", sourceUrl: null }],
+      },
+    },
+  ],
+  groups: [
+    {
+      sourceId: "telegram-source",
+      connectorId: "Telegram",
+      sections: [
+        {
+          sourceId: "telegram-source",
+          connectorId: "Telegram",
+          feedId: "telegram-feed",
+          feedName: "Telegram channel",
+          feedRemoved: false,
+          content: {
+            kind: "aggregate",
+            points: [
+              {
+                text: "Telegram stays flat",
+                sourceUrl: "https://t.me/example",
+              },
+            ],
+          },
+        },
+        {
+          sourceId: "telegram-source",
+          connectorId: "Telegram",
+          feedId: "removed-feed",
+          feedName: "Removed channel",
+          feedRemoved: true,
+          content: {
+            kind: "aggregate",
+            points: [{ text: "Historical point", sourceUrl: null }],
+          },
+        },
+      ],
+    },
+    {
+      sourceId: "substack-source",
+      connectorId: "Substack",
+      sections: [
+        {
+          sourceId: "substack-source",
+          connectorId: "Substack",
+          feedId: "substack-feed",
+          feedName: "Substack publication",
+          feedRemoved: false,
+          content: {
+            kind: "articles",
+            articles: [
+              {
+                sourceExternalId: "article-1",
+                title: "First article",
+                sourceUrl: "https://example.com/first",
+                publishedAt: 1_704_067_200_000,
+                contentAccess: "preview",
+                points: [
+                  { text: "First article point", sourceUrl: null },
+                ],
+              },
+              {
+                sourceExternalId: "article-2",
+                title: "Second article",
+                sourceUrl: null,
+                publishedAt: 1_704_153_600_000,
+                contentAccess: "full",
+                points: [],
+              },
+            ],
+          },
+        },
+        {
+          sourceId: "substack-source",
+          connectorId: "Substack",
+          feedId: "empty-feed",
+          feedName: "Empty publication",
+          feedRemoved: false,
+          content: { kind: "articles", articles: [] },
+        },
+      ],
+    },
+  ],
+} as unknown as DigestView;
+
+describe("DigestsPanel tagged digest content", () => {
+  it("renders aggregate points and article content without crossing article boundaries", async () => {
+    const { getByText, getByRole, queryByText, container } = render(() => (
+      <DigestsPanel
+        digests={[sampleDigests[0]]}
+        onSelectDigest={() => Promise.resolve(mixedContentView)}
+        onDeleteDigest={noopOnDeleteDigest}
+        onAuthError={noopOnAuthError}
+      />
+    ));
+
+    getByRole("button", { name: /#1/ }).click();
+    await waitFor(() =>
+      expect(getByRole("heading", { name: "First article" })).toBeDefined()
+    );
+
+    expect(getByText("Telegram stays flat")).toBeDefined();
+    expect(getByRole("heading", { name: "Telegram channel" })).toBeDefined();
+    expect(getByRole("heading", { name: "Substack publication" }))
+      .toBeDefined();
+    expect(getByRole("heading", { name: "First article" })).toBeDefined();
+    expect(getByRole("heading", { name: "Second article" })).toBeDefined();
+    expect(getByText("First article point")).toBeDefined();
+    expect(queryByText("Telegram stays flat", { selector: "h3, h4" }))
+      .toBeNull();
+    expect(container.querySelectorAll("article")).toHaveLength(2);
+  });
+
+  it("links article titles, labels previews, formats dates, and explains empty states", async () => {
+    const { getByRole, getByText, container } = render(() => (
+      <DigestsPanel
+        digests={[sampleDigests[0]]}
+        onSelectDigest={() => Promise.resolve(mixedContentView)}
+        onDeleteDigest={noopOnDeleteDigest}
+        onAuthError={noopOnAuthError}
+      />
+    ));
+
+    getByRole("button", { name: /#1/ }).click();
+    await waitFor(() =>
+      expect(getByRole("heading", { name: "First article" })).toBeDefined()
+    );
+
+    const articleLink = getByRole("link", { name: "First article" });
+    expect(articleLink.getAttribute("href")).toBe("https://example.com/first");
+    expect(articleLink.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(getByText("Preview")).toBeDefined();
+    expect(getByText("No points available for this article.")).toBeDefined();
+    expect(getByText("No articles available.")).toBeDefined();
+    expect(getByText("(removed)")).toBeDefined();
+    expect(container.querySelectorAll("article time")).toHaveLength(2);
   });
 });

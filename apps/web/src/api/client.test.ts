@@ -1,19 +1,20 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
-  ApiClientError,
-  updateCurrentUser,
-  startTelegramLogin,
-  getTelegramLoginStatus,
-  submitTelegramTwoFactorAuthentication,
-  disconnectSource,
-  listFeedsForSource,
-  getFeed,
-  unsubscribeFeed,
-  listDigestRuns,
-  getDigestRunDetail,
-  deleteDigest,
-  connectSubstackSession,
   addSubstackPublication,
+  ApiClientError,
+  connectSubstackSession,
+  deleteDigest,
+  disconnectSource,
+  getDigestRunDetail,
+  getFeed,
+  getTelegramLoginStatus,
+  listDigestRuns,
+  listFeedsForSource,
+  listSubstackPublications,
+  startTelegramLogin,
+  submitTelegramTwoFactorAuthentication,
+  unsubscribeFeed,
+  updateCurrentUser,
 } from "../api/client";
 
 describe("ApiClientError", () => {
@@ -34,14 +35,28 @@ describe("updateCurrentUser", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ id: "u1", name: "Test", email: "t@t.com", systemPrompt: "", defaultLanguage: null, createdAt: 0, updatedAt: 0 }), { status: 200 }),
+          new Response(
+            JSON.stringify({
+              id: "u1",
+              name: "Test",
+              email: "t@t.com",
+              systemPrompt: "",
+              defaultLanguage: null,
+              createdAt: 0,
+              updatedAt: 0,
+            }),
+            { status: 200 },
+          ),
         );
       }) as typeof fetch;
       await updateCurrentUser({ name: "New Name", defaultLanguage: null });
       expect(fetchCalls[0][0]).toBe("/auth/me");
       const opts = fetchCalls[0][1];
       expect(opts?.method).toBe("PATCH");
-      expect(JSON.parse(opts?.body as string)).toEqual({ name: "New Name", defaultLanguage: null });
+      expect(JSON.parse(opts?.body as string)).toEqual({
+        name: "New Name",
+        defaultLanguage: null,
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -56,7 +71,14 @@ describe("startTelegramLogin", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ loginSessionId: "s1", qrUrl: "tg://qr", expiresAt: 1000 }), { status: 200 }),
+          new Response(
+            JSON.stringify({
+              loginSessionId: "s1",
+              qrUrl: "tg://qr",
+              expiresAt: 1000,
+            }),
+            { status: 200 },
+          ),
         );
       }) as typeof fetch;
       await startTelegramLogin();
@@ -77,7 +99,9 @@ describe("getTelegramLoginStatus", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ status: "pending", expiresAt: 1000 }), { status: 200 }),
+          new Response(JSON.stringify({ status: "pending", expiresAt: 1000 }), {
+            status: 200,
+          }),
         );
       }) as typeof fetch;
       await getTelegramLoginStatus("s1");
@@ -96,13 +120,18 @@ describe("submitTelegramTwoFactorAuthentication", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ status: "complete", expiresAt: 1000 }), { status: 200 }),
+          new Response(
+            JSON.stringify({ status: "complete", expiresAt: 1000 }),
+            { status: 200 },
+          ),
         );
       }) as typeof fetch;
       await submitTelegramTwoFactorAuthentication("s1", { password: "secret" });
       expect(fetchCalls[0][0]).toBe("/connectors/telegram/login/s1/2fa");
       expect(fetchCalls[0][1]?.method).toBe("POST");
-      expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({ password: "secret" });
+      expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({
+        password: "secret",
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -117,7 +146,14 @@ describe("disconnectSource", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ source: { id: "s1", connected: false }, revokeTelegramSession: true, message: "OK" }), { status: 200 }),
+          new Response(
+            JSON.stringify({
+              source: { id: "s1", connected: false },
+              revokeTelegramSession: true,
+              message: "OK",
+            }),
+            { status: 200 },
+          ),
         );
       }) as typeof fetch;
       const result = await disconnectSource("s1");
@@ -155,7 +191,23 @@ describe("getFeed", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ id: "f1", sourceId: "s1", externalId: "e1", name: "Feed", kind: "news", customPrompt: null, position: null, enabled: true, deletedAt: null, lastFetchedPeriodEndMs: null, createdAt: 0, updatedAt: 0 }), { status: 200 }),
+          new Response(
+            JSON.stringify({
+              id: "f1",
+              sourceId: "s1",
+              externalId: "e1",
+              name: "Feed",
+              kind: "news",
+              customPrompt: null,
+              position: null,
+              enabled: true,
+              deletedAt: null,
+              lastFetchedPeriodEndMs: null,
+              createdAt: 0,
+              updatedAt: 0,
+            }),
+            { status: 200 },
+          ),
         );
       }) as typeof fetch;
       const result = await getFeed("f1");
@@ -175,7 +227,10 @@ describe("unsubscribeFeed", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ id: "f1", sourceId: "s1", deletedAt: 1 }), { status: 200 }),
+          new Response(
+            JSON.stringify({ id: "f1", sourceId: "s1", deletedAt: 1 }),
+            { status: 200 },
+          ),
         );
       }) as typeof fetch;
       await unsubscribeFeed("f1");
@@ -212,7 +267,9 @@ describe("getDigestRunDetail", () => {
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ run: { id: "r1" }, feeds: [] }), { status: 200 }),
+          new Response(JSON.stringify({ run: { id: "r1" }, feeds: [] }), {
+            status: 200,
+          }),
         );
       }) as typeof fetch;
       const result = await getDigestRunDetail("r1");
@@ -229,7 +286,15 @@ describe("deleteDigest", () => {
     const originalFetch = globalThis.fetch;
     try {
       const fetchCalls: Array<[string, RequestInit?]> = [];
-      const sample = { id: "d1", userId: "u1", periodStartMs: 1, periodEndMs: 2, status: "complete", createdAt: 3, updatedAt: 4 };
+      const sample = {
+        id: "d1",
+        userId: "u1",
+        periodStartMs: 1,
+        periodEndMs: 2,
+        status: "complete",
+        createdAt: 3,
+        updatedAt: 4,
+      };
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
@@ -245,7 +310,7 @@ describe("deleteDigest", () => {
     }
   });
 });
- 
+
 describe("Substack connector API", () => {
   const originalFetch = globalThis.fetch;
 
@@ -257,9 +322,18 @@ describe("Substack connector API", () => {
     const calls: Array<[string, RequestInit?]> = [];
     globalThis.fetch = ((url: string, options?: RequestInit) => {
       calls.push([url, options]);
-      return Promise.resolve(new Response(JSON.stringify({
-        source: { id: "source-1", connectorId: "Substack", connected: true },
-      }), { status: 200 }));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            source: {
+              id: "source-1",
+              connectorId: "Substack",
+              connected: true,
+            },
+          }),
+          { status: 200 },
+        ),
+      );
     }) as typeof fetch;
 
     const result = await connectSubstackSession({
@@ -281,13 +355,28 @@ describe("Substack connector API", () => {
     const calls: Array<[string, RequestInit?]> = [];
     globalThis.fetch = ((url: string, options?: RequestInit) => {
       calls.push([url, options]);
-      return Promise.resolve(new Response(JSON.stringify({
-        source: { id: "source-1", connectorId: "Substack", connected: true },
-        feed: { id: "feed-1", sourceId: "source-1", externalId: "https://example.com" },
-      }), { status: 201 }));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            source: {
+              id: "source-1",
+              connectorId: "Substack",
+              connected: true,
+            },
+            feed: {
+              id: "feed-1",
+              sourceId: "source-1",
+              externalId: "https://example.com",
+            },
+          }),
+          { status: 201 },
+        ),
+      );
     }) as typeof fetch;
 
-    const result = await addSubstackPublication({ publicationUrl: "https://example.com/articles/hello" });
+    const result = await addSubstackPublication({
+      publicationUrl: "https://example.com/articles/hello",
+    });
 
     expect(calls[0][0]).toBe("/connectors/substack/publications");
     expect(calls[0][1]?.method).toBe("POST");
@@ -295,5 +384,35 @@ describe("Substack connector API", () => {
       publicationUrl: "https://example.com/articles/hello",
     });
     expect(result.feed.id).toBe("feed-1");
+  });
+  it("gets followed Substack publications as a direct AvailableFeed array", async () => {
+    const calls: Array<[string, RequestInit?]> = [];
+    globalThis.fetch = ((url: string, options?: RequestInit) => {
+      calls.push([url, options]);
+      return Promise.resolve(
+        new Response(
+          JSON.stringify([
+            {
+              externalId: "https://example.substack.com",
+              name: "Example",
+              kind: "news",
+            },
+          ]),
+          { status: 200 },
+        ),
+      );
+    }) as typeof fetch;
+
+    const result = await listSubstackPublications();
+
+    expect(calls[0][0]).toBe("/connectors/substack/publications");
+    expect(calls[0][1]?.method).toBeUndefined();
+    expect(result).toEqual([
+      {
+        externalId: "https://example.substack.com",
+        name: "Example",
+        kind: "news",
+      },
+    ]);
   });
 });
