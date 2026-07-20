@@ -37,8 +37,26 @@ const ENV_KEYS = [
 
 console.log("3");
 
+function withClearedEnvironment<T>(
+  keys: readonly string[],
+  callback: () => T,
+): T {
+  const previousValues = new Map(
+    keys.map((key) => [key, Deno.env.get(key)]),
+  );
+  try {
+    for (const key of keys) Deno.env.delete(key);
+    return callback();
+  } finally {
+    for (const [key, value] of previousValues) {
+      if (value === undefined) Deno.env.delete(key);
+      else Deno.env.set(key, value);
+    }
+  }
+}
+
 Deno.test("config defaults cover runtime boundaries", () => {
-  const config = getConfig();
+  const config = withClearedEnvironment(ENV_KEYS, getConfig);
   assertEquals(config.port, 3000);
   assertEquals(config.allowedOrigins, [
     "http://127.0.0.1:5173",
