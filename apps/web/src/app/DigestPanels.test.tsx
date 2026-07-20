@@ -567,7 +567,10 @@ const mixedContentView = {
                 publishedAt: 1_704_067_200_000,
                 contentAccess: "preview",
                 points: [
-                  { text: "First article point", sourceUrl: null },
+                  {
+                    text: "First article point",
+                    sourceUrl: "https://example.com/first#point",
+                  },
                 ],
               },
               {
@@ -623,8 +626,15 @@ describe("DigestsPanel tagged digest content", () => {
     expect(container.querySelectorAll("article")).toHaveLength(2);
   });
 
-  it("links article titles, labels previews, formats dates, and explains empty states", async () => {
-    const { getByRole, getByText, container } = render(() => (
+  it("links article titles without redundant point sources or empty publications", async () => {
+    const {
+      getAllByRole,
+      getByRole,
+      getByText,
+      queryByRole,
+      queryByText,
+      container,
+    } = render(() => (
       <DigestsPanel
         digests={[sampleDigests[0]]}
         onSelectDigest={() => Promise.resolve(mixedContentView)}
@@ -643,7 +653,9 @@ describe("DigestsPanel tagged digest content", () => {
     expect(articleLink.getAttribute("rel")).toBe("noopener noreferrer");
     expect(getByText("Preview")).toBeDefined();
     expect(getByText("No points available for this article.")).toBeDefined();
-    expect(getByText("No articles available.")).toBeDefined();
+    expect(queryByText("No articles available.")).toBeNull();
+    expect(queryByRole("heading", { name: "Empty publication" })).toBeNull();
+    expect(getAllByRole("link", { name: "source" })).toHaveLength(1);
     expect(getByText("(removed)")).toBeDefined();
     expect(container.querySelectorAll("article time")).toHaveLength(2);
   });
@@ -664,27 +676,38 @@ describe("DigestsPanel tagged digest content", () => {
     expect(queryByRole("heading", { name: "Paid posts" })).toBeNull();
   });
 
-  it("shows linked and plain paid titles after all normal digest content", async () => {
-    const view: DigestView = {
+  it("groups paid titles by newsletter in first-appearance and post order", async () => {
+    const view = {
       ...sampleView,
       paidPosts: [
         {
+          newsletterName: "The Linked Ledger",
           title: "Linked paid title",
           sourceUrl: "https://example.substack.com/p/linked",
           publishedAt: 1_704_240_000_000,
+          preview: "Paid preview must not render",
+          body: "Paid body must not render",
         },
         {
+          newsletterName: "The Linked Ledger",
+          title: "Second linked paid title",
+          sourceUrl: "https://example.substack.com/p/second-linked",
+          publishedAt: 1_704_283_200_000,
+        },
+        {
+          newsletterName: "Plainspoken Weekly",
           title: "Plain paid title",
           sourceUrl: null,
           publishedAt: 1_704_326_400_000,
         },
         {
+          newsletterName: "Unsafe URL Review",
           title: "Unsafe paid title",
           sourceUrl: "javascript:alert(document.domain)",
           publishedAt: 1_704_412_800_000,
         },
       ],
-    };
+    } as unknown as DigestView;
     const { getByRole, getByText, queryByText, container } = render(() => (
       <DigestsPanel
         digests={[sampleDigests[0]]}
@@ -699,18 +722,60 @@ describe("DigestsPanel tagged digest content", () => {
       expect(getByRole("heading", { name: "Paid posts" })).toBeDefined()
     );
 
+    const paidPosts = container.querySelector<HTMLElement>(".paid-posts")!;
+    const newsletterHeadings = Array.from(
+      paidPosts.querySelectorAll<HTMLHeadingElement>("h4"),
+    );
+    const newsletterLists = Array.from(
+      paidPosts.querySelectorAll<HTMLUListElement>("ul.paid-post-list"),
+    );
+    expect(newsletterHeadings.map((heading) => heading.textContent)).toEqual([
+      "The Linked Ledger",
+      "Plainspoken Weekly",
+      "Unsafe URL Review",
+    ]);
+    expect(newsletterLists).toHaveLength(3);
+    expect(
+      newsletterLists.map((list) =>
+        Array.from(list.querySelectorAll("li")).map((item) => item.textContent)
+      ),
+    ).toEqual([
+      ["Linked paid title", "Second linked paid title"],
+      ["Plain paid title"],
+      ["Unsafe paid title"],
+    ]);
+    newsletterHeadings.forEach((heading, index) => {
+      expect(newsletterLists[index].getAttribute("aria-labelledby")).toBe(
+        heading.id,
+      );
+    });
+    expect(
+      new Set(newsletterHeadings.map((heading) => heading.textContent)).size,
+    )
+      .toBe(3);
+
     const linkedTitle = getByRole("link", { name: "Linked paid title" });
     expect(linkedTitle.getAttribute("href")).toBe(
       "https://example.substack.com/p/linked",
     );
-    expect(getByText("Plain paid title").tagName).not.toBe("A");
-    expect(getByText("Unsafe paid title").tagName).not.toBe("A");
+    expect(linkedTitle.parentElement?.textContent).toBe("Linked paid title");
+    const secondLinkedTitle = getByRole("link", {
+      name: "Second linked paid title",
+    });
+    expect(secondLinkedTitle.getAttribute("href")).toBe(
+      "https://example.substack.com/p/second-linked",
+    );
+    expect(queryByText("Plain paid title", { selector: "a" })).toBeNull();
+    expect(queryByText("Unsafe paid title", { selector: "a" })).toBeNull();
+    expect(paidPosts.querySelector('a[href^="javascript:"]')).toBeNull();
     const lastNormalContent = getByText("historical bullet");
     const paidHeading = getByRole("heading", { name: "Paid posts" });
     expect(
       lastNormalContent.compareDocumentPosition(paidHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+    expect(queryByText("Paid preview must not render")).toBeNull();
+    expect(queryByText("Paid body must not render")).toBeNull();
     expect(queryByText("Preview")).toBeNull();
     expect(queryByText("No points available for this article.")).toBeNull();
     expect(container.querySelector(".paid-posts article")).toBeNull();

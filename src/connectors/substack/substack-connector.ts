@@ -1,14 +1,21 @@
 import { convert } from "html-to-text";
 import { ConnectorId } from "../../constants.ts";
-import type { Connector, NormalizedData, NormalizedItem } from "../connector.types.ts";
+import type {
+  Connector,
+  NormalizedData,
+  NormalizedItem,
+} from "../connector.types.ts";
 import {
-  readPublicArchive,
   type ArchiveItem,
   type PublicArchivePage,
+  readPublicArchive,
 } from "./publication-reader.ts";
 import type { SubstackPrivatePost } from "./session-client.ts";
 
 const ARCHIVE_PAGE_SIZE = 50;
+
+const isSupportedArchivePostType = (type: string): boolean =>
+  type === "newsletter" || type === "podcast";
 
 export type PublicationPageReader = (
   publicationUrl: string,
@@ -18,7 +25,10 @@ export type PublicationPageReader = (
 ) => Promise<PublicArchivePage>;
 
 export interface SubstackPostReader {
-  getPostById(postId: number, signal?: AbortSignal): Promise<SubstackPrivatePost | null>;
+  getPostById(
+    postId: number,
+    signal?: AbortSignal,
+  ): Promise<SubstackPrivatePost | null>;
 }
 
 export interface SubstackRawPost {
@@ -41,7 +51,8 @@ const defaultPublicationReader: PublicationPageReader = (
 export class SubstackConnector implements Connector<SubstackRawData> {
   constructor(
     private readonly postReader: SubstackPostReader,
-    private readonly publicationReader: PublicationPageReader = defaultPublicationReader,
+    private readonly publicationReader: PublicationPageReader =
+      defaultPublicationReader,
   ) {}
 
   public async getRawData(
@@ -73,8 +84,15 @@ export class SubstackConnector implements Connector<SubstackRawData> {
     const rawData = await this.getRawData(from, to, feedExternalIds, signal);
     const result: NormalizedData = {};
     for (const [feedExternalId, publication] of Object.entries(rawData)) {
-      result[feedExternalId] = publication.posts.map(({ preview, privatePost }) =>
-        this.normalizePost(feedExternalId, publication.feedName, preview, privatePost)
+      result[feedExternalId] = publication.posts.map((
+        { preview, privatePost },
+      ) =>
+        this.normalizePost(
+          feedExternalId,
+          publication.feedName,
+          preview,
+          privatePost,
+        )
       );
     }
     return result;
@@ -105,18 +123,30 @@ export class SubstackConnector implements Connector<SubstackRawData> {
         throw new Error("Substack archive pagination made no progress");
       }
       seenPages.add(pageSignature);
-      feedName = page.items.find((item) => item.publicationName)?.publicationName ?? feedName;
+      feedName = page.items.find((item) =>
+        item.publicationName
+      )?.publicationName ?? feedName;
 
       for (const preview of page.items) {
         if (seenPostIds.has(preview.id)) continue;
         seenPostIds.add(preview.id);
-        if (preview.type !== "newsletter" || preview.postDate < from || preview.postDate > to) continue;
-        const privatePost = await this.postReader.getPostById(preview.id, signal);
+        if (
+          !isSupportedArchivePostType(preview.type) ||
+          preview.postDate < from ||
+          preview.postDate > to
+        ) continue;
+        const privatePost = await this.postReader.getPostById(
+          preview.id,
+          signal,
+        );
         if (
           privatePost &&
-          (privatePost.id !== preview.id || privatePost.publicationId !== preview.publicationId)
+          (privatePost.id !== preview.id ||
+            privatePost.publicationId !== preview.publicationId)
         ) {
-          throw new Error("Substack private post does not match archive preview");
+          throw new Error(
+            "Substack private post does not match archive preview",
+          );
         }
         posts.push({ preview, privatePost });
       }
@@ -134,9 +164,20 @@ export class SubstackConnector implements Connector<SubstackRawData> {
     preview: ArchiveItem,
     privatePost: SubstackPrivatePost | null,
   ): NormalizedItem {
-    const fullText = privatePost?.bodyHtml
+    const canUsePrivateBody = preview.audience !== "only_paid" ||
+      privatePost?.hasPaidSubscription === true;
+    const fullText = canUsePrivateBody && privatePost?.bodyHtml
       ? normalizeHtml(privatePost.bodyHtml)
       : "";
+    if (
+      preview.audience === "only_paid" &&
+      privatePost?.hasPaidSubscription === true &&
+      fullText.length === 0
+    ) {
+      throw new Error(
+        "Substack returned an empty body for an accessible paid post",
+      );
+    }
     const text = fullText ||
       preview.truncatedBodyText ||
       preview.description ||
@@ -155,6 +196,7 @@ export class SubstackConnector implements Connector<SubstackRawData> {
       meta: {
         audience: preview.audience,
         contentAccess: fullText ? "full" : "preview",
+        hasPaidSubscription: privatePost?.hasPaidSubscription === true,
       },
     };
   }
@@ -176,7 +218,9 @@ function safeHttpUrl(value?: string): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.href
+      : null;
   } catch {
     return null;
   }

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { feeds } from "../db/schema/feed.ts";
@@ -6,7 +6,6 @@ import { sources } from "../db/schema/source.ts";
 import { ConflictError, NotFoundError } from "../server/errors.ts";
 import type { FeedKind } from "../connectors/connector.types.ts";
 import { isUniqueViolation } from "../db/errors.ts";
-
 
 const feedKindSchema = z.enum(["news", "discussion"]);
 
@@ -117,7 +116,9 @@ async function lockSourceForFeedWrite(
     throw new NotFoundError("source not found");
   }
   if (source.credentials === null) {
-    throw new ConflictError("source must be reconnected before feeds can be subscribed");
+    throw new ConflictError(
+      "source must be reconnected before feeds can be subscribed",
+    );
   }
 }
 
@@ -135,7 +136,9 @@ async function findFeedBySourceAndExternalId(
 }
 
 function ownedSourceIds(database: Database, userId: string) {
-  return database.select({ id: sources.id }).from(sources).where(eq(sources.userId, userId));
+  return database.select({ id: sources.id }).from(sources).where(
+    eq(sources.userId, userId),
+  );
 }
 export async function createOrReviveFeed(
   database: Database,
@@ -145,7 +148,11 @@ export async function createOrReviveFeed(
 
   return await database.transaction(async (transaction) => {
     const transactionalDatabase = transaction as Database;
-    await lockSourceForFeedWrite(transactionalDatabase, parsed.sourceId, parsed.userId);
+    await lockSourceForFeedWrite(
+      transactionalDatabase,
+      parsed.sourceId,
+      parsed.userId,
+    );
 
     const existingFeed = await findFeedBySourceAndExternalId(
       transactionalDatabase,
@@ -289,7 +296,12 @@ export async function updateFeed(
   const rows = await database
     .update(feeds)
     .set({ ...parsed, updatedAt: Date.now() })
-    .where(and(eq(feeds.id, id), inArray(feeds.sourceId, ownedSourceIds(database, userId))))
+    .where(
+      and(
+        eq(feeds.id, id),
+        inArray(feeds.sourceId, ownedSourceIds(database, userId)),
+      ),
+    )
     .returning(publicColumns());
   if (!rows[0]) {
     throw new NotFoundError("feed not found");
@@ -306,7 +318,12 @@ export async function softDeleteFeed(
   const rows = await database
     .update(feeds)
     .set({ deletedAt: now, enabled: false, updatedAt: now })
-    .where(and(eq(feeds.id, id), inArray(feeds.sourceId, ownedSourceIds(database, userId))))
+    .where(
+      and(
+        eq(feeds.id, id),
+        inArray(feeds.sourceId, ownedSourceIds(database, userId)),
+      ),
+    )
     .returning(publicColumns());
   if (!rows[0]) {
     throw new NotFoundError("feed not found");
@@ -322,8 +339,17 @@ export async function setLastFetched(
 ): Promise<PublicFeed> {
   const rows = await database
     .update(feeds)
-    .set({ lastFetchedPeriodEndMs, updatedAt: Date.now() })
-    .where(and(eq(feeds.id, id), inArray(feeds.sourceId, ownedSourceIds(database, userId))))
+    .set({
+      lastFetchedPeriodEndMs:
+        sql`greatest(${feeds.lastFetchedPeriodEndMs}, ${lastFetchedPeriodEndMs})`,
+      updatedAt: Date.now(),
+    })
+    .where(
+      and(
+        eq(feeds.id, id),
+        inArray(feeds.sourceId, ownedSourceIds(database, userId)),
+      ),
+    )
     .returning(publicColumns());
   if (!rows[0]) {
     throw new NotFoundError("feed not found");

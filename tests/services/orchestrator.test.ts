@@ -3,6 +3,13 @@ import type {
   ConnectorFactoryLike,
   ConnectorHandle,
 } from "../../src/connectors/connector-factory.ts";
+import {
+  type PublicationPageReader,
+  SubstackConnector,
+  type SubstackPostReader,
+} from "../../src/connectors/substack/substack-connector.ts";
+import type { ArchiveItem } from "../../src/connectors/substack/publication-reader.ts";
+import type { SubstackPrivatePost } from "../../src/connectors/substack/session-client.ts";
 import { ConflictError } from "../../src/server/errors.ts";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -17,13 +24,21 @@ import type {
   NormalizedData,
   NormalizedItem,
 } from "../../src/connectors/connector.types.ts";
-import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
-import { listItemsForFeedInWindow } from "../../src/repositories/item-repository.ts";
+import {
+  createOrReviveFeed,
+  setLastFetched,
+} from "../../src/repositories/feed-repository.ts";
+import {
+  listItemsForFeedInWindow,
+  upsertItems,
+} from "../../src/repositories/item-repository.ts";
 import {
   createSource,
   type PublicSource,
+  updateSource,
 } from "../../src/repositories/source-repository.ts";
 import { runForUser } from "../../src/services/orchestrator.ts";
+import { renderDigestMarkdown } from "../../src/services/digest-service.ts";
 import {
   createUser,
   type CreateUserInput,
@@ -35,7 +50,10 @@ import type {
   SummaryRuleset,
 } from "../../src/summarizers/summarizer.types.ts";
 import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
-import { findSummaryForFeedPeriod } from "../../src/repositories/summary-repository.ts";
+import {
+  findSummaryForFeedPeriod,
+  upsertSummaryForPeriod,
+} from "../../src/repositories/summary-repository.ts";
 import { sql } from "drizzle-orm";
 import { listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
 
@@ -110,7 +128,7 @@ class FakeConnectorFactory implements ConnectorFactoryLike {
   readonly forSourceCalls: string[] = [];
 
   constructor(
-    readonly connectorsBySourceId: Record<string, FakeConnector>,
+    readonly connectorsBySourceId: Record<string, Connector<unknown>>,
     readonly failingSourceIds: Set<string> = new Set(),
     readonly ingestionModesBySourceId: Record<string, "batch" | "individual"> =
       {},
@@ -665,5 +683,544 @@ Deno.test("runForUser uses one individual handle and requests each feed separate
     assertEquals(connector.calls.map((call) => call.feedExternalIds), [[
       "channel:1",
     ], ["channel:2"]]);
+  });
+});
+
+Deno.test("runForUser refreshes covered Substack feeds with paid items for the full period", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-legacy-paid@example.com"),
+    );
+    const { source, feed: legacyFeed } = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Substack,
+      1,
+      "legacy-publication",
+      "Legacy publication",
+    );
+    const unaffectedFeed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: source.id,
+      externalId: "current-publication",
+      name: "Current publication",
+      kind: "news",
+      position: 2,
+    });
+    await setLastFetched(database, legacyFeed.id, user.id, period.endMs);
+    await setLastFetched(database, unaffectedFeed.id, user.id, period.endMs);
+
+    const legacyItem: NormalizedItem = {
+      connectorId: ConnectorId.Substack,
+      feedExternalId: legacyFeed.externalId,
+      externalId: "post-1",
+      date: period.startMs + 1,
+      title: "Paid post",
+      text: "Paid post body",
+      author: "Writer",
+      url: "https://example.substack.com/p/post-1",
+      meta: { audience: "only_paid" },
+    };
+    await upsertItems(database, legacyFeed.id, [legacyItem], period.startMs);
+
+    const refreshedItem: NormalizedItem = {
+      ...legacyItem,
+      text: "Refreshed paid post body",
+      meta: { audience: "only_paid", hasPaidSubscription: true },
+    };
+    const connector = new FakeConnector({
+      [legacyFeed.externalId]: [refreshedItem],
+      [unaffectedFeed.externalId]: [],
+    });
+    const connectorFactory = new FakeConnectorFactory({
+      [source.id]: connector,
+    });
+    const summarizer = new FakeSummarizer([[
+      { text: "refreshed summary", sourceUrl: null },
+    ]]);
+
+    await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => period.endMs + 1,
+    });
+
+    assertEquals(connector.calls, [{
+      from: period.startMs,
+      to: period.endMs,
+      feedExternalIds: [legacyFeed.externalId],
+    }]);
+    const stored = await listItemsForFeedInWindow(
+      database,
+      legacyFeed.id,
+      period.startMs,
+      period.endMs,
+    );
+    assertEquals(stored.length, 1);
+    assertEquals(stored[0].payload.text, "Refreshed paid post body");
+    assertEquals(stored[0].payload.meta?.hasPaidSubscription, true);
+    assertEquals(summarizer.calls.length, 1);
+
+    await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => period.endMs + 2,
+    });
+    assertEquals(connector.calls.length, 2);
+    assertEquals(summarizer.calls.length, 1);
+  });
+});
+
+Deno.test("runForUser resummarizes a paid post after a free subscriber upgrades", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-paid-upgrade@example.com"),
+    );
+    const { source, feed } = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Substack,
+      1,
+      "upgrade-publication",
+      "Upgrade publication",
+    );
+    await updateSource(database, source.id, user.id, {
+      showPaidPostTitles: true,
+    });
+    await setLastFetched(database, feed.id, user.id, period.endMs);
+
+    const title = "Paid post available after upgrade";
+    const inaccessibleItem: NormalizedItem = {
+      connectorId: ConnectorId.Substack,
+      feedExternalId: feed.externalId,
+      externalId: "upgrade-post-1",
+      date: period.startMs + 1,
+      title,
+      text: "Public preview",
+      author: "Writer",
+      url: "https://example.substack.com/p/upgrade-post-1",
+      meta: {
+        audience: "only_paid",
+        contentAccess: "preview",
+        hasPaidSubscription: false,
+      },
+    };
+    await upsertItems(database, feed.id, [inaccessibleItem], period.startMs);
+    await upsertSummaryForPeriod(database, {
+      feedId: feed.id,
+      periodStartMs: period.startMs,
+      periodEndMs: period.endMs,
+      feedNameSnapshot: feed.name,
+      content: {
+        kind: "articles",
+        articles: [{
+          sourceExternalId: inaccessibleItem.externalId,
+          title,
+          sourceUrl: inaccessibleItem.url,
+          publishedAt: inaccessibleItem.date,
+          contentAccess: "full",
+          points: [{
+            text: "stale pre-fix teaser summary",
+            sourceUrl: inaccessibleItem.url,
+          }],
+        }],
+      },
+    }, period.startMs + 2);
+
+    const accessibleItem: NormalizedItem = {
+      ...inaccessibleItem,
+      text: "Complete paid article body",
+      meta: {
+        audience: "only_paid",
+        contentAccess: "full",
+        hasPaidSubscription: true,
+      },
+    };
+    const connector = new FakeConnector({
+      [feed.externalId]: [accessibleItem],
+    });
+    const connectorFactory = new FakeConnectorFactory(
+      { [source.id]: connector },
+      new Set(),
+      { [source.id]: "individual" },
+    );
+    const summarizer = new FakeSummarizer([
+      new Error("temporary model failure"),
+      [{ text: "new full-body summary", sourceUrl: accessibleItem.url }],
+    ]);
+
+    const failedView = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => period.endMs + 1,
+    });
+    assertEquals(failedView.digest.status, "failed");
+    assertEquals(summarizer.calls.length, 1);
+    assertEquals(
+      renderDigestMarkdown(failedView).includes(
+        "stale pre-fix teaser summary",
+      ),
+      false,
+    );
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => period.endMs + 2,
+    });
+
+    assertEquals(connector.calls, [{
+      from: period.startMs,
+      to: period.endMs,
+      feedExternalIds: [feed.externalId],
+    }, {
+      from: period.startMs,
+      to: period.endMs,
+      feedExternalIds: [feed.externalId],
+    }]);
+    assertEquals(summarizer.calls.length, 2);
+    assertEquals(summarizer.calls[0].items[0].text, accessibleItem.text);
+    assertEquals(view.paidPosts, []);
+    assertEquals(
+      view.sections.flatMap((section) =>
+        section.content.kind === "articles"
+          ? section.content.articles.flatMap((article) =>
+            article.points.map((point) => point.text)
+          )
+          : []
+      ),
+      ["new full-body summary"],
+    );
+
+    await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => period.endMs + 3,
+    });
+    assertEquals(connector.calls.length, 3);
+    assertEquals(summarizer.calls.length, 2);
+
+    connector.responses[feed.externalId] = [{
+      ...accessibleItem,
+      text: "Public preview after subscription ended",
+      meta: {
+        audience: "only_paid",
+        contentAccess: "preview",
+        hasPaidSubscription: false,
+      },
+    }];
+    const downgradedView = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => period.endMs + 4,
+    });
+    assertEquals(connector.calls.length, 4);
+    assertEquals(summarizer.calls.length, 2);
+    assertEquals(downgradedView.paidPosts.map((post) => post.title), [title]);
+    assertEquals(
+      downgradedView.sections.flatMap((section) =>
+        section.content.kind === "articles"
+          ? section.content.articles.flatMap((article) =>
+            article.points.map((point) => point.text)
+          )
+          : []
+      ),
+      [],
+    );
+  });
+});
+
+Deno.test("runForUser repairs a cached free-subscriber paid teaser without another model call", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-cached-paid-teaser@example.com"),
+    );
+    const { source, feed } = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Substack,
+      1,
+      "paid-publication",
+      "Paid publication",
+    );
+    await updateSource(database, source.id, user.id, {
+      showPaidPostTitles: true,
+    });
+    await setLastFetched(database, feed.id, user.id, period.endMs);
+
+    const title = "Paid post with a teaser";
+    const legacyItem: NormalizedItem = {
+      connectorId: ConnectorId.Substack,
+      feedExternalId: feed.externalId,
+      externalId: "paid-post-1",
+      date: period.startMs + 1,
+      title,
+      text: "One available teaser sentence.",
+      author: "Writer",
+      url: "https://example.substack.com/p/paid-post-1",
+      meta: { audience: "only_paid", contentAccess: "full" },
+    };
+    await upsertItems(database, feed.id, [legacyItem], period.startMs);
+    await upsertSummaryForPeriod(database, {
+      feedId: feed.id,
+      periodStartMs: period.startMs,
+      periodEndMs: period.endMs,
+      feedNameSnapshot: feed.name,
+      content: {
+        kind: "articles",
+        articles: [{
+          sourceExternalId: legacyItem.externalId,
+          title,
+          sourceUrl: legacyItem.url,
+          publishedAt: legacyItem.date,
+          contentAccess: "full",
+          points: [{
+            text: "stale teaser point",
+            sourceUrl: legacyItem.url,
+          }],
+        }],
+      },
+    }, period.startMs + 2);
+
+    const refreshedItem: NormalizedItem = {
+      ...legacyItem,
+      text: "Public preview",
+      meta: {
+        audience: "only_paid",
+        contentAccess: "preview",
+        hasPaidSubscription: false,
+      },
+    };
+    const connector = new FakeConnector({
+      [feed.externalId]: [refreshedItem],
+    });
+    const connectorFactory = new FakeConnectorFactory(
+      { [source.id]: connector },
+      new Set(),
+      { [source.id]: "individual" },
+    );
+    const summarizer = new FakeSummarizer([]);
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => period.endMs + 1,
+    });
+
+    assertEquals(connector.calls, [{
+      from: period.startMs,
+      to: period.endMs,
+      feedExternalIds: [feed.externalId],
+    }]);
+    assertEquals(summarizer.calls.length, 0);
+    assertEquals(
+      view.sections.flatMap((section) =>
+        section.content.kind === "articles"
+          ? section.content.articles.map((article) => article.title)
+          : []
+      ).includes(title),
+      false,
+    );
+    assertEquals(view.paidPosts.map((post) => post.title), [title]);
+    const markdown = renderDigestMarkdown(view);
+    assertEquals(markdown.includes("stale teaser point"), false);
+    assertEquals(markdown.includes(title), true);
+
+    const [storedItem] = await listItemsForFeedInWindow(
+      database,
+      feed.id,
+      period.startMs,
+      period.endMs,
+    );
+    assertEquals(storedItem.payload.meta?.hasPaidSubscription, false);
+  });
+});
+
+Deno.test("runForUser summarizes a public Substack podcast beside an inaccessible paid post", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-substack-podcast@example.com"),
+    );
+    const publication = "https://podcast-letter.example.com";
+    const { source, feed } = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Substack,
+      1,
+      publication,
+      "Podcast Letter",
+    );
+    await updateSource(database, source.id, user.id, {
+      showPaidPostTitles: true,
+    });
+
+    const podcastTitle = "A public podcast episode";
+    const podcastBody = "The complete public podcast transcript.";
+    const podcastUrl = `${publication}/p/public-podcast`;
+    const paidTitle = "The private newsletter";
+    const paidPreview = "This paid preview must never reach the digest.";
+    const paidUrl = `${publication}/p/private-newsletter`;
+    const podcastId = 201;
+    const paidId = 202;
+    const publicationId = 91;
+
+    const storedPaidItem: NormalizedItem = {
+      connectorId: ConnectorId.Substack,
+      feedExternalId: feed.externalId,
+      externalId: String(paidId),
+      date: period.startMs + 2_000,
+      title: paidTitle,
+      text: paidPreview,
+      author: "Newsletter Writer",
+      url: paidUrl,
+      meta: {
+        audience: "only_paid",
+        contentAccess: "preview",
+        hasPaidSubscription: false,
+      },
+    };
+    await upsertItems(database, feed.id, [storedPaidItem], period.startMs);
+    await setLastFetched(database, feed.id, user.id, period.endMs);
+
+    await upsertSummaryForPeriod(database, {
+      feedId: feed.id,
+      periodStartMs: period.startMs,
+      periodEndMs: period.endMs,
+      feedNameSnapshot: feed.name,
+      content: {
+        kind: "articles",
+        articles: [{
+          sourceExternalId: String(paidId),
+          title: paidTitle,
+          sourceUrl: paidUrl,
+          publishedAt: period.startMs + 2_000,
+          contentAccess: "paid",
+          points: [],
+        }],
+      },
+    }, period.startMs + 3_000);
+
+    const archiveItems: ArchiveItem[] = [{
+      id: podcastId,
+      type: "podcast",
+      title: podcastTitle,
+      postDate: period.startMs + 1_000,
+      audience: "everyone",
+      truncatedBodyText: "Public podcast preview",
+      description: undefined,
+      subtitle: undefined,
+      canonicalUrl: podcastUrl,
+      publishedBylines: [{ name: "Podcast Host" }],
+      publicationName: feed.name,
+      publicationId,
+      raw: {},
+    }, {
+      id: paidId,
+      type: "newsletter",
+      title: paidTitle,
+      postDate: period.startMs + 2_000,
+      audience: "only_paid",
+      truncatedBodyText: paidPreview,
+      description: undefined,
+      subtitle: undefined,
+      canonicalUrl: paidUrl,
+      publishedBylines: [{ name: "Newsletter Writer" }],
+      publicationName: feed.name,
+      publicationId,
+      raw: {},
+    }];
+    const pages: PublicationPageReader = (_publicationUrl, offset) =>
+      Promise.resolve({
+        origin: publication,
+        items: offset === 0 ? archiveItems : [],
+      });
+    const privatePosts = new Map<number, SubstackPrivatePost>([
+      [podcastId, {
+        id: podcastId,
+        publicationId,
+        bodyHtml: `<p>${podcastBody}</p>`,
+        hasPaidSubscription: false,
+      }],
+      [paidId, {
+        id: paidId,
+        publicationId,
+        bodyHtml: "<p>Subscriber-only teaser</p>",
+        hasPaidSubscription: false,
+      }],
+    ]);
+    const posts: SubstackPostReader = {
+      getPostById: (postId) =>
+        Promise.resolve(privatePosts.get(postId) ?? null),
+    };
+    const realConnector = new SubstackConnector(posts, pages);
+    const connectorCalls: Array<{
+      from: number;
+      to: number;
+      feedExternalIds?: string[];
+    }> = [];
+    const connector: Connector<unknown> = {
+      getRawData: (from, to, feedExternalIds, signal) =>
+        realConnector.getRawData(from, to, feedExternalIds, signal),
+      getNormalizedData: (from, to, feedExternalIds, signal) => {
+        connectorCalls.push({ from, to, feedExternalIds });
+        return realConnector.getNormalizedData(
+          from,
+          to,
+          feedExternalIds,
+          signal,
+        );
+      },
+    };
+    const connectorFactory = new FakeConnectorFactory(
+      { [source.id]: connector },
+      new Set(),
+      { [source.id]: "individual" },
+    );
+    const podcastSummary = "A concise summary of the public podcast.";
+    const summarizer = new FakeSummarizer([[
+      { text: podcastSummary, sourceUrl: podcastUrl },
+    ]]);
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      now: () => period.endMs + 1,
+    });
+
+    assertEquals(connectorCalls, [{
+      from: period.startMs,
+      to: period.endMs,
+      feedExternalIds: [feed.externalId],
+    }]);
+    assertEquals(summarizer.calls.length, 1);
+    assertEquals(
+      summarizer.calls[0].items.map((item) => ({
+        title: item.title,
+        text: item.text,
+      })),
+      [{ title: podcastTitle, text: podcastBody }],
+    );
+    assertEquals(
+      view.sections.flatMap((section) =>
+        section.content.kind === "articles"
+          ? section.content.articles.map((article) => ({
+            title: article.title,
+            points: article.points.map((point) => point.text),
+          }))
+          : []
+      ),
+      [{ title: podcastTitle, points: [podcastSummary] }],
+    );
+    assertEquals(view.paidPosts.map((post) => post.title), [paidTitle]);
+
+    const markdown = renderDigestMarkdown(view);
+    assert(markdown.includes(podcastTitle));
+    assert(markdown.includes(podcastSummary));
+    assert(markdown.includes(paidTitle));
+    assertEquals(markdown.includes(paidPreview), false);
   });
 });

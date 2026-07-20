@@ -94,15 +94,27 @@ one aggregate. Substack summarizes each article independently, preserves source
 order and metadata, then wraps the results in the tagged `SummaryContent`
 contract.
 
-For Substack, an item is an **inaccessible paid post** only when both
-`NormalizedItem.meta.audience === "only_paid"` and
-`NormalizedItem.meta.contentAccess === "preview"`. The orchestration layer does
-not send such an item to the summarizer or make any model call for it. Instead
-it persists an article summary with the available source metadata,
-`contentAccess: "paid"`, and `points: []`. A paid article whose full content is
-available, and a free article represented by a preview, continue through normal
-article summarization. This classification does not imply that Morning Post can
-read the paid body or subscribe the user to the publication.
+For Substack, paid access is an explicit entitlement boundary, not a body-shape
+heuristic. An authenticated `GET /api/v1/posts/by-id/:id` can return a nonempty
+teaser in `post.body_html` to a free subscriber, so neither body presence nor
+text length proves access. `SubstackSessionClient` reads
+`subscription.membership_state`; only the exact value `paid_subscriber` is
+affirmative. Missing or unknown evidence is normalized conservatively to
+`meta.hasPaidSubscription: false`. The archive ingestion boundary accepts both
+`newsletter` articles and `podcast` episodes as summarizable posts. Other
+archive entry types remain excluded.
+
+For an `only_paid` archive item without that entitlement, normalization falls
+back to the preview, emits `meta.contentAccess: "preview"` and
+`meta.hasPaidSubscription: false`, and the orchestration layer does not send the
+item to the summarizer or make a model call. It persists the available source
+metadata with `contentAccess: "paid"` and `points: []`. Entitled items continue
+through ordinary article summarization. This boundary records what the
+authenticated session proved; it does not claim that Morning Post can infer
+access from returned body text or subscribe the user to a publication. An
+entitled `only_paid` response must also contain a nonempty normalized private
+body. If it does not, ingestion fails instead of silently summarizing or caching
+the public teaser as paid content.
 
 The low-level service implements `SummarizerService` in
 `src/summarizers/summarizer.types.ts`.
@@ -163,10 +175,24 @@ Digest presentation partitions inaccessible-paid article summaries from regular
 sections. `DigestView` always contains a `paidPosts` array; paid articles never
 appear in its ordinary sections. When the owning Substack source has opted in,
 their available titles are projected into `paidPosts` in stable digest/article
-order. A section containing only paid articles is omitted, while a genuinely
-empty article section remains present. The Markdown API output and web digest
-append a final title-only **Paid posts** section; they neither render
-preview/body text nor claim access to it.
+order. During projection, an Item's explicit
+`meta.hasPaidSubscription === false` overrides stale cached summary points; a
+missing flag is never guessed to mean either paid access or inaccessibility. Any
+Item whose changed `fetchedAt` is newer than the cached Summary's `generatedAt`
+invalidates that Summary for assembly. This includes public posts first
+discovered while a paid feed is being authoritatively refreshed. The model retry
+continues on later runs until a replacement Summary is persisted. A section
+containing only paid articles is omitted. The API can retain a genuinely empty
+article section, but the web digest omits empty Substack publication sections
+instead of rendering an empty-state field. Within a rendered Substack article,
+the linked article title is the source; summary bullets do not repeat a
+point-level source link. Aggregate connector bullets retain their source links.
+The Markdown API output and web digest append a final **Paid posts** section.
+Paid posts are grouped by newsletter: within the section, each unique newsletter
+name (from `summary.feedNameSnapshot`, captured at generation time) appears once
+as a newsletter header, followed by that newsletter's title-only article bullets
+in their original digest/article order. Only safe HTTP(S) titles are linked. The
+section never renders preview/body text or claims access to it.
 
 Readable date formatting happens here.
 
@@ -199,20 +225,22 @@ All cross-layer timestamps are epoch ms (`number`); periods are explicit
 `periodStartMs`/`periodEndMs` ranges, never a day string.
 
 **Timestamp conventions.** Mutable rows (`User`, `Source`, `Feed`, `Digest`)
-carry `createdAt` + `updatedAt`. Immutable rows carry a single semantic creation
-timestamp and no `updatedAt`: `Summary.generatedAt` — a summary is never
-rewritten, so an `updatedAt` would only echo it and contradict immutability. The
-`Item` cache uses `fetchedAt` as its last-write timestamp (bumped on upsert);
+carry `createdAt` + `updatedAt`. A `Summary` has one `generatedAt` timestamp for
+the latest successful generation of its unique feed/period row; a successful
+rerun replaces both content and `generatedAt` atomically, so a separate
+`updatedAt` would duplicate that meaning. The `Item` cache uses `fetchedAt` as a
+content-version timestamp that advances only when an upsert changes the payload;
 `date` is the content's own timestamp, not a row timestamp.
 
 **Deletion is non-destructive to history.** A feed is soft-deleted
-(`Feed.deletedAt`); `Summary` rows are never deleted or rewritten. Each summary
-snapshots `feedNameSnapshot` at generation time so digests still render after a
-feed is renamed upstream or removed.
+(`Feed.deletedAt`); its `Summary` rows remain available for historical digests,
+although a successful rerun may replace the matching feed/period Summary. Each
+summary snapshots `feedNameSnapshot` at generation time so digests still render
+after a feed is renamed upstream or removed.
 
 Paid-title projection is likewise derived at read time rather than frozen into
 the digest. Changing an owned Substack source's `showPaidPostTitles` setting
-therefore re-renders historical digests from their immutable paid article
+therefore re-renders historical digests from their persisted paid article
 summaries without re-ingestion, re-summarization, or a new model call.
 
 #### Credentials &amp; secrets
@@ -272,10 +300,23 @@ allows — the trusted-custodian posture of any SaaS that holds your OAuth token
   to a fixed lookback. The `UNIQUE(Item.feedId, externalId)` constraint makes
   overlapping windows safe.
 - **Item upsert.** `Item` writes are
-  `ON CONFLICT (feedId, externalId) DO
-  UPDATE payload, fetchedAt` —
-  re-fetching an edited message refreshes the cache rather than failing or
-  silently skipping.
+  `ON CONFLICT (feedId, externalId) DO UPDATE`. The payload is always replaced,
+  while `fetchedAt` advances only when that payload changed. This makes
+  `fetchedAt` a durable content-version timestamp rather than merely the latest
+  no-op refresh time.
+- **Paid entitlement refresh.** A digest rerun authoritatively re-ingests the
+  full requested period for each feed containing an `only_paid` Substack item,
+  even when its fetch-window cursor already covers the period. This symmetric
+  refresh observes free-to-paid upgrades and paid-to-free downgrades; the
+  persisted cursor remains the maximum previously covered endpoint and never
+  moves backward during a historical refresh. Items cached before
+  `meta.hasPaidSubscription` existed receive current evidence through the same
+  path, without guessing from absent metadata or requiring a destructive data
+  migration. When any changed or newly inserted Item is newer than its cached
+  Summary, assembly regenerates the Summary; a failed model call leaves the
+  persisted timestamps stale so the next run retries. A live replay verified
+  that the originally affected Item was refreshed, its title moved into
+  `paidPosts`, and no model call was made.
 - **Digest scope (v1).** One `Digest` per `(user, period)`. Its sections are
   derived from the period's `Summary` rows ordered by `Source.position` (then
   `Feed.position` or name) — nothing is stored per section. Multiple named

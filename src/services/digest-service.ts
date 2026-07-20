@@ -17,6 +17,10 @@ import {
 } from "../repositories/summary-repository.ts";
 import { findUserById } from "../repositories/user-repository.ts";
 import {
+  listItemsForFeedsInWindow,
+  type StoredItem,
+} from "../repositories/item-repository.ts";
+import {
   type SummarizeFeedPeriodDependencies,
   summarizeOwnedFeedPeriod,
 } from "./summarization-service.ts";
@@ -47,6 +51,7 @@ export interface DigestSourceGroup {
 }
 
 export interface PaidPost {
+  newsletterName: string;
   title: string;
   sourceUrl: string | null;
   publishedAt: number;
@@ -68,21 +73,54 @@ export interface AssembleDigestDependencies
   summarizationConcurrency?: number;
 }
 
+function latestItemFetches(storedItems: StoredItem[]): Map<string, number> {
+  const latestFetchByFeedId = new Map<string, number>();
+  for (const item of storedItems) {
+    latestFetchByFeedId.set(
+      item.feedId,
+      Math.max(latestFetchByFeedId.get(item.feedId) ?? 0, item.fetchedAt),
+    );
+  }
+  return latestFetchByFeedId;
+}
+
 function toDigestContent(
   userPeriodSummaries: UserPeriodSummary[],
+  storedItems: StoredItem[],
 ): { sections: DigestSection[]; paidPosts: PaidPost[] } {
   const sections: DigestSection[] = [];
   const paidPosts: PaidPost[] = [];
+  const storedItemsByArticle = new Map(
+    storedItems.map((item) => [`${item.feedId}\0${item.externalId}`, item]),
+  );
 
   for (const summary of userPeriodSummaries) {
     let content = summary.content;
     if (content.kind === "articles") {
       const articles = content.articles.filter((article) => {
-        if (article.contentAccess !== "paid") {
+        const storedItem = storedItemsByArticle.get(
+          `${summary.feedId}\0${article.sourceExternalId}`,
+        );
+        const inaccessiblePaidSubstackArticle =
+          storedItem?.payload.connectorId === ConnectorId.Substack &&
+          storedItem.payload.meta?.audience === "only_paid" &&
+          storedItem.payload.meta?.hasPaidSubscription === false;
+        const staleAccessiblePaidSubstackArticle =
+          storedItem?.payload.connectorId === ConnectorId.Substack &&
+          storedItem.payload.meta?.audience === "only_paid" &&
+          storedItem.payload.meta?.hasPaidSubscription === true &&
+          storedItem.fetchedAt > summary.generatedAt;
+        if (staleAccessiblePaidSubstackArticle) {
+          return false;
+        }
+        if (
+          article.contentAccess !== "paid" && !inaccessiblePaidSubstackArticle
+        ) {
           return true;
         }
         if (summary.showPaidPostTitles) {
           paidPosts.push({
+            newsletterName: summary.feedNameSnapshot,
             title: article.title,
             sourceUrl: article.sourceUrl,
             publishedAt: article.publishedAt,
@@ -155,7 +193,16 @@ export async function buildDigestViewForPeriod(
     digest.periodStartMs,
     digest.periodEndMs,
   );
-  const { sections, paidPosts } = toDigestContent(userPeriodSummaries);
+  const storedItems = await listItemsForFeedsInWindow(
+    database,
+    [...new Set(userPeriodSummaries.map((summary) => summary.feedId))],
+    digest.periodStartMs,
+    digest.periodEndMs,
+  );
+  const { sections, paidPosts } = toDigestContent(
+    userPeriodSummaries,
+    storedItems,
+  );
   return {
     digest,
     sections,
@@ -235,6 +282,14 @@ export async function assembleDigestForPeriod(
     ))
       .map((summary) => [summary.feedId, summary] as const),
   );
+  const latestItemFetchByFeedId = latestItemFetches(
+    await listItemsForFeedsInWindow(
+      database,
+      feeds.map((feed) => feed.id),
+      periodStartMs,
+      periodEndMs,
+    ),
+  );
 
   let sourceConnectorIdsBySourceId = dependencies.sourceConnectorIdsBySourceId;
   if (!sourceConnectorIdsBySourceId) {
@@ -245,9 +300,12 @@ export async function assembleDigestForPeriod(
   }
 
   let hadFailure = false;
-  const feedsToSummarize = feeds.filter((feed) =>
-    !summariesByFeedId.has(feed.id)
-  );
+  const feedsToSummarize = feeds.filter((feed) => {
+    const summary = summariesByFeedId.get(feed.id);
+    return summary === undefined ||
+      (latestItemFetchByFeedId.get(feed.id) ?? 0) >
+        summary.generatedAt;
+  });
   const concurrency = dependencies.summarizationConcurrency ?? 2;
 
   await runBounded(feedsToSummarize, concurrency, async (feed) => {
@@ -390,10 +448,23 @@ export function renderDigestMarkdown(view: DigestView): string {
 
   if (view.paidPosts.length > 0) {
     lines.push("## Paid posts", "");
+    const postsByNewsletter = new Map<string, PaidPost[]>();
     for (const paidPost of view.paidPosts) {
-      const title = escapeMarkdownTitle(paidPost.title);
-      const sourceUrl = safeMarkdownLinkDestination(paidPost.sourceUrl);
-      lines.push(sourceUrl ? `- [${title}](<${sourceUrl}>)` : `- ${title}`);
+      const newsletterPosts = postsByNewsletter.get(paidPost.newsletterName);
+      if (newsletterPosts) {
+        newsletterPosts.push(paidPost);
+      } else {
+        postsByNewsletter.set(paidPost.newsletterName, [paidPost]);
+      }
+    }
+    for (const [newsletterName, paidPosts] of postsByNewsletter) {
+      lines.push(`### ${escapeMarkdownTitle(newsletterName)}`);
+      for (const paidPost of paidPosts) {
+        const title = escapeMarkdownTitle(paidPost.title);
+        const sourceUrl = safeMarkdownLinkDestination(paidPost.sourceUrl);
+        lines.push(sourceUrl ? `- [${title}](<${sourceUrl}>)` : `- ${title}`);
+      }
+      lines.push("");
     }
     lines.push(
       "",

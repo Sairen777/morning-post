@@ -1,8 +1,14 @@
-import type { Connector, NormalizedItem } from "../connectors/connector.types.ts";
+import type {
+  Connector,
+  NormalizedItem,
+} from "../connectors/connector.types.ts";
 import type { Database } from "../db/client.ts";
 import type { PublicFeed } from "../repositories/feed-repository.ts";
 import { setLastFetched } from "../repositories/feed-repository.ts";
-import { upsertItems, validateNormalizedItems } from "../repositories/item-repository.ts";
+import {
+  upsertItems,
+  validateNormalizedItems,
+} from "../repositories/item-repository.ts";
 import { ValidationError } from "../server/errors.ts";
 import { getConfig } from "../config.ts";
 
@@ -39,14 +45,18 @@ export function computeIngestionWindow(
     return options.window;
   }
   const to = options.now?.() ?? Date.now();
-  const defaultLookbackMs = options.defaultLookbackMs ?? DEFAULT_INGESTION_LOOKBACK_MS;
+  const defaultLookbackMs = options.defaultLookbackMs ??
+    DEFAULT_INGESTION_LOOKBACK_MS;
   const from = feed.lastFetchedPeriodEndMs === null
     ? to - defaultLookbackMs
     : feed.lastFetchedPeriodEndMs + 1;
   return { from, to };
 }
 
-function validateFeedItems(feed: PublicFeed, normalizedItems: NormalizedItem[]): NormalizedItem[] {
+function validateFeedItems(
+  feed: PublicFeed,
+  normalizedItems: NormalizedItem[],
+): NormalizedItem[] {
   const validItems = validateNormalizedItems(normalizedItems);
   for (const item of validItems) {
     if (item.feedExternalId !== feed.externalId) {
@@ -73,7 +83,10 @@ export async function ingestFeed(
   if (options.signal?.aborted) {
     throw new IngestionAbortError();
   }
-  const normalizedItems = validateFeedItems(feed, normalizedData[feed.externalId] ?? []);
+  const normalizedItems = validateFeedItems(
+    feed,
+    normalizedData[feed.externalId] ?? [],
+  );
   if (options.signal?.aborted) {
     throw new IngestionAbortError();
   }
@@ -84,11 +97,21 @@ export async function ingestFeed(
     if (options.signal?.aborted) {
       throw new IngestionAbortError();
     }
-    await upsertItems(transactionalDatabase, feed.id, normalizedItems, fetchedAt);
+    await upsertItems(
+      transactionalDatabase,
+      feed.id,
+      normalizedItems,
+      fetchedAt,
+    );
     if (options.signal?.aborted) {
       throw new IngestionAbortError();
     }
-    await setLastFetched(transactionalDatabase, feed.id, userId, window.to);
+    await setLastFetched(
+      transactionalDatabase,
+      feed.id,
+      userId,
+      window.to,
+    );
   });
 
   return {
@@ -140,11 +163,19 @@ export async function ingestFeedsForSource(
     const allExternalIds = feeds.map((feed) => feed.externalId);
     const fetchedAt = options.fetchedAt ?? options.now?.() ?? Date.now();
 
-    const normalizedData = await connector.getNormalizedData(minFrom, maxTo, allExternalIds, controller.signal);
+    const normalizedData = await connector.getNormalizedData(
+      minFrom,
+      maxTo,
+      allExternalIds,
+      controller.signal,
+    );
 
     // Deadline check: if connector ignored the abort signal and returned late,
     // treat the whole batch as failed.
-    if (controller.signal.aborted && Date.now() - startMs >= config.connectorTimeoutMs) {
+    if (
+      controller.signal.aborted &&
+      Date.now() - startMs >= config.connectorTimeoutMs
+    ) {
       return {
         feedResults: feeds.map((feed) => ({
           feedId: feed.id,
@@ -164,8 +195,18 @@ export async function ingestFeedsForSource(
 
         await database.transaction(async (transaction) => {
           const transactionalDatabase = transaction as Database;
-          await upsertItems(transactionalDatabase, feed.id, validItems, fetchedAt);
-          await setLastFetched(transactionalDatabase, feed.id, userId, window.to);
+          await upsertItems(
+            transactionalDatabase,
+            feed.id,
+            validItems,
+            fetchedAt,
+          );
+          await setLastFetched(
+            transactionalDatabase,
+            feed.id,
+            userId,
+            window.to,
+          );
         });
 
         feedResults.push({
@@ -194,7 +235,8 @@ export async function ingestFeedsIndividually(
   connector: Connector<unknown>,
   options: IngestFeedOptions = {},
 ): Promise<IngestFeedsForSourceResult> {
-  const connectorTimeoutMs = options.connectorTimeoutMs ?? getConfig().connectorTimeoutMs;
+  const connectorTimeoutMs = options.connectorTimeoutMs ??
+    getConfig().connectorTimeoutMs;
   const concurrency = options.concurrency ?? 4;
   if (!Number.isInteger(connectorTimeoutMs) || connectorTimeoutMs <= 0) {
     throw new Error("connectorTimeoutMs must be a positive integer");
@@ -203,13 +245,16 @@ export async function ingestFeedsIndividually(
     throw new Error("concurrency must be a positive integer");
   }
 
-  const feedResults: Array<IngestFeedResult | IngestFeedError | undefined> = Array.from(
-    { length: feeds.length },
-    () => undefined,
-  );
+  const feedResults: Array<IngestFeedResult | IngestFeedError | undefined> =
+    Array.from(
+      { length: feeds.length },
+      () => undefined,
+    );
   let nextFeedIndex = 0;
 
-  const ingestOne = async (feed: PublicFeed): Promise<IngestFeedResult | IngestFeedError> => {
+  const ingestOne = async (
+    feed: PublicFeed,
+  ): Promise<IngestFeedResult | IngestFeedError> => {
     const controller = new AbortController();
     let deadlineExceeded = false;
     const deadline = Promise.withResolvers<never>();
@@ -225,12 +270,15 @@ export async function ingestFeedsIndividually(
       if (options.signal.aborted) {
         controller.abort();
       } else {
-        options.signal.addEventListener("abort", parentAbortHandler, { once: true });
+        options.signal.addEventListener("abort", parentAbortHandler, {
+          once: true,
+        });
       }
     }
 
     try {
-      const window = options.feedWindows?.get(feed.id) ?? options.window ?? computeIngestionWindow(feed, options);
+      const window = options.feedWindows?.get(feed.id) ?? options.window ??
+        computeIngestionWindow(feed, options);
       const ingestion = ingestFeed(database, userId, feed, connector, {
         ...options,
         window,
@@ -240,7 +288,11 @@ export async function ingestFeedsIndividually(
     } catch (error) {
       return {
         feedId: feed.id,
-        error: deadlineExceeded ? "connector deadline exceeded" : error instanceof Error ? error.message : String(error),
+        error: deadlineExceeded
+          ? "connector deadline exceeded"
+          : error instanceof Error
+          ? error.message
+          : String(error),
       };
     } finally {
       clearTimeout(timer);
@@ -262,5 +314,7 @@ export async function ingestFeedsIndividually(
   await Promise.all(
     Array.from({ length: Math.min(concurrency, feeds.length) }, () => worker()),
   );
-  return { feedResults: feedResults as Array<IngestFeedResult | IngestFeedError> };
+  return {
+    feedResults: feedResults as Array<IngestFeedResult | IngestFeedError>,
+  };
 }

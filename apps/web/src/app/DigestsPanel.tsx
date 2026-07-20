@@ -2,19 +2,47 @@ import { createSignal, For, Show } from "solid-js";
 import type { DigestSection, DigestView, PublicDigest } from "../api/types";
 import StatusBadge from "./StatusBadge";
 import FormatTime from "./FormatTime";
-
-function safeHttpUrl(value: string | null): string | null {
-  if (value === null) return null;
+function safeHttpUrl(value: string | null): string | undefined {
+  if (!value) {
+    return undefined;
+  }
   try {
     const url = new URL(value);
     return url.protocol === "http:" || url.protocol === "https:"
-      ? url.href
-      : null;
+      ? value
+      : undefined;
   } catch {
-    return null;
+    return undefined;
   }
 }
+type PaidPost = DigestView["paidPosts"][number];
 
+interface PaidPostGroup {
+  newsletterName: string;
+  posts: PaidPost[];
+}
+
+function groupPaidPosts(posts: PaidPost[]): PaidPostGroup[] {
+  const groups = new Map<string, PaidPost[]>();
+  for (const post of posts) {
+    const existing = groups.get(post.newsletterName);
+    if (existing) {
+      existing.push(post);
+    } else {
+      groups.set(post.newsletterName, [post]);
+    }
+  }
+  return Array.from(groups, ([newsletterName, groupedPosts]) => ({
+    newsletterName,
+    posts: groupedPosts,
+  }));
+}
+
+function hasVisibleDigestSection(section: DigestSection): boolean {
+  return (
+    section.content.kind !== "articles" || section.content.articles.length > 0
+  );
+}
 function DigestSectionView(props: { section: DigestSection }) {
   const articleContent = () => {
     const content = props.section.content;
@@ -105,21 +133,7 @@ function DigestSectionView(props: { section: DigestSection }) {
                     >
                       <ul class="bullet-list article-points">
                         <For each={article.points}>
-                          {(point) => (
-                            <li>
-                              {point.text}
-                              <Show when={point.sourceUrl}>
-                                {" "}
-                                <a
-                                  href={point.sourceUrl!}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                >
-                                  source
-                                </a>
-                              </Show>
-                            </li>
-                          )}
+                          {(point) => <li>{point.text}</li>}
                         </For>
                       </ul>
                     </Show>
@@ -295,9 +309,7 @@ export default function DigestsPanel(props: DigestsPanelProps) {
         {(view) => (
           <div style="margin-top: 1.5rem;">
             <div class="section-title">
-              <h3>
-                Digest detail
-              </h3>
+              <h3>Digest detail</h3>
               <a
                 href={`/digests/${view().digest.id}.md`}
                 target="_blank"
@@ -306,7 +318,11 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                 View markdown
               </a>
             </div>
-            <For each={view().groups}>
+            <For
+              each={view().groups.filter((group) =>
+                group.sections.some(hasVisibleDigestSection)
+              )}
+            >
               {(group) => (
                 <section class="digest-group">
                   <div class="meta-row">
@@ -317,7 +333,7 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                     <dt>Connector</dt>
                     <dd>{group.connectorId}</dd>
                   </div>
-                  <For each={group.sections}>
+                  <For each={group.sections.filter(hasVisibleDigestSection)}>
                     {(section) => <DigestSectionView section={section} />}
                   </For>
                 </section>
@@ -331,28 +347,43 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                   linked titles appear at the end of each digest so the reader
                   can decide whether to subscribe.
                 </p>
-                <ul class="paid-post-list">
-                  <For each={view().paidPosts}>
-                    {(post) => (
-                      <li>
-                        <Show
-                          when={safeHttpUrl(post.sourceUrl)}
-                          fallback={post.title}
-                        >
-                          {(sourceUrl) => (
-                            <a
-                              href={sourceUrl()}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            >
-                              {post.title}
-                            </a>
+                <For each={groupPaidPosts(view().paidPosts)}>
+                  {(group, index) => (
+                    <div class="paid-post-group">
+                      <h4
+                        class="paid-post-newsletter"
+                        id={`paid-post-newsletter-${index()}`}
+                      >
+                        {group.newsletterName}
+                      </h4>
+                      <ul
+                        class="paid-post-list"
+                        aria-labelledby={`paid-post-newsletter-${index()}`}
+                      >
+                        <For each={group.posts}>
+                          {(post) => (
+                            <li>
+                              <Show
+                                when={safeHttpUrl(post.sourceUrl)}
+                                fallback={post.title}
+                              >
+                                {(sourceUrl) => (
+                                  <a
+                                    href={sourceUrl()}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                  >
+                                    {post.title}
+                                  </a>
+                                )}
+                              </Show>
+                            </li>
                           )}
-                        </Show>
-                      </li>
-                    )}
-                  </For>
-                </ul>
+                        </For>
+                      </ul>
+                    </div>
+                  )}
+                </For>
               </section>
             </Show>
           </div>

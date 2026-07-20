@@ -1,4 +1,4 @@
-import { and, asc, between, eq, sql } from "drizzle-orm";
+import { and, asc, between, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { ConnectorId } from "../constants.ts";
 import type { Database } from "../db/client.ts";
@@ -41,7 +41,9 @@ function parseStoredItem(row: unknown): StoredItem {
   return storedItemRowSchema.parse(row);
 }
 
-export function validateNormalizedItems(normalizedItems: NormalizedItem[]): NormalizedItem[] {
+export function validateNormalizedItems(
+  normalizedItems: NormalizedItem[],
+): NormalizedItem[] {
   return normalizedItems.map((item) => normalizedItemSchema.parse(item));
 }
 
@@ -70,7 +72,8 @@ export async function upsertItems(
       set: {
         date: sql`excluded.date`,
         payload: sql`excluded.payload`,
-        fetchedAt: sql`excluded.fetched_at`,
+        fetchedAt:
+          sql`case when ${items.payload} is distinct from excluded.payload then excluded.fetched_at else ${items.fetchedAt} end`,
       },
     })
     .returning();
@@ -100,6 +103,45 @@ export async function listMediaPathsForFeedWindow(
   }
   return paths;
 }
+export async function listFeedIdsWithPaidItems(
+  database: Database,
+  feedIds: string[],
+  from: number,
+  to: number,
+): Promise<string[]> {
+  if (feedIds.length === 0) {
+    return [];
+  }
+  const rows = await database
+    .selectDistinct({ feedId: items.feedId })
+    .from(items)
+    .where(and(
+      inArray(items.feedId, feedIds),
+      between(items.date, from, to),
+      sql`${items.payload}->>'connectorId' = ${ConnectorId.Substack}`,
+      sql`${items.payload}->'meta'->>'audience' = 'only_paid'`,
+    ))
+    .orderBy(asc(items.feedId));
+  return rows.map((row) => row.feedId);
+}
+
+export async function listItemsForFeedsInWindow(
+  database: Database,
+  feedIds: string[],
+  from: number,
+  to: number,
+): Promise<StoredItem[]> {
+  if (feedIds.length === 0) {
+    return [];
+  }
+  const rows = await database
+    .select()
+    .from(items)
+    .where(and(inArray(items.feedId, feedIds), between(items.date, from, to)))
+    .orderBy(asc(items.date), asc(items.externalId));
+  return rows.map(parseStoredItem);
+}
+
 export async function listItemsForFeedInWindow(
   database: Database,
   feedId: string,

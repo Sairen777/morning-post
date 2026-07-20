@@ -1118,7 +1118,7 @@ Deno.test("assembleDigestForPeriod partitions paid posts by source preference wh
       sourceId,
       1,
       "https://paid-only.substack.com",
-      "Paid only",
+      "Paid ] only",
     );
     const emptyFeed = await createFeedForSource(
       database,
@@ -1136,6 +1136,23 @@ Deno.test("assembleDigestForPeriod partitions paid posts by source preference wh
       "https://mixed-paid.substack.com",
       "Mixed",
     );
+    await upsertItems(database, paidOnlyFeed.id, [
+      normalizedItem(
+        paidOnlyFeed.externalId,
+        "paid-1",
+        "Paid article text",
+        ConnectorId.Substack,
+        { author: "  Writer [One]  " },
+      ),
+      normalizedItem(
+        paidOnlyFeed.externalId,
+        "paid-2",
+        "Paid article text",
+        ConnectorId.Substack,
+        { author: "   " },
+      ),
+    ], 1);
+
     await upsertSummaryForPeriod(database, {
       feedId: paidOnlyFeed.id,
       periodStartMs,
@@ -1246,16 +1263,19 @@ Deno.test("assembleDigestForPeriod partitions paid posts by source preference wh
     });
     assertEquals(view.paidPosts, [
       {
+        newsletterName: "Paid ] only",
         title: "First paid",
         sourceUrl: "https://paid-only.substack.com/p/first) draft",
         publishedAt: periodStartMs + 1,
       },
       {
+        newsletterName: "Paid ] only",
         title: "Unsafe ] paid",
         sourceUrl: "javascript:alert(1)",
         publishedAt: periodStartMs + 2,
       },
       {
+        newsletterName: "Mixed",
         title: "Third paid",
         sourceUrl: null,
         publishedAt: periodStartMs + 4,
@@ -1264,19 +1284,26 @@ Deno.test("assembleDigestForPeriod partitions paid posts by source preference wh
 
     const markdown = renderDigestMarkdown(view);
     const paidHeading = markdown.indexOf("## Paid posts");
+    const paidMarkdown = markdown.slice(paidHeading);
+    const paidOnlyHeading = markdown.indexOf("### Paid \\] only");
     const firstPaid = markdown.indexOf(
       "- [First paid](<https://paid-only.substack.com/p/first)%20draft>)",
     );
     const unsafePaid = markdown.indexOf("- Unsafe \\] paid");
+    const mixedHeading = markdown.indexOf("### Mixed", unsafePaid);
     const thirdPaid = markdown.indexOf("- Third paid");
-    assertEquals(
-      paidHeading > markdown.indexOf("Free point") &&
-        paidHeading < firstPaid && firstPaid < unsafePaid &&
-        unsafePaid < thirdPaid,
-      true,
-    );
+    assertEquals(paidHeading > markdown.indexOf("Free point"), true);
+    assertEquals(paidHeading < paidOnlyHeading, true);
+    assertEquals(paidOnlyHeading < firstPaid, true);
+    assertEquals(firstPaid < unsafePaid, true);
+    assertEquals(unsafePaid < mixedHeading, true);
+    assertEquals(mixedHeading < thirdPaid, true);
+    assertEquals(paidMarkdown.match(/^### Paid \\] only$/gm)?.length, 1);
+    assertEquals(paidMarkdown.match(/^### Mixed$/gm)?.length, 1);
     assertEquals(markdown.includes("javascript:alert"), false);
-    assertEquals(markdown.includes("Paid only"), false);
+    assertEquals(markdown.includes("Writer"), false);
+    assertEquals(markdown.includes("- Paid \\] only --"), false);
+    assertEquals(markdown.includes("- Mixed --"), false);
     assertEquals(markdown.includes("### Genuinely empty"), true);
     assertEquals(markdown.includes("No articles."), true);
   });
@@ -1332,5 +1359,122 @@ Deno.test("assembleDigestForPeriod records cancellation as a feed failure withou
 
     assertEquals(view.digest.status, "failed");
     assertEquals(view.sections, []);
+  });
+});
+
+Deno.test("buildDigestViewById hides only explicit-false paid Substack evidence", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("digest-service-stale-paid@example.com"),
+    );
+    const sourceId = await createSourceForUser(
+      database,
+      user.id,
+      ConnectorId.Substack,
+      0,
+    );
+    const feed = await createFeedForSource(
+      database,
+      user.id,
+      sourceId,
+      0,
+      "https://access.substack.com",
+      "Access",
+    );
+    await upsertItems(database, feed.id, [
+      normalizedItem(
+        feed.externalId,
+        "legacy",
+        "Teaser",
+        ConnectorId.Substack,
+        {
+          date: periodStartMs + 1,
+          meta: { audience: "only_paid" },
+        },
+      ),
+      normalizedItem(feed.externalId, "free", "Teaser", ConnectorId.Substack, {
+        date: periodStartMs + 2,
+        meta: { audience: "only_paid", hasPaidSubscription: false },
+      }),
+      normalizedItem(feed.externalId, "paid", "Full", ConnectorId.Substack, {
+        date: periodStartMs + 3,
+        meta: { audience: "only_paid", hasPaidSubscription: true },
+      }),
+      normalizedItem(
+        feed.externalId,
+        "ordinary",
+        "Full",
+        ConnectorId.Substack,
+        {
+          date: periodStartMs + 4,
+          meta: { audience: "everyone" },
+        },
+      ),
+      normalizedItem(
+        feed.externalId,
+        "non-substack",
+        "Full",
+        ConnectorId.Telegram,
+        {
+          date: periodStartMs + 5,
+          meta: { audience: "only_paid", hasPaidSubscription: false },
+        },
+      ),
+    ]);
+    await upsertSummaryForPeriod(database, {
+      feedId: feed.id,
+      periodStartMs,
+      periodEndMs,
+      feedNameSnapshot: feed.name,
+      content: {
+        kind: "articles",
+        articles: ["legacy", "free", "paid", "ordinary", "non-substack"].map((
+          id,
+          index,
+        ) => ({
+          sourceExternalId: id,
+          title: id,
+          sourceUrl: null,
+          publishedAt: periodStartMs + index + 1,
+          contentAccess: "full" as const,
+          points: [{ text: `stale-${id}`, sourceUrl: null }],
+        })),
+      },
+    });
+    const digest = await assembleDigestForPeriod(
+      database,
+      user.id,
+      periodStartMs,
+      periodEndMs,
+    );
+
+    assertEquals(
+      digest.sections[0].content.kind === "articles"
+        ? digest.sections[0].content.articles.map((article) => article.title)
+        : [],
+      ["legacy", "paid", "ordinary", "non-substack"],
+    );
+    assertEquals(digest.paidPosts, []);
+    const markdown = renderDigestMarkdown(digest);
+    assertEquals(markdown.includes("stale-legacy"), true);
+    assertEquals(markdown.includes("stale-paid"), true);
+    assertEquals(markdown.includes("stale-free"), false);
+
+    await updateSource(database, sourceId, user.id, {
+      showPaidPostTitles: true,
+    });
+    const optedIn = await buildDigestViewById(
+      database,
+      user.id,
+      digest.digest.id,
+    );
+    assertEquals(optedIn.paidPosts.map((post) => post.title), ["free"]);
+    assertEquals(
+      optedIn.sections[0].content.kind === "articles"
+        ? optedIn.sections[0].content.articles.map((article) => article.title)
+        : [],
+      ["legacy", "paid", "ordinary", "non-substack"],
+    );
   });
 });

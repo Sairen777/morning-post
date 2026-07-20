@@ -18,6 +18,7 @@ export interface SubstackPrivatePost {
   id: number;
   publicationId: number;
   bodyHtml: string | null;
+  hasPaidSubscription: boolean;
 }
 export interface SubstackSubscriptionPublication {
   id: number;
@@ -136,6 +137,8 @@ export class SubstackSessionClient {
       id: post.id,
       publicationId: post.publication_id,
       bodyHtml: post.body_html,
+      hasPaidSubscription: isRecord(value.subscription) &&
+        value.subscription.membership_state === "paid_subscriber",
     };
   }
 

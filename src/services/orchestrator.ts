@@ -17,6 +17,7 @@ import {
   listFeedsForUser,
   type PublicFeed,
 } from "../repositories/feed-repository.ts";
+import { listFeedIdsWithPaidItems } from "../repositories/item-repository.ts";
 import {
   listSourcesForUser,
   type PublicSource,
@@ -76,6 +77,20 @@ function alreadyIngestedForPeriod(
     feed.lastFetchedPeriodEndMs >= period.endMs;
 }
 
+function ingestionWindow(
+  feed: PublicFeed,
+  period: DigestPeriod,
+  paidRefreshFeedIds: ReadonlySet<string>,
+): { from: number; to: number } {
+  return {
+    from:
+      paidRefreshFeedIds.has(feed.id) || feed.lastFetchedPeriodEndMs === null
+        ? period.startMs
+        : feed.lastFetchedPeriodEndMs + 1,
+    to: period.endMs,
+  };
+}
+
 interface RunContext {
   digestRunId: string;
   period: DigestPeriod;
@@ -113,6 +128,16 @@ async function ingestUserFeeds(
 ): Promise<{ successfulFeedIds: string[]; hadFailure: boolean }> {
   const successfulFeedIds: string[] = [];
   let hadFailure = false;
+  const activeFeedIds = [...plan.feedsBySourceId.values()]
+    .flatMap((feeds) => feeds.map((feed) => feed.id));
+  const paidRefreshFeedIds = new Set(
+    await listFeedIdsWithPaidItems(
+      database,
+      activeFeedIds,
+      period.startMs,
+      period.endMs,
+    ),
+  );
 
   for (const [sourceId, sourceFeeds] of plan.feedsBySourceId.entries()) {
     const source = plan.sourcesById.get(sourceId);
@@ -123,7 +148,10 @@ async function ingestUserFeeds(
 
     const feedsNeedingIngestion: PublicFeed[] = [];
     for (const feed of sourceFeeds) {
-      if (alreadyIngestedForPeriod(feed, period)) {
+      if (
+        alreadyIngestedForPeriod(feed, period) &&
+        !paidRefreshFeedIds.has(feed.id)
+      ) {
         successfulFeedIds.push(feed.id);
       } else {
         feedsNeedingIngestion.push(feed);
@@ -183,12 +211,10 @@ async function ingestUserFeeds(
         try {
           const feedWindows = new Map<string, { from: number; to: number }>();
           for (const feed of feedsNeedingIngestion) {
-            feedWindows.set(feed.id, {
-              from: feed.lastFetchedPeriodEndMs === null
-                ? period.startMs
-                : feed.lastFetchedPeriodEndMs + 1,
-              to: period.endMs,
-            });
+            feedWindows.set(
+              feed.id,
+              ingestionWindow(feed, period, paidRefreshFeedIds),
+            );
           }
 
           const individualResult = await ingestFeedsIndividually(
@@ -253,12 +279,7 @@ async function ingestUserFeeds(
             feed,
             handle.connector,
             {
-              window: {
-                from: feed.lastFetchedPeriodEndMs === null
-                  ? period.startMs
-                  : feed.lastFetchedPeriodEndMs + 1,
-                to: period.endMs,
-              },
+              window: ingestionWindow(feed, period, paidRefreshFeedIds),
               fetchedAt: now(),
             },
           );
@@ -299,12 +320,10 @@ async function ingestUserFeeds(
         try {
           const feedWindows = new Map<string, { from: number; to: number }>();
           for (const feed of feedsNeedingIngestion) {
-            feedWindows.set(feed.id, {
-              from: feed.lastFetchedPeriodEndMs === null
-                ? period.startMs
-                : feed.lastFetchedPeriodEndMs + 1,
-              to: period.endMs,
-            });
+            feedWindows.set(
+              feed.id,
+              ingestionWindow(feed, period, paidRefreshFeedIds),
+            );
           }
 
           const batchResult = await ingestFeedsForSource(

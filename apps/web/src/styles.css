@@ -513,6 +513,20 @@ button:focus-visible {
   margin: 0 0 0.75rem;
 }
 
+.paid-post-group + .paid-post-group {
+  margin-top: 0.9rem;
+}
+
+.paid-post-newsletter {
+  margin: 0 0 0.3rem;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .paid-post-list {
   margin: 0;
   padding-left: 1.25rem;
@@ -523,6 +537,10 @@ button:focus-visible {
   margin-bottom: 0.35rem;
   font-size: 0.9rem;
   line-height: 1.5;
+}
+
+.paid-post-list li:last-child {
+  margin-bottom: 0;
 }
 
 @media (max-width: 640px) {

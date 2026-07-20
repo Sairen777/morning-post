@@ -98,6 +98,7 @@ export interface DigestSourceGroup {
   sections: DigestSection[];
 }
 export interface PaidPost {
+  newsletterName: string;
   title: string;
   sourceUrl: string | null;
   publishedAt: number;

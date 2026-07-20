@@ -91,7 +91,10 @@ const mixedDigestView = {
                 publishedAt: 1_704_067_200_000,
                 contentAccess: "preview",
                 points: [
-                  { text: "First article point", sourceUrl: null },
+                  {
+                    text: "First article point",
+                    sourceUrl: "https://example.com/first#point",
+                  },
                 ],
               },
               {
@@ -107,16 +110,36 @@ const mixedDigestView = {
             ],
           },
         },
+        {
+          sourceId: "substack-source",
+          connectorId: "Substack",
+          feedId: "empty-substack-feed",
+          feedName: "Empty Substack publication",
+          feedRemoved: false,
+          content: {
+            kind: "articles",
+            articles: [],
+          },
+        },
       ],
     },
   ],
   paidPosts: [
     {
+      newsletterName: "The Dispatch Review",
       title: "Subscriber-only dispatch",
       sourceUrl: "https://example.com/paid-dispatch",
       publishedAt: 1_704_153_600_000,
       preview: "Paid post preview must not render",
       body: "Paid post body must not render",
+    },
+    {
+      newsletterName: "The Dispatch Review",
+      title: "Second subscriber-only dispatch",
+      sourceUrl: "javascript:alert(document.domain)",
+      publishedAt: 1_704_196_800_000,
+      preview: "Second paid preview must not render",
+      body: "Second paid body must not render",
     },
   ],
 };
@@ -173,6 +196,13 @@ test("renders mixed digest content without crossing article boundaries", async (
   await expect(secondArticle.locator("li")).not.toContainText(
     "First article point",
   );
+  await expect(firstArticle.getByRole("link", { name: "source" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText("No articles available.")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Empty Substack publication" }),
+  ).toHaveCount(0);
 
   const telegramSection = page.locator("section.digest-section").filter({
     hasText: "Telegram channel",
@@ -183,6 +213,21 @@ test("renders mixed digest content without crossing article boundaries", async (
   );
 
   const paidPosts = page.locator("section.paid-posts");
+  const paidHeadings = paidPosts.locator("h4");
+  await expect(paidHeadings).toHaveCount(1);
+  await expect(paidHeadings).toHaveText("The Dispatch Review");
+  const newsletterHeadingId = await paidHeadings.getAttribute("id");
+  expect(newsletterHeadingId).toBeTruthy();
+  const newsletterList = paidPosts.locator("ul.paid-post-list");
+  await expect(newsletterList).toHaveCount(1);
+  await expect(newsletterList).toHaveAttribute(
+    "aria-labelledby",
+    newsletterHeadingId!,
+  );
+  await expect(newsletterList.locator("li")).toHaveText([
+    "Subscriber-only dispatch",
+    "Second subscriber-only dispatch",
+  ]);
   const paidPostLink = paidPosts.getByRole("link", {
     name: "Subscriber-only dispatch",
   });
@@ -190,10 +235,22 @@ test("renders mixed digest content without crossing article boundaries", async (
     "href",
     "https://example.com/paid-dispatch",
   );
+  await expect(newsletterList.locator("a")).toHaveCount(1);
+  await expect(
+    paidPosts.getByRole("link", { name: "Second subscriber-only dispatch" }),
+  ).toHaveCount(0);
+  await expect(
+    paidPosts.getByRole("link", { name: "The Dispatch Review" }),
+  ).toHaveCount(0);
+  await expect(paidPosts.locator('a[href^="javascript:"]')).toHaveCount(0);
   await expect(paidPosts).not.toContainText(
     "Paid post preview must not render",
   );
   await expect(paidPosts).not.toContainText("Paid post body must not render");
+  await expect(paidPosts).not.toContainText(
+    "Second paid preview must not render",
+  );
+  await expect(paidPosts).not.toContainText("Second paid body must not render");
   await expect(
     page.locator("section.digest-section, section.paid-posts").last(),
   ).toHaveClass(/paid-posts/);

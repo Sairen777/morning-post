@@ -60,11 +60,44 @@ Deno.test("session client sends an optional compatibility cookie only to substac
   });
   const post = await client.getPostById(7);
   assertEquals(post?.bodyHtml, "<p>Full body</p>");
+  assertEquals(post?.hasPaidSubscription, false);
   assertEquals(requests[0].url, "https://substack.com/api/v1/posts/by-id/7");
   assertEquals(
     requests[0].headers.get("cookie"),
     "substack.sid=s%3Aprimary.signature; connect.sid=s%3Acompat.signature",
   );
+});
+
+Deno.test("session client reads paid entitlement conservatively from the response envelope", async () => {
+  const membershipStates: unknown[] = [
+    "free_signup",
+    "paid_subscriber",
+    "unknown_state",
+    undefined,
+  ];
+  const results = [];
+  for (const membershipState of membershipStates) {
+    const subscription = membershipState === undefined
+      ? {}
+      : { membership_state: membershipState };
+    const client = new SubstackSessionClient(
+      credentials,
+      () =>
+        Promise.resolve(
+          new Response(JSON.stringify({
+            post: {
+              id: 7,
+              publication_id: 9,
+              body_html: "<p>Teaser body</p>",
+              audience: "only_paid",
+            },
+            subscription,
+          })),
+        ),
+    );
+    results.push((await client.getPostById(7))?.hasPaidSubscription);
+  }
+  assertEquals(results, [false, true, false, false]);
 });
 
 Deno.test("session client lists subscribed publications across pages", async () => {

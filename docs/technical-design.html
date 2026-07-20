@@ -949,14 +949,14 @@
     O->>C: dispose connector handle
   end
   O->>DB: upsert digest(status=pending)
-  loop each successful feed without summary
+  loop each successful feed without a current summary
     O->>DB: start digest_run_feed(stage=summarization)
     O->>O: choose strategy from connectorId
     alt Substack
       loop each ordered article
-        alt meta.audience == only_paid and meta.contentAccess == preview
+        alt only_paid preview and meta.hasPaidSubscription == false
           O->>O: persist contentAccess=paid and points=[]; do not call model
-        else accessible paid full or free preview
+        else explicit entitlement or no proven inaccessible state
           O->>G: summarize exactly one article in article mode
         end
       end
@@ -971,9 +971,11 @@
   O->>DB: set digest status; finish digest_run
   O-->>S: derived DigestView</pre>
 
-        <p>For Substack, an item is an <strong>inaccessible paid post</strong> exactly when <code>NormalizedItem.meta.audience === "only_paid"</code> and <code>NormalizedItem.meta.contentAccess === "preview"</code>. The orchestration layer never sends that item to the summarizer and makes no model call for it; it persists the available article metadata with <code>contentAccess: "paid"</code> and <code>points: []</code>. Accessible paid-full articles and free previews still follow normal article summarization. This representation records a title that Substack exposed; it does not mean Morning Post can read the paid body or automatically subscribe the user.</p>
+        <p>Substack archive ingestion accepts both <code>newsletter</code> articles and <code>podcast</code> episodes as summarizable posts; unrelated archive entry types remain excluded. Paid access is an explicit entitlement boundary, not a body-shape heuristic. An authenticated <code>GET /api/v1/posts/by-id/:id</code> can return a nonempty teaser in <code>post.body_html</code> to a free subscriber, so neither body presence nor text length proves access. <code>SubstackSessionClient</code> reads <code>subscription.membership_state</code>; only the exact value <code>paid_subscriber</code> is affirmative. Missing or unknown evidence is normalized conservatively to <code>meta.hasPaidSubscription: false</code>. For an <code>only_paid</code> archive item without entitlement, normalization falls back to the preview and emits <code>meta.contentAccess: "preview"</code> plus <code>meta.hasPaidSubscription: false</code>. Entitled paid responses must contain a nonempty normalized private body; otherwise ingestion fails rather than summarizing or caching the public teaser. Inaccessible paid posts persist as <code>contentAccess: "paid"</code> with no points and never trigger a model call.</p>
 
-        <p>Every <code>DigestView</code> includes <code>paidPosts</code>. Digest projection partitions paid articles out of ordinary sections, preserving stable digest/article order for title projection only when the owning Substack source has <code>showPaidPostTitles</code> enabled. A section containing only paid articles is omitted, but a genuinely empty article section remains. Because this partition is derived at read time from immutable summaries and the source's current setting, toggling the opt-in re-renders historical digests without re-ingestion, re-summarization, or a model call. The Markdown API representation and web digest append a final title-only <strong>Paid posts</strong> section; paid articles never appear in regular sections and no preview or body text is rendered.</p>
+        <p>Every digest rerun authoritatively re-ingests the full requested period for each feed containing an <code>only_paid</code> Substack Item, even when its cursor already covers that period. This symmetric refresh observes free-to-paid upgrades and paid-to-free downgrades. Historical refreshes preserve the maximum cursor endpoint instead of moving it backward. The same path repairs legacy Items whose entitlement flag is absent without guessing or a destructive migration. Item <code>fetchedAt</code> advances only when the payload changes, making it a durable content-version timestamp. Any changed or newly inserted Item newer than its cached Summary forces regeneration, including public podcasts first discovered during paid-feed repair; if the model call fails, persisted timestamps remain stale and the next run retries.</p>
+
+        <p>Every <code>DigestView</code> includes <code>paidPosts</code>. Digest projection partitions paid articles out of ordinary sections, preserving stable digest/article order for title projection only when the owning Substack source has <code>showPaidPostTitles</code> enabled. An Item's explicit <code>meta.hasPaidSubscription === false</code> overrides stale cached summary points during projection; a missing flag is never guessed to mean either paid access or inaccessibility. The API can retain a genuinely empty article section, but the web digest omits empty Substack publication sections instead of rendering <code>No articles available.</code>. Within a rendered Substack article, the linked title is the source, so article summary bullets do not repeat point-level source links; aggregate connector bullets retain source links. The Markdown API representation and web digest append a final <strong>Paid posts</strong> section. Paid posts are grouped by newsletter: within the section, each unique newsletter name (from <code>summary.feedNameSnapshot</code> captured at generation time) appears once as a newsletter header, followed by that newsletter's title-only article bullets in their original digest/article order. Only safe HTTP(S) titles are linked. Paid article preview/body text is never rendered there.</p>
 
         <div class="risk-grid">
           <div class="card">
