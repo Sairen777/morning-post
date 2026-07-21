@@ -17,12 +17,21 @@ import { findUserById, type User } from "../repositories/user-repository.ts";
 import { findSourceById } from "../repositories/source-repository.ts";
 import { NotFoundError } from "../server/errors.ts";
 import { sanitizeErrorForOps } from "../server/error-sanitizer.ts";
+import {
+  appendOperationalLog,
+  type OperationalLogEvent,
+  type OperationalLogRecorder,
+} from "../observability/operational-log.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
 import { composeSummaryRuleset } from "../summarizers/compose-prompt.ts";
 import type {
   ArticleSummary,
+  SummarizationDiagnostic,
+  SummarizeOptions,
   SummarizerService,
   SummaryContent,
+  SummaryPoint,
+  SummaryRuleset,
 } from "../summarizers/summarizer.types.ts";
 import { getConfig } from "../config.ts";
 import { ConnectorId, CONNECTORS_MEDIA_DIR } from "../constants.ts";
@@ -32,6 +41,8 @@ export interface SummarizeFeedPeriodDependencies {
   now?: () => number;
   signal?: AbortSignal;
   timeoutMs?: number;
+  runId?: string;
+  recordOperationalEvent?: OperationalLogRecorder;
 }
 
 export interface OwnedSummarizeFeedPeriodInput {
@@ -137,6 +148,107 @@ function isInaccessiblePaidPost(
     payload.meta?.contentAccess === "preview";
 }
 
+const MAXIMUM_UTF8_BYTES_PER_UTF16_CODE_UNIT = 3;
+const MAXIMUM_LOGICAL_SOURCE_CALLS_PER_CHUNK = 2;
+const MAXIMUM_PAIRWISE_MERGE_CALLS_PER_INPUT = 2;
+const PAIRWISE_MERGE_ROOT_CALL_ADJUSTMENT = 1;
+const MAXIMUM_HTTP_ATTEMPTS_PER_LOGICAL_CALL = 3;
+const MAXIMUM_SUMMARIZATION_OPERATION_TIMEOUT_MS = 3 * 60 * 60 * 1_000;
+
+interface SummarizationDeadlineOptions {
+  requestTimeoutMs: number;
+  maxTextBytesPerChunk: number;
+}
+
+function calculateSummarizationOperationTimeout(
+  items: Parameters<SummarizerService["summarize"]>[0],
+  options: SummarizationDeadlineOptions,
+): number {
+  const maximumChunkCount = items.reduce(
+    (count, item) =>
+      count +
+      Math.max(
+        1,
+        Math.ceil(
+          (item.text.length * MAXIMUM_UTF8_BYTES_PER_UTF16_CODE_UNIT) /
+            options.maxTextBytesPerChunk,
+        ),
+      ),
+    0,
+  );
+  const boundedChunkCount = Math.max(1, maximumChunkCount);
+  const maximumSourceCallCount =
+    boundedChunkCount * MAXIMUM_LOGICAL_SOURCE_CALLS_PER_CHUNK;
+  const maximumHierarchicalMergeCallCount =
+    maximumSourceCallCount * MAXIMUM_PAIRWISE_MERGE_CALLS_PER_INPUT -
+    PAIRWISE_MERGE_ROOT_CALL_ADJUSTMENT;
+  const maximumLogicalCallCount =
+    maximumSourceCallCount + maximumHierarchicalMergeCallCount;
+  const maximumRequestTimeoutCount =
+    maximumLogicalCallCount * MAXIMUM_HTTP_ATTEMPTS_PER_LOGICAL_CALL;
+  return Math.min(
+    options.requestTimeoutMs * maximumRequestTimeoutCount,
+    MAXIMUM_SUMMARIZATION_OPERATION_TIMEOUT_MS,
+  );
+}
+
+async function summarizeWithDeadline(
+  summarizer: SummarizerService,
+  items: Parameters<SummarizerService["summarize"]>[0],
+  rules: SummaryRuleset,
+  options: SummarizeOptions,
+  deadlineOptions: SummarizationDeadlineOptions,
+): Promise<SummaryPoint[]> {
+  options.signal?.throwIfAborted();
+  const controller = new AbortController();
+  let rejectOperation!: (reason: unknown) => void;
+  const operationDeadline = new Promise<never>((_resolve, reject) => {
+    rejectOperation = reject;
+  });
+  const abortOperation = (reason: unknown) => {
+    controller.abort(reason);
+    rejectOperation(reason);
+  };
+  const onParentAbort = () =>
+    abortOperation(
+      options.signal?.reason ?? new DOMException("Aborted", "AbortError"),
+    );
+  options.signal?.addEventListener("abort", onParentAbort, { once: true });
+  const timer = setTimeout(
+    () =>
+      abortOperation(
+        new DOMException("Summarizer timed out", "TimeoutError"),
+      ),
+    calculateSummarizationOperationTimeout(items, deadlineOptions),
+  );
+
+  try {
+    const summarization = summarizer.summarize(items, rules, {
+      ...options,
+      signal: controller.signal,
+      requestTimeoutMs: deadlineOptions.requestTimeoutMs,
+    });
+    return await Promise.race([summarization, operationDeadline]);
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onParentAbort);
+  }
+}
+
+async function recordOperationalEvent(
+  recorder: OperationalLogRecorder,
+  event: OperationalLogEvent,
+): Promise<void> {
+  try {
+    await recorder(event);
+  } catch (error) {
+    console.warn(
+      "[summarization] operational event recorder failed:",
+      sanitizeErrorForOps(error),
+    );
+  }
+}
+
 export async function summarizeOwnedFeedPeriod(
   database: Database,
   input: OwnedSummarizeFeedPeriodInput,
@@ -145,18 +257,28 @@ export async function summarizeOwnedFeedPeriod(
   dependencies.signal?.throwIfAborted();
   const summarizer = dependencies.summarizer ??
     new OpenAICompatibleSummarizerService();
+  const config = getConfig();
   const nowFn = dependencies.now ?? Date.now;
-  const timeoutMs = dependencies.timeoutMs ?? getConfig().summarizerTimeoutMs;
+  const timeoutMs = dependencies.timeoutMs ?? config.summarizerTimeoutMs;
+  const operationalLog = dependencies.recordOperationalEvent ??
+    appendOperationalLog;
+  let itemCount: number | undefined;
+  const onDiagnostic = async (diagnostic: SummarizationDiagnostic) => {
+    await recordOperationalEvent(operationalLog, {
+      level: diagnostic.event === "vision_unavailable" ? "warning" : "error",
+      event: `summarization.${diagnostic.event}`,
+      runId: dependencies.runId,
+      feedId: input.feed.id,
+      connectorId: input.connectorId,
+      itemCount,
+      chunkIndex: diagnostic.chunkIndex,
+      chunkCount: diagnostic.chunkCount,
+      model: diagnostic.model,
+      errorMessage: diagnostic.errorMessage,
+    });
+  };
 
-  // Build an abort controller: timeout + optional parent signal
   const controller = new AbortController();
-  const timer = setTimeout(
-    () =>
-      controller.abort(
-        new DOMException("Summarizer timed out", "TimeoutError"),
-      ),
-    timeoutMs,
-  );
   const onParentAbort = () => controller.abort(dependencies.signal?.reason);
   if (dependencies.signal) {
     if (dependencies.signal.aborted) {
@@ -175,6 +297,7 @@ export async function summarizeOwnedFeedPeriod(
       input.periodStartMs,
       input.periodEndMs,
     );
+    itemCount = items.length;
     let content: SummaryContent;
     if (input.connectorId === ConnectorId.Substack) {
       const rules = composeSummaryRuleset({
@@ -193,10 +316,23 @@ export async function summarizeOwnedFeedPeriod(
         const points = inaccessiblePaidPost
           ? []
           : hasText
-          ? await summarizer.summarize([payload], rules, {
-            signal: controller.signal,
-            summaryMode: "article",
-          })
+          ? await summarizeWithDeadline(
+            summarizer,
+            [payload],
+            rules,
+            {
+              signal: controller.signal,
+              summaryMode: "article",
+              onDiagnostic,
+              maxTextBytesPerChunk: config.summarizerTextBytesPerChunk,
+              maxItemsPerChunk: config.summarizerMaxItemsPerChunk,
+              maxImageBytes: config.summarizerMaxImageBytes,
+            },
+            {
+              requestTimeoutMs: timeoutMs,
+              maxTextBytesPerChunk: config.summarizerTextBytesPerChunk,
+            },
+          )
           : [];
         controller.signal.throwIfAborted();
         if (!inaccessiblePaidPost && hasText && points.length === 0) {
@@ -220,17 +356,31 @@ export async function summarizeOwnedFeedPeriod(
       content = { kind: "articles", articles };
       controller.signal.throwIfAborted();
     } else {
-      const points = items.length === 0 ? [] : await summarizer.summarize(
-        items.map((item) => item.payload),
-        composeSummaryRuleset({
-          connectorId: input.connectorId,
-          kind: input.feed.kind,
-          systemPrompt: input.user.systemPrompt,
-          customPrompt: input.feed.customPrompt,
-          language: input.user.defaultLanguage,
-        }),
-        { signal: controller.signal },
-      );
+      const normalizedItems = items.map((item) => item.payload);
+      const points = normalizedItems.length === 0
+        ? []
+        : await summarizeWithDeadline(
+          summarizer,
+          normalizedItems,
+          composeSummaryRuleset({
+            connectorId: input.connectorId,
+            kind: input.feed.kind,
+            systemPrompt: input.user.systemPrompt,
+            customPrompt: input.feed.customPrompt,
+            language: input.user.defaultLanguage,
+          }),
+          {
+            signal: controller.signal,
+            onDiagnostic,
+            maxTextBytesPerChunk: config.summarizerTextBytesPerChunk,
+            maxItemsPerChunk: config.summarizerMaxItemsPerChunk,
+            maxImageBytes: config.summarizerMaxImageBytes,
+          },
+          {
+            requestTimeoutMs: timeoutMs,
+            maxTextBytesPerChunk: config.summarizerTextBytesPerChunk,
+          },
+        );
       controller.signal.throwIfAborted();
       content = { kind: "aggregate", points };
     }
@@ -265,8 +415,18 @@ export async function summarizeOwnedFeedPeriod(
     );
 
     return result;
+  } catch (error) {
+    await recordOperationalEvent(operationalLog, {
+      level: "error",
+      event: "summarization.feed_failed",
+      runId: dependencies.runId,
+      feedId: input.feed.id,
+      connectorId: input.connectorId,
+      itemCount,
+      errorMessage: sanitizeErrorForOps(error),
+    });
+    throw error;
   } finally {
-    clearTimeout(timer);
     if (dependencies.signal) {
       dependencies.signal.removeEventListener("abort", onParentAbort);
     }

@@ -4,30 +4,40 @@ import { EnvMasterKeyProvider } from "../../crypto/key-provider.ts";
 import type { Database } from "../../db/client.ts";
 import { upsertSourceCredentials } from "../../repositories/source-repository.ts";
 import { AppError, ConflictError, NotFoundError } from "../../server/errors.ts";
-import { readTelegramApiCredentials } from "./client-factory.ts";
-import type { TelegramApiCredentials } from "./client-factory.ts";
+import {
+  type DestroyableTelegramClient,
+  destroyTelegramClient,
+  readTelegramApiCredentials,
+  type TelegramApiCredentials,
+} from "./client-factory.ts";
 
 const LOGIN_SESSION_TTL_MS = 10 * 60_000;
 const MAX_CONCURRENT_LOGIN_SESSIONS_PER_USER = 3;
 const SAFE_LOGIN_ERROR_MESSAGE = "Telegram login failed";
 
-export type TelegramLoginStatus = "pending" | "needs_2fa" | "complete" | "error" | "expired";
+export type TelegramLoginStatus =
+  | "pending"
+  | "needs_2fa"
+  | "complete"
+  | "error"
+  | "expired";
 
 type PasswordResolver = (password: string) => void;
 
-export interface TelegramLoginClient {
+export interface TelegramLoginClient extends DestroyableTelegramClient {
   session: {
     save(): string;
   };
   signInUserWithQrCode(
     credentials: TelegramApiCredentials,
     callbacks: {
-      qrCode(code: { token: { toString(encoding: "base64url"): string } }): Promise<void>;
+      qrCode(
+        code: { token: { toString(encoding: "base64url"): string } },
+      ): Promise<void>;
       password(): Promise<string>;
       onError(error: unknown): Promise<boolean>;
     },
   ): Promise<void>;
-  disconnect?(): Promise<void> | void;
 }
 
 export interface TelegramLoginClientFactory {
@@ -73,10 +83,14 @@ class DefaultTelegramLoginClientFactory implements TelegramLoginClientFactory {
   async createUnauthenticatedClient(): Promise<TelegramLoginClient> {
     try {
       // Deliberately lazy: the Telegram client factory loads GramJS only when login starts.
-      const { createUnauthenticatedTelegramClient } = await import("./client-factory.ts");
+      const { createUnauthenticatedTelegramClient } = await import(
+        "./client-factory.ts"
+      );
       return await createUnauthenticatedTelegramClient() as unknown as TelegramLoginClient;
     } catch (error) {
-      throw new Error("Failed to load Telegram login client factory", { cause: error });
+      throw new Error("Failed to load Telegram login client factory", {
+        cause: error,
+      });
     }
   }
 
@@ -95,11 +109,14 @@ export class TelegramLoginSessionManager {
   constructor(dependencies: TelegramLoginSessionManagerDependencies) {
     this.#database = dependencies.database;
     this.#credentialCipher = dependencies.credentialCipher;
-    this.#clientFactory = dependencies.clientFactory ?? new DefaultTelegramLoginClientFactory();
+    this.#clientFactory = dependencies.clientFactory ??
+      new DefaultTelegramLoginClientFactory();
     this.#now = dependencies.now ?? Date.now;
   }
 
-  async startLogin(userId: string): Promise<{ loginSessionId: string; qrUrl: string; expiresAt: number }> {
+  async startLogin(
+    userId: string,
+  ): Promise<{ loginSessionId: string; qrUrl: string; expiresAt: number }> {
     await this.#reapExpiredSessions();
     this.#enforceConcurrentSessionLimit(userId);
 
@@ -112,7 +129,11 @@ export class TelegramLoginSessionManager {
       const qrUrlPromise = this.#startAuthorizationFlow(session);
       const qrUrl = await qrUrlPromise;
 
-      return { loginSessionId: session.id, qrUrl, expiresAt: session.expiresAt };
+      return {
+        loginSessionId: session.id,
+        qrUrl,
+        expiresAt: session.expiresAt,
+      };
     } catch (error) {
       await this.#disposeSession(session);
       this.#sessions.delete(session.id);
@@ -120,7 +141,10 @@ export class TelegramLoginSessionManager {
     }
   }
 
-  async getStatus(id: string, userId: string): Promise<TelegramLoginSessionStatus> {
+  async getStatus(
+    id: string,
+    userId: string,
+  ): Promise<TelegramLoginSessionStatus> {
     const session = this.#findOwnedSession(id, userId);
     if (await this.#expireSessionIfNeeded(session)) {
       return { status: "expired", expiresAt: session.expiresAt };
@@ -138,7 +162,9 @@ export class TelegramLoginSessionManager {
       throw new ConflictError("telegram login session expired");
     }
     if (session.status !== "needs_2fa" || session.passwordResolver === null) {
-      throw new ConflictError("telegram login session is not waiting for two-factor authentication");
+      throw new ConflictError(
+        "telegram login session is not waiting for two-factor authentication",
+      );
     }
 
     const resolvePassword = session.passwordResolver;
@@ -163,7 +189,10 @@ export class TelegramLoginSessionManager {
     return sessionString;
   }
 
-  debugSnapshotForTesting(id: string, userId: string): TelegramLoginSessionDebugSnapshot | null {
+  debugSnapshotForTesting(
+    id: string,
+    userId: string,
+  ): TelegramLoginSessionDebugSnapshot | null {
     const session = this.#sessions.get(id);
     if (!session || session.userId !== userId) {
       return null;
@@ -175,7 +204,10 @@ export class TelegramLoginSessionManager {
     };
   }
 
-  #createSession(userId: string, client: TelegramLoginClient | null): TelegramLoginSession {
+  #createSession(
+    userId: string,
+    client: TelegramLoginClient | null,
+  ): TelegramLoginSession {
     return {
       id: crypto.randomUUID(),
       userId,
@@ -192,7 +224,10 @@ export class TelegramLoginSessionManager {
   }
 
   async #ensureReservationIsLive(session: TelegramLoginSession): Promise<void> {
-    if (session.expiresAt > this.#now() && this.#sessions.get(session.id) === session) {
+    if (
+      session.expiresAt > this.#now() &&
+      this.#sessions.get(session.id) === session
+    ) {
       return;
     }
 
@@ -202,8 +237,11 @@ export class TelegramLoginSessionManager {
   }
 
   #startAuthorizationFlow(session: TelegramLoginSession): Promise<string> {
-    const { promise: qrUrlPromise, resolve: resolveQrUrl, reject: rejectQrUrl } =
-      Promise.withResolvers<string>();
+    const {
+      promise: qrUrlPromise,
+      resolve: resolveQrUrl,
+      reject: rejectQrUrl,
+    } = Promise.withResolvers<string>();
 
     const client = session.client;
     if (client === null) {
@@ -218,7 +256,8 @@ export class TelegramLoginSessionManager {
         resolveQrUrl(qrUrl);
         return Promise.resolve();
       },
-      password: async () => await this.#waitForTwoFactorAuthenticationPassword(session),
+      password: async () =>
+        await this.#waitForTwoFactorAuthenticationPassword(session),
       onError: async () => {
         await this.#markSessionError(session);
         rejectQrUrl(new Error(SAFE_LOGIN_ERROR_MESSAGE));
@@ -234,7 +273,9 @@ export class TelegramLoginSessionManager {
     return qrUrlPromise;
   }
 
-  async #waitForTwoFactorAuthenticationPassword(session: TelegramLoginSession): Promise<string> {
+  async #waitForTwoFactorAuthenticationPassword(
+    session: TelegramLoginSession,
+  ): Promise<string> {
     session.status = "needs_2fa";
     const { promise, resolve } = Promise.withResolvers<string>();
     session.passwordResolver = resolve;
@@ -308,11 +349,17 @@ export class TelegramLoginSessionManager {
 
   async #reapExpiredSessions(): Promise<void> {
     const now = this.#now();
-    const expiredSessions = [...this.#sessions.values()].filter((session) => session.expiresAt <= now);
-    await Promise.all(expiredSessions.map((session) => this.#disposeExpiredSession(session)));
+    const expiredSessions = [...this.#sessions.values()].filter((session) =>
+      session.expiresAt <= now
+    );
+    await Promise.all(
+      expiredSessions.map((session) => this.#disposeExpiredSession(session)),
+    );
   }
 
-  async #expireSessionIfNeeded(session: TelegramLoginSession): Promise<boolean> {
+  async #expireSessionIfNeeded(
+    session: TelegramLoginSession,
+  ): Promise<boolean> {
     if (session.expiresAt > this.#now()) {
       return false;
     }
@@ -320,7 +367,9 @@ export class TelegramLoginSessionManager {
     return true;
   }
 
-  async #terminalizeExpiredSession(session: TelegramLoginSession): Promise<void> {
+  async #terminalizeExpiredSession(
+    session: TelegramLoginSession,
+  ): Promise<void> {
     session.status = "expired";
     session.passwordResolver = null;
     await this.#disposeSession(session);
@@ -332,10 +381,13 @@ export class TelegramLoginSessionManager {
   }
 
   async #disposeSession(session: TelegramLoginSession): Promise<void> {
+    const client = session.client;
+    session.client = null;
     try {
-      await session.client?.disconnect?.();
+      if (client !== null) {
+        await destroyTelegramClient(client);
+      }
     } finally {
-      session.client = null;
       session.sessionString = null;
       session.qrUrl = null;
     }
@@ -349,13 +401,17 @@ export class TelegramLoginSessionManager {
     return {
       status: session.status,
       ...(session.qrUrl === null ? {} : { qrUrl: session.qrUrl }),
-      ...(session.errorMessage === null ? {} : { errorMessage: session.errorMessage }),
+      ...(session.errorMessage === null
+        ? {}
+        : { errorMessage: session.errorMessage }),
       expiresAt: session.expiresAt,
     };
   }
 }
 
-export function createDefaultTelegramLoginSessionManager(database: Database): TelegramLoginSessionManager {
+export function createDefaultTelegramLoginSessionManager(
+  database: Database,
+): TelegramLoginSessionManager {
   return new TelegramLoginSessionManager({
     database,
     credentialCipher: new CredentialCipher(new EnvMasterKeyProvider()),

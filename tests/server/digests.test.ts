@@ -557,6 +557,53 @@ Deno.test("POST /digests/run creates a manual digest run record", async () => {
   });
 });
 
+Deno.test("POST /digests/run conflict preserves the active run for recovery", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const userId = await register(app, "digests-run-active-conflict@example.com");
+    const cookie = await login(app, "digests-run-active-conflict@example.com");
+    const activeRun = await createDigestRun(database, {
+      userId,
+      trigger: "manual",
+      periodStartMs,
+      periodEndMs,
+      status: "running",
+    });
+
+    const rollbackConflictAttempt = new Error("rollback conflict attempt");
+    try {
+      await database.transaction(async (transaction) => {
+        const conflictApp = buildApp(transaction as Database);
+        const runResponse = await conflictApp.request("/digests/run", {
+          ...jsonRequest("POST", { periodStartMs, periodEndMs }),
+          headers: { cookie, Origin: "http://127.0.0.1:5173" },
+        });
+        assertEquals(runResponse.status, 409);
+        throw rollbackConflictAttempt;
+      });
+    } catch (error) {
+      if (error !== rollbackConflictAttempt) {
+        throw error;
+      }
+    }
+
+    const runsResponse = await app.request("/digests/runs", {
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(runsResponse.status, 200);
+    const runsJson = await runsResponse.json();
+    assertEquals(runsJson.data.length, 1);
+    assertEquals(runsJson.data[0].id, activeRun.id);
+    assertEquals(runsJson.data[0].status, "running");
+
+    const rows = await database.execute(
+      sql`select id from digest_runs where user_id = ${userId}`,
+    );
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].id, activeRun.id);
+  });
+});
+
 Deno.test("GET /digests/runs requires authentication", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);

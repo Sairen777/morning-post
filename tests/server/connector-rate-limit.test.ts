@@ -91,6 +91,8 @@ class FakeTelegramLoginClient implements TelegramLoginClient {
     save: () => this.sessionString,
   };
 
+  destroy(): void {}
+
   async signInUserWithQrCode(
     _credentials: { apiId: number; apiHash: string },
     callbacks: {

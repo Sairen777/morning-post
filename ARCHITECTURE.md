@@ -79,6 +79,27 @@ a persistent `Feed` needs the `(sourceId, externalId)` pair or the surrogate
 external id. The field will be renamed `feedExternalId` (and `SourceSummary` →
 `FeedSummary`) before persistence integration to make this explicit.
 
+**Telegram client lifecycle.** All Telegram short-lived clients use
+`client.destroy()` (not `disconnect()`): GramJS `disconnect()` leaves the
+internal `_destroyed` flag `false`, allowing the update loop to continue
+receiving and dispatching events. `destroy()` terminates the update loop and
+clears internal state. This pattern applies to every client path: batch
+ingestion (connector handle `dispose()` in the orchestrator's per-source scope),
+individual feed ingestion and discovery (feed-service handle `dispose()`),
+one-shot CLI execution, acquisition and authorization failures, and QR login
+sessions. Every path reaches `destroyTelegramClient()` in its `finally` block or
+error handler — no leaked clients or running loops survive a success, error, or
+early deadline. See `src/connectors/connector-factory.ts`,
+`src/services/feed-service.ts`, `src/cli/run-once.ts`,
+`src/connectors/telegram/login-session.ts`.
+
+**Device identity avoids sys permission.** The Telegram connector passes
+nonempty `deviceModel` and `systemVersion` strings to the `TelegramClient`
+constructor. Without them GramJS reads `node:os.type()` and `node:os.release()`
+at runtime, which triggers a `Deno.PermissionError` unless `--allow-sys` is
+granted. Supplying stable identity strings keeps the Deno permission profile
+tighter: the `cli` and `api` sets do not include sys access.
+
 ### 2. Summarizer
 
 Accepts `NormalizedItem[]`, a `SummaryRuleset`
@@ -454,18 +475,18 @@ tests/db/digest-run-repository.test.ts */}
 ### 9. Connector batching and deadlines
 
 **Source batching.** When two or more feeds need ingestion from the same source,
-`ingestFeedsForSource()` computes the union window, calls
-`getNormalizedData(from, to)` once, filters returned items per feed, and upserts
-each feed independently. A connector-level failure marks all pending feeds
-failed; per-feed errors remain isolated.
-
-**Connector deadlines.** `Connector.getRawData`, `getNormalizedData`, and
+`ingestFeedsForSource()` computes the union window, calls **Connector
+deadlines.** `Connector.getRawData`, `getNormalizedData`, and
 `getMessagesFromEntity` accept an optional `AbortSignal`. Ingestion creates a
-per-source deadline from `CONNECTOR_TIMEOUT_MS` (default 120 seconds), and the
-Telegram connector checks it between iterations. Connectors that do not support
-the signal still receive the deadline at the service boundary. {/* Tests:
-tests/services/ingestion-service.test.ts, tests/services/orchestrator.test.ts,
-tests/connector.test.ts */}
+per-source deadline from `CONNECTOR_TIMEOUT_MS` (default 120 seconds) and races
+it against the connector call via `Promise.race` for both individual and batched
+feeds. Neither path relies on the connector honouring `AbortSignal`: the
+deadline rejects the race independently. Connectors that do not support the
+signal still receive the deadline at the service boundary, and late returns
+after the timeout produce per-feed `connector deadline exceeded` errors without
+persisting data or advancing cursors. {/* Tests:
+tests:services:ingestion-service.test.ts, tests:services:orchestrator.test.ts,
+tests:connector.test.ts */}
 
 ### 10. Summarizer budgets, chunking, privacy, and vision routing
 
@@ -523,6 +544,16 @@ Telegram photo files are written under
 across feeds. Per-connector media quota (`MEDIA_QUOTA_BYTES`, default 500 MiB)
 is enforced before writes by deleting oldest files until the new file fits.
 
+Media operations — download, cleanup, TTL sweep — require **both** read and
+write Deno permissions on every connector-specific media directory from
+`CONNECTORS_MEDIA_DIR` (`telegram_media`, `substack_media`, `youtube_media`,
+`reddit_media`, `x_media`, `rss_media`) plus the shared/legacy `./media`. Read
+permission alone is insufficient for quota eviction and post-summarization
+cleanup; write permission alone is insufficient for TTL sweeps that enumerate
+operations. The `api` and `test` permission sets grant both. The `cli` set also
+grants both (read + write) plus unrestricted network access — see CLI exception
+below.
+
 After each successful feed summarization, `cleanupFeedMedia()` deletes the
 period's media files (best-effort, never fail the digest). A weekly scheduler
 housekeeping callback deletes files older than `MEDIA_TTL_MS` (default 7 days),
@@ -561,6 +592,18 @@ plans:
   multi-host scaling requires it.
 - **Automatic feed theme classification.** Per-feed `customPrompt` handles
   manual steering; LLM-inferred theming is deferred.
+
+### 14. CLI exception
+
+The `cli` permission set (`deno.json` → `permissions.cli`) grants unrestricted
+network access (`"net": true`), matching the `api` set. This is an intentional
+exception: Telegram DC IPs are dynamic and stored inside the session; they
+cannot be statically enumerated in the allow list. Configurable provider
+endpoints (`SUMMARIZER_BASE_URL`, `VISION_BASE_URL`) also resolve to user-chosen
+hosts. Other permissions remain scoped — env, read, write, and FFI are
+explicitly listed; no `--allow-sys` is granted because
+`deviceModel`/`systemVersion` are supplied to GramJS (see Telegram client
+lifecycle above).
 
 ---
 

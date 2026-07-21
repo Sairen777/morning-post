@@ -17,6 +17,12 @@ export interface SummarizerRuntimeConfigOverrides {
   vision?: Partial<ModelEndpointConfig>;
 }
 
+export interface SummarizerBudgetConfig {
+  summarizerTextBytesPerChunk: number;
+  summarizerMaxItemsPerChunk: number;
+  summarizerMaxImageBytes: number;
+}
+
 export interface Config {
   databaseUrl: string;
   port: number;
@@ -45,7 +51,10 @@ export interface AppSecurityOptions {
   maxRequestBodyBytes: number;
 }
 
-const DEFAULT_ALLOWED_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
+const DEFAULT_ALLOWED_ORIGINS = [
+  "http://127.0.0.1:5173",
+  "http://localhost:5173",
+];
 const DEFAULT_PORT = 3000;
 const DEFAULT_SERVER_HOSTNAME = "127.0.0.1";
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1_048_576;
@@ -72,7 +81,9 @@ function invalidConfig(name: string, message: string): Error {
 function parsePositiveInteger(name: string, value: number | string): number {
   const parsed = typeof value === "number"
     ? value
-    : value.trim() === "" ? Number.NaN : Number(value);
+    : value.trim() === ""
+    ? Number.NaN
+    : Number(value);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
     throw invalidConfig(name, "expected a positive integer");
   }
@@ -82,7 +93,9 @@ function parsePositiveInteger(name: string, value: number | string): number {
 function parseNonNegativeInteger(name: string, value: number | string): number {
   const parsed = typeof value === "number"
     ? value
-    : value.trim() === "" ? Number.NaN : Number(value);
+    : value.trim() === ""
+    ? Number.NaN
+    : Number(value);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
     throw invalidConfig(name, "expected a non-negative integer");
   }
@@ -97,14 +110,23 @@ function numberSetting(
   allowZero = false,
 ): number {
   if (override !== undefined) {
-    return allowZero ? parseNonNegativeInteger(name, override) : parsePositiveInteger(name, override);
+    return allowZero
+      ? parseNonNegativeInteger(name, override)
+      : parsePositiveInteger(name, override);
   }
   const raw = Deno.env.get(envName);
   if (raw === undefined) return fallback;
-  return allowZero ? parseNonNegativeInteger(name, raw) : parsePositiveInteger(name, raw);
+  return allowZero
+    ? parseNonNegativeInteger(name, raw)
+    : parsePositiveInteger(name, raw);
 }
 
-function booleanSetting(name: string, envName: string, override: boolean | undefined, fallback: boolean): boolean {
+function booleanSetting(
+  name: string,
+  envName: string,
+  override: boolean | undefined,
+  fallback: boolean,
+): boolean {
   if (override !== undefined) {
     if (typeof override !== "boolean") {
       throw invalidConfig(name, "expected true or false");
@@ -170,9 +192,19 @@ export function getSummarizerRuntimeConfig(
     "SUMMARIZER_API_KEY",
     overrides.summarizer?.apiKey,
   ).value;
-  const visionModel = requiredStringSetting("VISION_MODEL", overrides.vision?.model, summarizerModel);
-  const visionBaseUrlSetting = optionalStringSetting("VISION_BASE_URL", overrides.vision?.baseUrl);
-  const visionApiKeySetting = optionalStringSetting("VISION_API_KEY", overrides.vision?.apiKey);
+  const visionModel = requiredStringSetting(
+    "VISION_MODEL",
+    overrides.vision?.model,
+    summarizerModel,
+  );
+  const visionBaseUrlSetting = optionalStringSetting(
+    "VISION_BASE_URL",
+    overrides.vision?.baseUrl,
+  );
+  const visionApiKeySetting = optionalStringSetting(
+    "VISION_API_KEY",
+    overrides.vision?.apiKey,
+  );
   const sameModel = summarizerModel === visionModel;
 
   if (sameModel) {
@@ -203,23 +235,40 @@ export function getSummarizerRuntimeConfig(
     },
     vision: {
       model: visionModel,
-      baseUrl: normalizeEndpointRoot(visionBaseUrlSetting.value ?? summarizerBaseUrl),
+      baseUrl: normalizeEndpointRoot(
+        visionBaseUrlSetting.value ?? summarizerBaseUrl,
+      ),
       ...(sameModel
         ? summarizerApiKey === undefined ? {} : { apiKey: summarizerApiKey }
-        : visionApiKeySetting.value === undefined ? {} : { apiKey: visionApiKeySetting.value }),
+        : visionApiKeySetting.value === undefined
+        ? {}
+        : { apiKey: visionApiKeySetting.value }),
     },
     sameModel,
   };
 }
 
 export function resolveAllowRemoteSummarization(override?: boolean): boolean {
-  return booleanSetting("ALLOW_REMOTE_SUMMARIZATION", "ALLOW_REMOTE_SUMMARIZATION", override, false);
+  return booleanSetting(
+    "ALLOW_REMOTE_SUMMARIZATION",
+    "ALLOW_REMOTE_SUMMARIZATION",
+    override,
+    false,
+  );
 }
 
 function originsSetting(override: string[] | undefined): string[] {
   if (override !== undefined) {
-    if (!Array.isArray(override) || override.some((origin) => typeof origin !== "string" || origin.trim() === "")) {
-      throw invalidConfig("ALLOWED_ORIGINS", "expected a non-empty origin list");
+    if (
+      !Array.isArray(override) ||
+      override.some((origin) =>
+        typeof origin !== "string" || origin.trim() === ""
+      )
+    ) {
+      throw invalidConfig(
+        "ALLOWED_ORIGINS",
+        "expected a non-empty origin list",
+      );
     }
     return override.map((origin) => origin.trim());
   }
@@ -227,24 +276,60 @@ function originsSetting(override: string[] | undefined): string[] {
   if (raw === undefined) return [...DEFAULT_ALLOWED_ORIGINS];
   const origins = raw.split(",").map((origin) => origin.trim());
   if (origins.length === 0 || origins.some((origin) => origin === "")) {
-    throw invalidConfig("ALLOWED_ORIGINS", "expected a comma-separated origin list");
+    throw invalidConfig(
+      "ALLOWED_ORIGINS",
+      "expected a comma-separated origin list",
+    );
   }
   return origins;
 }
 
-function sslModeSetting(override: DatabaseSslMode | undefined): DatabaseSslMode {
+function sslModeSetting(
+  override: DatabaseSslMode | undefined,
+): DatabaseSslMode {
   const raw = override ?? Deno.env.get("DB_SSL_MODE") ?? "disable";
-  if (raw === "disable" || raw === "require" || raw === "verify-full") return raw;
-  throw invalidConfig("DB_SSL_MODE", "expected disable, require, or verify-full");
+  if (raw === "disable" || raw === "require" || raw === "verify-full") {
+    return raw;
+  }
+  throw invalidConfig(
+    "DB_SSL_MODE",
+    "expected disable, require, or verify-full",
+  );
 }
 
 export function resolveServerHostname(override?: string): string {
-  const serverHostname = override ?? Deno.env.get("SERVER_HOSTNAME") ?? DEFAULT_SERVER_HOSTNAME;
+  const serverHostname = override ?? Deno.env.get("SERVER_HOSTNAME") ??
+    DEFAULT_SERVER_HOSTNAME;
   const normalizedServerHostname = serverHostname.trim();
   if (normalizedServerHostname === "") {
     throw invalidConfig("SERVER_HOSTNAME", "expected a non-empty hostname");
   }
   return normalizedServerHostname;
+}
+
+export function getSummarizerBudgetConfig(
+  overrides: Partial<SummarizerBudgetConfig> = {},
+): SummarizerBudgetConfig {
+  return {
+    summarizerTextBytesPerChunk: numberSetting(
+      "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
+      "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
+      overrides.summarizerTextBytesPerChunk,
+      DEFAULT_SUMMARIZER_TEXT_BYTES_PER_CHUNK,
+    ),
+    summarizerMaxItemsPerChunk: numberSetting(
+      "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
+      "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
+      overrides.summarizerMaxItemsPerChunk,
+      DEFAULT_SUMMARIZER_MAX_ITEMS_PER_CHUNK,
+    ),
+    summarizerMaxImageBytes: numberSetting(
+      "SUMMARIZER_MAX_IMAGE_BYTES",
+      "SUMMARIZER_MAX_IMAGE_BYTES",
+      overrides.summarizerMaxImageBytes,
+      DEFAULT_SUMMARIZER_MAX_IMAGE_BYTES,
+    ),
+  };
 }
 
 export function getConfig(overrides: Partial<Config> = {}): Config {
@@ -254,14 +339,25 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
     databaseUrl: overrides.databaseUrl ?? Deno.env.get("DATABASE_URL") ?? "",
     port,
     allowedOrigins: originsSetting(overrides.allowedOrigins),
-    trustedProxyCount: numberSetting("TRUSTED_PROXY_COUNT", "TRUSTED_PROXY_COUNT", overrides.trustedProxyCount, 0, true),
+    trustedProxyCount: numberSetting(
+      "TRUSTED_PROXY_COUNT",
+      "TRUSTED_PROXY_COUNT",
+      overrides.trustedProxyCount,
+      0,
+      true,
+    ),
     maxRequestBodyBytes: numberSetting(
       "MAX_REQUEST_BODY_BYTES",
       "MAX_REQUEST_BODY_BYTES",
       overrides.maxRequestBodyBytes,
       DEFAULT_MAX_REQUEST_BODY_BYTES,
     ),
-    databasePoolMax: numberSetting("DB_POOL_MAX", "DB_POOL_MAX", overrides.databasePoolMax, DEFAULT_DATABASE_POOL_MAX),
+    databasePoolMax: numberSetting(
+      "DB_POOL_MAX",
+      "DB_POOL_MAX",
+      overrides.databasePoolMax,
+      DEFAULT_DATABASE_POOL_MAX,
+    ),
     databaseIdleTimeoutSeconds: numberSetting(
       "DB_IDLE_TIMEOUT_SECONDS",
       "DB_IDLE_TIMEOUT_SECONDS",
@@ -287,24 +383,7 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
       overrides.connectorTimeoutMs,
       DEFAULT_CONNECTOR_TIMEOUT_MS,
     ),
-    summarizerTextBytesPerChunk: numberSetting(
-      "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
-      "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
-      overrides.summarizerTextBytesPerChunk,
-      DEFAULT_SUMMARIZER_TEXT_BYTES_PER_CHUNK,
-    ),
-    summarizerMaxItemsPerChunk: numberSetting(
-      "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
-      "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
-      overrides.summarizerMaxItemsPerChunk,
-      DEFAULT_SUMMARIZER_MAX_ITEMS_PER_CHUNK,
-    ),
-    summarizerMaxImageBytes: numberSetting(
-      "SUMMARIZER_MAX_IMAGE_BYTES",
-      "SUMMARIZER_MAX_IMAGE_BYTES",
-      overrides.summarizerMaxImageBytes,
-      DEFAULT_SUMMARIZER_MAX_IMAGE_BYTES,
-    ),
+    ...getSummarizerBudgetConfig(overrides),
     summarizerTimeoutMs: numberSetting(
       "SUMMARIZER_TIMEOUT_MS",
       "SUMMARIZER_TIMEOUT_MS",
@@ -317,7 +396,12 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
       overrides.summarizationConcurrency,
       DEFAULT_SUMMARIZATION_CONCURRENCY,
     ),
-    mediaTtlMs: numberSetting("MEDIA_TTL_MS", "MEDIA_TTL_MS", overrides.mediaTtlMs, DEFAULT_MEDIA_TTL_MS),
+    mediaTtlMs: numberSetting(
+      "MEDIA_TTL_MS",
+      "MEDIA_TTL_MS",
+      overrides.mediaTtlMs,
+      DEFAULT_MEDIA_TTL_MS,
+    ),
     mediaQuotaBytes: numberSetting(
       "MEDIA_QUOTA_BYTES",
       "MEDIA_QUOTA_BYTES",
@@ -340,7 +424,8 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
 }
 
 export function resolveAppSecurityOptions(
-  overrides: Partial<Pick<Config, "allowedOrigins" | "maxRequestBodyBytes">> = {},
+  overrides: Partial<Pick<Config, "allowedOrigins" | "maxRequestBodyBytes">> =
+    {},
 ): AppSecurityOptions {
   const config = getConfig(overrides);
   return {

@@ -1,9 +1,12 @@
-import { assert, assertEquals, assertExists } from "@std/assert"
+import { assert, assertEquals, assertExists } from "@std/assert";
 import type { Hono } from "@hono/hono";
 import { and, eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import { telegramCredentialSchema } from "../../src/connectors/credential-schemas.ts";
-import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
+import {
+  CredentialCipher,
+  type EncryptedBlob,
+} from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { sources } from "../../src/db/schema/source.ts";
@@ -15,9 +18,9 @@ import {
 } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import {
-  TelegramLoginSessionManager,
   type TelegramLoginClient,
   type TelegramLoginClientFactory,
+  TelegramLoginSessionManager,
 } from "../../src/connectors/telegram/login-session.ts";
 
 const PASSWORD = "analytical-engine-1843";
@@ -45,7 +48,10 @@ function buildCredentialCipher(): CredentialCipher {
 function jsonRequest(method: "POST" | "PATCH", body?: unknown): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173" },
+    headers: {
+      "content-type": "application/json",
+      Origin: "http://127.0.0.1:5173",
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   };
 }
@@ -84,7 +90,10 @@ async function registerAndLogin(
   return { user, cookie };
 }
 
-function buildHarness(database: Database, now: () => number = Date.now): LoginHarness {
+function buildHarness(
+  database: Database,
+  now: () => number = Date.now,
+): LoginHarness {
   const credentialCipher = buildCredentialCipher();
   const factory = new FakeTelegramLoginClientFactory();
   const manager = new TelegramLoginSessionManager({
@@ -99,7 +108,10 @@ function buildHarness(database: Database, now: () => number = Date.now): LoginHa
   return { app, manager, factory, credentialCipher };
 }
 
-async function startTelegramLogin(app: Hono, cookie: string): Promise<Record<string, unknown>> {
+async function startTelegramLogin(
+  app: Hono,
+  cookie: string,
+): Promise<Record<string, unknown>> {
   const response = await app.request("/connectors/telegram/login", {
     method: "POST",
     headers: { cookie, Origin: "http://127.0.0.1:5173" },
@@ -113,9 +125,12 @@ async function pollTelegramLogin(
   cookie: string,
   loginSessionId: string,
 ): Promise<Record<string, unknown>> {
-  const response = await app.request(`/connectors/telegram/login/${loginSessionId}`, {
-    headers: { cookie },
-  });
+  const response = await app.request(
+    `/connectors/telegram/login/${loginSessionId}`,
+    {
+      headers: { cookie },
+    },
+  );
   assertEquals(response.status, 200);
   return await response.json();
 }
@@ -128,7 +143,11 @@ async function submitTwoFactorAuthentication(
 ): Promise<Response> {
   return await app.request(`/connectors/telegram/login/${loginSessionId}/2fa`, {
     ...jsonRequest("POST", { password }),
-    headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+    headers: {
+      "content-type": "application/json",
+      cookie,
+      Origin: "http://127.0.0.1:5173",
+    },
   });
 }
 
@@ -152,9 +171,18 @@ async function encryptedTelegramSessionString(
   credentialCipher: CredentialCipher,
   userId: string,
 ): Promise<string> {
-  const source = await findSourceByConnectorId(database, userId, ConnectorId.Telegram);
+  const source = await findSourceByConnectorId(
+    database,
+    userId,
+    ConnectorId.Telegram,
+  );
   assertExists(source);
-  const credentials = await getDecryptedCredentials(database, source.id, userId, credentialCipher);
+  const credentials = await getDecryptedCredentials(
+    database,
+    source.id,
+    userId,
+    credentialCipher,
+  );
   return telegramCredentialSchema.parse(credentials).sessionString;
 }
 
@@ -189,7 +217,6 @@ class FakeTelegramLoginClientFactory implements TelegramLoginClientFactory {
     return promise;
   }
 
-
   queueClient(mode: FakeLoginMode = "approval"): void {
     this.#queuedModes.push(mode);
   }
@@ -218,7 +245,8 @@ class FakeTelegramLoginClientFactory implements TelegramLoginClientFactory {
 class FakeTelegramLoginClient implements TelegramLoginClient {
   readonly approval = Promise.withResolvers<void>();
   readonly token = crypto.randomUUID().replaceAll("-", "");
-  disconnected = false;
+  destroyCount = 0;
+  disconnectCount = 0;
   sessionString = `session-${crypto.randomUUID()}`;
 
   constructor(readonly mode: FakeLoginMode) {}
@@ -234,7 +262,9 @@ class FakeTelegramLoginClient implements TelegramLoginClient {
   async signInUserWithQrCode(
     _credentials: { apiId: number; apiHash: string },
     callbacks: {
-      qrCode(code: { token: { toString(encoding: "base64url"): string } }): Promise<void>;
+      qrCode(
+        code: { token: { toString(encoding: "base64url"): string } },
+      ): Promise<void>;
       password(): Promise<string>;
       onError(error: unknown): Promise<boolean>;
     },
@@ -248,20 +278,29 @@ class FakeTelegramLoginClient implements TelegramLoginClient {
 
     const password = await callbacks.password();
     if (password !== TWO_FACTOR_AUTHENTICATION_PASSWORD) {
-      await callbacks.onError(new Error("invalid two-factor authentication password"));
+      await callbacks.onError(
+        new Error("invalid two-factor authentication password"),
+      );
       throw new Error("invalid two-factor authentication password");
     }
   }
 
+  destroy(): void {
+    this.destroyCount += 1;
+  }
+
   disconnect(): void {
-    this.disconnected = true;
+    this.disconnectCount += 1;
   }
 }
 
 Deno.test("Telegram QR login stores encrypted source credentials after approval", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
-    const { user, cookie } = await registerAndLogin(app, "telegram-login@example.com");
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "telegram-login@example.com",
+    );
 
     factory.queueClient("approval");
     const start = await startTelegramLogin(app, cookie);
@@ -275,7 +314,9 @@ Deno.test("Telegram QR login stores encrypted source credentials after approval"
     factory.clients[0].approve();
     const complete = await waitForCompleteStatus(app, cookie, loginSessionId);
     assertEquals(complete.status, "complete");
-    assert(!JSON.stringify(complete).includes(factory.clients[0].sessionString));
+    assert(
+      !JSON.stringify(complete).includes(factory.clients[0].sessionString),
+    );
     assertEquals(
       await encryptedTelegramSessionString(database, credentialCipher, user.id),
       factory.clients[0].sessionString,
@@ -286,7 +327,10 @@ Deno.test("Telegram QR login stores encrypted source credentials after approval"
 Deno.test("completed Telegram login sessions release clients, plaintext sessions, and capacity", async () => {
   await withTestDb(async (database) => {
     const { app, manager, factory } = buildHarness(database);
-    const { user, cookie } = await registerAndLogin(app, "telegram-complete-cleanup@example.com");
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "telegram-complete-cleanup@example.com",
+    );
 
     factory.queueClient("approval");
     const completedStart = await startTelegramLogin(app, cookie);
@@ -294,12 +338,16 @@ Deno.test("completed Telegram login sessions release clients, plaintext sessions
     factory.clients[0].approve();
     await waitForCompleteStatus(app, cookie, completedSessionId);
 
-    const completedSnapshot = manager.debugSnapshotForTesting(completedSessionId, user.id);
+    const completedSnapshot = manager.debugSnapshotForTesting(
+      completedSessionId,
+      user.id,
+    );
     assertExists(completedSnapshot);
     assertEquals(completedSnapshot.status, "complete");
     assertEquals(completedSnapshot.hasClient, false);
     assertEquals(completedSnapshot.hasSessionString, false);
-    assertEquals(factory.clients[0].disconnected, true);
+    assertEquals(factory.clients[0].destroyCount, 1);
+    assertEquals(factory.clients[0].disconnectCount, 0);
 
     factory.queueClient("approval");
     factory.queueClient("approval");
@@ -319,12 +367,19 @@ Deno.test("completed Telegram login sessions release clients, plaintext sessions
 Deno.test("Telegram QR login supports two-factor authentication and rejects a wrong password without writing a source", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
-    const { user, cookie } = await registerAndLogin(app, "telegram-two-factor@example.com");
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "telegram-two-factor@example.com",
+    );
 
     factory.queueClient("two-factor-authentication");
     const firstStart = await startTelegramLogin(app, cookie);
     const firstLoginSessionId = String(firstStart.loginSessionId);
-    const needsTwoFactorAuthentication = await pollTelegramLogin(app, cookie, firstLoginSessionId);
+    const needsTwoFactorAuthentication = await pollTelegramLogin(
+      app,
+      cookie,
+      firstLoginSessionId,
+    );
     assertEquals(needsTwoFactorAuthentication.status, "needs_2fa");
 
     const wrongPasswordResponse = await submitTwoFactorAuthentication(
@@ -336,13 +391,26 @@ Deno.test("Telegram QR login supports two-factor authentication and rejects a wr
     assertEquals(wrongPasswordResponse.status, 200);
     const wrongPasswordBody = await wrongPasswordResponse.json();
     assertEquals(wrongPasswordBody.status, "error");
-    assert(!JSON.stringify(wrongPasswordBody).includes(factory.clients[0].sessionString));
-    assertEquals(await findSourceByConnectorId(database, user.id, ConnectorId.Telegram), null);
+    assert(
+      !JSON.stringify(wrongPasswordBody).includes(
+        factory.clients[0].sessionString,
+      ),
+    );
+    assertEquals(
+      await findSourceByConnectorId(database, user.id, ConnectorId.Telegram),
+      null,
+    );
+    assertEquals(factory.clients[0].destroyCount, 1);
+    assertEquals(factory.clients[0].disconnectCount, 0);
 
     factory.queueClient("two-factor-authentication");
     const secondStart = await startTelegramLogin(app, cookie);
     const secondLoginSessionId = String(secondStart.loginSessionId);
-    const secondStatus = await pollTelegramLogin(app, cookie, secondLoginSessionId);
+    const secondStatus = await pollTelegramLogin(
+      app,
+      cookie,
+      secondLoginSessionId,
+    );
     assertEquals(secondStatus.status, "needs_2fa");
 
     const correctPasswordResponse = await submitTwoFactorAuthentication(
@@ -358,26 +426,39 @@ Deno.test("Telegram QR login supports two-factor authentication and rejects a wr
       await encryptedTelegramSessionString(database, credentialCipher, user.id),
       factory.clients[1].sessionString,
     );
+    assertEquals(factory.clients[1].destroyCount, 1);
+    assertEquals(factory.clients[1].disconnectCount, 0);
   });
 });
 
 Deno.test("Telegram reconnect updates an existing source without duplicating it", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
-    const { user, cookie } = await registerAndLogin(app, "telegram-reconnect@example.com");
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "telegram-reconnect@example.com",
+    );
     const existingSource = await upsertSourceCredentials(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
-      credentials: await encryptTelegramCredentials(credentialCipher, user.id, "old-session"),
+      credentials: await encryptTelegramCredentials(
+        credentialCipher,
+        user.id,
+        "old-session",
+      ),
     });
-    await database.update(sources).set({ enabled: false, position: 17 }).where(eqSource(existingSource.id));
+    await database.update(sources).set({ enabled: false, position: 17 }).where(
+      eqSource(existingSource.id),
+    );
 
     factory.queueClient("approval");
     const start = await startTelegramLogin(app, cookie);
     factory.clients[0].approve();
     await waitForCompleteStatus(app, cookie, String(start.loginSessionId));
 
-    const rows = await database.select().from(sources).where(eqUserConnector(user.id, ConnectorId.Telegram));
+    const rows = await database.select().from(sources).where(
+      eqUserConnector(user.id, ConnectorId.Telegram),
+    );
     assertEquals(rows.length, 1);
     assertEquals(rows[0].id, existingSource.id);
     assertEquals(rows[0].enabled, true);
@@ -399,12 +480,22 @@ Deno.test("Telegram reconnect updates an existing source without duplicating it"
 Deno.test("Telegram login approval after expiry does not persist Telegram credentials", async () => {
   await withTestDb(async (database) => {
     let now = 1_000;
-    const { app, manager, factory, credentialCipher } = buildHarness(database, () => now);
-    const { user, cookie } = await registerAndLogin(app, "telegram-expired-approval@example.com");
+    const { app, manager, factory, credentialCipher } = buildHarness(
+      database,
+      () => now,
+    );
+    const { user, cookie } = await registerAndLogin(
+      app,
+      "telegram-expired-approval@example.com",
+    );
     const existingSource = await upsertSourceCredentials(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
-      credentials: await encryptTelegramCredentials(credentialCipher, user.id, "old-session"),
+      credentials: await encryptTelegramCredentials(
+        credentialCipher,
+        user.id,
+        "old-session",
+      ),
     });
 
     factory.queueClient("approval");
@@ -415,28 +506,40 @@ Deno.test("Telegram login approval after expiry does not persist Telegram creden
 
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const snapshot = manager.debugSnapshotForTesting(loginSessionId, user.id);
-      if (snapshot?.status === "expired" && !snapshot.hasClient && !snapshot.hasSessionString) {
+      if (
+        snapshot?.status === "expired" && !snapshot.hasClient &&
+        !snapshot.hasSessionString
+      ) {
         break;
       }
       await Promise.resolve();
     }
 
-    const rows = await database.select().from(sources).where(eqUserConnector(user.id, ConnectorId.Telegram));
+    const rows = await database.select().from(sources).where(
+      eqUserConnector(user.id, ConnectorId.Telegram),
+    );
     assertEquals(rows.length, 1);
     assertEquals(rows[0].id, existingSource.id);
-    assertEquals(await encryptedTelegramSessionString(database, credentialCipher, user.id), "old-session");
-    assertEquals(factory.clients[0].disconnected, true);
+    assertEquals(
+      await encryptedTelegramSessionString(database, credentialCipher, user.id),
+      "old-session",
+    );
+    assertEquals(factory.clients[0].destroyCount, 1);
+    assertEquals(factory.clients[0].disconnectCount, 0);
 
     const expired = await pollTelegramLogin(app, cookie, loginSessionId);
     assertEquals(expired.status, "expired");
   });
 });
 
-Deno.test("Telegram login disconnects a client created after the reservation expired", async () => {
+Deno.test("Telegram login destroys a client created after the reservation expired", async () => {
   await withTestDb(async (database) => {
     let now = 1_000;
     const { app, factory } = buildHarness(database, () => now);
-    const { cookie } = await registerAndLogin(app, "telegram-expired-start@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "telegram-expired-start@example.com",
+    );
     const gate = Promise.withResolvers<void>();
     factory.blockClientCreationUntil(gate.promise);
 
@@ -451,7 +554,8 @@ Deno.test("Telegram login disconnects a client created after the reservation exp
     const expiredStartResponse = await startPromise;
     assertEquals(expiredStartResponse.status, 409);
     assertEquals(factory.clients.length, 1);
-    assertEquals(factory.clients[0].disconnected, true);
+    assertEquals(factory.clients[0].destroyCount, 1);
+    assertEquals(factory.clients[0].disconnectCount, 0);
 
     factory.queueClient("approval");
     const freshStart = await startTelegramLogin(app, cookie);
@@ -463,28 +567,41 @@ Deno.test("Telegram login expiry returns expired once, then unknown session is h
   await withTestDb(async (database) => {
     let now = 1_000;
     const { app, factory } = buildHarness(database, () => now);
-    const { cookie } = await registerAndLogin(app, "telegram-expiry@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "telegram-expiry@example.com",
+    );
 
     factory.queueClient("approval");
     const start = await startTelegramLogin(app, cookie);
     now += 10 * 60_000 + 1;
 
-    const expiredResponse = await app.request(`/connectors/telegram/login/${start.loginSessionId}`, {
-      headers: { cookie },
-    });
+    const expiredResponse = await app.request(
+      `/connectors/telegram/login/${start.loginSessionId}`,
+      {
+        headers: { cookie },
+      },
+    );
     assertEquals(expiredResponse.status, 200);
     const expiredBody = await expiredResponse.json();
     assertEquals(expiredBody.status, "expired");
-    assertEquals(factory.clients[0].disconnected, true);
+    assertEquals(factory.clients[0].destroyCount, 1);
+    assertEquals(factory.clients[0].disconnectCount, 0);
 
-    const hiddenResponse = await app.request(`/connectors/telegram/login/${start.loginSessionId}`, {
-      headers: { cookie },
-    });
+    const hiddenResponse = await app.request(
+      `/connectors/telegram/login/${start.loginSessionId}`,
+      {
+        headers: { cookie },
+      },
+    );
     assertEquals(hiddenResponse.status, 404);
 
-    const unknownResponse = await app.request(`/connectors/telegram/login/${crypto.randomUUID()}`, {
-      headers: { cookie },
-    });
+    const unknownResponse = await app.request(
+      `/connectors/telegram/login/${crypto.randomUUID()}`,
+      {
+        headers: { cookie },
+      },
+    );
     assertEquals(unknownResponse.status, 404);
   });
 });
@@ -512,15 +629,20 @@ Deno.test("Telegram login enforces three concurrent sessions per user", async ()
 Deno.test("Telegram login reserves capacity before awaiting client creation", async () => {
   await withTestDb(async (database) => {
     const { app, factory } = buildHarness(database);
-    const { cookie } = await registerAndLogin(app, "telegram-cap-race@example.com");
+    const { cookie } = await registerAndLogin(
+      app,
+      "telegram-cap-race@example.com",
+    );
     const gate = Promise.withResolvers<void>();
     factory.blockClientCreationUntil(gate.promise);
 
-    const requests = Array.from({ length: 4 }, () =>
-      app.request("/connectors/telegram/login", {
-        method: "POST",
-        headers: { cookie, Origin: "http://127.0.0.1:5173" },
-      })
+    const requests = Array.from(
+      { length: 4 },
+      () =>
+        app.request("/connectors/telegram/login", {
+          method: "POST",
+          headers: { cookie, Origin: "http://127.0.0.1:5173" },
+        }),
     );
 
     await factory.waitForClientCreationAttempts(3);
@@ -530,7 +652,12 @@ Deno.test("Telegram login reserves capacity before awaiting client creation", as
       requests[3],
       new Promise<Response>((_, reject) => {
         timeoutId = setTimeout(
-          () => reject(new Error("fourth login did not hit capacity before client creation unblocked")),
+          () =>
+            reject(
+              new Error(
+                "fourth login did not hit capacity before client creation unblocked",
+              ),
+            ),
           100,
         );
       }),
@@ -542,27 +669,43 @@ Deno.test("Telegram login reserves capacity before awaiting client creation", as
     assertEquals(fourthResponse.status, 429);
     const fourthJson = await fourthResponse.json();
     assertEquals(fourthJson.error.code, "RATE_LIMITED");
-    assertEquals(fourthJson.error.message, "too many active telegram login sessions");
+    assertEquals(
+      fourthJson.error.message,
+      "too many active telegram login sessions",
+    );
 
     gate.resolve();
     const firstThreeResponses = await Promise.all(requests.slice(0, 3));
-    assertEquals(firstThreeResponses.map((response) => response.status), [201, 201, 201]);
+    assertEquals(firstThreeResponses.map((response) => response.status), [
+      201,
+      201,
+      201,
+    ]);
   });
 });
 
 Deno.test("Telegram login session ownership is hidden from other users", async () => {
   await withTestDb(async (database) => {
     const { app, factory } = buildHarness(database);
-    const { cookie: ownerCookie } = await registerAndLogin(app, "telegram-owner@example.com");
-    const { cookie: otherCookie } = await registerAndLogin(app, "telegram-other@example.com");
+    const { cookie: ownerCookie } = await registerAndLogin(
+      app,
+      "telegram-owner@example.com",
+    );
+    const { cookie: otherCookie } = await registerAndLogin(
+      app,
+      "telegram-other@example.com",
+    );
 
     factory.queueClient("two-factor-authentication");
     const start = await startTelegramLogin(app, ownerCookie);
     const loginSessionId = String(start.loginSessionId);
 
-    const pollResponse = await app.request(`/connectors/telegram/login/${loginSessionId}`, {
-      headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
-    });
+    const pollResponse = await app.request(
+      `/connectors/telegram/login/${loginSessionId}`,
+      {
+        headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
+      },
+    );
     assertEquals(pollResponse.status, 404);
 
     const submitResponse = await submitTwoFactorAuthentication(

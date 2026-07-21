@@ -3,15 +3,19 @@ import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import {
   createDigestRun,
+  type CreateDigestRunInput,
   DigestRunAlreadyRunningError,
   finishDigestRun,
   finishDigestRunFeed,
+  listDigestRunFeedsForRun,
   listDigestRunsForUser,
   recoverStaleDigestRuns,
   startDigestRunFeed,
-  type CreateDigestRunInput,
 } from "../../src/repositories/digest-run-repository.ts";
-import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
+import {
+  createUser,
+  type CreateUserInput,
+} from "../../src/repositories/user-repository.ts";
 
 function userInput(overrides: Partial<CreateUserInput> = {}): CreateUserInput {
   return {
@@ -66,7 +70,11 @@ Deno.test("createDigestRun round-trips all fields", async () => {
 
     assertEquals(typeof run.id, "string");
     assertEquals(typeof run.startedAt, "number");
-    assertEquals(run.startedAt > 1_000_000_000_000, true, "startedAt should be epoch-ms");
+    assertEquals(
+      run.startedAt > 1_000_000_000_000,
+      true,
+      "startedAt should be epoch-ms",
+    );
   });
 });
 
@@ -84,7 +92,11 @@ Deno.test("finishDigestRun sets finishedAt, status", async () => {
     assertEquals(finished.status, "complete");
     assertEquals(finished.digestId, null);
     assertEquals(typeof finished.finishedAt, "number");
-    assertEquals(finished.finishedAt! >= run.startedAt, true, "finishedAt should be >= startedAt");
+    assertEquals(
+      finished.finishedAt! >= run.startedAt,
+      true,
+      "finishedAt should be >= startedAt",
+    );
   });
 });
 
@@ -149,7 +161,11 @@ Deno.test("startDigestRunFeed round-trips fields", async () => {
 
     assertEquals(typeof feedRun.id, "string");
     assertEquals(typeof feedRun.startedAt, "number");
-    assertEquals(feedRun.startedAt > 1_000_000_000_000, true, "startedAt should be epoch-ms");
+    assertEquals(
+      feedRun.startedAt > 1_000_000_000_000,
+      true,
+      "startedAt should be epoch-ms",
+    );
   });
 });
 
@@ -176,7 +192,11 @@ Deno.test("finishDigestRunFeed sets finishedAt, status, itemCount", async () => 
     assertEquals(finished.status, "complete");
     assertEquals(finished.itemCount, 12);
     assertEquals(typeof finished.finishedAt, "number");
-    assertEquals(finished.finishedAt! >= feedRun.startedAt, true, "finishedAt should be >= startedAt");
+    assertEquals(
+      finished.finishedAt! >= feedRun.startedAt,
+      true,
+      "finishedAt should be >= startedAt",
+    );
   });
 });
 
@@ -222,10 +242,20 @@ Deno.test("finishDigestRunFeed of a missing id throws", async () => {
 
 Deno.test("listDigestRunsForUser returns only that user's runs, ordered desc", async () => {
   await withTestDb(async (database) => {
-    const alice = await createUser(database, userInput({ email: "alice@example.com" }));
-    const bob = await createUser(database, userInput({ email: "bob@example.com" }));
+    const alice = await createUser(
+      database,
+      userInput({ email: "alice@example.com" }),
+    );
+    const bob = await createUser(
+      database,
+      userInput({ email: "bob@example.com" }),
+    );
 
-    const aliceRun1 = await createDigestRun(database, runInput(alice.id, { status: "complete" }), 1000);
+    const aliceRun1 = await createDigestRun(
+      database,
+      runInput(alice.id, { status: "complete" }),
+      1000,
+    );
     const bobRun = await createDigestRun(database, runInput(bob.id), 2000);
     const aliceRun2 = await createDigestRun(database, runInput(alice.id), 3000);
 
@@ -253,14 +283,19 @@ Deno.test("listDigestRunsForUser respects limit", async () => {
     await createDigestRun(database, runInput(user.id, { status: "partial" }));
     await createDigestRun(database, runInput(user.id, { status: "failed" }));
 
-    const limited = await listDigestRunsForUser(database, user.id, { limit: 2 });
+    const limited = await listDigestRunsForUser(database, user.id, {
+      limit: 2,
+    });
     assertEquals(limited.length, 2);
   });
 });
 
 Deno.test("createDigestRun surfaces a typed conflict for an active run", async () => {
   await withTestDb(async (database) => {
-    const user = await createUser(database, userInput({ email: "active-run@example.com" }));
+    const user = await createUser(
+      database,
+      userInput({ email: "active-run@example.com" }),
+    );
     await createDigestRun(database, runInput(user.id), 1_000);
 
     await assertRejects(
@@ -271,21 +306,133 @@ Deno.test("createDigestRun surfaces a typed conflict for an active run", async (
   });
 });
 
-Deno.test("recoverStaleDigestRuns fails old runs once and is idempotent", async () => {
+Deno.test("recoverStaleDigestRuns atomically fails only stale runs and their running stages", async () => {
   await withTestDb(async (database) => {
-    const user = await createUser(database, userInput({ email: "stale-run@example.com" }));
-    const stale = await createDigestRun(database, runInput(user.id), 1_000);
+    const staleUser = await createUser(
+      database,
+      userInput({ email: "stale-run@example.com" }),
+    );
+    const freshUser = await createUser(
+      database,
+      userInput({ email: "fresh-run@example.com" }),
+    );
+    const terminalUser = await createUser(
+      database,
+      userInput({ email: "terminal-run@example.com" }),
+    );
+    const staleRun = await createDigestRun(
+      database,
+      runInput(staleUser.id),
+      1_000,
+    );
+    const freshRun = await createDigestRun(
+      database,
+      runInput(freshUser.id),
+      5_000,
+    );
+    const terminalRun = await createDigestRun(
+      database,
+      runInput(terminalUser.id, { status: "complete" }),
+      2_000,
+    );
 
-    const recovered = await recoverStaleDigestRuns(database, 10_000, 5_000);
-    assertEquals(recovered, 1);
-    const repeated = await recoverStaleDigestRuns(database, 10_000, 5_000);
-    assertEquals(repeated, 0);
+    const staleRunningStage = await startDigestRunFeed(database, {
+      runId: staleRun.id,
+      connectorId: "stale-running-connector",
+      stage: "ingestion",
+      status: "running",
+    }, 3_000);
+    const staleCompletedStage = await startDigestRunFeed(database, {
+      runId: staleRun.id,
+      connectorId: "stale-completed-connector",
+      stage: "summarization",
+      status: "running",
+    }, 3_100);
+    const staleCompletedStageBeforeRecovery = await finishDigestRunFeed(
+      database,
+      staleCompletedStage.id,
+      { status: "complete", itemCount: 7 },
+      4_000,
+    );
+    const freshRunningStage = await startDigestRunFeed(database, {
+      runId: freshRun.id,
+      connectorId: "fresh-running-connector",
+      stage: "summarization",
+      status: "running",
+    }, 5_100);
+    const terminalRunStage = await startDigestRunFeed(database, {
+      runId: terminalRun.id,
+      connectorId: "terminal-run-connector",
+      stage: "connector",
+      status: "running",
+    }, 2_100);
 
-    const [run] = await listDigestRunsForUser(database, user.id);
-    assertEquals(run.id, stale.id);
-    assertEquals(run.status, "failed");
-    assertEquals(run.finishedAt, 10_000);
-    assertEquals(run.errorMessage, "digest run lease expired");
+    const recoveryTime = 10_000;
+    const staleAfterMs = 5_000;
+    assertEquals(
+      await recoverStaleDigestRuns(database, recoveryTime, staleAfterMs),
+      1,
+    );
+    assertEquals(
+      await recoverStaleDigestRuns(database, recoveryTime, staleAfterMs),
+      0,
+    );
+
+    const [recoveredRun] = await listDigestRunsForUser(database, staleUser.id);
+    assertEquals(recoveredRun.id, staleRun.id);
+    assertEquals(recoveredRun.status, "failed");
+    assertEquals(recoveredRun.finishedAt, recoveryTime);
+    assertEquals(recoveredRun.errorMessage, "digest run lease expired");
+
+    const staleStages = await listDigestRunFeedsForRun(
+      database,
+      staleRun.id,
+      staleUser.id,
+    );
+    const recoveredRunningStage = staleStages.find(
+      (stage) => stage.id === staleRunningStage.id,
+    );
+    const unchangedCompletedStage = staleStages.find(
+      (stage) => stage.id === staleCompletedStage.id,
+    );
+    assertEquals(recoveredRunningStage?.status, "failed");
+    assertEquals(recoveredRunningStage?.finishedAt, recoveryTime);
+    assertEquals(
+      recoveredRunningStage?.errorMessage,
+      "digest run lease expired",
+    );
+    assertEquals(unchangedCompletedStage, staleCompletedStageBeforeRecovery);
+
+    const [unchangedFreshRun] = await listDigestRunsForUser(
+      database,
+      freshUser.id,
+    );
+    assertEquals(unchangedFreshRun, freshRun);
+    const freshStages = await listDigestRunFeedsForRun(
+      database,
+      freshRun.id,
+      freshUser.id,
+    );
+    assertEquals(freshStages, [freshRunningStage]);
+
+    const [unchangedTerminalRun] = await listDigestRunsForUser(
+      database,
+      terminalUser.id,
+    );
+    assertEquals(unchangedTerminalRun, terminalRun);
+    const terminalRunStages = await listDigestRunFeedsForRun(
+      database,
+      terminalRun.id,
+      terminalUser.id,
+    );
+    assertEquals(terminalRunStages, [terminalRunStage]);
+
+    const nextRun = await createDigestRun(
+      database,
+      runInput(staleUser.id),
+      recoveryTime + 1,
+    );
+    assertEquals(nextRun.status, "running");
   });
 });
 
@@ -303,8 +450,11 @@ Deno.test("invalid digest run status insert is rejected at DB level", async () =
       throw new Error("expected insert to fail");
     } catch (error) {
       const msg = unwrapPostgresMessage(error);
-      assertEquals(msg.includes("digest_runs_status_check"), true,
-        `expected status check violation, got: ${msg}`);
+      assertEquals(
+        msg.includes("digest_runs_status_check"),
+        true,
+        `expected status check violation, got: ${msg}`,
+      );
     }
   });
 });
@@ -323,8 +473,11 @@ Deno.test("invalid digest run trigger insert is rejected at DB level", async () 
       throw new Error("expected insert to fail");
     } catch (error) {
       const msg = unwrapPostgresMessage(error);
-      assertEquals(msg.includes("digest_runs_trigger_check"), true,
-        `expected trigger check violation, got: ${msg}`);
+      assertEquals(
+        msg.includes("digest_runs_trigger_check"),
+        true,
+        `expected trigger check violation, got: ${msg}`,
+      );
     }
   });
 });
@@ -344,8 +497,11 @@ Deno.test("invalid digest run feed stage insert is rejected at DB level", async 
       throw new Error("expected insert to fail");
     } catch (error) {
       const msg = unwrapPostgresMessage(error);
-      assertEquals(msg.includes("digest_run_feeds_stage_check"), true,
-        `expected stage check violation, got: ${msg}`);
+      assertEquals(
+        msg.includes("digest_run_feeds_stage_check"),
+        true,
+        `expected stage check violation, got: ${msg}`,
+      );
     }
   });
 });
@@ -365,8 +521,11 @@ Deno.test("invalid digest run feed status insert is rejected at DB level", async
       throw new Error("expected insert to fail");
     } catch (error) {
       const msg = unwrapPostgresMessage(error);
-      assertEquals(msg.includes("digest_run_feeds_status_check"), true,
-        `expected status check violation, got: ${msg}`);
+      assertEquals(
+        msg.includes("digest_run_feeds_status_check"),
+        true,
+        `expected status check violation, got: ${msg}`,
+      );
     }
   });
 });
@@ -385,8 +544,11 @@ Deno.test("period order constraint rejects start > end", async () => {
       throw new Error("expected insert to fail");
     } catch (error) {
       const msg = unwrapPostgresMessage(error);
-      assertEquals(msg.includes("digest_runs_period_order_check"), true,
-        `expected period order violation, got: ${msg}`);
+      assertEquals(
+        msg.includes("digest_runs_period_order_check"),
+        true,
+        `expected period order violation, got: ${msg}`,
+      );
     }
   });
 });

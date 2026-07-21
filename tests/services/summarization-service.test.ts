@@ -9,6 +9,7 @@ import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { feeds } from "../../src/db/schema/feed.ts";
+import type { OperationalLogEvent } from "../../src/observability/operational-log.ts";
 import { composeSummaryRuleset } from "../../src/summarizers/compose-prompt.ts";
 import { DEFAULT_SYSTEM_PROMPT } from "../../src/summarizers/prompts.ts";
 import type {
@@ -616,7 +617,6 @@ class NeverSettlingFakeSummarizer implements SummarizerService {
     _rules: SummaryRuleset,
     options?: SummarizeOptions,
   ): Promise<SummaryPoint[]> {
-    // Return a promise that rejects when the signal aborts, never resolves otherwise
     return new Promise<SummaryPoint[]>((_resolve, reject) => {
       if (options?.signal) {
         if (options.signal.aborted) {
@@ -629,8 +629,52 @@ class NeverSettlingFakeSummarizer implements SummarizerService {
           { once: true },
         );
       }
-      // If no signal provided, never settle (simulates a hang)
     });
+  }
+}
+
+class SignalIgnoringNeverSettlingFakeSummarizer implements SummarizerService {
+  summarize(
+    _items: NormalizedItem[],
+    _rules: SummaryRuleset,
+    _options?: SummarizeOptions,
+  ): Promise<SummaryPoint[]> {
+    return new Promise<SummaryPoint[]>(() => {});
+  }
+}
+
+class TwoRequestFakeSummarizer implements SummarizerService {
+  completedRequestCount = 0;
+
+  async summarize(
+    _items: NormalizedItem[],
+    _rules: SummaryRuleset,
+    options?: SummarizeOptions,
+  ): Promise<SummaryPoint[]> {
+    for (let requestIndex = 0; requestIndex < 2; requestIndex++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      options?.signal?.throwIfAborted();
+      this.completedRequestCount++;
+    }
+    return [{ text: "two requests completed", sourceUrl: null }];
+  }
+}
+
+class HealthyRetryVisionHierarchyFakeSummarizer implements SummarizerService {
+  completed = false;
+
+  async summarize(
+    _items: NormalizedItem[],
+    _rules: SummaryRuleset,
+    options?: SummarizeOptions,
+  ): Promise<SummaryPoint[]> {
+    // This integration test exercises the real watchdog with a 350 ms gap beyond the old deadline.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 800);
+    await promise;
+    options?.signal?.throwIfAborted();
+    this.completed = true;
+    return [{ text: "healthy envelope completed", sourceUrl: null }];
   }
 }
 
@@ -686,6 +730,195 @@ Deno.test("summarizeOwnedFeedPeriod — timeout during summarization rejects wit
     );
   });
 });
+
+Deno.test("summarizeOwnedFeedPeriod — watchdog rejects a signal-ignoring summarizer", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(
+      database,
+      "summarize-signal-ignoring-timeout@example.com",
+    );
+    await upsertItems(database, feed.id, [normalizedItem()], 1);
+
+    await assertRejects(
+      () =>
+        summarizeFeedPeriod(
+          database,
+          user.id,
+          feed.id,
+          periodStartMs,
+          periodEndMs,
+          {
+            summarizer: new SignalIgnoringNeverSettlingFakeSummarizer(),
+            timeoutMs: 5,
+          },
+        ),
+      DOMException,
+      "Summarizer timed out",
+    );
+  });
+});
+
+Deno.test("summarizeOwnedFeedPeriod — passes a per-request timeout to the summarizer", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(
+      database,
+      "summarize-request-timeout@example.com",
+    );
+    await upsertItems(database, feed.id, [normalizedItem()], 1);
+    const summarizer = new FakeSummarizer([[{
+      text: "request completed",
+      sourceUrl: null,
+    }]]);
+
+    await summarizeFeedPeriod(
+      database,
+      user.id,
+      feed.id,
+      periodStartMs,
+      periodEndMs,
+      { summarizer, timeoutMs: 5 },
+    );
+
+    assertEquals(summarizer.calls[0].options?.requestTimeoutMs, 5);
+  });
+});
+
+Deno.test("summarizeOwnedFeedPeriod — forwards configured chunk and image limits", async () => {
+  const variableNames = [
+    "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
+    "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
+    "SUMMARIZER_MAX_IMAGE_BYTES",
+  ] as const;
+  const previousValues = variableNames.map((name) => Deno.env.get(name));
+  Deno.env.set("SUMMARIZER_TEXT_BYTES_PER_CHUNK", "23456");
+  Deno.env.set("SUMMARIZER_MAX_ITEMS_PER_CHUNK", "12");
+  Deno.env.set("SUMMARIZER_MAX_IMAGE_BYTES", "34567");
+
+  try {
+    await withTestDb(async (database) => {
+      const { user, feed } = await createFeed(
+        database,
+        "summarize-configured-limits@example.com",
+      );
+      await upsertItems(database, feed.id, [normalizedItem()], 1);
+      const summarizer = new FakeSummarizer([[{
+        text: "configured request",
+        sourceUrl: null,
+      }]]);
+
+      await summarizeFeedPeriod(
+        database,
+        user.id,
+        feed.id,
+        periodStartMs,
+        periodEndMs,
+        { summarizer },
+      );
+
+      assertEquals(summarizer.calls[0].options?.maxTextBytesPerChunk, 23456);
+      assertEquals(summarizer.calls[0].options?.maxItemsPerChunk, 12);
+      assertEquals(summarizer.calls[0].options?.maxImageBytes, 34567);
+    });
+  } finally {
+    for (let index = 0; index < variableNames.length; index++) {
+      const previousValue = previousValues[index];
+      if (previousValue === undefined) {
+        Deno.env.delete(variableNames[index]);
+      } else {
+        Deno.env.set(variableNames[index], previousValue);
+      }
+    }
+  }
+});
+
+Deno.test("summarizeOwnedFeedPeriod — healthy sequential requests may exceed one request timeout in total", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(
+      database,
+      "summarize-sequential-requests@example.com",
+    );
+    await upsertItems(database, feed.id, [normalizedItem()], 1);
+    const summarizer = new TwoRequestFakeSummarizer();
+
+    await summarizeFeedPeriod(
+      database,
+      user.id,
+      feed.id,
+      periodStartMs,
+      periodEndMs,
+      { summarizer, timeoutMs: 30 },
+    );
+
+    assertEquals(summarizer.completedRequestCount, 2);
+  });
+});
+
+Deno.test("summarizeOwnedFeedPeriod — watchdog permits retry, vision, and hierarchical merge envelope", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(
+      database,
+      "summarize-retry-vision-hierarchy-envelope@example.com",
+    );
+    await upsertItems(database, feed.id, [normalizedItem()], 1);
+    const summarizer = new HealthyRetryVisionHierarchyFakeSummarizer();
+
+    await summarizeFeedPeriod(
+      database,
+      user.id,
+      feed.id,
+      periodStartMs,
+      periodEndMs,
+      { summarizer, timeoutMs: 150 },
+    );
+
+    assertEquals(summarizer.completed, true);
+  });
+});
+
+Deno.test("summarizeOwnedFeedPeriod — records redacted feed timeout context", async () => {
+  await withTestDb(async (database) => {
+    const { user, feed } = await createFeed(
+      database,
+      "summarize-timeout-log@example.com",
+    );
+    await upsertItems(database, feed.id, [normalizedItem()], 1);
+    const summarizer = new NeverSettlingFakeSummarizer();
+    const events: OperationalLogEvent[] = [];
+
+    await assertRejects(
+      () =>
+        summarizeFeedPeriod(
+          database,
+          user.id,
+          feed.id,
+          periodStartMs,
+          periodEndMs,
+          {
+            summarizer,
+            timeoutMs: 5,
+            runId: "run-timeout",
+            recordOperationalEvent: (event) => {
+              events.push(event);
+              return Promise.resolve();
+            },
+          },
+        ),
+      DOMException,
+      "Summarizer timed out",
+    );
+
+    assertEquals(events, [{
+      level: "error",
+      event: "summarization.feed_failed",
+      runId: "run-timeout",
+      feedId: feed.id,
+      connectorId: ConnectorId.Telegram,
+      itemCount: 1,
+      errorMessage: "Summarizer timed out",
+    }]);
+  });
+});
+
 Deno.test("cleanupFeedMedia — deletes files for media items in the window", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(

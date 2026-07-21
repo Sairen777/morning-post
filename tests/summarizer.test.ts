@@ -14,6 +14,7 @@ import {
 } from "../src/summarizers/prompts.ts";
 import type { OpenAICompatibleSummarizerOptions } from "../src/summarizers/openai-compatible-summarizer.ts";
 import type { NormalizedItem } from "../src/connectors/connector.types.ts";
+import type { SummarizationDiagnostic } from "../src/summarizers/summarizer.types.ts";
 import { ConnectorId } from "../src/constants.ts";
 
 const item = (overrides: Partial<NormalizedItem> = {}): NormalizedItem => ({
@@ -363,6 +364,93 @@ async function createRoutingTestDirectory(name: string): Promise<string> {
   return directory;
 }
 
+Deno.test("summarize — enforces the timeout at the model request boundary", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestAborted = false;
+  globalThis.fetch = (_input, init) =>
+    new Promise<Response>((resolve, reject) => {
+      const responseTimer = setTimeout(
+        () =>
+          resolve(
+            new Response(modelResponse('[{"t":"too late","i":0}]'), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          ),
+        50,
+      );
+      const signal = init?.signal;
+      signal?.addEventListener(
+        "abort",
+        () => {
+          requestAborted = true;
+          clearTimeout(responseTimer);
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
+
+  try {
+    const service = createTestSummarizer();
+    await assertRejects(
+      () =>
+        service.summarize([item()], buildNewsPrompt(), {
+          requestTimeoutMs: 5,
+        }),
+      DOMException,
+      "Summarizer timed out",
+    );
+    assert(requestAborted);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarize — renews the timeout for every chunk and merge request", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestSignals: Array<AbortSignal | null | undefined> = [];
+  const responses = [
+    modelResponse('[{"t":"first chunk","i":0}]'),
+    modelResponse('[{"t":"second chunk","i":0}]'),
+    modelResponse('[{"t":"merged","i":0}]'),
+  ];
+  let callIndex = 0;
+  globalThis.fetch = (_input, init) => {
+    requestSignals.push(init?.signal);
+    const responseBody = responses[callIndex] ?? responses.at(-1)!;
+    callIndex++;
+    return Promise.resolve(
+      new Response(responseBody, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  };
+
+  try {
+    const service = createTestSummarizer({ maxItemsPerChunk: 1 });
+    const result = await service.summarize(
+      [
+        item({ externalId: "first", text: "first" }),
+        item({ externalId: "second", text: "second" }),
+      ],
+      buildNewsPrompt(),
+      { requestTimeoutMs: 1_000 },
+    );
+
+    assertEquals(result[0].text, "merged");
+    assertEquals(requestSignals.length, 3);
+    assertEquals(
+      requestSignals.every((signal) => signal instanceof AbortSignal),
+      true,
+    );
+    assertEquals(new Set(requestSignals).size, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 // --- retry behavior ---
 
 Deno.test("summarize — retries on 429 and succeeds on second attempt", async () => {
@@ -419,28 +507,39 @@ Deno.test("summarize — does not retry on 400 (non-retryable status)", async ()
     ) throw err;
     assertEquals(err instanceof Error, true);
     assertStringIncludes((err as Error).message, "Model API 400");
-    assertStringIncludes((err as Error).message, "bad request");
+    assertEquals((err as Error).message.includes("bad request"), false);
     assertEquals(callCount(), 1);
   } finally {
     restore();
   }
 });
 
-Deno.test("summarize — includes response body in error message", async () => {
+Deno.test("summarize — provider response bodies stay out of diagnostics", async () => {
+  const privateMarker = "PRIVATE_PROVIDER_RESPONSE_MUST_NOT_BE_LOGGED";
   const { restore } = stubFetchSequence([
-    { status: 500, body: '{"error":"internal quota exceeded"}' },
+    { status: 500, body: `{"error":"${privateMarker}"}` },
   ]);
+  const diagnostics: SummarizationDiagnostic[] = [];
   try {
-    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
-    await svc.summarize([item()], buildNewsPrompt());
-    throw new Error("expected summarize to throw on 500");
-  } catch (err: unknown) {
-    if (
-      err instanceof Error &&
-      err.message === "expected summarize to throw on 500"
-    ) throw err;
-    assertEquals(err instanceof Error, true);
-    assertStringIncludes((err as Error).message, "internal quota exceeded");
+    const service = createTestSummarizer({ retryBaseDelayMs: 0 });
+    const error = await assertRejects(
+      () =>
+        service.summarize([item()], buildNewsPrompt(), {
+          onDiagnostic: (diagnostic) => {
+            diagnostics.push(diagnostic);
+          },
+        }),
+      Error,
+      "Model API 500",
+    );
+    assertEquals(error.message.includes(privateMarker), false);
+    assertEquals(diagnostics, [{
+      event: "chunk_failed",
+      chunkIndex: 1,
+      chunkCount: 1,
+      model: "test-model",
+      errorMessage: "Model API 500",
+    }]);
   } finally {
     restore();
   }
@@ -503,6 +602,32 @@ Deno.test("parsePoints — throws on non-array object response", async () => {
     ) throw err;
     assertEquals(err instanceof Error, true);
     assertStringIncludes((err as Error).message, "non-array");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("parsePoints — validation errors do not include raw model output", async () => {
+  const privateMarker = "PRIVATE_MODEL_OUTPUT_MUST_NOT_BE_LOGGED";
+  const restore = stubFetch({
+    choices: [{
+      message: { content: `{"private":"${privateMarker}"}` },
+    }],
+  });
+  try {
+    const service = createTestSummarizer();
+    await service.summarize([item()], buildNewsPrompt());
+    throw new Error("expected summarize to reject raw object output");
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "expected summarize to reject raw object output"
+    ) {
+      throw error;
+    }
+    assertEquals(error instanceof Error, true);
+    assertStringIncludes((error as Error).message, "non-array");
+    assertEquals((error as Error).message.includes(privateMarker), false);
   } finally {
     restore();
   }
@@ -623,6 +748,188 @@ Deno.test("summarize — chunks items and merges when maxItemsPerChunk is exceed
     assertEquals(results[0].text, "final X");
     assertEquals(results[1].text, "final Y");
   } finally {
+    restore();
+  }
+});
+
+Deno.test("summarize — bounds a production-shaped hierarchical merge", async () => {
+  const originalFetch = globalThis.fetch;
+  const sourceRequestCount = 18;
+  const pointsPerSource = 50;
+  const totalPoints = sourceRequestCount * pointsPerSource;
+  const maxMergeItems = 32;
+  const maxMergeBytes = 512;
+  const mergePayloads: string[] = [];
+  let requestCount = 0;
+  globalThis.fetch = (_input, init) => {
+    const request = JSON.parse(
+      (init as RequestInit & { body: string }).body,
+    ) as FetchRequest;
+    const isSourceRequest = requestCount++ < sourceRequestCount;
+    const responseContent = isSourceRequest
+      ? JSON.stringify(
+        Array.from(
+          { length: pointsPerSource },
+          (_, index) => ({ t: `source ${requestCount} point ${index}`, i: 0 }),
+        ),
+      )
+      : (() => {
+        mergePayloads.push(String(request.messages[1].content));
+        return `[{"t":"merged ${mergePayloads.length}","i":0}]`;
+      })();
+    return Promise.resolve(
+      new Response(modelResponse(responseContent), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  };
+
+  try {
+    const service = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: maxMergeItems,
+      maxTextBytesPerChunk: maxMergeBytes,
+    });
+    const results = await service.summarize(
+      Array.from(
+        { length: sourceRequestCount },
+        (_, index) =>
+          item({
+            externalId: String(index),
+            text: `source item ${index} ${"x".repeat(300)}`,
+          }),
+      ),
+      buildNewsPrompt(),
+    );
+
+    const encoder = new TextEncoder();
+    const mergeItemCounts = mergePayloads.map((content) =>
+      (content.match(/^\[\d+\]$/gm) ?? []).length
+    );
+    assert(mergePayloads.length > 1);
+    assert(
+      mergeItemCounts.every((count) =>
+        count <= maxMergeItems && count < totalPoints
+      ),
+    );
+    assert(
+      mergePayloads.every((content) =>
+        encoder.encode(content).byteLength <= maxMergeBytes
+      ),
+    );
+    assertEquals(results.length, 1);
+    assertStringIncludes(results[0].text, "merged");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarize — merge framing honors tiny UTF-8 budgets and maxItems one", async () => {
+  const originalFetch = globalThis.fetch;
+  const mergeContents: string[] = [];
+  let requestCount = 0;
+  globalThis.fetch = (_input, init) => {
+    const request = JSON.parse(
+      (init as RequestInit & { body: string }).body,
+    ) as FetchRequest;
+    requestCount++;
+    const responseContent = requestCount <= 2
+      ? '[{"t":"😀😀","i":0}]'
+      : (() => {
+        mergeContents.push(String(request.messages[1].content));
+        return '[{"t":"done","i":0}]';
+      })();
+    return Promise.resolve(
+      new Response(modelResponse(responseContent), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  };
+
+  try {
+    const service = createTestSummarizer({
+      maxItemsPerChunk: 1,
+      maxTextBytesPerChunk: 14,
+    });
+    const result = await service.summarize(
+      [item({ text: "a" }), item({ text: "b" })],
+      buildNewsPrompt(),
+    );
+    assertEquals(result[0].text, "done");
+    assertEquals(mergeContents.length, 1);
+    assertEquals(new TextEncoder().encode(mergeContents[0]).byteLength, 14);
+    assertEquals((mergeContents[0].match(/^\[\d+\]$/gm) ?? []).length, 2);
+    assertEquals(mergeContents[0].includes("\uFFFD"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarize — rejects an empty intermediate merge through merge_failed", async () => {
+  const diagnostics: SummarizationDiagnostic[] = [];
+  const { restore } = stubFetchSequence([
+    { status: 200, body: modelResponse('[{"t":"first","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"second","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"third","i":0}]') },
+    { status: 200, body: modelResponse("[]") },
+  ]);
+  try {
+    const service = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 1,
+    });
+    await assertRejects(
+      () =>
+        service.summarize(
+          [item({ text: "a" }), item({ text: "b" }), item({ text: "c" })],
+          buildNewsPrompt(),
+          {
+            onDiagnostic: (diagnostic) => {
+              diagnostics.push(diagnostic);
+            },
+          },
+        ),
+      Error,
+      "Non-final merge batch returned no summary points",
+    );
+    assertEquals(diagnostics, [{
+      event: "merge_failed",
+      chunkCount: 3,
+      model: "test-model",
+      errorMessage: "Non-final merge batch returned no summary points",
+    }]);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("summarize — constructor uses the scoped item limit configuration", async () => {
+  const previousValue = Deno.env.get("SUMMARIZER_MAX_ITEMS_PER_CHUNK");
+  Deno.env.set("SUMMARIZER_MAX_ITEMS_PER_CHUNK", "1");
+  const { callCount, restore } = stubFetchSequence([
+    { status: 200, body: modelResponse('[{"t":"first","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"second","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"merged","i":0}]') },
+  ]);
+
+  try {
+    const service = createTestSummarizer({ retryBaseDelayMs: 0 });
+    await service.summarize(
+      [
+        item({ externalId: "first", text: "first" }),
+        item({ externalId: "second", text: "second" }),
+      ],
+      buildNewsPrompt(),
+    );
+    assertEquals(callCount(), 3);
+  } finally {
+    if (previousValue === undefined) {
+      Deno.env.delete("SUMMARIZER_MAX_ITEMS_PER_CHUNK");
+    } else {
+      Deno.env.set("SUMMARIZER_MAX_ITEMS_PER_CHUNK", previousValue);
+    }
     restore();
   }
 });
@@ -1229,9 +1536,9 @@ Deno.test("summarize — vision failure is logged once per run and retried on th
     { status: 200, body: "not valid vision JSON" },
     { status: 200, body: modelResponse('[{"t":"second unavailable","i":0}]') },
   ]);
-  const originalError = console.error;
+  const originalWarning = console.warn;
   const logs: unknown[][] = [];
-  console.error = (...arguments_: unknown[]) => {
+  console.warn = (...arguments_: unknown[]) => {
     logs.push(arguments_);
   };
   try {
@@ -1249,7 +1556,8 @@ Deno.test("summarize — vision failure is logged once per run and retried on th
     assertEquals(logs.length, 2);
     assertEquals(
       logs.every((entry) =>
-        entry[0] === "[summarization] vision analysis unavailable for this run:"
+        entry[0] ===
+          "[summarization] vision analysis unavailable at chunk 1/1; continuing with text-only fallback:"
       ),
       true,
     );
@@ -1263,8 +1571,237 @@ Deno.test("summarize — vision failure is logged once per run and retried on th
       "[IMAGE_ANALYSIS_UNAVAILABLE]",
     );
   } finally {
-    console.error = originalError;
+    console.warn = originalWarning;
     restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — duplicate vision indexes merge distinct album descriptions", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory(
+    "vision-duplicate-index",
+  );
+  const firstImagePath = `${temporaryDirectory}/first.jpg`;
+  const secondImagePath = `${temporaryDirectory}/second.jpg`;
+  await Deno.writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
+  await Deno.writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
+  const { captured, callCount, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(
+        '[{"i":0,"description":" first image "},{"i":0,"description":"second image"},{"i":0,"description":"first image"}]',
+      ),
+    },
+    { status: 200, body: modelResponse('[{"t":"album summary","i":0}]') },
+  ]);
+  const originalWarning = console.warn;
+  const warnings: unknown[][] = [];
+  const diagnostics: SummarizationDiagnostic[] = [];
+  console.warn = (...arguments_: unknown[]) => {
+    warnings.push(arguments_);
+  };
+
+  try {
+    const service = createTestSummarizer({
+      models: DISTINCT_TEST_MODELS,
+      retryBaseDelayMs: 0,
+    });
+    const result = await service.summarize(
+      [item({
+        media: {
+          type: "album",
+          localPaths: [firstImagePath, secondImagePath],
+        },
+      })],
+      buildNewsPrompt(),
+      {
+        onDiagnostic: (diagnostic) => {
+          diagnostics.push(diagnostic);
+        },
+      },
+    );
+
+    assertEquals(callCount(), 2);
+    assertEquals(result[0].text, "album summary");
+    assertEquals(
+      captured[1].body.messages[1].content,
+      "[0]\nSome news post\n[IMAGE_ANALYSIS]\nfirst image\nsecond image\n[/IMAGE_ANALYSIS]",
+    );
+    assertEquals(
+      String(captured[1].body.messages[1].content).includes(
+        "[IMAGE_ANALYSIS_UNAVAILABLE]",
+      ),
+      false,
+    );
+    assertEquals(warnings, []);
+    assertEquals(diagnostics, []);
+  } finally {
+    console.warn = originalWarning;
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — duplicate vision indexes do not mask a missing expected index", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory(
+    "vision-duplicate-missing-index",
+  );
+  const firstImagePath = `${temporaryDirectory}/first.jpg`;
+  const secondImagePath = `${temporaryDirectory}/second.jpg`;
+  await Deno.writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
+  await Deno.writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
+  const { captured, callCount, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(
+        '[{"i":0,"description":"first"},{"i":0,"description":"second"}]',
+      ),
+    },
+    { status: 200, body: modelResponse('[{"t":"text fallback","i":0}]') },
+  ]);
+  const originalWarning = console.warn;
+  const diagnostics: SummarizationDiagnostic[] = [];
+  console.warn = () => {};
+
+  try {
+    const service = createTestSummarizer({
+      models: DISTINCT_TEST_MODELS,
+      retryBaseDelayMs: 0,
+    });
+    const result = await service.summarize(
+      [
+        item({
+          externalId: "1",
+          media: { type: "photo", localPath: firstImagePath },
+        }),
+        item({
+          externalId: "2",
+          media: { type: "photo", localPath: secondImagePath },
+        }),
+      ],
+      buildNewsPrompt(),
+      {
+        onDiagnostic: (diagnostic) => {
+          diagnostics.push(diagnostic);
+        },
+      },
+    );
+
+    assertEquals(callCount(), 2);
+    assertEquals(result[0].text, "text fallback");
+    assertStringIncludes(
+      String(captured[1].body.messages[1].content),
+      "[IMAGE_ANALYSIS_UNAVAILABLE]",
+    );
+    assertEquals(diagnostics, [{
+      event: "vision_unavailable",
+      chunkIndex: 1,
+      chunkCount: 1,
+      model: "vision-model",
+      errorMessage: "vision response validation failed: expected=2 received=1",
+    }]);
+  } finally {
+    console.warn = originalWarning;
+    restore();
+    await Deno.remove(temporaryDirectory, { recursive: true });
+  }
+});
+
+Deno.test("summarize — text timeout after valid vision is not retried as vision fallback", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory(
+    "vision-success-text-timeout",
+  );
+  const imagePath = `${temporaryDirectory}/photo.jpg`;
+  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  const originalFetch = globalThis.fetch;
+  const diagnostics: SummarizationDiagnostic[] = [];
+  let callCount = 0;
+  const textRequestContents: string[] = [];
+  globalThis.fetch = (_input, init) => {
+    callCount++;
+    const request = JSON.parse(
+      (init as RequestInit & { body: string }).body,
+    ) as FetchRequest;
+    if (callCount === 1) {
+      return Promise.resolve(
+        new Response(
+          modelResponse('[{"i":0,"description":"visible image"}]'),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      );
+    }
+    textRequestContents.push(String(request.messages[1].content));
+    return new Promise<Response>((resolve, reject) => {
+      const responseTimer = setTimeout(
+        () =>
+          resolve(
+            new Response(modelResponse('[{"t":"too late","i":0}]'), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          ),
+        50,
+      );
+      const signal = init?.signal;
+      signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(responseTimer);
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
+  };
+
+  try {
+    const service = createTestSummarizer({
+      models: DISTINCT_TEST_MODELS,
+      retryBaseDelayMs: 0,
+    });
+    await assertRejects(
+      () =>
+        service.summarize(
+          [item({ media: { type: "photo", localPath: imagePath } })],
+          buildNewsPrompt(),
+          {
+            requestTimeoutMs: 5,
+            onDiagnostic: (diagnostic) => {
+              diagnostics.push(diagnostic);
+            },
+          },
+        ),
+      DOMException,
+      "Summarizer timed out",
+    );
+
+    assertEquals(callCount, 4);
+    assertEquals(textRequestContents.length, 3);
+    assert(
+      textRequestContents.every((content) =>
+        content.includes("[IMAGE_ANALYSIS]") &&
+        content.includes("visible image") &&
+        !content.includes("[IMAGE_ANALYSIS_UNAVAILABLE]")
+      ),
+    );
+    assertEquals(
+      diagnostics.some((diagnostic) =>
+        diagnostic.event === "vision_unavailable"
+      ),
+      false,
+    );
+    assertEquals(diagnostics, [{
+      event: "chunk_failed",
+      chunkIndex: 1,
+      chunkCount: 1,
+      model: "text-model",
+      errorMessage: "Summarizer timed out",
+    }]);
+  } finally {
+    globalThis.fetch = originalFetch;
     await Deno.remove(temporaryDirectory, { recursive: true });
   }
 });

@@ -1,18 +1,22 @@
-import { and, asc, eq, desc, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import {
   digestRunFeeds,
-  digestRuns,
-  type DigestRunFeedStatus,
   type DigestRunFeedStage,
+  type DigestRunFeedStatus,
+  digestRuns,
   type DigestRunStatus,
   type DigestRunTrigger,
 } from "../db/schema/digest-run.ts";
 
 import { isUniqueViolation } from "../db/errors.ts";
 import { ConflictError } from "../server/errors.ts";
-import { type PageResult, encodeDigestRunCursor, decodeDigestRunCursor } from "../server/cursor.ts";
+import {
+  decodeDigestRunCursor,
+  encodeDigestRunCursor,
+  type PageResult,
+} from "../server/cursor.ts";
 
 const publicDigestRunSchema = z.object({
   id: z.string(),
@@ -54,7 +58,9 @@ export class DigestRunAlreadyRunningError extends ConflictError {
   }
 }
 
-export function isDigestRunAlreadyRunningError(error: unknown): error is DigestRunAlreadyRunningError {
+export function isDigestRunAlreadyRunningError(
+  error: unknown,
+): error is DigestRunAlreadyRunningError {
   return error instanceof DigestRunAlreadyRunningError;
 }
 
@@ -121,16 +127,38 @@ export async function recoverStaleDigestRuns(
   staleAfterMs: number,
 ): Promise<number> {
   const staleBefore = now - staleAfterMs;
-  const rows = await database
-    .update(digestRuns)
-    .set({
-      status: "failed",
-      finishedAt: now,
-      errorMessage: "digest run lease expired",
-    })
-    .where(and(eq(digestRuns.status, "running"), lt(digestRuns.startedAt, staleBefore)))
-    .returning({ id: digestRuns.id });
-  return rows.length;
+  return await database.transaction(async (transaction) => {
+    const recoveredRuns = await transaction
+      .update(digestRuns)
+      .set({
+        status: "failed",
+        finishedAt: now,
+        errorMessage: "digest run lease expired",
+      })
+      .where(and(
+        eq(digestRuns.status, "running"),
+        lt(digestRuns.startedAt, staleBefore),
+      ))
+      .returning({ id: digestRuns.id });
+
+    if (recoveredRuns.length === 0) {
+      return 0;
+    }
+
+    await transaction
+      .update(digestRunFeeds)
+      .set({
+        status: "failed",
+        finishedAt: now,
+        errorMessage: "digest run lease expired",
+      })
+      .where(and(
+        eq(digestRunFeeds.status, "running"),
+        inArray(digestRunFeeds.runId, recoveredRuns.map((run) => run.id)),
+      ));
+
+    return recoveredRuns.length;
+  });
 }
 
 export async function finishDigestRun(
@@ -235,7 +263,6 @@ export async function listDigestRunsForUser(
   return rows.map(parsePublicDigestRun);
 }
 
-
 export async function listDigestRunPageForUser(
   database: Database,
   userId: string,
@@ -269,7 +296,10 @@ export async function listDigestRunPageForUser(
   const hasMore = rows.length > limit;
   const data = rows.slice(0, limit).map(parsePublicDigestRun);
   const nextCursor: string | null = hasMore
-    ? encodeDigestRunCursor(data[data.length - 1].startedAt, data[data.length - 1].id)
+    ? encodeDigestRunCursor(
+      data[data.length - 1].startedAt,
+      data[data.length - 1].id,
+    )
     : null;
 
   return { data, nextCursor };

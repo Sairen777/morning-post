@@ -1,6 +1,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   getConfig,
+  getSummarizerBudgetConfig,
   getSummarizerRuntimeConfig,
   resolveAllowRemoteSummarization,
   resolveAppSecurityOptions,
@@ -79,6 +80,30 @@ Deno.test("config defaults cover runtime boundaries", () => {
   assertEquals(config.mediaQuotaBytes, 524_288_000);
   assertEquals(config.digestRunStaleAfterMs, 900_000);
   assertEquals(config.schedulerLeaseMs, 90_000);
+});
+
+Deno.test("summarizer budget resolver reads only scoped limit settings", () => {
+  const budget = withClearedEnvironment(
+    [
+      "ALLOWED_ORIGINS",
+      "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
+      "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
+      "SUMMARIZER_MAX_IMAGE_BYTES",
+    ],
+    () => {
+      Deno.env.set("ALLOWED_ORIGINS", "not a valid origin list");
+      Deno.env.set("SUMMARIZER_TEXT_BYTES_PER_CHUNK", "9000");
+      Deno.env.set("SUMMARIZER_MAX_ITEMS_PER_CHUNK", "7");
+      Deno.env.set("SUMMARIZER_MAX_IMAGE_BYTES", "8000");
+      return getSummarizerBudgetConfig();
+    },
+  );
+
+  assertEquals(budget, {
+    summarizerTextBytesPerChunk: 9000,
+    summarizerMaxItemsPerChunk: 7,
+    summarizerMaxImageBytes: 8000,
+  });
 });
 
 Deno.test("server hostname resolver uses loopback and strict precedence", () => {

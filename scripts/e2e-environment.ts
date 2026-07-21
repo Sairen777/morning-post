@@ -157,7 +157,7 @@ async function startE2eApi(): Promise<void> {
   Deno.env.set("PORT", String(E2E_API_PORT));
   Deno.env.set("ALLOWED_ORIGINS", E2E_WEB_ORIGIN);
   const { bootServer } = await import("../src/server/main.ts");
-  bootServer();
+  await bootServer();
 }
 
 async function cleanupE2eDatabase(): Promise<void> {

@@ -1,5 +1,6 @@
 import type { TelegramClient } from "telegram";
 import type { StringSession } from "telegram/sessions/index.js";
+import { sanitizeErrorForOps } from "../../server/error-sanitizer.ts";
 
 export interface TelegramApiCredentials {
   apiId: number;
@@ -13,8 +14,41 @@ export function readTelegramApiCredentials(): TelegramApiCredentials {
   };
 }
 
-async function createTelegramClientWithSession(sessionString: string): Promise<TelegramClient> {
-  const { apiId, apiHash } = readTelegramApiCredentials();
+export interface DestroyableTelegramClient {
+  destroy(): Promise<void> | void;
+}
+
+export async function destroyTelegramClient(
+  client: DestroyableTelegramClient,
+): Promise<void> {
+  await client.destroy();
+}
+
+export interface TelegramClientConstructionOptions {
+  connectionRetries: number;
+  deviceModel: string;
+  systemVersion: string;
+}
+
+const TELEGRAM_CLIENT_OPTIONS: TelegramClientConstructionOptions = {
+  connectionRetries: 5,
+  deviceModel: "Morning Post",
+  systemVersion: "Deno",
+};
+
+export interface TelegramClientFactoryDependencies {
+  constructClient?: (
+    sessionString: string,
+    credentials: TelegramApiCredentials,
+    options: TelegramClientConstructionOptions,
+  ) => Promise<TelegramClient>;
+}
+
+async function constructTelegramClient(
+  sessionString: string,
+  credentials: TelegramApiCredentials,
+  options: TelegramClientConstructionOptions,
+): Promise<TelegramClient> {
   let TelegramClientConstructor: typeof TelegramClient;
   let StringSessionConstructor: typeof StringSession;
   try {
@@ -26,18 +60,52 @@ async function createTelegramClientWithSession(sessionString: string): Promise<T
   } catch (error) {
     throw new Error("Failed to load Telegram client runtime", { cause: error });
   }
-  const client = new TelegramClientConstructor(new StringSessionConstructor(sessionString), apiId, apiHash, {
-    connectionRetries: 5,
-  });
-
-  await client.connect();
-  return client;
+  return new TelegramClientConstructor(
+    new StringSessionConstructor(sessionString),
+    credentials.apiId,
+    credentials.apiHash,
+    options,
+  );
 }
 
-export async function createClientFromSession(sessionString: string): Promise<TelegramClient> {
-  return await createTelegramClientWithSession(sessionString);
+async function createTelegramClientWithSession(
+  sessionString: string,
+  dependencies: TelegramClientFactoryDependencies = {},
+): Promise<TelegramClient> {
+  const credentials = readTelegramApiCredentials();
+  const client =
+    await (dependencies.constructClient ?? constructTelegramClient)(
+      sessionString,
+      credentials,
+      TELEGRAM_CLIENT_OPTIONS,
+    );
+
+  try {
+    await client.connect();
+    return client;
+  } catch (error) {
+    try {
+      await destroyTelegramClient(client);
+    } catch (cleanupError) {
+      console.error(
+        "Failed to destroy Telegram client after connection failure:",
+        sanitizeErrorForOps(cleanupError),
+      );
+      // Preserve the acquisition failure; it is the actionable error.
+    }
+    throw error;
+  }
 }
 
-export async function createUnauthenticatedTelegramClient(): Promise<TelegramClient> {
-  return await createTelegramClientWithSession("");
+export async function createClientFromSession(
+  sessionString: string,
+  dependencies: TelegramClientFactoryDependencies = {},
+): Promise<TelegramClient> {
+  return await createTelegramClientWithSession(sessionString, dependencies);
+}
+
+export async function createUnauthenticatedTelegramClient(
+  dependencies: TelegramClientFactoryDependencies = {},
+): Promise<TelegramClient> {
+  return await createTelegramClientWithSession("", dependencies);
 }

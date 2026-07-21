@@ -6,22 +6,37 @@ import {
   type TelegramClientFactory,
   type TelegramClientHandle,
 } from "../src/connectors/connector-factory.ts";
-import { CredentialCipher, type EncryptedBlob } from "../src/crypto/credential-cipher.ts";
+import {
+  CredentialCipher,
+  type EncryptedBlob,
+} from "../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../src/crypto/key-provider.ts";
 import type { Database } from "../src/db/client.ts";
 import { withTestDb } from "../src/db/testing.ts";
-import { createSource, deleteSourceCredentials } from "../src/repositories/source-repository.ts";
-import { createUser, type CreateUserInput } from "../src/repositories/user-repository.ts";
+import {
+  createSource,
+  deleteSourceCredentials,
+} from "../src/repositories/source-repository.ts";
+import {
+  createUser,
+  type CreateUserInput,
+} from "../src/repositories/user-repository.ts";
 import { ConflictError, NotFoundError } from "../src/server/errors.ts";
 import type { SubstackPostReader } from "../src/connectors/substack/substack-connector.ts";
 
 class FakeTelegramClientFactory implements TelegramClientFactory {
   readonly sessions: string[] = [];
+  destroyCount = 0;
   disconnectCount = 0;
 
-  createClientFromSession(sessionString: string): Promise<TelegramClientHandle> {
+  createClientFromSession(
+    sessionString: string,
+  ): Promise<TelegramClientHandle> {
     this.sessions.push(sessionString);
     const client = {
+      destroy: () => {
+        this.destroyCount += 1;
+      },
       disconnect: () => {
         this.disconnectCount += 1;
       },
@@ -31,7 +46,9 @@ class FakeTelegramClientFactory implements TelegramClientFactory {
 }
 
 class FakeSubstackClientFactory implements SubstackClientFactory {
-  readonly credentials: Array<{ substackSessionId: string; connectSessionId?: string }> = [];
+  readonly credentials: Array<
+    { substackSessionId: string; connectSessionId?: string }
+  > = [];
 
   createClient(
     credentials: { substackSessionId: string; connectSessionId?: string },
@@ -52,7 +69,9 @@ function userInput(email: string): CreateUserInput {
 }
 
 function credentialCipher(): CredentialCipher {
-  return new CredentialCipher(new EnvMasterKeyProvider(new Uint8Array(32).fill(31)));
+  return new CredentialCipher(
+    new EnvMasterKeyProvider(new Uint8Array(32).fill(31)),
+  );
 }
 
 async function encryptedCredentials(
@@ -70,10 +89,13 @@ async function encryptedSubstackCredentials(
   userId: string,
   connectorId = ConnectorId.Substack,
 ): Promise<EncryptedBlob> {
-  return await credentialCipher().encrypt(JSON.stringify({
-    substackSessionId: "s%3Asubstack.signature",
-    connectSessionId: "s%3Aconnect.signature",
-  }), { userId, connectorId });
+  return await credentialCipher().encrypt(
+    JSON.stringify({
+      substackSessionId: "s%3Asubstack.signature",
+      connectSessionId: "s%3Aconnect.signature",
+    }),
+    { userId, connectorId },
+  );
 }
 
 async function createUserAndSource(
@@ -92,7 +114,10 @@ async function createUserAndSource(
 
 Deno.test("ConnectorFactory builds a Telegram connector from encrypted credentials and disposes it", async () => {
   await withTestDb(async (database) => {
-    const { user, source } = await createUserAndSource(database, "connector-factory@example.com");
+    const { user, source } = await createUserAndSource(
+      database,
+      "connector-factory@example.com",
+    );
     const fakeTelegramClientFactory = new FakeTelegramClientFactory();
     const factory = new ConnectorFactory(database, {
       credentialCipher: credentialCipher(),
@@ -105,13 +130,17 @@ Deno.test("ConnectorFactory builds a Telegram connector from encrypted credentia
     assertEquals(handle.ingestionMode, "batch");
 
     await handle.dispose?.();
-    assertEquals(fakeTelegramClientFactory.disconnectCount, 1);
+    assertEquals(fakeTelegramClientFactory.destroyCount, 1);
+    assertEquals(fakeTelegramClientFactory.disconnectCount, 0);
   });
 });
 
 Deno.test("ConnectorFactory builds an individual Substack connector from encrypted credentials", async () => {
   await withTestDb(async (database) => {
-    const user = await createUser(database, userInput("substack-factory@example.com"));
+    const user = await createUser(
+      database,
+      userInput("substack-factory@example.com"),
+    );
     const source = await createSource(database, {
       userId: user.id,
       connectorId: ConnectorId.Substack,
@@ -122,7 +151,8 @@ Deno.test("ConnectorFactory builds an individual Substack connector from encrypt
       credentialCipher: credentialCipher(),
       telegramClientFactory: new FakeTelegramClientFactory(),
       substackClientFactory,
-      substackPublicationReader: () => Promise.resolve({ origin: "https://example.com", items: [] }),
+      substackPublicationReader: () =>
+        Promise.resolve({ origin: "https://example.com", items: [] }),
     });
 
     const handle = await factory.forSource(source, user.id);
@@ -137,8 +167,14 @@ Deno.test("ConnectorFactory builds an individual Substack connector from encrypt
 
 Deno.test("ConnectorFactory rejects non-owner and disconnected sources without exposing credentials", async () => {
   await withTestDb(async (database) => {
-    const { source } = await createUserAndSource(database, "connector-owner@example.com");
-    const otherUser = await createUser(database, userInput("connector-other@example.com"));
+    const { source } = await createUserAndSource(
+      database,
+      "connector-owner@example.com",
+    );
+    const otherUser = await createUser(
+      database,
+      userInput("connector-other@example.com"),
+    );
     const factory = new ConnectorFactory(database, {
       credentialCipher: credentialCipher(),
       telegramClientFactory: new FakeTelegramClientFactory(),
@@ -161,7 +197,11 @@ Deno.test("ConnectorFactory rejects non-owner and disconnected sources without e
 
 Deno.test("ConnectorFactory rejects unsupported connectors", async () => {
   await withTestDb(async (database) => {
-    const { user, source } = await createUserAndSource(database, "connector-unsupported@example.com", ConnectorId.RSS);
+    const { user, source } = await createUserAndSource(
+      database,
+      "connector-unsupported@example.com",
+      ConnectorId.RSS,
+    );
     const factory = new ConnectorFactory(database, {
       credentialCipher: credentialCipher(),
       telegramClientFactory: new FakeTelegramClientFactory(),

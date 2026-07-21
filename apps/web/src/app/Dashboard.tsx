@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import {
   ApiClientError,
   deleteDigest,
@@ -77,23 +77,20 @@ export default function Dashboard(props: DashboardProps) {
   const [sourceFeeds, setSourceFeeds] = createSignal<
     Record<string, PublicFeed[]>
   >({});
+  const [isCheckingDigestRunStatus, setIsCheckingDigestRunStatus] =
+    createSignal(
+      true,
+    );
+  const [digestRunStatusError, setDigestRunStatusError] = createSignal<
+    string | null
+  >(null);
+  let digestRunPollingTimer:
+    | ReturnType<typeof globalThis.setInterval>
+    | undefined;
+  let digestRunRefreshInFlight = false;
+  const digestRunStatusCheckError =
+    "We couldn't confirm whether a digest is already running. Retry the status check before starting another digest.";
   let feedRefreshGeneration = 0;
-
-  const withAuthError = <T,>(
-    fn: () => Promise<T>,
-    fallback: () => T,
-  ): () => Promise<T> => {
-    return async () => {
-      try {
-        return await fn();
-      } catch (err: unknown) {
-        if (err instanceof ApiClientError && err.status === 401) {
-          props.onAuthError();
-        }
-        return fallback();
-      }
-    };
-  };
 
   // Fetch helpers
   const refreshSources = async () => {
@@ -133,17 +130,60 @@ export default function Dashboard(props: DashboardProps) {
     }
   };
 
-  const refreshDigestRuns = async () => {
+  const refreshDigestRuns = async (): Promise<boolean> => {
     try {
       const page = await listDigestRuns();
       setDigestRuns(page.data);
       setDigestRunCursor(page.nextCursor);
+      setDigestRunStatusError(null);
+      return true;
     } catch (err: unknown) {
       if (err instanceof ApiClientError && err.status === 401) {
         props.onAuthError();
+      } else {
+        setDigestRunStatusError(digestRunStatusCheckError);
       }
+      return false;
     }
   };
+
+  const activeDigestRun = () =>
+    digestRuns().find((run) => run.status === "running");
+
+  const pollDigestRuns = async () => {
+    if (digestRunRefreshInFlight) return;
+    digestRunRefreshInFlight = true;
+    const hadActiveDigestRun = activeDigestRun() !== undefined;
+    try {
+      const refreshed = await refreshDigestRuns();
+      if (refreshed && hadActiveDigestRun && activeDigestRun() === undefined) {
+        await refreshDigests();
+      }
+    } finally {
+      digestRunRefreshInFlight = false;
+    }
+  };
+
+  createEffect(() => {
+    if (isCheckingDigestRunStatus() || activeDigestRun() === undefined) {
+      if (digestRunPollingTimer !== undefined) {
+        globalThis.clearInterval(digestRunPollingTimer);
+        digestRunPollingTimer = undefined;
+      }
+      return;
+    }
+    if (digestRunPollingTimer === undefined) {
+      digestRunPollingTimer = globalThis.setInterval(() => {
+        void pollDigestRuns();
+      }, 5_000);
+    }
+    onCleanup(() => {
+      if (digestRunPollingTimer !== undefined) {
+        globalThis.clearInterval(digestRunPollingTimer);
+        digestRunPollingTimer = undefined;
+      }
+    });
+  });
 
   const handleLoadMoreDigests = async () => {
     const cursor = digestCursor();
@@ -200,12 +240,14 @@ export default function Dashboard(props: DashboardProps) {
       }
     }
   };
-
   onMount(() => {
     refreshSources();
     refreshFeeds();
     refreshDigests();
-    refreshDigestRuns();
+    void (async () => {
+      await refreshDigestRuns();
+      setIsCheckingDigestRunStatus(false);
+    })();
   });
 
   // Actions
@@ -360,6 +402,7 @@ export default function Dashboard(props: DashboardProps) {
 
   const tabLabel = (tab: TabId, label: string) => (
     <button
+      type="button"
       onClick={() => setActiveTab(tab)}
       class={activeTab() === tab ? "primary" : ""}
       style={{ "margin-right": "0.5rem" }}
@@ -367,14 +410,13 @@ export default function Dashboard(props: DashboardProps) {
       {label}
     </button>
   );
-
   return (
     <div class="app-container">
       <header class="app-header">
         <h1>Morning Post</h1>
         <div class="user-info">
           <span>{props.user.email}</span>
-          <button onClick={handleLogout}>Log out</button>
+          <button type="button" onClick={handleLogout}>Log out</button>
         </div>
       </header>
 
@@ -391,6 +433,13 @@ export default function Dashboard(props: DashboardProps) {
         <DigestRunnerCard
           onRun={handleRunDigest}
           onAuthError={props.onAuthError}
+          activeRun={activeDigestRun()}
+          isCheckingRunStatus={isCheckingDigestRunStatus()}
+          runStatusError={digestRunStatusError()}
+          onRefreshRunStatus={async () => {
+            await refreshDigestRuns();
+          }}
+          onOpenRuns={() => setActiveTab("runs")}
         />
         <div style="margin-top: 1rem;">
           <DigestsPanel
@@ -409,7 +458,9 @@ export default function Dashboard(props: DashboardProps) {
         <DigestRunsPanel
           runs={digestRuns()}
           onSelectRun={handleSelectRun}
-          onRefresh={refreshDigestRuns}
+          onRefresh={async () => {
+            await refreshDigestRuns();
+          }}
           onAuthError={props.onAuthError}
           nextCursor={digestRunCursor()}
           loadingMore={loadingMoreRuns()}

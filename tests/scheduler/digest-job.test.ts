@@ -1,5 +1,4 @@
 import { assertEquals } from "@std/assert";
-import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
 import {
@@ -277,12 +276,12 @@ Deno.test("scheduleDigestJob skips digest work when the lease is held by another
       now: () => 2_000,
       ownerId: "worker-2",
       schedulerLeaseMs: 321,
-      acquireLease: async (_database, name, ownerId, now, leaseMs) => {
+      acquireLease: (_database, name, ownerId, now, leaseMs) => {
         assertEquals(name, "digest-job");
         assertEquals(ownerId, "worker-2");
         assertEquals(now, 2_000);
         leaseDuration = leaseMs;
-        return false;
+        return Promise.resolve(false);
       },
       runForUser: () => {
         runCalls++;
@@ -298,14 +297,15 @@ Deno.test("scheduleDigestJob skips digest work when the lease is held by another
   });
 });
 
-Deno.test("bootServer injects scheduler and serve without startup side effects", async () => {
+Deno.test("bootServer injects scheduler and serve after stale recovery", async () => {
   await withTestDb(async (database: Database) => {
     const scheduler = new FakeScheduler();
     let served = 0;
-    bootServer({
+    await bootServer({
       database,
       scheduler,
-      summarizer: { summarize: async () => [] },
+      summarizer: { summarize: () => Promise.resolve([]) },
+      recoverStaleRuns: () => Promise.resolve(0),
       config: {
         databaseUrl: "postgres://localhost/test",
         port: 31_001,
@@ -348,13 +348,13 @@ Deno.test("leader tick recovers stale runs before processing users", async () =>
     scheduleDigestJob(scheduler, database, {
       now: () => 4_000,
       ownerId: "worker-leader",
-      acquireLease: async () => {
+      acquireLease: () => {
         events.push("lease");
-        return true;
+        return Promise.resolve(true);
       },
-      recoverStaleRuns: async (_database, now, staleAfterMs) => {
+      recoverStaleRuns: (_database, now, staleAfterMs) => {
         events.push(`recovery:${now}:${staleAfterMs}`);
-        return 0;
+        return Promise.resolve(0);
       },
       runForUser: (_database, userId) => {
         events.push(`run:${userId}`);

@@ -1,7 +1,14 @@
-import { assertEquals, assertExists, assertThrows } from "@std/assert";
+import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { bootServer } from "../../src/server/main.ts";
+import {
+  createDigestRun,
+  listDigestRunFeedsForRun,
+  listDigestRunsForUser,
+  startDigestRunFeed,
+} from "../../src/repositories/digest-run-repository.ts";
+import { createUser } from "../../src/repositories/user-repository.ts";
 import type { Scheduler } from "../../src/scheduler/scheduler.ts";
 
 type ScheduledJob = {
@@ -31,23 +38,32 @@ const MODEL_ENV_KEYS = [
   "VISION_API_KEY",
 ];
 
-Deno.test("bootServer registers jobs and serves health without startup side effects", async () => {
+Deno.test("bootServer waits for stale recovery before registering jobs and serving", async () => {
   const scheduler = new FakeScheduler();
   let servedOptions: { hostname: string; port: number } | undefined;
   let requestHandler:
     | ((request: Request) => Response | Promise<Response>)
     | undefined;
+  const recoveryGate = Promise.withResolvers<number>();
+  const recoveryCalls: Array<
+    { database: Database; now: number; staleAfterMs: number }
+  > = [];
 
   const previousModelEnvironment = new Map(
     MODEL_ENV_KEYS.map((key) => [key, Deno.env.get(key)]),
   );
   try {
     for (const key of MODEL_ENV_KEYS) Deno.env.delete(key);
-    bootServer({
+    const bootPromise = bootServer({
       serverHostname: " 192.0.2.20 ",
       database: {} as Database,
       scheduler,
       summarizer: { summarize: () => Promise.resolve([]) },
+      recoverStaleRuns: (database, now, staleAfterMs) => {
+        recoveryCalls.push({ database, now, staleAfterMs });
+        return recoveryGate.promise;
+      },
+      now: () => 1_234,
       config: {
         databaseUrl: "postgres://unused",
         port: 31_001,
@@ -76,6 +92,15 @@ Deno.test("bootServer registers jobs and serves health without startup side effe
       },
       log: () => {},
     });
+    assertEquals(recoveryCalls, [{
+      database: {} as Database,
+      now: 1_234,
+      staleAfterMs: 1,
+    }]);
+    assertEquals(scheduler.jobs.length, 0);
+    assertEquals(servedOptions, undefined);
+    recoveryGate.resolve(1);
+    await bootPromise;
   } finally {
     for (const [key, value] of previousModelEnvironment) {
       if (value === undefined) Deno.env.delete(key);
@@ -98,8 +123,29 @@ Deno.test("bootServer registers jobs and serves health without startup side effe
   assertEquals(await response.json(), { ok: true });
 });
 
-Deno.test("bootServer serves registration without model environment variables", async () => {
+Deno.test("bootServer recovers stale runs before serving registration", async () => {
   await withTestDb(async (database) => {
+    const interruptedUser = await createUser(database, {
+      name: "Interrupted",
+      email: "interrupted-at-boot@example.com",
+      passwordHash: "$argon2id$fakehash",
+      systemPrompt: "Summarize tersely.",
+      defaultLanguage: "en",
+    });
+    const interruptedRun = await createDigestRun(database, {
+      userId: interruptedUser.id,
+      trigger: "manual",
+      periodStartMs: 100,
+      periodEndMs: 200,
+      status: "running",
+    }, 1_000);
+    const interruptedStage = await startDigestRunFeed(database, {
+      runId: interruptedRun.id,
+      connectorId: "Telegram",
+      stage: "summarization",
+      status: "running",
+    }, 1_100);
+    const recoveryTime = 10_000;
     const scheduler = new FakeScheduler();
     let requestHandler:
       | ((request: Request) => Response | Promise<Response>)
@@ -109,9 +155,10 @@ Deno.test("bootServer serves registration without model environment variables", 
     );
     try {
       for (const key of MODEL_ENV_KEYS) Deno.env.delete(key);
-      bootServer({
+      await bootServer({
         database,
         scheduler,
+        now: () => recoveryTime,
         config: {
           databaseUrl: "postgres://unused",
           port: 31_002,
@@ -131,7 +178,7 @@ Deno.test("bootServer serves registration without model environment variables", 
           summarizationConcurrency: 1,
           mediaTtlMs: 1,
           mediaQuotaBytes: 1,
-          digestRunStaleAfterMs: 1,
+          digestRunStaleAfterMs: 5_000,
           schedulerLeaseMs: 1,
         },
         serve: (_options, handler) => {
@@ -139,6 +186,22 @@ Deno.test("bootServer serves registration without model environment variables", 
         },
         log: () => {},
       });
+      const [recoveredRun] = await listDigestRunsForUser(
+        database,
+        interruptedUser.id,
+      );
+      assertEquals(recoveredRun.status, "failed");
+      assertEquals(recoveredRun.finishedAt, recoveryTime);
+      assertEquals(recoveredRun.errorMessage, "digest run lease expired");
+      const [recoveredStage] = await listDigestRunFeedsForRun(
+        database,
+        interruptedRun.id,
+        interruptedUser.id,
+      );
+      assertEquals(recoveredStage.id, interruptedStage.id);
+      assertEquals(recoveredStage.status, "failed");
+      assertEquals(recoveredStage.finishedAt, recoveryTime);
+      assertEquals(recoveredStage.errorMessage, "digest run lease expired");
       assertExists(requestHandler);
       const response = await requestHandler(
         new Request("http://127.0.0.1:31002/auth/register", {
@@ -164,16 +227,17 @@ Deno.test("bootServer serves registration without model environment variables", 
   });
 });
 
-Deno.test("bootServer rejects invalid model configuration before serving", () => {
+Deno.test("bootServer rejects invalid model configuration before serving", async () => {
   const previous = Deno.env.get("SUMMARIZER_MODEL");
   let served = false;
   try {
     Deno.env.set("SUMMARIZER_MODEL", "   ");
-    assertThrows(
+    await assertRejects(
       () =>
         bootServer({
           database: {} as Database,
           scheduler: new FakeScheduler(),
+          recoverStaleRuns: () => Promise.resolve(0),
           serve: () => {
             served = true;
           },

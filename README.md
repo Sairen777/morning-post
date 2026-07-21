@@ -107,12 +107,47 @@ contains deployment credentials. The main settings are:
 | `SUMMARIZER_TEXT_BYTES_PER_CHUNK` | Max text bytes per summarizer chunk | `120000` |
 | `SUMMARIZER_MAX_ITEMS_PER_CHUNK` | Max items per summarizer chunk | `50` |
 | `SUMMARIZER_MAX_IMAGE_BYTES` | Oversize images become `[IMAGE_OMITTED]` | `1000000` |
-| `SUMMARIZER_TIMEOUT_MS` | Per-chunk summarizer request timeout | `120000` |
+| `SUMMARIZER_TIMEOUT_MS` | Per-attempt model request timeout | `120000` |
 | `SUMMARIZATION_CONCURRENCY` | Max concurrent feed summarizations per run | `2` |
 | `MEDIA_TTL_MS` | Media file TTL | `604800000` (7 days) |
 | `MEDIA_QUOTA_BYTES` | Per-connector media quota | `524288000` (500 MiB) |
 | `DIGEST_RUN_STALE_AFTER_MS` | Stale digest-run threshold for recovery | `900000` (15 min) |
 | `SCHEDULER_LEASE_MS` | Scheduler leader lease duration | `90000` (90 sec) |
+
+#### Summarization reliability
+
+Aggregate input is split by the configured item and UTF-8 text-byte limits.
+When chunk results cannot fit one merge request, they are reduced through
+hierarchical text-only merge batches bounded by serialized UTF-8 content bytes
+and an item cap of `max(2, SUMMARIZER_MAX_ITEMS_PER_CHUNK)`. An odd level may
+leave a trailing singleton batch. The guaranteed invariant is that every
+non-final level reduces the item count—not that every non-final batch has a
+fan-in of two or that a configured item cap of one is strictly honored—and the
+hierarchy ends with one final merge.
+
+Transient provider failures retry up to three total attempts, each with a fresh
+`SUMMARIZER_TIMEOUT_MS` per-attempt deadline. Retries cover HTTP fetch/body
+`TypeError`, HTTP 429/503 responses, and the summarizer's internal per-attempt
+`TimeoutError`. Caller cancellation and nonretryable errors do not retry. A
+separate whole-operation watchdog conservatively covers all attempts, distinct
+vision analysis, and hierarchical merges, and is capped at three hours.
+
+For distinct vision analysis, duplicate entries for the same expected item
+index are trimmed, exact-deduplicated, and merged in provider response order.
+Missing or invalid indexes still produce the nonterminal text-only fallback
+rather than attaching an analysis to the wrong item.
+
+#### Operational diagnostics
+
+Digest and per-feed terminal status remains queryable in the
+`digest_runs` and `digest_run_feeds` tables. Terminal summarization chunk,
+merge, and feed failures, plus the nonterminal `vision_unavailable` fallback,
+are appended to `.debug_logs/operations.jsonl`; recovered retry attempts are
+not recorded there. The file rotates to `operations.jsonl.1` at 5 MiB. Entries
+contain epoch-millisecond timestamps, run/feed identifiers, connector and
+item/chunk counts, model names, and redacted errors. They never contain prompts,
+normalized item text, images, or raw model output. A `vision_unavailable`
+warning is non-terminal: summarization continues with the text-only fallback.
 
 #### Session behavior
 
@@ -191,6 +226,22 @@ npm run web:dev
 `?cursor=<value>` to fetch the next page. The web UI provides a "Load more"
 button that appends results without duplicates and resets the cursor after a
 new run, delete, or refresh.
+
+#### Active digest runs
+
+One running digest per user is intentional. After a Dashboard reload, the
+initial run-status check restores any persisted running state; duplicate
+submission remains blocked until that check settles. While a run is active, the
+Dashboard polls its status every five seconds without overlapping requests and
+refreshes the digest list when the run reaches a terminal state. If a
+`POST /digests/run` request loses a race and returns `409`, the Dashboard maps
+the conflict to the active-run UI instead of displaying raw error text.
+
+API startup and each scheduler leader tick transactionally recover digest runs
+older than `DIGEST_RUN_STALE_AFTER_MS`. Recovery marks the stale run and only
+its still-running feed stages as failed, which releases the per-user lock.
+Fresh running rows remain untouched so another live API instance can finish
+its work safely.
 
 Open `http://127.0.0.1:5173`. Register an account, click "Run digest",
 and verify the digest appears with status `complete`.

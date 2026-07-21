@@ -2,7 +2,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import Dashboard from "./Dashboard";
-import type { PublicFeed, PublicSource, PublicUser } from "../api/types";
+import type {
+  PublicDigestRun,
+  PublicFeed,
+  PublicSource,
+  PublicUser,
+} from "../api/types";
 
 const source: PublicSource = {
   id: "source-substack",
@@ -180,4 +185,167 @@ describe("Dashboard Substack refresh ordering", () => {
     },
     15_000,
   );
+});
+
+const activeDigestRun: PublicDigestRun = {
+  id: "run-active",
+  digestId: null,
+  userId: user.id,
+  trigger: "manual",
+  periodStartMs: 1_700_000_000_000,
+  periodEndMs: 1_700_086_400_000,
+  status: "running",
+  startedAt: 1_700_000_123_000,
+  finishedAt: null,
+  errorMessage: null,
+};
+
+const completedDigestRun: PublicDigestRun = {
+  ...activeDigestRun,
+  id: "run-complete",
+  status: "complete",
+  finishedAt: 1_700_086_500_000,
+};
+
+function emptyDigestPage() {
+  return { data: [], nextCursor: null };
+}
+
+function dashboardResponse(
+  path: string,
+  digestRunsResponse: unknown,
+  digestResponse: unknown = emptyDigestPage(),
+) {
+  if (path === "/sources") return jsonResponse([]);
+  if (path === "/feeds") return jsonResponse([]);
+  if (path === "/digests/runs") return jsonResponse(digestRunsResponse);
+  if (path === "/digests") return jsonResponse(digestResponse);
+  throw new Error(`Unexpected request: ${path}`);
+}
+
+describe("Dashboard digest run recovery", () => {
+  it("keeps submission disabled while the initial run status is pending", async () => {
+    const runStatus = createDeferred<Response>();
+    globalThis.fetch = vi.fn((input) => {
+      const path = String(input);
+      if (path === "/digests/runs") return runStatus.promise;
+      return Promise.resolve(dashboardResponse(path, emptyDigestPage()));
+    }) as typeof fetch;
+
+    render(() => (
+      <Dashboard
+        user={user}
+        onLogout={() => {}}
+        onAuthError={() => {}}
+        onUserUpdate={() => {}}
+      />
+    ));
+
+    expect(
+      screen.getByRole("button", { name: "Checking run status…" }),
+    ).toBeDisabled();
+    expect(screen.getByText("Checking whether a digest is already running…"))
+      .toBeVisible();
+
+    runStatus.resolve(jsonResponse(emptyDigestPage()));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Run digest" })).toBeEnabled()
+    );
+  });
+
+  it("disables submission after reload when the initial response has a running row", async () => {
+    globalThis.fetch = vi.fn((input) => {
+      const path = String(input);
+      return Promise.resolve(
+        dashboardResponse(path, { data: [activeDigestRun], nextCursor: null }),
+      );
+    }) as typeof fetch;
+
+    render(() => (
+      <Dashboard
+        user={user}
+        onLogout={() => {}}
+        onAuthError={() => {}}
+        onUserUpdate={() => {}}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "A digest is running.",
+      );
+      expect(screen.getByRole("button", { name: "Run digest" })).toBeDisabled();
+    });
+    expect(screen.getByRole("button", { name: "Open Runs tab" })).toBeVisible();
+  });
+
+  it("shows a retryable status error instead of enabling an unchecked run", async () => {
+    globalThis.fetch = vi.fn((input) => {
+      const path = String(input);
+      if (path === "/digests/runs") {
+        return Promise.resolve(jsonResponse({ error: { message: "backend details" } }, 503));
+      }
+      return Promise.resolve(dashboardResponse(path, emptyDigestPage()));
+    }) as typeof fetch;
+
+    render(() => (
+      <Dashboard
+        user={user}
+        onLogout={() => {}}
+        onAuthError={() => {}}
+        onUserUpdate={() => {}}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "We couldn't confirm whether a digest is already running.",
+      );
+      expect(screen.getByRole("button", { name: "Run digest" })).toBeDisabled();
+    });
+    expect(screen.getByRole("alert")).not.toHaveTextContent("backend details");
+    expect(
+      screen.getByRole("button", { name: "Retry status check" }),
+    ).toBeVisible();
+  });
+
+  it("polls an active run every five seconds and refreshes digests after completion", async () => {
+    vi.useFakeTimers();
+    let digestRunRequestCount = 0;
+    let digestRequestCount = 0;
+    globalThis.fetch = vi.fn((input) => {
+      const path = String(input);
+      if (path === "/digests/runs") {
+        digestRunRequestCount += 1;
+        const response = digestRunRequestCount === 1
+          ? { data: [activeDigestRun], nextCursor: null }
+          : { data: [completedDigestRun], nextCursor: null };
+        return Promise.resolve(jsonResponse(response));
+      }
+      if (path === "/digests") {
+        digestRequestCount += 1;
+        return Promise.resolve(jsonResponse(emptyDigestPage()));
+      }
+      return Promise.resolve(dashboardResponse(path, emptyDigestPage()));
+    }) as typeof fetch;
+
+    render(() => (
+      <Dashboard
+        user={user}
+        onLogout={() => {}}
+        onAuthError={() => {}}
+        onUserUpdate={() => {}}
+      />
+    ));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByRole("button", { name: "Run digest" })).toBeDisabled();
+
+    await vi.advanceTimersByTimeAsync(5_100);
+    expect(digestRunRequestCount).toBe(2);
+    expect(digestRequestCount).toBe(2);
+    expect(screen.getByRole("button", { name: "Run digest" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Open Runs tab" })).toBeNull();
+    vi.useRealTimers();
+  });
 });

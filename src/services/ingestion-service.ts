@@ -1,5 +1,6 @@
 import type {
   Connector,
+  NormalizedData,
   NormalizedItem,
 } from "../connectors/connector.types.ts";
 import type { Database } from "../db/client.ts";
@@ -144,88 +145,125 @@ export async function ingestFeedsForSource(
   connector: Connector<unknown>,
   options: IngestFeedOptions = {},
 ): Promise<IngestFeedsForSourceResult> {
-  const config = getConfig();
+  const connectorTimeoutMs = options.connectorTimeoutMs ??
+    getConfig().connectorTimeoutMs;
+  if (!Number.isInteger(connectorTimeoutMs) || connectorTimeoutMs <= 0) {
+    throw new Error("connectorTimeoutMs must be a positive integer");
+  }
+  if (options.signal?.aborted) {
+    const error = new IngestionAbortError().message;
+    return {
+      feedResults: feeds.map((feed) => ({ feedId: feed.id, error })),
+    };
+  }
+
+  const feedWindows = feeds.map((feed) => {
+    const override = options.feedWindows?.get(feed.id);
+    return {
+      feed,
+      window: override ?? computeIngestionWindow(feed, options),
+    };
+  });
+
+  const minFrom = Math.min(...feedWindows.map((fw) => fw.window.from));
+  const maxTo = Math.max(...feedWindows.map((fw) => fw.window.to));
+  const allExternalIds = feeds.map((feed) => feed.externalId);
+  const fetchedAt = options.fetchedAt ?? options.now?.() ?? Date.now();
   const controller = new AbortController();
-  const startMs = Date.now();
-  const timer = setTimeout(() => controller.abort(), config.connectorTimeoutMs);
-
-  try {
-    const feedWindows = feeds.map((feed) => {
-      const override = options.feedWindows?.get(feed.id);
-      return {
-        feed,
-        window: override ?? computeIngestionWindow(feed, options),
-      };
+  const cancellation = Promise.withResolvers<"deadline" | "parent-abort">();
+  let cancellationSettled = false;
+  const cancel = (reason: "deadline" | "parent-abort") => {
+    if (cancellationSettled) return;
+    cancellationSettled = true;
+    controller.abort();
+    cancellation.resolve(reason);
+  };
+  const timer = setTimeout(() => cancel("deadline"), connectorTimeoutMs);
+  const parentAbortHandler = () => cancel("parent-abort");
+  if (options.signal?.aborted) {
+    parentAbortHandler();
+  } else {
+    options.signal?.addEventListener("abort", parentAbortHandler, {
+      once: true,
     });
+  }
 
-    const minFrom = Math.min(...feedWindows.map((fw) => fw.window.from));
-    const maxTo = Math.max(...feedWindows.map((fw) => fw.window.to));
-    const allExternalIds = feeds.map((feed) => feed.externalId);
-    const fetchedAt = options.fetchedAt ?? options.now?.() ?? Date.now();
-
-    const normalizedData = await connector.getNormalizedData(
-      minFrom,
-      maxTo,
-      allExternalIds,
-      controller.signal,
+  let normalizedData: NormalizedData;
+  try {
+    const connectorWork = Promise.resolve().then(() =>
+      connector.getNormalizedData(
+        minFrom,
+        maxTo,
+        allExternalIds,
+        controller.signal,
+      )
     );
-
-    // Deadline check: if connector ignored the abort signal and returned late,
-    // treat the whole batch as failed.
-    if (
-      controller.signal.aborted &&
-      Date.now() - startMs >= config.connectorTimeoutMs
-    ) {
+    const outcome = await Promise.race([
+      connectorWork.then((data) => ({ type: "data" as const, data })),
+      cancellation.promise.then((reason) => ({ type: reason })),
+    ]);
+    if (outcome.type !== "data") {
+      const error = outcome.type === "deadline"
+        ? "connector deadline exceeded"
+        : new IngestionAbortError().message;
       return {
-        feedResults: feeds.map((feed) => ({
-          feedId: feed.id,
-          error: "connector deadline exceeded",
-        })),
+        feedResults: feeds.map((feed) => ({ feedId: feed.id, error })),
       };
     }
-
-    const feedResults: (IngestFeedResult | IngestFeedError)[] = [];
-
-    for (const { feed, window } of feedWindows) {
-      try {
-        const feedItems = (normalizedData[feed.externalId] ?? []).filter(
-          (item) => item.date >= window.from && item.date <= window.to,
-        );
-        const validItems = validateFeedItems(feed, feedItems);
-
-        await database.transaction(async (transaction) => {
-          const transactionalDatabase = transaction as Database;
-          await upsertItems(
-            transactionalDatabase,
-            feed.id,
-            validItems,
-            fetchedAt,
-          );
-          await setLastFetched(
-            transactionalDatabase,
-            feed.id,
-            userId,
-            window.to,
-          );
-        });
-
-        feedResults.push({
-          feedId: feed.id,
-          window,
-          itemCount: validItems.length,
-        });
-      } catch (error) {
-        feedResults.push({
-          feedId: feed.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    return { feedResults };
+    normalizedData = outcome.data;
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", parentAbortHandler);
   }
+
+  const feedResults: (IngestFeedResult | IngestFeedError)[] = [];
+
+  for (const { feed, window } of feedWindows) {
+    try {
+      if (options.signal?.aborted) {
+        throw new IngestionAbortError();
+      }
+      const feedItems = (normalizedData[feed.externalId] ?? []).filter(
+        (item) => item.date >= window.from && item.date <= window.to,
+      );
+      const validItems = validateFeedItems(feed, feedItems);
+
+      await database.transaction(async (transaction) => {
+        const transactionalDatabase = transaction as Database;
+        if (options.signal?.aborted) {
+          throw new IngestionAbortError();
+        }
+        await upsertItems(
+          transactionalDatabase,
+          feed.id,
+          validItems,
+          fetchedAt,
+        );
+        if (options.signal?.aborted) {
+          throw new IngestionAbortError();
+        }
+        await setLastFetched(
+          transactionalDatabase,
+          feed.id,
+          userId,
+          window.to,
+        );
+      });
+
+      feedResults.push({
+        feedId: feed.id,
+        window,
+        itemCount: validItems.length,
+      });
+    } catch (error) {
+      feedResults.push({
+        feedId: feed.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return { feedResults };
 }
 
 export async function ingestFeedsIndividually(

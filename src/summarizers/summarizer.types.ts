@@ -36,9 +36,23 @@ export interface ArticleSummaryContent {
 
 export type SummaryContent = AggregateSummaryContent | ArticleSummaryContent;
 
+export interface SummarizationDiagnostic {
+  event: "vision_unavailable" | "chunk_failed" | "merge_failed";
+  chunkIndex?: number;
+  chunkCount: number;
+  model: string;
+  errorMessage: string;
+}
+
 export interface SummarizeOptions {
   /** AbortSignal for cancellation through retries, backoff, and merge */
   signal?: AbortSignal;
+  /** Timeout for each model request; renewed for every chunk, fallback, and merge */
+  requestTimeoutMs?: number;
+  /** Receives redacted operational events without item or prompt content */
+  onDiagnostic?: (
+    diagnostic: SummarizationDiagnostic,
+  ) => Promise<void> | void;
   /** Max text bytes per chunk; default resolved from config (120_000) */
   maxTextBytesPerChunk?: number;
   /** Max items per chunk; default resolved from config (50) */

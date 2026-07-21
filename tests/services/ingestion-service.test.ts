@@ -591,6 +591,182 @@ Deno.test("ingestFeedsForSource passes abort signal to connector", () => {
   assert(connector.calls[0].signal?.aborted);
 });
 
+Deno.test("ingestFeedsForSource bounds an abort-ignoring connector deadline without persistence", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feed1, feed2 } = await createTwoFeeds(
+      database,
+      "batch-deadline@example.com",
+    );
+    let connectorSignal: AbortSignal | undefined;
+    const connector: Connector<unknown> = {
+      getRawData: () => Promise.resolve({}),
+      getNormalizedData: (_from, _to, _feedExternalIds, signal) => {
+        connectorSignal = signal;
+        return Promise.withResolvers<NormalizedData>().promise;
+      },
+    };
+    const startedAt = performance.now();
+
+    const result = await ingestFeedsForSource(
+      database,
+      userId,
+      [feed1, feed2],
+      connector,
+      {
+        window: { from: 0, to: 10_000 },
+        connectorTimeoutMs: 20,
+      },
+    );
+    const elapsedMs = performance.now() - startedAt;
+
+    assert(elapsedMs < 250, `deadline took ${elapsedMs}ms`);
+    assert(connectorSignal?.aborted);
+    assertEquals(result.feedResults, [
+      { feedId: feed1.id, error: "connector deadline exceeded" },
+      { feedId: feed2.id, error: "connector deadline exceeded" },
+    ]);
+    assertEquals(
+      (await findFeedById(database, feed1.id, userId))
+        ?.lastFetchedPeriodEndMs,
+      null,
+    );
+    assertEquals(
+      (await findFeedById(database, feed2.id, userId))
+        ?.lastFetchedPeriodEndMs,
+      null,
+    );
+    assertEquals(
+      await listItemsForFeedInWindow(database, feed1.id, 0, 10_000),
+      [],
+    );
+    assertEquals(
+      await listItemsForFeedInWindow(database, feed2.id, 0, 10_000),
+      [],
+    );
+  });
+});
+
+Deno.test("ingestFeedsForSource validates connector timeout", async () => {
+  await withTestDb(async (database) => {
+    const connector = new FakeConnector([{}]);
+
+    await assertRejects(
+      () =>
+        ingestFeedsForSource(database, "unused", [], connector, {
+          connectorTimeoutMs: 0,
+        }),
+      Error,
+      "connectorTimeoutMs must be a positive integer",
+    );
+    assertEquals(connector.calls, []);
+  });
+});
+
+Deno.test("ingestFeedsForSource skips connector and persistence for an already-aborted parent", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feed1, feed2 } = await createTwoFeeds(
+      database,
+      "batch-pre-aborted@example.com",
+    );
+    await setLastFetched(database, feed1.id, userId, 20_000);
+    await setLastFetched(database, feed2.id, userId, 30_000);
+
+    const parent = new AbortController();
+    parent.abort();
+    let connectorCallCount = 0;
+    const connector: Connector<unknown> = {
+      getRawData: () => Promise.resolve({}),
+      getNormalizedData: () => {
+        connectorCallCount += 1;
+        return Promise.resolve({});
+      },
+    };
+
+    const result = await ingestFeedsForSource(
+      database,
+      userId,
+      [feed1, feed2],
+      connector,
+      {
+        window: { from: 0, to: 10_000 },
+        connectorTimeoutMs: 1_000,
+        signal: parent.signal,
+      },
+    );
+
+    assertEquals(connectorCallCount, 0);
+    assertEquals(result.feedResults, [
+      { feedId: feed1.id, error: "Connector ingestion aborted" },
+      { feedId: feed2.id, error: "Connector ingestion aborted" },
+    ]);
+    assertEquals(
+      (await findFeedById(database, feed1.id, userId))
+        ?.lastFetchedPeriodEndMs,
+      20_000,
+    );
+    assertEquals(
+      (await findFeedById(database, feed2.id, userId))
+        ?.lastFetchedPeriodEndMs,
+      30_000,
+    );
+    assertEquals(
+      await listItemsForFeedInWindow(database, feed1.id, 0, 10_000),
+      [],
+    );
+    assertEquals(
+      await listItemsForFeedInWindow(database, feed2.id, 0, 10_000),
+      [],
+    );
+  });
+});
+
+Deno.test("ingestFeedsForSource propagates parent abort to an uncooperative connector", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feed1, feed2 } = await createTwoFeeds(
+      database,
+      "batch-parent-abort@example.com",
+    );
+    const parent = new AbortController();
+    let connectorSignal: AbortSignal | undefined;
+    const connector: Connector<unknown> = {
+      getRawData: () => Promise.resolve({}),
+      getNormalizedData: (_from, _to, _feedExternalIds, signal) => {
+        connectorSignal = signal;
+        queueMicrotask(() => parent.abort());
+        return Promise.withResolvers<NormalizedData>().promise;
+      },
+    };
+
+    const result = await ingestFeedsForSource(
+      database,
+      userId,
+      [feed1, feed2],
+      connector,
+      {
+        window: { from: 0, to: 10_000 },
+        connectorTimeoutMs: 1_000,
+        signal: parent.signal,
+      },
+    );
+
+    assert(connectorSignal?.aborted);
+    assertEquals(result.feedResults, [
+      { feedId: feed1.id, error: "Connector ingestion aborted" },
+      { feedId: feed2.id, error: "Connector ingestion aborted" },
+    ]);
+    assertEquals(
+      (await findFeedById(database, feed1.id, userId))
+        ?.lastFetchedPeriodEndMs,
+      null,
+    );
+    assertEquals(
+      (await findFeedById(database, feed2.id, userId))
+        ?.lastFetchedPeriodEndMs,
+      null,
+    );
+  });
+});
+
 Deno.test("ingestFeedsIndividually isolates failures, aborts deadlines, and bounds concurrency", async () => {
   await withTestDb(async (database) => {
     const { userId, feeds } = await createFourFeeds(
