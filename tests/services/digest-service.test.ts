@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -31,6 +32,8 @@ import {
   buildDigestViewById,
   renderDigestMarkdown,
 } from "../../src/services/digest-service.ts";
+import { discardOperationalEvent } from "../operational-log-recorder.ts";
+
 import type {
   SummarizeOptions,
   SummarizerService,
@@ -153,9 +156,10 @@ function normalizedItem(
 }
 
 const periodStartMs = 1_700_000_000_000;
+const discardLogRecorder = { recordOperationalEvent: discardOperationalEvent };
 const periodEndMs = 1_700_086_400_000;
 
-Deno.test("assembleDigestForPeriod orders sections by source then feed position", async () => {
+test("assembleDigestForPeriod orders sections by source then feed position", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -213,6 +217,7 @@ Deno.test("assembleDigestForPeriod orders sections by source then feed position"
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([
           [{ text: "rss-two", sourceUrl: null }],
           [{ text: "rss-one", sourceUrl: null }],
@@ -235,7 +240,7 @@ Deno.test("assembleDigestForPeriod orders sections by source then feed position"
   });
 });
 
-Deno.test("assembleDigestForPeriod excludes disabled feeds on fresh assembly but keeps historical deleted summaries on read", async () => {
+test("assembleDigestForPeriod excludes disabled feeds on fresh assembly but keeps historical deleted summaries on read", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -276,6 +281,7 @@ Deno.test("assembleDigestForPeriod excludes disabled feeds on fresh assembly but
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([
           [{ text: "active", sourceUrl: null }],
           [{ text: "deleted", sourceUrl: null }],
@@ -292,6 +298,7 @@ Deno.test("assembleDigestForPeriod excludes disabled feeds on fresh assembly but
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([]),
         now: () => 61,
       },
@@ -311,7 +318,7 @@ Deno.test("assembleDigestForPeriod excludes disabled feeds on fresh assembly but
   });
 });
 
-Deno.test("assembleDigestForPeriod marks partial failures as failed and keeps successful sections", async () => {
+test("assembleDigestForPeriod marks partial failures as failed and keeps successful sections", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -352,6 +359,7 @@ Deno.test("assembleDigestForPeriod marks partial failures as failed and keeps su
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([
           [{ text: "first summary", sourceUrl: null }],
           new Error("boom"),
@@ -365,7 +373,7 @@ Deno.test("assembleDigestForPeriod marks partial failures as failed and keeps su
   });
 });
 
-Deno.test("assembleDigestForPeriod is idempotent and reuses cached summaries", async () => {
+test("assembleDigestForPeriod is idempotent and reuses cached summaries", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -398,14 +406,22 @@ Deno.test("assembleDigestForPeriod is idempotent and reuses cached summaries", a
       user.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 80 },
+        {
+          ...discardLogRecorder,
+          summarizer,
+          now: () => 80,
+        },
     );
     const second = await assembleDigestForPeriod(
       database,
       user.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 81 },
+        {
+          ...discardLogRecorder,
+          summarizer,
+          now: () => 81,
+        },
     );
 
     assertEquals(first.digest.id, second.digest.id);
@@ -413,7 +429,7 @@ Deno.test("assembleDigestForPeriod is idempotent and reuses cached summaries", a
   });
 });
 
-Deno.test("renderDigestMarkdown includes ordered source groups and removed marker", async () => {
+test("renderDigestMarkdown includes ordered source groups and removed marker", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -443,6 +459,7 @@ Deno.test("renderDigestMarkdown includes ordered source groups and removed marke
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([[{
           text: "markdown bullet",
           sourceUrl: null,
@@ -464,7 +481,7 @@ Deno.test("renderDigestMarkdown includes ordered source groups and removed marke
   });
 });
 
-Deno.test("assembleDigestForPeriod batches cached summaries and only summarizes missing feeds", async () => {
+test("assembleDigestForPeriod batches cached summaries and only summarizes missing feeds", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -518,6 +535,7 @@ Deno.test("assembleDigestForPeriod batches cached summaries and only summarizes 
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: fakeSummarizer,
         now: () => 100,
       },
@@ -544,7 +562,7 @@ Deno.test("assembleDigestForPeriod batches cached summaries and only summarizes 
   });
 });
 
-Deno.test("assembleDigestForPeriod keeps source groups contiguous when positions tie", async () => {
+test("assembleDigestForPeriod keeps source groups contiguous when positions tie", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -615,6 +633,7 @@ Deno.test("assembleDigestForPeriod keeps source groups contiguous when positions
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([[], [], [], []]),
       },
     );
@@ -632,7 +651,7 @@ Deno.test("assembleDigestForPeriod keeps source groups contiguous when positions
   });
 });
 
-Deno.test("assembleDigestForPeriod records summarization failures in digest_run_feeds when runId is supplied", async () => {
+test("assembleDigestForPeriod records summarization failures in digest_run_feeds when runId is supplied", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -675,6 +694,7 @@ Deno.test("assembleDigestForPeriod records summarization failures in digest_run_
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([
           new Error(
             "summarizer failed with sk-live-secret and https://alice:password@example.com/path",
@@ -734,7 +754,7 @@ class ConcurrentCountingSummarizer implements SummarizerService {
   }
 }
 
-Deno.test("assembleDigestForPeriod respects summarizationConcurrency=2 with bounded parallelism", async () => {
+test("assembleDigestForPeriod respects summarizationConcurrency=2 with bounded parallelism", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -783,6 +803,7 @@ Deno.test("assembleDigestForPeriod respects summarizationConcurrency=2 with boun
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: counter,
         summarizationConcurrency: 2,
       },
@@ -808,7 +829,7 @@ Deno.test("assembleDigestForPeriod respects summarizationConcurrency=2 with boun
   });
 });
 
-Deno.test("assembleDigestForPeriod with concurrency=1 runs feeds sequentially", async () => {
+test("assembleDigestForPeriod with concurrency=1 runs feeds sequentially", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -849,6 +870,7 @@ Deno.test("assembleDigestForPeriod with concurrency=1 runs feeds sequentially", 
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: counter,
         summarizationConcurrency: 1,
       },
@@ -868,7 +890,7 @@ Deno.test("assembleDigestForPeriod with concurrency=1 runs feeds sequentially", 
   });
 });
 
-Deno.test("assembleDigestForPeriod with concurrent summarization isolates feed failures", async () => {
+test("assembleDigestForPeriod with concurrent summarization isolates feed failures", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -914,6 +936,7 @@ Deno.test("assembleDigestForPeriod with concurrent summarization isolates feed f
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: failingSummarizer,
         summarizationConcurrency: 5,
       },
@@ -935,7 +958,7 @@ Deno.test("assembleDigestForPeriod with concurrent summarization isolates feed f
   });
 });
 
-Deno.test("assembleDigestForPeriod keeps Telegram aggregate and Substack articles isolated and ordered", async () => {
+test("assembleDigestForPeriod keeps Telegram aggregate and Substack articles isolated and ordered", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -1005,6 +1028,7 @@ Deno.test("assembleDigestForPeriod keeps Telegram aggregate and Substack article
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([
           [{ text: "telegram point", sourceUrl: null }],
           [{ text: "first point", sourceUrl: null }],
@@ -1063,7 +1087,7 @@ Deno.test("assembleDigestForPeriod keeps Telegram aggregate and Substack article
   });
 });
 
-Deno.test("renderDigestMarkdown displays an explicit empty article collection", async () => {
+test("renderDigestMarkdown displays an explicit empty article collection", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -1095,12 +1119,13 @@ Deno.test("renderDigestMarkdown displays an explicit empty article collection", 
       user.id,
       periodStartMs,
       periodEndMs,
+      { ...discardLogRecorder },
     );
     assertEquals(renderDigestMarkdown(digest).includes("No articles."), true);
   });
 });
 
-Deno.test("assembleDigestForPeriod partitions paid posts by source preference while preserving section and paid ordering", async () => {
+test("assembleDigestForPeriod partitions paid posts by source preference while preserving section and paid ordering", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -1220,6 +1245,7 @@ Deno.test("assembleDigestForPeriod partitions paid posts by source preference wh
       user.id,
       periodStartMs,
       periodEndMs,
+      { ...discardLogRecorder },
     );
     assertEquals(optedOutView.paidPosts, []);
     assertEquals(optedOutView.sections.map((section) => section.feedName), [
@@ -1240,6 +1266,7 @@ Deno.test("assembleDigestForPeriod partitions paid posts by source preference wh
       user.id,
       periodStartMs,
       periodEndMs,
+      { ...discardLogRecorder },
     );
 
     assertEquals(view.sections.map((section) => section.feedName), [
@@ -1308,7 +1335,7 @@ Deno.test("assembleDigestForPeriod partitions paid posts by source preference wh
     assertEquals(markdown.includes("No articles."), true);
   });
 });
-Deno.test("assembleDigestForPeriod records cancellation as a feed failure without persisting a section", async () => {
+test("assembleDigestForPeriod records cancellation as a feed failure without persisting a section", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -1349,6 +1376,7 @@ Deno.test("assembleDigestForPeriod records cancellation as a feed failure withou
       periodStartMs,
       periodEndMs,
       {
+        ...discardLogRecorder,
         summarizer: new FakeSummarizer([[{
           text: "must not persist",
           sourceUrl: null,
@@ -1362,7 +1390,7 @@ Deno.test("assembleDigestForPeriod records cancellation as a feed failure withou
   });
 });
 
-Deno.test("buildDigestViewById hides only explicit-false paid Substack evidence", async () => {
+test("buildDigestViewById hides only explicit-false paid Substack evidence", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -1447,6 +1475,7 @@ Deno.test("buildDigestViewById hides only explicit-false paid Substack evidence"
       user.id,
       periodStartMs,
       periodEndMs,
+      { ...discardLogRecorder },
     );
 
     assertEquals(

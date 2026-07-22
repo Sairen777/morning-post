@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "./assertions.ts";
 import { ConnectorId } from "../src/constants.ts";
 import {
   type PublicationPageReader,
@@ -44,7 +45,7 @@ function post(
   };
 }
 
-Deno.test("SubstackConnector normalizes authenticated full posts under the requested feed key", async () => {
+test("SubstackConnector normalizes authenticated full posts under the requested feed key", async () => {
   const pages: PublicationPageReader = (_publicationUrl, offset) =>
     Promise.resolve({
       origin: "https://custom.example.com",
@@ -73,7 +74,7 @@ Deno.test("SubstackConnector normalizes authenticated full posts under the reque
   }]);
 });
 
-Deno.test("SubstackConnector does not classify a free signup paid-post teaser as full", async () => {
+test("SubstackConnector does not classify a free signup paid-post teaser as full", async () => {
   const pages: PublicationPageReader = (_publicationUrl, offset) =>
     Promise.resolve({
       origin: PUBLICATION,
@@ -97,7 +98,7 @@ Deno.test("SubstackConnector does not classify a free signup paid-post teaser as
   });
 });
 
-Deno.test("SubstackConnector rejects an empty body for an accessible paid post", async () => {
+test("SubstackConnector rejects an empty body for an accessible paid post", async () => {
   const pages: PublicationPageReader = (_publicationUrl, offset) =>
     Promise.resolve({
       origin: PUBLICATION,
@@ -117,7 +118,7 @@ Deno.test("SubstackConnector rejects an empty body for an accessible paid post",
   );
 });
 
-Deno.test("SubstackConnector preserves private bodies for non-paid posts without paid entitlement", async () => {
+test("SubstackConnector preserves private bodies for non-paid posts without paid entitlement", async () => {
   const pages: PublicationPageReader = (_publicationUrl, offset) =>
     Promise.resolve({
       origin: PUBLICATION,
@@ -140,7 +141,7 @@ Deno.test("SubstackConnector preserves private bodies for non-paid posts without
   });
 });
 
-Deno.test("SubstackConnector normalizes public podcasts alongside paid newsletter previews", async () => {
+test("SubstackConnector normalizes public podcasts alongside paid newsletter previews", async () => {
   const podcast = archiveItem({
     id: 201,
     type: "podcast",
@@ -225,7 +226,7 @@ Deno.test("SubstackConnector normalizes public podcasts alongside paid newslette
   }]);
 });
 
-Deno.test("SubstackConnector paginates until an entire page predates the window", async () => {
+test("SubstackConnector paginates until an entire page predates the window", async () => {
   const offsets: number[] = [];
   const pages: PublicationPageReader = (_publicationUrl, offset) => {
     offsets.push(offset);
@@ -245,7 +246,7 @@ Deno.test("SubstackConnector paginates until an entire page predates the window"
   assertEquals(result[PUBLICATION].map((item) => item.externalId), ["101"]);
 });
 
-Deno.test("SubstackConnector uses preview fallbacks for unavailable bodies", async () => {
+test("SubstackConnector uses preview fallbacks for unavailable bodies", async () => {
   const previews = [
     archiveItem({ id: 101, truncatedBodyText: "Preview text" }),
     archiveItem({
@@ -289,7 +290,7 @@ Deno.test("SubstackConnector uses preview fallbacks for unavailable bodies", asy
   );
 });
 
-Deno.test("SubstackConnector rejects mismatched private posts and repeated archive pages", async () => {
+test("SubstackConnector rejects mismatched private posts and repeated archive pages", async () => {
   const page = { origin: PUBLICATION, items: [archiveItem()] };
   const mismatch = new SubstackConnector(
     { getPostById: () => Promise.resolve(post({ publicationId: 10 })) },
@@ -312,7 +313,7 @@ Deno.test("SubstackConnector rejects mismatched private posts and repeated archi
   );
 });
 
-Deno.test("SubstackConnector avoids work for an empty feed filter", async () => {
+test("SubstackConnector avoids work for an empty feed filter", async () => {
   let calls = 0;
   const connector = new SubstackConnector(
     {

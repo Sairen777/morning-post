@@ -1,8 +1,10 @@
-import { assertEquals } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts"
+import { readFile } from "node:fs/promises";
 import postgres from "postgres";
 
-Deno.test("source paid-post title migration defaults existing rows without data loss", async () => {
-  const databaseUrl = Deno.env.get("TEST_DATABASE_URL");
+test("source paid-post title migration defaults existing rows without data loss", async () => {
+  const databaseUrl = process.env.TEST_DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("TEST_DATABASE_URL environment variable is not set");
   }
@@ -25,8 +27,9 @@ Deno.test("source paid-post title migration defaults existing rows without data 
           (2, 'telegram', false, NULL)
       `;
 
-      const migration = await Deno.readTextFile(
+      const migration = await readFile(
         "drizzle/0014_cynical_malice.sql",
+        "utf8",
       );
       await transaction.unsafe(migration);
 

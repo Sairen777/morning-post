@@ -23,7 +23,7 @@ class TestRollback extends Error {
 export async function withTestDb<T>(
   fn: (database: Database) => Promise<T>,
 ): Promise<T> {
-  const url = Deno.env.get("TEST_DATABASE_URL");
+  const url = process.env["TEST_DATABASE_URL"];
   if (!url) {
     throw new Error("TEST_DATABASE_URL environment variable is not set");
   }

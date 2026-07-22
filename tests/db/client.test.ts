@@ -1,4 +1,5 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertThrows } from "../assertions.ts"
 import { getDatabaseClientOptions } from "../../src/db/client.ts";
 
 const base = {
@@ -7,7 +8,7 @@ const base = {
   databaseConnectTimeoutSeconds: 35,
 };
 
-Deno.test("database client maps pool and SSL settings explicitly", () => {
+test("database client maps pool and SSL settings explicitly", () => {
   const options = getDatabaseClientOptions({
     ...base,
     databaseUrl: "postgres://localhost:5432/app",
@@ -53,7 +54,7 @@ Deno.test("database client maps pool and SSL settings explicitly", () => {
   );
 });
 
-Deno.test("remote database rejects disabled TLS", () => {
+test("remote database rejects disabled TLS", () => {
   assertThrows(
     () =>
       getDatabaseClientOptions({

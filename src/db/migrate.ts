@@ -6,7 +6,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 20;
 const DEFAULT_CONNECT_TIMEOUT_SECONDS = 30;
 
 function positiveIntegerFromEnv(name: string, fallback: number): number {
-  const raw = Deno.env.get(name);
+  const raw = process.env[name];
   if (raw === undefined) return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
@@ -15,10 +15,9 @@ function positiveIntegerFromEnv(name: string, fallback: number): number {
   return value;
 }
 
-const url = Deno.env.get("DATABASE_URL");
+const url = process.env["DATABASE_URL"];
 if (!url) {
-  console.error("DATABASE_URL environment variable is not set");
-  Deno.exit(1);
+  throw new Error("DATABASE_URL environment variable is not set");
 }
 
 const connectionUrl = new URL(url);
@@ -27,7 +26,7 @@ if (!databaseName) {
   throw new Error("DATABASE_URL must include a database name");
 }
 
-const sslMode = Deno.env.get("DB_SSL_MODE") ?? "disable";
+const sslMode = process.env["DB_SSL_MODE"] ?? "disable";
 if (sslMode !== "disable" && sslMode !== "require" && sslMode !== "verify-full") {
   throw new Error("DB_SSL_MODE must be disable, require, or verify-full");
 }
@@ -56,7 +55,9 @@ const client = postgres(url, {
 } as Parameters<typeof postgres>[1]);
 const database = drizzle(client);
 
-await migrate(database, { migrationsFolder: "./drizzle" });
-
-console.log("Migrations applied.");
-Deno.exit(0);
+try {
+  await migrate(database, { migrationsFolder: "./drizzle" });
+  console.log("Migrations applied.");
+} finally {
+  await client.end();
+}

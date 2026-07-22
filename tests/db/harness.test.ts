@@ -1,8 +1,9 @@
-import { assertEquals, assertRejects } from "@std/assert"
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 
-Deno.test("withTestDb — connects and executes a query", async () => {
+test("withTestDb — connects and executes a query", async () => {
   await withTestDb(async (database) => {
     const result = await database.execute(sql`select 1 as value`);
     assertEquals(result.length, 1);
@@ -10,7 +11,7 @@ Deno.test("withTestDb — connects and executes a query", async () => {
   });
 });
 
-Deno.test("withTestDb — isolation via transaction rollback", async () => {
+test("withTestDb — isolation via transaction rollback", async () => {
   // Create a table, insert a row, then the transaction rolls back.
   await withTestDb(async (database) => {
     await database.execute(
@@ -34,9 +35,9 @@ Deno.test("withTestDb — isolation via transaction rollback", async () => {
   });
 });
 
-Deno.test("withTestDb — missing TEST_DATABASE_URL throws", async () => {
-  const original = Deno.env.get("TEST_DATABASE_URL");
-  Deno.env.delete("TEST_DATABASE_URL");
+test("withTestDb — missing TEST_DATABASE_URL throws", async () => {
+  const original = process.env.TEST_DATABASE_URL;
+  delete process.env.TEST_DATABASE_URL;
   try {
     await assertRejects(
       () => withTestDb(async () => {}),
@@ -44,11 +45,15 @@ Deno.test("withTestDb — missing TEST_DATABASE_URL throws", async () => {
       "TEST_DATABASE_URL",
     );
   } finally {
-    if (original) Deno.env.set("TEST_DATABASE_URL", original);
+    if (original === undefined) {
+      delete process.env.TEST_DATABASE_URL;
+    } else {
+      process.env.TEST_DATABASE_URL = original;
+    }
   }
 });
 
-Deno.test("withTestDb — failing test body still rolls back", async () => {
+test("withTestDb — failing test body still rolls back", async () => {
   try {
     await withTestDb(async (database) => {
       await database.execute(

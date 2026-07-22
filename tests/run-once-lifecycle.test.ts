@@ -1,4 +1,9 @@
-import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
+import { test } from "bun:test";
+import {
+  assertEquals,
+  assertRejects,
+  assertStrictEquals,
+} from "./assertions.ts";
 import { runOnce, type RunOnceDependencies } from "../src/cli/run-once.ts";
 
 const NOW = Date.UTC(2026, 6, 20);
@@ -18,7 +23,7 @@ function lifecycleDependencies(
   };
 }
 
-Deno.test("runOnce destroys its Telegram client exactly once after success", async () => {
+test("runOnce destroys its Telegram client exactly once after success", async () => {
   let destroyCount = 0;
   let receivedWindow: [number, number] | undefined;
   const dependencies = lifecycleDependencies(
@@ -37,7 +42,7 @@ Deno.test("runOnce destroys its Telegram client exactly once after success", asy
   assertEquals(receivedWindow, [NOW - 7 * DAY_MS, NOW - 5 * DAY_MS]);
 });
 
-Deno.test("runOnce destroys its Telegram client and propagates pipeline failure", async () => {
+test("runOnce destroys its Telegram client and propagates pipeline failure", async () => {
   const pipelineFailure = new Error("pipeline failed");
   let destroyCount = 0;
   const dependencies = lifecycleDependencies(

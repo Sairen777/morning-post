@@ -1,9 +1,14 @@
+import { test } from "bun:test";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import sharp from "sharp";
 import {
   assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
-} from "@std/assert";
+} from "./assertions.ts";
 import { OpenAICompatibleSummarizerService } from "../src/summarizers/openai-compatible-summarizer.ts";
 import {
   buildArticlePrompt,
@@ -15,7 +20,10 @@ import {
 import type { OpenAICompatibleSummarizerOptions } from "../src/summarizers/openai-compatible-summarizer.ts";
 import type { NormalizedItem } from "../src/connectors/connector.types.ts";
 import type { SummarizationDiagnostic } from "../src/summarizers/summarizer.types.ts";
+import type { FetchFunction } from "../src/summarizers/openai-compatible-client.ts";
 import { ConnectorId } from "../src/constants.ts";
+
+const fetchEnvironment: { fetch: FetchFunction } = globalThis;
 
 const item = (overrides: Partial<NormalizedItem> = {}): NormalizedItem => ({
   connectorId: ConnectorId.Telegram,
@@ -54,13 +62,13 @@ type FetchRequest = { messages: Array<{ role: string; content: unknown }> };
 
 function stubFetch(responseBody: unknown): () => void {
   const original = globalThis.fetch;
-  globalThis.fetch = () =>
+  fetchEnvironment.fetch = (() =>
     Promise.resolve(
       new Response(JSON.stringify(responseBody), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
-    );
+  ));
   return () => {
     globalThis.fetch = original;
   };
@@ -72,7 +80,7 @@ function captureFetch(responseBody: unknown): {
 } {
   const original = globalThis.fetch;
   const state = { body: null as FetchRequest | null };
-  globalThis.fetch = (_input, init) => {
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
     state.body = JSON.parse((init as RequestInit & { body: string }).body);
     return Promise.resolve(
       new Response(JSON.stringify(responseBody), {
@@ -80,7 +88,7 @@ function captureFetch(responseBody: unknown): {
         headers: { "Content-Type": "application/json" },
       }),
     );
-  };
+  });
   return {
     captured: state,
     restore: () => {
@@ -91,18 +99,18 @@ function captureFetch(responseBody: unknown): {
 
 // --- prompt builders ---
 
-Deno.test("buildNewsPrompt — contains t/i field instruction", () => {
+test("buildNewsPrompt — contains t/i field instruction", () => {
   const { systemPrompt } = buildNewsPrompt();
   assertStringIncludes(systemPrompt, '"t"');
   assertStringIncludes(systemPrompt, '"i"');
 });
 
-Deno.test("buildDiscussionPrompt — contains discussion instruction", () => {
+test("buildDiscussionPrompt — contains discussion instruction", () => {
   const { systemPrompt } = buildDiscussionPrompt();
   assertStringIncludes(systemPrompt, "discussion summarizer");
 });
 
-Deno.test("buildDiscussionPrompt — requires topic, arguments, and conclusion status", () => {
+test("buildDiscussionPrompt — requires topic, arguments, and conclusion status", () => {
   const { systemPrompt } = buildDiscussionPrompt();
   // Must ban topic-only bullets.
   assertStringIncludes(systemPrompt, "topic-only");
@@ -112,7 +120,7 @@ Deno.test("buildDiscussionPrompt — requires topic, arguments, and conclusion s
   assertStringIncludes(systemPrompt, "unresolved");
   assertStringIncludes(systemPrompt, "no shared conclusion");
 });
-Deno.test("buildArticlePrompt — requires every article and forbids generated headings", () => {
+test("buildArticlePrompt — requires every article and forbids generated headings", () => {
   const rules = buildArticlePrompt({
     language: "French",
     focus: "product strategy",
@@ -127,12 +135,12 @@ Deno.test("buildArticlePrompt — requires every article and forbids generated h
   assertEquals(rules.showTitle, true);
 });
 
-Deno.test("buildNewsPrompt — explicit language overrides default", () => {
+test("buildNewsPrompt — explicit language overrides default", () => {
   const { systemPrompt } = buildNewsPrompt({ language: "Ukrainian" });
   assertStringIncludes(systemPrompt, "Ukrainian");
 });
 
-Deno.test("buildVisionAnalysisPrompt — enforces indexed OCR and album uncertainty contract", () => {
+test("buildVisionAnalysisPrompt — enforces indexed OCR and album uncertainty contract", () => {
   const { systemPrompt } = buildVisionAnalysisPrompt();
   assertStringIncludes(systemPrompt, "exactly two fields");
   assertStringIncludes(systemPrompt, '"i"');
@@ -146,31 +154,31 @@ Deno.test("buildVisionAnalysisPrompt — enforces indexed OCR and album uncertai
 
 // --- selectRuleset ---
 
-Deno.test("selectRuleset — explicit kind 'discussion' returns discussion ruleset", () => {
+test("selectRuleset — explicit kind 'discussion' returns discussion ruleset", () => {
   const items = [item({ meta: { isGroup: false } })];
   const rules = selectRuleset(items, "discussion");
   assertStringIncludes(rules.systemPrompt, "discussion summarizer");
 });
 
-Deno.test("selectRuleset — explicit kind 'news' returns news ruleset", () => {
+test("selectRuleset — explicit kind 'news' returns news ruleset", () => {
   const items = [item({ meta: { isGroup: true } })];
   const rules = selectRuleset(items, "news");
   assertStringIncludes(rules.systemPrompt, "news summarizer");
 });
 
-Deno.test("selectRuleset — no kind, isGroup=true infers discussion", () => {
+test("selectRuleset — no kind, isGroup=true infers discussion", () => {
   const items = [item({ meta: { isGroup: true } })];
   const rules = selectRuleset(items);
   assertStringIncludes(rules.systemPrompt, "discussion summarizer");
 });
 
-Deno.test("selectRuleset — no kind, isGroup=false infers news", () => {
+test("selectRuleset — no kind, isGroup=false infers news", () => {
   const items = [item({ meta: { isGroup: false } })];
   const rules = selectRuleset(items);
   assertStringIncludes(rules.systemPrompt, "news summarizer");
 });
 
-Deno.test("selectRuleset — explicit kind overrides meta.isGroup", () => {
+test("selectRuleset — explicit kind overrides meta.isGroup", () => {
   const items = [item({ meta: { isGroup: true } })];
   const rules = selectRuleset(items, "news");
   assertStringIncludes(rules.systemPrompt, "news summarizer");
@@ -178,22 +186,20 @@ Deno.test("selectRuleset — explicit kind overrides meta.isGroup", () => {
 
 // --- summarizer wiring ---
 
-Deno.test(
-  "summarize — sends configured system prompt to model",
-  async () => {
-    const { captured, restore } = captureFetch({
-      choices: [{ message: { content: '[{"t":"x","i":0}]' } }],
-    });
-    const svc = createTestSummarizer();
-    await svc.summarize([item()], buildNewsPrompt());
-    assertStringIncludes(captured.body!.messages[0].content as string, '"t"');
-    restore();
-  },
-);
+test("summarize — sends configured system prompt to model",
+async () => {
+  const { captured, restore } = captureFetch({
+    choices: [{ message: { content: '[{"t":"x","i":0}]' } }],
+  });
+  const svc = createTestSummarizer();
+  await svc.summarize([item()], buildNewsPrompt());
+  assertStringIncludes(captured.body!.messages[0].content as string, '"t"');
+  restore();
+},);
 
 // --- emoji filter ---
 
-Deno.test("buildContentParts — emoji-only item is filtered out", async () => {
+test("buildContentParts — emoji-only item is filtered out", async () => {
   const { captured, restore } = captureFetch({
     choices: [{ message: { content: "[]" } }],
   });
@@ -209,29 +215,27 @@ Deno.test("buildContentParts — emoji-only item is filtered out", async () => {
   restore();
 });
 
-Deno.test(
-  "buildContentParts — discussion preset sends plain string and shows authors",
-  async () => {
-    const { captured, restore } = captureFetch({
-      choices: [{ message: { content: "[]" } }],
-    });
-    const svc = createTestSummarizer();
-    await svc.summarize(
-      [item({ text: "hello", author: "@alice", meta: { isGroup: true } })],
-      buildDiscussionPrompt(),
-    );
-    assertEquals(typeof captured.body!.messages[1].content, "string");
-    assertStringIncludes(
-      captured.body!.messages[1].content as string,
-      "@alice",
-    );
-    restore();
-  },
-);
+test("buildContentParts — discussion preset sends plain string and shows authors",
+async () => {
+  const { captured, restore } = captureFetch({
+    choices: [{ message: { content: "[]" } }],
+  });
+  const svc = createTestSummarizer();
+  await svc.summarize(
+    [item({ text: "hello", author: "@alice", meta: { isGroup: true } })],
+    buildDiscussionPrompt(),
+  );
+  assertEquals(typeof captured.body!.messages[1].content, "string");
+  assertStringIncludes(
+    captured.body!.messages[1].content as string,
+    "@alice",
+  );
+  restore();
+},);
 
 // --- parsePoints ---
 
-Deno.test("parsePoints — attaches metadata from indexedItems", async () => {
+test("parsePoints — attaches metadata from indexedItems", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: '[{"t":"summary bullet","i":0}]' } }],
   });
@@ -243,50 +247,44 @@ Deno.test("parsePoints — attaches metadata from indexedItems", async () => {
   restore();
 });
 
-Deno.test(
-  "parsePoints — strips markdown code fences from response",
-  async () => {
-    const restore = stubFetch({
-      choices: [
-        { message: { content: '```json\n[{"t":"fenced","i":0}]\n```' } },
-      ],
-    });
-    const svc = createTestSummarizer();
-    const results = await svc.summarize([item()], buildNewsPrompt());
-    assertEquals(results[0].text, "fenced");
-    restore();
-  },
-);
+test("parsePoints — strips markdown code fences from response",
+async () => {
+  const restore = stubFetch({
+    choices: [
+      { message: { content: '```json\n[{"t":"fenced","i":0}]\n```' } },
+    ],
+  });
+  const svc = createTestSummarizer();
+  const results = await svc.summarize([item()], buildNewsPrompt());
+  assertEquals(results[0].text, "fenced");
+  restore();
+},);
 
-Deno.test(
-  "parsePoints — out-of-bounds sourceIndex yields null sourceUrl",
-  async () => {
-    const restore = stubFetch({
-      choices: [{ message: { content: '[{"t":"orphan","i":99}]' } }],
-    });
-    const svc = createTestSummarizer();
-    const results = await svc.summarize([item()], buildNewsPrompt());
-    assertEquals(results[0].text, "orphan");
-    assertEquals(results[0].sourceUrl, null);
-    restore();
-  },
-);
+test("parsePoints — out-of-bounds sourceIndex yields null sourceUrl",
+async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: '[{"t":"orphan","i":99}]' } }],
+  });
+  const svc = createTestSummarizer();
+  const results = await svc.summarize([item()], buildNewsPrompt());
+  assertEquals(results[0].text, "orphan");
+  assertEquals(results[0].sourceUrl, null);
+  restore();
+},);
 
-Deno.test(
-  "parsePoints — missing source index maps to null sourceUrl",
-  async () => {
-    const restore = stubFetch({
-      choices: [{
-        message: { content: '[{"t":"discussion summary without index"}]' },
-      }],
-    });
-    const svc = createTestSummarizer();
-    const results = await svc.summarize([item()], buildNewsPrompt());
-    assertEquals(results[0].text, "discussion summary without index");
-    assertEquals(results[0].sourceUrl, null);
-    restore();
-  },
-);
+test("parsePoints — missing source index maps to null sourceUrl",
+async () => {
+  const restore = stubFetch({
+    choices: [{
+      message: { content: '[{"t":"discussion summary without index"}]' },
+    }],
+  });
+  const svc = createTestSummarizer();
+  const results = await svc.summarize([item()], buildNewsPrompt());
+  assertEquals(results[0].text, "discussion summary without index");
+  assertEquals(results[0].sourceUrl, null);
+  restore();
+},);
 
 // --- retry / API error helpers ---
 
@@ -298,7 +296,7 @@ function stubFetchSequence(specs: ResponseSpec[]): {
 } {
   const original = globalThis.fetch;
   let callIndex = 0;
-  globalThis.fetch = () => {
+  fetchEnvironment.fetch = (() => {
     const spec = specs[callIndex] ?? specs[specs.length - 1];
     callIndex++;
     return Promise.resolve(
@@ -307,7 +305,7 @@ function stubFetchSequence(specs: ResponseSpec[]): {
         headers: { "Content-Type": "application/json" },
       }),
     );
-  };
+  });
   return {
     callCount: () => callIndex,
     restore: () => {
@@ -329,7 +327,7 @@ function captureFetchSequence(specs: ResponseSpec[]): {
   const original = globalThis.fetch;
   const captured: CapturedModelRequest[] = [];
   let callIndex = 0;
-  globalThis.fetch = (input, init) => {
+  fetchEnvironment.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     captured.push({
       url: String(input),
       body: JSON.parse((init as RequestInit & { body: string }).body),
@@ -342,7 +340,7 @@ function captureFetchSequence(specs: ResponseSpec[]): {
         headers: { "Content-Type": "application/json" },
       }),
     );
-  };
+  });
   return {
     captured,
     callCount: () => callIndex,
@@ -360,36 +358,35 @@ function modelResponse(content: string): string {
 
 async function createRoutingTestDirectory(name: string): Promise<string> {
   const directory = `./.test-data/${name}`;
-  await Deno.mkdir(directory, { recursive: true });
+  await mkdir(directory, { recursive: true });
   return directory;
 }
 
-Deno.test("summarize — enforces the timeout at the model request boundary", async () => {
+test("summarize — enforces the timeout at the model request boundary", async () => {
   const originalFetch = globalThis.fetch;
   let requestAborted = false;
-  globalThis.fetch = (_input, init) =>
-    new Promise<Response>((resolve, reject) => {
-      const responseTimer = setTimeout(
-        () =>
-          resolve(
-            new Response(modelResponse('[{"t":"too late","i":0}]'), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            }),
-          ),
-        50,
-      );
-      const signal = init?.signal;
-      signal?.addEventListener(
-        "abort",
-        () => {
-          requestAborted = true;
-          clearTimeout(responseTimer);
-          reject(signal.reason);
-        },
-        { once: true },
-      );
-    });
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+    const responseTimer = setTimeout(
+      () =>
+        resolve(
+          new Response(modelResponse('[{"t":"too late","i":0}]'), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      50,
+    );
+    const signal = init?.signal;
+    signal?.addEventListener(
+      "abort",
+      () => {
+        requestAborted = true;
+        clearTimeout(responseTimer);
+        reject(signal.reason);
+      },
+      { once: true },
+    );
+    }));
 
   try {
     const service = createTestSummarizer();
@@ -407,7 +404,7 @@ Deno.test("summarize — enforces the timeout at the model request boundary", as
   }
 });
 
-Deno.test("summarize — renews the timeout for every chunk and merge request", async () => {
+test("summarize — renews the timeout for every chunk and merge request", async () => {
   const originalFetch = globalThis.fetch;
   const requestSignals: Array<AbortSignal | null | undefined> = [];
   const responses = [
@@ -416,7 +413,7 @@ Deno.test("summarize — renews the timeout for every chunk and merge request", 
     modelResponse('[{"t":"merged","i":0}]'),
   ];
   let callIndex = 0;
-  globalThis.fetch = (_input, init) => {
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
     requestSignals.push(init?.signal);
     const responseBody = responses[callIndex] ?? responses.at(-1)!;
     callIndex++;
@@ -426,7 +423,7 @@ Deno.test("summarize — renews the timeout for every chunk and merge request", 
         headers: { "Content-Type": "application/json" },
       }),
     );
-  };
+  });
 
   try {
     const service = createTestSummarizer({ maxItemsPerChunk: 1 });
@@ -453,7 +450,7 @@ Deno.test("summarize — renews the timeout for every chunk and merge request", 
 
 // --- retry behavior ---
 
-Deno.test("summarize — retries on 429 and succeeds on second attempt", async () => {
+test("summarize — retries on 429 and succeeds on second attempt", async () => {
   const { callCount, restore } = stubFetchSequence([
     { status: 429, body: '{"error":"rate limited"}' },
     {
@@ -472,7 +469,7 @@ Deno.test("summarize — retries on 429 and succeeds on second attempt", async (
   }
 });
 
-Deno.test("summarize — retries on 503 and succeeds on third attempt", async () => {
+test("summarize — retries on 503 and succeeds on third attempt", async () => {
   const { callCount, restore } = stubFetchSequence([
     { status: 503, body: "Service Unavailable" },
     { status: 503, body: "Service Unavailable" },
@@ -492,7 +489,7 @@ Deno.test("summarize — retries on 503 and succeeds on third attempt", async ()
   }
 });
 
-Deno.test("summarize — does not retry on 400 (non-retryable status)", async () => {
+test("summarize — does not retry on 400 (non-retryable status)", async () => {
   const { callCount, restore } = stubFetchSequence([
     { status: 400, body: '{"error":"bad request"}' },
   ]);
@@ -514,7 +511,7 @@ Deno.test("summarize — does not retry on 400 (non-retryable status)", async ()
   }
 });
 
-Deno.test("summarize — provider response bodies stay out of diagnostics", async () => {
+test("summarize — provider response bodies stay out of diagnostics", async () => {
   const privateMarker = "PRIVATE_PROVIDER_RESPONSE_MUST_NOT_BE_LOGGED";
   const { restore } = stubFetchSequence([
     { status: 500, body: `{"error":"${privateMarker}"}` },
@@ -547,7 +544,7 @@ Deno.test("summarize — provider response bodies stay out of diagnostics", asyn
 
 // --- parsePoints boundary cases ---
 
-Deno.test("parsePoints — throws on empty response", async () => {
+test("parsePoints — throws on empty response", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: "" } }],
   });
@@ -567,7 +564,7 @@ Deno.test("parsePoints — throws on empty response", async () => {
   }
 });
 
-Deno.test("parsePoints — throws on non-array JSON response", async () => {
+test("parsePoints — throws on non-array JSON response", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: '{"not":"an array"}' } }],
   });
@@ -587,7 +584,7 @@ Deno.test("parsePoints — throws on non-array JSON response", async () => {
   }
 });
 
-Deno.test("parsePoints — throws on non-array object response", async () => {
+test("parsePoints — throws on non-array object response", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: '{"status":"ok","summary":"done"}' } }],
   });
@@ -607,7 +604,7 @@ Deno.test("parsePoints — throws on non-array object response", async () => {
   }
 });
 
-Deno.test("parsePoints — validation errors do not include raw model output", async () => {
+test("parsePoints — validation errors do not include raw model output", async () => {
   const privateMarker = "PRIVATE_MODEL_OUTPUT_MUST_NOT_BE_LOGGED";
   const restore = stubFetch({
     choices: [{
@@ -633,7 +630,7 @@ Deno.test("parsePoints — validation errors do not include raw model output", a
   }
 });
 
-Deno.test("parsePoints — strips bare fence without language tag", async () => {
+test("parsePoints — strips bare fence without language tag", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: '```\n[{"t":"bare","i":0}]\n```' } }],
   });
@@ -646,7 +643,7 @@ Deno.test("parsePoints — strips bare fence without language tag", async () => 
   }
 });
 
-Deno.test("parsePoints — strips think tags before fence extraction", async () => {
+test("parsePoints — strips think tags before fence extraction", async () => {
   const restore = stubFetch({
     choices: [{
       message: {
@@ -664,7 +661,7 @@ Deno.test("parsePoints — strips think tags before fence extraction", async () 
   }
 });
 
-Deno.test("parsePoints — throws on element without string t (prose turned to word array)", async () => {
+test("parsePoints — throws on element without string t (prose turned to word array)", async () => {
   // jsonrepair turns "Sure, here is your summary:" into ["Sure","here is your summary:"]
   // — a valid array whose elements lack t/i, which should fail element validation.
   const restore = stubFetch({
@@ -688,13 +685,13 @@ Deno.test("parsePoints — throws on element without string t (prose turned to w
 
 // --- empty and filtered input ---
 
-Deno.test("summarize — returns [] for empty items", async () => {
+test("summarize — returns [] for empty items", async () => {
   const svc = createTestSummarizer();
   const results = await svc.summarize([], buildNewsPrompt());
   assertEquals(results, []);
 });
 
-Deno.test("summarize — returns [] when all items are filtered (emoji-only, no photo)", async () => {
+test("summarize — returns [] when all items are filtered (emoji-only, no photo)", async () => {
   const svc = createTestSummarizer();
   const results = await svc.summarize(
     [item({ text: "👍🔥😂" }), item({ text: "" })],
@@ -705,7 +702,7 @@ Deno.test("summarize — returns [] when all items are filtered (emoji-only, no 
 
 // --- chunking and merge ---
 
-Deno.test("summarize — chunks items and merges when maxItemsPerChunk is exceeded", async () => {
+test("summarize — chunks items and merges when maxItemsPerChunk is exceeded", async () => {
   // 3 items, maxItemsPerChunk=2 → chunk 1 gets items 0,1; chunk 2 gets item 2.
   // Each chunk returns fewer points than items to simulate real summarization reduction.
   // Merge call returns final points.
@@ -752,7 +749,7 @@ Deno.test("summarize — chunks items and merges when maxItemsPerChunk is exceed
   }
 });
 
-Deno.test("summarize — bounds a production-shaped hierarchical merge", async () => {
+test("summarize — bounds a production-shaped hierarchical merge", async () => {
   const originalFetch = globalThis.fetch;
   const sourceRequestCount = 18;
   const pointsPerSource = 50;
@@ -761,7 +758,7 @@ Deno.test("summarize — bounds a production-shaped hierarchical merge", async (
   const maxMergeBytes = 512;
   const mergePayloads: string[] = [];
   let requestCount = 0;
-  globalThis.fetch = (_input, init) => {
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -783,7 +780,7 @@ Deno.test("summarize — bounds a production-shaped hierarchical merge", async (
         headers: { "Content-Type": "application/json" },
       }),
     );
-  };
+  });
 
   try {
     const service = createTestSummarizer({
@@ -825,11 +822,11 @@ Deno.test("summarize — bounds a production-shaped hierarchical merge", async (
   }
 });
 
-Deno.test("summarize — merge framing honors tiny UTF-8 budgets and maxItems one", async () => {
+test("summarize — merge framing honors tiny UTF-8 budgets and maxItems one", async () => {
   const originalFetch = globalThis.fetch;
   const mergeContents: string[] = [];
   let requestCount = 0;
-  globalThis.fetch = (_input, init) => {
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -846,7 +843,7 @@ Deno.test("summarize — merge framing honors tiny UTF-8 budgets and maxItems on
         headers: { "Content-Type": "application/json" },
       }),
     );
-  };
+  });
 
   try {
     const service = createTestSummarizer({
@@ -867,7 +864,7 @@ Deno.test("summarize — merge framing honors tiny UTF-8 budgets and maxItems on
   }
 });
 
-Deno.test("summarize — rejects an empty intermediate merge through merge_failed", async () => {
+test("summarize — rejects an empty intermediate merge through merge_failed", async () => {
   const diagnostics: SummarizationDiagnostic[] = [];
   const { restore } = stubFetchSequence([
     { status: 200, body: modelResponse('[{"t":"first","i":0}]') },
@@ -905,9 +902,9 @@ Deno.test("summarize — rejects an empty intermediate merge through merge_faile
   }
 });
 
-Deno.test("summarize — constructor uses the scoped item limit configuration", async () => {
-  const previousValue = Deno.env.get("SUMMARIZER_MAX_ITEMS_PER_CHUNK");
-  Deno.env.set("SUMMARIZER_MAX_ITEMS_PER_CHUNK", "1");
+test("summarize — constructor uses the scoped item limit configuration", async () => {
+  const previousValue = process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK;
+  process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK = "1";
   const { callCount, restore } = stubFetchSequence([
     { status: 200, body: modelResponse('[{"t":"first","i":0}]') },
     { status: 200, body: modelResponse('[{"t":"second","i":0}]') },
@@ -926,15 +923,15 @@ Deno.test("summarize — constructor uses the scoped item limit configuration", 
     assertEquals(callCount(), 3);
   } finally {
     if (previousValue === undefined) {
-      Deno.env.delete("SUMMARIZER_MAX_ITEMS_PER_CHUNK");
+      delete process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK;
     } else {
-      Deno.env.set("SUMMARIZER_MAX_ITEMS_PER_CHUNK", previousValue);
+      process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK = previousValue;
     }
     restore();
   }
 });
 
-Deno.test("summarize — single chunk skips merge", async () => {
+test("summarize — single chunk skips merge", async () => {
   const { callCount, restore } = stubFetchSequence([
     {
       status: 200,
@@ -953,10 +950,10 @@ Deno.test("summarize — single chunk skips merge", async () => {
   }
 });
 
-Deno.test("summarize — article mode splits UTF-8 safely, keeps title context, and never merges chunks", async () => {
+test("summarize — article mode splits UTF-8 safely, keeps title context, and never merges chunks", async () => {
   const original = globalThis.fetch;
   const requestContents: string[] = [];
-  globalThis.fetch = (_input, init) => {
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -972,7 +969,7 @@ Deno.test("summarize — article mode splits UTF-8 safely, keeps title context, 
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
-  };
+  });
   try {
     const service = createTestSummarizer({ maxTextBytesPerChunk: 5 });
     const points = await service.summarize(
@@ -1001,7 +998,7 @@ Deno.test("summarize — article mode splits UTF-8 safely, keeps title context, 
   }
 });
 
-Deno.test("summarize — article mode rejects multiple items", async () => {
+test("summarize — article mode rejects multiple items", async () => {
   const service = createTestSummarizer();
   await assertRejects(
     () =>
@@ -1017,10 +1014,10 @@ Deno.test("summarize — article mode rejects multiple items", async () => {
   );
 });
 
-Deno.test("summarize — article mode does not apply aggregate noise filtering", async () => {
+test("summarize — article mode does not apply aggregate noise filtering", async () => {
   const original = globalThis.fetch;
   const submitted: string[] = [];
-  globalThis.fetch = (_input, init) => {
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -1033,7 +1030,7 @@ Deno.test("summarize — article mode does not apply aggregate noise filtering",
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
-  };
+  });
   try {
     const service = createTestSummarizer();
     for (const text of ["123456", "(){ =>; }", "👍🔥😂"]) {
@@ -1050,13 +1047,13 @@ Deno.test("summarize — article mode does not apply aggregate noise filtering",
   }
 });
 
-Deno.test("summarize — article byte budget rejects invalid and undersized scalar budgets before requests", async () => {
+test("summarize — article byte budget rejects invalid and undersized scalar budgets before requests", async () => {
   const original = globalThis.fetch;
   let requests = 0;
-  globalThis.fetch = () => {
+  fetchEnvironment.fetch = (() => {
     requests++;
     throw new Error("model must not be called");
-  };
+  });
   try {
     const service = createTestSummarizer();
     for (const budget of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN]) {
@@ -1094,10 +1091,10 @@ Deno.test("summarize — article byte budget rejects invalid and undersized scal
   }
 });
 
-Deno.test("summarize — article splitter preserves long mixed UTF-8 text at byte boundaries", async () => {
+test("summarize — article splitter preserves long mixed UTF-8 text at byte boundaries", async () => {
   const original = globalThis.fetch;
   const chunks: string[] = [];
-  globalThis.fetch = (_input, init) => {
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -1111,7 +1108,7 @@ Deno.test("summarize — article splitter preserves long mixed UTF-8 text at byt
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
-  };
+  });
   try {
     const text = "aé😀".repeat(20);
     const service = createTestSummarizer();
@@ -1133,7 +1130,7 @@ Deno.test("summarize — article splitter preserves long mixed UTF-8 text at byt
 
 // --- oversize text truncation ---
 
-Deno.test("summarize — truncates item text exceeding maxTextBytesPerChunk", async () => {
+test("summarize — truncates item text exceeding maxTextBytesPerChunk", async () => {
   const longText = "A".repeat(200);
   const maxBytes = 100;
 
@@ -1161,7 +1158,7 @@ Deno.test("summarize — truncates item text exceeding maxTextBytesPerChunk", as
   }
 });
 
-Deno.test("summarize — normal text below maxTextBytesPerChunk is not truncated", async () => {
+test("summarize — normal text below maxTextBytesPerChunk is not truncated", async () => {
   const normalText = "Hello world";
 
   const { captured, restore } = captureFetch({
@@ -1185,12 +1182,12 @@ Deno.test("summarize — normal text below maxTextBytesPerChunk is not truncated
 
 // --- image omission ---
 
-Deno.test("summarize — omits images above maxImageBytes", async () => {
+test("summarize — omits images above maxImageBytes", async () => {
   const temporaryDirectory = "./.test-data/summarizer-test-images";
   try {
-    await Deno.mkdir(temporaryDirectory, { recursive: true });
-    await Deno.writeFile(`${temporaryDirectory}/small.jpg`, new Uint8Array(50)); // 50 bytes
-    await Deno.writeFile(
+    await mkdir(temporaryDirectory, { recursive: true });
+    await writeFile(`${temporaryDirectory}/small.jpg`, new Uint8Array(50)); // 50 bytes
+    await writeFile(
       `${temporaryDirectory}/large.jpg`,
       new Uint8Array(2_000),
     ); // 2KB
@@ -1271,14 +1268,40 @@ Deno.test("summarize — omits images above maxImageBytes", async () => {
       restore2();
     }
   } finally {
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — encodes an image at the configured byte limit", async () => {
+test("Bun loads native sharp and resizes a PNG through temporary files", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "morning-post-sharp-"));
+  const sourcePath = join(directory, "source.png");
+  const resizedPath = join(directory, "resized.png");
+  try {
+    await sharp({
+      create: {
+        width: 4,
+        height: 3,
+        channels: 4,
+        background: { r: 12, g: 34, b: 56, alpha: 1 },
+      },
+    }).png().toFile(sourcePath);
+    await sharp(sourcePath).resize(2, 2, { fit: "fill" }).png().toFile(resizedPath);
+
+    const resized = await readFile(resizedPath);
+    assertEquals(resized.subarray(1, 4).toString("ascii"), "PNG");
+    const metadata = await sharp(resized).metadata();
+    assertEquals(metadata.format, "png");
+    assertEquals(metadata.width, 2);
+    assertEquals(metadata.height, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("summarize — encodes an image at the configured byte limit", async () => {
   const temporaryDirectory = await createRoutingTestDirectory("image-limit");
   const imagePath = `${temporaryDirectory}/limit.jpg`;
-  await Deno.writeFile(imagePath, new Uint8Array(1_000_000).fill(7));
+  await writeFile(imagePath, new Uint8Array(1_000_000).fill(7));
   const { captured, restore } = captureFetch({
     choices: [{ message: { content: '[{"t":"limit image","i":0}]' } }],
   });
@@ -1300,16 +1323,16 @@ Deno.test("summarize — encodes an image at the configured byte limit", async (
     assertEquals(JSON.stringify(content).includes("[IMAGE_OMITTED]"), false);
   } finally {
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — same-model routing sends valid images directly as multimodal content", async () => {
+test("summarize — same-model routing sends valid images directly as multimodal content", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
     "same-model-direct",
   );
   const imagePath = `${temporaryDirectory}/photo.jpg`;
-  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(imagePath, new Uint8Array([1, 2, 3]));
   const { captured, restore } = captureFetchSequence([
     {
       status: 200,
@@ -1332,16 +1355,16 @@ Deno.test("summarize — same-model routing sends valid images directly as multi
     );
   } finally {
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — distinct vision model analyzes images before text summarization", async () => {
+test("summarize — distinct vision model analyzes images before text summarization", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
     "distinct-vision",
   );
   const imagePath = `${temporaryDirectory}/photo.jpg`;
-  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(imagePath, new Uint8Array([1, 2, 3]));
   const { captured, restore } = captureFetchSequence([
     {
       status: 200,
@@ -1389,15 +1412,15 @@ Deno.test("summarize — distinct vision model analyzes images before text summa
     assertEquals(String(summaryContent).includes("image_url"), false);
   } finally {
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — separate vision preserves omitted album images without decorating omission markers", async () => {
+test("summarize — separate vision preserves omitted album images without decorating omission markers", async () => {
   const temporaryDirectory = await createRoutingTestDirectory("distinct-album");
   const validImagePath = `${temporaryDirectory}/valid.jpg`;
   const missingImagePath = `${temporaryDirectory}/missing.jpg`;
-  await Deno.writeFile(validImagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(validImagePath, new Uint8Array([1, 2, 3]));
   const { captured, restore } = captureFetchSequence([
     {
       status: 200,
@@ -1438,18 +1461,18 @@ Deno.test("summarize — separate vision preserves omitted album images without 
     );
   } finally {
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — same-model vision fallback disables image attempts for later chunks", async () => {
+test("summarize — same-model vision fallback disables image attempts for later chunks", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
     "same-model-fallback",
   );
   const firstImagePath = `${temporaryDirectory}/first.jpg`;
   const secondImagePath = `${temporaryDirectory}/second.jpg`;
-  await Deno.writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
-  await Deno.writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
+  await writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
   const { captured, callCount, restore } = captureFetchSequence([
     { status: 400, body: '{"error":"multimodal unsupported"}' },
     { status: 200, body: modelResponse('[{"t":"first fallback","i":0}]') },
@@ -1496,16 +1519,16 @@ Deno.test("summarize — same-model vision fallback disables image attempts for 
     );
   } finally {
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — same-model vision does not fall back on unrelated provider failures", async () => {
+test("summarize — same-model vision does not fall back on unrelated provider failures", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
     "same-model-failure",
   );
   const imagePath = `${temporaryDirectory}/photo.jpg`;
-  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(imagePath, new Uint8Array([1, 2, 3]));
   const { callCount, restore } = captureFetchSequence([
     { status: 401, body: '{"error":"unauthorized"}' },
   ]);
@@ -1522,14 +1545,14 @@ Deno.test("summarize — same-model vision does not fall back on unrelated provi
     assertEquals(callCount(), 1);
   } finally {
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — vision failure is logged once per run and retried on the next run", async () => {
+test("summarize — vision failure is logged once per run and retried on the next run", async () => {
   const temporaryDirectory = await createRoutingTestDirectory("vision-retry");
   const imagePath = `${temporaryDirectory}/photo.jpg`;
-  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(imagePath, new Uint8Array([1, 2, 3]));
   const { captured, callCount, restore } = captureFetchSequence([
     { status: 200, body: "not valid vision JSON" },
     { status: 200, body: modelResponse('[{"t":"first unavailable","i":0}]') },
@@ -1573,18 +1596,18 @@ Deno.test("summarize — vision failure is logged once per run and retried on th
   } finally {
     console.warn = originalWarning;
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — duplicate vision indexes merge distinct album descriptions", async () => {
+test("summarize — duplicate vision indexes merge distinct album descriptions", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
     "vision-duplicate-index",
   );
   const firstImagePath = `${temporaryDirectory}/first.jpg`;
   const secondImagePath = `${temporaryDirectory}/second.jpg`;
-  await Deno.writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
-  await Deno.writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
+  await writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
   const { captured, callCount, restore } = captureFetchSequence([
     {
       status: 200,
@@ -1638,18 +1661,18 @@ Deno.test("summarize — duplicate vision indexes merge distinct album descripti
   } finally {
     console.warn = originalWarning;
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — duplicate vision indexes do not mask a missing expected index", async () => {
+test("summarize — duplicate vision indexes do not mask a missing expected index", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
     "vision-duplicate-missing-index",
   );
   const firstImagePath = `${temporaryDirectory}/first.jpg`;
   const secondImagePath = `${temporaryDirectory}/second.jpg`;
-  await Deno.writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
-  await Deno.writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
+  await writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
   const { captured, callCount, restore } = captureFetchSequence([
     {
       status: 200,
@@ -1703,21 +1726,21 @@ Deno.test("summarize — duplicate vision indexes do not mask a missing expected
   } finally {
     console.warn = originalWarning;
     restore();
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — text timeout after valid vision is not retried as vision fallback", async () => {
+test("summarize — text timeout after valid vision is not retried as vision fallback", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
     "vision-success-text-timeout",
   );
   const imagePath = `${temporaryDirectory}/photo.jpg`;
-  await Deno.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  await writeFile(imagePath, new Uint8Array([1, 2, 3]));
   const originalFetch = globalThis.fetch;
   const diagnostics: SummarizationDiagnostic[] = [];
   let callCount = 0;
   const textRequestContents: string[] = [];
-  globalThis.fetch = (_input, init) => {
+  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
     callCount++;
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
@@ -1755,7 +1778,7 @@ Deno.test("summarize — text timeout after valid vision is not retried as visio
         { once: true },
       );
     });
-  };
+  });
 
   try {
     const service = createTestSummarizer({
@@ -1802,11 +1825,11 @@ Deno.test("summarize — text timeout after valid vision is not retried as visio
     }]);
   } finally {
     globalThis.fetch = originalFetch;
-    await Deno.remove(temporaryDirectory, { recursive: true });
+    await rm(temporaryDirectory, { recursive: true });
   }
 });
 
-Deno.test("summarize — allows remote base URL with opt-in", async () => {
+test("summarize — allows remote base URL with opt-in", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: '[{"t":"remote summary","i":0}]' } }],
   });
@@ -1830,7 +1853,7 @@ Deno.test("summarize — allows remote base URL with opt-in", async () => {
   }
 });
 
-Deno.test("summarize — allows loopback URL without opt-in flag", async () => {
+test("summarize — allows loopback URL without opt-in flag", async () => {
   const restore = stubFetch({
     choices: [{ message: { content: '[{"t":"local summary","i":0}]' } }],
   });
@@ -1855,7 +1878,7 @@ Deno.test("summarize — allows loopback URL without opt-in flag", async () => {
 
 // --- Retry-After header ---
 
-Deno.test("summarize — retries on 429 with Retry-After header", async () => {
+test("summarize — retries on 429 with Retry-After header", async () => {
   const original = globalThis.fetch;
   let callIndex = 0;
   const specs: Array<
@@ -1873,13 +1896,13 @@ Deno.test("summarize — retries on 429 with Retry-After header", async () => {
       headers: { "Content-Type": "application/json" },
     },
   ];
-  globalThis.fetch = () => {
+  fetchEnvironment.fetch = (() => {
     const spec = specs[callIndex] ?? specs[specs.length - 1];
     callIndex++;
     return Promise.resolve(
       new Response(spec.body, { status: spec.status, headers: spec.headers }),
     );
-  };
+  });
   try {
     const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
     const results = await svc.summarize([item()], buildNewsPrompt());

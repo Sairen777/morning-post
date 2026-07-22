@@ -1,5 +1,6 @@
-import { assertEquals } from "@std/assert";
-import { Hono } from "@hono/hono";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts";
+import { Hono } from "hono";
 import { SESSION_COOKIE } from "../../src/auth/session-service.ts";
 import { errorHandler } from "../../src/server/errors.ts";
 import { createOriginGuard } from "../../src/server/middleware/origin-guard.ts";
@@ -26,7 +27,7 @@ async function request(
   });
 }
 
-Deno.test("origin guard accepts cookie-authenticated JSON POST/PATCH/DELETE from exact Origin", async () => {
+test("origin guard accepts cookie-authenticated JSON POST/PATCH/DELETE from exact Origin", async () => {
   const app = testApp();
   for (const method of ["POST", "PATCH", "DELETE"]) {
     const response = await request(app, method, { Origin: ALLOWED_ORIGIN });
@@ -34,7 +35,7 @@ Deno.test("origin guard accepts cookie-authenticated JSON POST/PATCH/DELETE from
   }
 });
 
-Deno.test("origin guard accepts the exact Referer origin when Origin is absent", async () => {
+test("origin guard accepts the exact Referer origin when Origin is absent", async () => {
   const app = testApp();
   const response = await request(app, "POST", {
     Referer: `${ALLOWED_ORIGIN}/settings/profile?tab=security`,
@@ -42,7 +43,7 @@ Deno.test("origin guard accepts the exact Referer origin when Origin is absent",
   assertEquals(response.status, 200);
 });
 
-Deno.test("origin guard rejects mismatched Origin and Referer values", async () => {
+test("origin guard rejects mismatched Origin and Referer values", async () => {
   const app = testApp();
   const cases: Record<string, string>[] = [
     { Origin: "https://evil.example" },
@@ -58,7 +59,7 @@ Deno.test("origin guard rejects mismatched Origin and Referer values", async () 
   }
 });
 
-Deno.test("origin guard rejects a cookie-authenticated mutation with no Origin or Referer", async () => {
+test("origin guard rejects a cookie-authenticated mutation with no Origin or Referer", async () => {
   for (const method of ["POST", "PATCH", "DELETE"]) {
     const response = await request(testApp(), method);
     assertEquals(response.status, 401);
@@ -66,7 +67,7 @@ Deno.test("origin guard rejects a cookie-authenticated mutation with no Origin o
   }
 });
 
-Deno.test("origin guard bypasses safe methods even with a cookie and no origin headers", async () => {
+test("origin guard bypasses safe methods even with a cookie and no origin headers", async () => {
   const app = testApp();
   for (const method of ["GET", "HEAD", "OPTIONS"]) {
     const response = await request(app, method);
@@ -74,7 +75,7 @@ Deno.test("origin guard bypasses safe methods even with a cookie and no origin h
   }
 });
 
-Deno.test("origin guard bypasses mutations without a session cookie", async () => {
+test("origin guard bypasses mutations without a session cookie", async () => {
   const app = testApp();
   const response = await app.request("/mutation", { method: "POST" });
   assertEquals(response.status, 200);

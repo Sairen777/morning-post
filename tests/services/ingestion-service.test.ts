@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assert, assertEquals, assertRejects } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import {
   CredentialCipher,
@@ -129,7 +130,7 @@ class FakeConnector implements Connector<unknown> {
   }
 }
 
-Deno.test("ingestFeed writes fetched items and advances the feed cursor", async () => {
+test("ingestFeed writes fetched items and advances the feed cursor", async () => {
   await withTestDb(async (database) => {
     const { userId, feed } = await createFeed(
       database,
@@ -161,7 +162,7 @@ Deno.test("ingestFeed writes fetched items and advances the feed cursor", async 
   });
 });
 
-Deno.test("ingestFeed computes cursor windows and advances empty fetches", async () => {
+test("ingestFeed computes cursor windows and advances empty fetches", async () => {
   await withTestDb(async (database) => {
     const { userId, feed } = await createFeed(
       database,
@@ -196,7 +197,7 @@ Deno.test("ingestFeed computes cursor windows and advances empty fetches", async
   });
 });
 
-Deno.test("ingestFeed preserves a newer cursor during a historical refresh", async () => {
+test("ingestFeed preserves a newer cursor during a historical refresh", async () => {
   await withTestDb(async (database) => {
     const { userId, feed } = await createFeed(
       database,
@@ -215,7 +216,7 @@ Deno.test("ingestFeed preserves a newer cursor during a historical refresh", asy
   });
 });
 
-Deno.test("ingestFeed upserts edited items across overlapping windows", async () => {
+test("ingestFeed upserts edited items across overlapping windows", async () => {
   await withTestDb(async (database) => {
     const { userId, feed } = await createFeed(
       database,
@@ -251,7 +252,7 @@ Deno.test("ingestFeed upserts edited items across overlapping windows", async ()
   });
 });
 
-Deno.test("ingestFeed rejects bad payloads and leaves cursor unchanged", async () => {
+test("ingestFeed rejects bad payloads and leaves cursor unchanged", async () => {
   await withTestDb(async (database) => {
     const { userId, feed } = await createFeed(
       database,
@@ -277,7 +278,7 @@ Deno.test("ingestFeed rejects bad payloads and leaves cursor unchanged", async (
   });
 });
 
-Deno.test("ingestFeed rejects items returned under the right key but belonging to another feed", async () => {
+test("ingestFeed rejects items returned under the right key but belonging to another feed", async () => {
   await withTestDb(async (database) => {
     const { userId, feed } = await createFeed(
       database,
@@ -352,7 +353,7 @@ async function createFourFeeds(
   return { userId: user.id, feeds };
 }
 
-Deno.test("ingestFeedsForSource calls connector once for multiple feeds", async () => {
+test("ingestFeedsForSource calls connector once for multiple feeds", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(
       database,
@@ -406,7 +407,7 @@ Deno.test("ingestFeedsForSource calls connector once for multiple feeds", async 
   });
 });
 
-Deno.test("ingestFeedsForSource preserves newer cursors during historical refreshes", async () => {
+test("ingestFeedsForSource preserves newer cursors during historical refreshes", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(
       database,
@@ -446,7 +447,7 @@ Deno.test("ingestFeedsForSource preserves newer cursors during historical refres
   });
 });
 
-Deno.test("ingestFeedsForSource filters items per feed by date range", async () => {
+test("ingestFeedsForSource filters items per feed by date range", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(
       database,
@@ -499,7 +500,7 @@ Deno.test("ingestFeedsForSource filters items per feed by date range", async () 
   });
 });
 
-Deno.test("ingestFeedsForSource isolates one-feed validation failure", async () => {
+test("ingestFeedsForSource isolates one-feed validation failure", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(
       database,
@@ -550,7 +551,7 @@ Deno.test("ingestFeedsForSource isolates one-feed validation failure", async () 
   });
 });
 
-Deno.test("ingestFeedsForSource returns empty results for empty connector data", async () => {
+test("ingestFeedsForSource returns empty results for empty connector data", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(
       database,
@@ -579,7 +580,7 @@ Deno.test("ingestFeedsForSource returns empty results for empty connector data",
   });
 });
 
-Deno.test("ingestFeedsForSource passes abort signal to connector", () => {
+test("ingestFeedsForSource passes abort signal to connector", () => {
   const controller = new AbortController();
   controller.abort();
   const connector = new FakeConnector([{}]);
@@ -591,7 +592,7 @@ Deno.test("ingestFeedsForSource passes abort signal to connector", () => {
   assert(connector.calls[0].signal?.aborted);
 });
 
-Deno.test("ingestFeedsForSource bounds an abort-ignoring connector deadline without persistence", async () => {
+test("ingestFeedsForSource bounds an abort-ignoring connector deadline without persistence", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(
       database,
@@ -646,7 +647,7 @@ Deno.test("ingestFeedsForSource bounds an abort-ignoring connector deadline with
   });
 });
 
-Deno.test("ingestFeedsForSource validates connector timeout", async () => {
+test("ingestFeedsForSource validates connector timeout", async () => {
   await withTestDb(async (database) => {
     const connector = new FakeConnector([{}]);
 
@@ -662,7 +663,7 @@ Deno.test("ingestFeedsForSource validates connector timeout", async () => {
   });
 });
 
-Deno.test("ingestFeedsForSource skips connector and persistence for an already-aborted parent", async () => {
+test("ingestFeedsForSource skips connector and persistence for an already-aborted parent", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(
       database,
@@ -720,7 +721,7 @@ Deno.test("ingestFeedsForSource skips connector and persistence for an already-a
   });
 });
 
-Deno.test("ingestFeedsForSource propagates parent abort to an uncooperative connector", async () => {
+test("ingestFeedsForSource propagates parent abort to an uncooperative connector", async () => {
   await withTestDb(async (database) => {
     const { userId, feed1, feed2 } = await createTwoFeeds(
       database,
@@ -767,7 +768,7 @@ Deno.test("ingestFeedsForSource propagates parent abort to an uncooperative conn
   });
 });
 
-Deno.test("ingestFeedsIndividually isolates failures, aborts deadlines, and bounds concurrency", async () => {
+test("ingestFeedsIndividually isolates failures, aborts deadlines, and bounds concurrency", async () => {
   await withTestDb(async (database) => {
     const { userId, feeds } = await createFourFeeds(
       database,

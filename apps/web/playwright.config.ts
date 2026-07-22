@@ -23,14 +23,14 @@ export default defineConfig({
   webServer: [
     {
       cwd: "../..",
-      command: "deno task e2e:api",
+      command: "bun run e2e:api",
       url: "http://127.0.0.1:3100/health",
       reuseExistingServer: false,
       timeout: 30_000,
     },
     {
       cwd: "../..",
-      command: "npm --workspace apps/web run e2e:server",
+      command: "bun run --cwd apps/web e2e:server",
       url: "http://127.0.0.1:5174",
       reuseExistingServer: false,
       timeout: 15_000,

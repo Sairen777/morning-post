@@ -76,5 +76,6 @@ if (import.meta.main) {
     await runOnce();
   } catch (error) {
     console.error(sanitizeErrorForOps(error));
+    process.exitCode = 1;
   }
 }

@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -50,7 +51,7 @@ async function createUserWithSource(database: Database, email: string) {
 const periodStartMs = 1_700_000_000_000;
 const periodEndMs = 1_700_086_400_000;
 
-Deno.test("digest repository creates and updates one digest per user period", async () => {
+test("digest repository creates and updates one digest per user period", async () => {
   await withTestDb(async (database) => {
     const user = await createUserWithSource(database, "digest-upsert@example.com");
     const pending = await upsertDigestForPeriod(database, {
@@ -76,7 +77,7 @@ Deno.test("digest repository creates and updates one digest per user period", as
   });
 });
 
-Deno.test("digest repository lists and finds digests only for the owner", async () => {
+test("digest repository lists and finds digests only for the owner", async () => {
   await withTestDb(async (database) => {
     const firstUser = await createUserWithSource(database, "digest-first@example.com");
     const secondUser = await createUserWithSource(database, "digest-second@example.com");
@@ -101,7 +102,7 @@ Deno.test("digest repository lists and finds digests only for the owner", async 
   });
 });
 
-Deno.test("digest repository lists digests latest-first by periodEndMs then createdAt", async () => {
+test("digest repository lists digests latest-first by periodEndMs then createdAt", async () => {
   await withTestDb(async (database) => {
     const user = await createUserWithSource(database, "digest-order@example.com");
 
@@ -140,7 +141,7 @@ Deno.test("digest repository lists digests latest-first by periodEndMs then crea
   });
 });
 
-Deno.test("digest check constraint rejects invalid status at database level", async () => {
+test("digest check constraint rejects invalid status at database level", async () => {
   await withTestDb(async (database) => {
     const user = await createUserWithSource(database, "digest-check-status@example.com");
 
@@ -155,7 +156,7 @@ Deno.test("digest check constraint rejects invalid status at database level", as
   });
 });
 
-Deno.test("digest check constraint rejects reversed period order", async () => {
+test("digest check constraint rejects reversed period order", async () => {
   await withTestDb(async (database) => {
     const user = await createUserWithSource(database, "digest-check-period@example.com");
 
@@ -170,7 +171,7 @@ Deno.test("digest check constraint rejects reversed period order", async () => {
   });
 });
 
-Deno.test("deleteDigestForUser deletes an owned digest and returns it", async () => {
+test("deleteDigestForUser deletes an owned digest and returns it", async () => {
   await withTestDb(async (database) => {
     const user = await createUserWithSource(database, "digest-delete@example.com");
     const digest = await upsertDigestForPeriod(database, {
@@ -188,7 +189,7 @@ Deno.test("deleteDigestForUser deletes an owned digest and returns it", async ()
   });
 });
 
-Deno.test("deleteDigestForUser throws NotFoundError for non-owner", async () => {
+test("deleteDigestForUser throws NotFoundError for non-owner", async () => {
   await withTestDb(async (database) => {
     const firstUser = await createUserWithSource(database, "digest-delete-first@example.com");
     const secondUser = await createUserWithSource(database, "digest-delete-second@example.com");

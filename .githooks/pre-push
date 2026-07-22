@@ -1,3 +1,3 @@
 #!/bin/sh
 set -e
-deno task test
+bun run test

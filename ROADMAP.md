@@ -3,9 +3,12 @@
 The following production-hardening phases have been implemented (see
 `ARCHITECTURE.md` for details):
 
-### Phase 1 — Runtime permissions, HTTP boundaries, and error redaction
+### Phase 1 — Bun runtime hardening, HTTP boundaries, and error redaction
 
-- Named Deno 2.5+ permission sets (`api`, `migrate`, `test`, `cli`) with scoped network, env, read, write, sys, and FFI.
+- Bun 1.3.14 clean cutover: explicit production env-file loading, `Bun.serve`,
+  Node-compatible filesystem/DNS/TLS boundaries, and workspace installation
+  through Bun. Operating-system process and filesystem policy replaces
+  runtime-specific named permission profiles.
 - Security headers: HSTS (`max-age=31536000; includeSubDomains`),
   `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`.
 - Origin guard rejecting unexpected `Origin`/`Referer` on unsafe requests.
@@ -79,11 +82,13 @@ The following remain for separate provider/product plans:
 ---
 
 <!-- Authored by: Claude Sonnet 4.5 (claude-sonnet-4-5-20250929) -->
+
 - [] telegram
 - [] substack
 - [] rss
 - [] reddit selected subreddits (post summarize only?)
 - [] optionally parse comments (telegram, youtube, substack etc)
+- [] click like/diskike button on the point to customize weights of different topics. Over time tune stuff you see to adjust the model's output.
 
 ## Flow
 
@@ -193,7 +198,7 @@ content, so this cache becomes load-bearing once those connectors land.
 - payload: jsonb — the NormalizedItem blob, read as a whole
 - fetchedAt
 - UNIQUE(feedId, externalId) — writes upsert: `ON CONFLICT (feedId, externalId)
-  DO UPDATE payload, fetchedAt`, so a re-fetched edited message refreshes the
+DO UPDATE payload, fetchedAt`, so a re-fetched edited message refreshes the
   cache rather than failing or silently skipping.
 
 ### Summary (per-feed, per-period result — immutable)

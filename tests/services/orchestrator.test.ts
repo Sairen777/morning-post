@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assert, assertEquals, assertRejects } from "../assertions.ts"
 import type {
   ConnectorFactoryLike,
   ConnectorHandle,
@@ -56,6 +57,7 @@ import {
 } from "../../src/repositories/summary-repository.ts";
 import { sql } from "drizzle-orm";
 import { listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
+import { discardOperationalEvent } from "../operational-log-recorder.ts";
 
 class FakeConnector implements Connector<unknown> {
   readonly calls: Array<
@@ -230,7 +232,7 @@ function normalizedItem(
 
 const period = { startMs: 1_700_000_000_000, endMs: 1_700_086_400_000 };
 
-Deno.test("runForUser ingests feeds, summarizes them, and returns a complete digest", async () => {
+test("runForUser ingests feeds, summarizes them, and returns a complete digest", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -273,6 +275,7 @@ Deno.test("runForUser ingests feeds, summarizes them, and returns a complete dig
       connectorFactory,
       summarizer,
       now: () => 200,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(view.digest.status, "complete");
@@ -297,7 +300,7 @@ Deno.test("runForUser ingests feeds, summarizes them, and returns a complete dig
   });
 });
 
-Deno.test("runForUser fails its run when connector disposal throws unexpectedly", async () => {
+test("runForUser fails its run when connector disposal throws unexpectedly", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -340,6 +343,7 @@ Deno.test("runForUser fails its run when connector disposal throws unexpectedly"
           sourceUrl: null,
         }]]),
         now: () => 206,
+        recordOperationalEvent: discardOperationalEvent,
       })
     );
 
@@ -357,7 +361,7 @@ Deno.test("runForUser fails its run when connector disposal throws unexpectedly"
   });
 });
 
-Deno.test("runForUser is idempotent for the same period", async () => {
+test("runForUser is idempotent for the same period", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -388,11 +392,13 @@ Deno.test("runForUser is idempotent for the same period", async () => {
       connectorFactory,
       summarizer,
       now: () => 201,
+      recordOperationalEvent: discardOperationalEvent,
     });
     const second = await runForUser(database, user.id, period, {
       connectorFactory,
       summarizer,
       now: () => 202,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(first.digest.id, second.digest.id);
@@ -401,7 +407,7 @@ Deno.test("runForUser is idempotent for the same period", async () => {
   });
 });
 
-Deno.test("runForUser creates an empty digest for a user with no sources", async () => {
+test("runForUser creates an empty digest for a user with no sources", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -409,13 +415,14 @@ Deno.test("runForUser creates an empty digest for a user with no sources", async
     );
     const view = await runForUser(database, user.id, period, {
       now: () => 203,
+      recordOperationalEvent: discardOperationalEvent,
     });
     assertEquals(view.digest.status, "complete");
     assertEquals(view.sections, []);
   });
 });
 
-Deno.test("runForUser isolates source failures and marks the digest failed", async () => {
+test("runForUser isolates source failures and marks the digest failed", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -456,6 +463,7 @@ Deno.test("runForUser isolates source failures and marks the digest failed", asy
       connectorFactory,
       summarizer,
       now: () => 204,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(view.digest.status, "failed");
@@ -494,7 +502,7 @@ Deno.test("runForUser isolates source failures and marks the digest failed", asy
   });
 });
 
-Deno.test("runForUser marks run partial when summarization fails but ingestion succeeds", async () => {
+test("runForUser marks run partial when summarization fails but ingestion succeeds", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -521,6 +529,7 @@ Deno.test("runForUser marks run partial when summarization fails but ingestion s
       connectorFactory,
       summarizer,
       now: () => 205,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(view.digest.status, "failed");
@@ -541,7 +550,7 @@ Deno.test("runForUser marks run partial when summarization fails but ingestion s
   });
 });
 
-Deno.test("runForUser batches multiple feeds from the same source", async () => {
+test("runForUser batches multiple feeds from the same source", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -576,6 +585,7 @@ Deno.test("runForUser batches multiple feeds from the same source", async () => 
       connectorFactory,
       summarizer,
       now: () => 205,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     // Exactly one connector call for both feeds
@@ -587,7 +597,7 @@ Deno.test("runForUser batches multiple feeds from the same source", async () => 
   });
 });
 
-Deno.test("runForUser connector failure marks all pending feeds failed when batching", async () => {
+test("runForUser connector failure marks all pending feeds failed when batching", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -621,6 +631,7 @@ Deno.test("runForUser connector failure marks all pending feeds failed when batc
     const view = await runForUser(database, user.id, period, {
       connectorFactory,
       now: () => 205,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(view.digest.status, "failed");
@@ -639,7 +650,7 @@ Deno.test("runForUser connector failure marks all pending feeds failed when batc
   });
 });
 
-Deno.test("runForUser uses one individual handle and requests each feed separately", async () => {
+test("runForUser uses one individual handle and requests each feed separately", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -675,6 +686,7 @@ Deno.test("runForUser uses one individual handle and requests each feed separate
       connectorFactory,
       summarizer,
       now: () => 205,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(view.digest.status, "complete");
@@ -686,7 +698,7 @@ Deno.test("runForUser uses one individual handle and requests each feed separate
   });
 });
 
-Deno.test("runForUser refreshes covered Substack feeds with paid items for the full period", async () => {
+test("runForUser refreshes covered Substack feeds with paid items for the full period", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -744,6 +756,7 @@ Deno.test("runForUser refreshes covered Substack feeds with paid items for the f
       connectorFactory,
       summarizer,
       now: () => period.endMs + 1,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(connector.calls, [{
@@ -766,13 +779,14 @@ Deno.test("runForUser refreshes covered Substack feeds with paid items for the f
       connectorFactory,
       summarizer,
       now: () => period.endMs + 2,
+      recordOperationalEvent: discardOperationalEvent,
     });
     assertEquals(connector.calls.length, 2);
     assertEquals(summarizer.calls.length, 1);
   });
 });
 
-Deno.test("runForUser resummarizes a paid post after a free subscriber upgrades", async () => {
+test("runForUser resummarizes a paid post after a free subscriber upgrades", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -855,6 +869,7 @@ Deno.test("runForUser resummarizes a paid post after a free subscriber upgrades"
       connectorFactory,
       summarizer,
       now: () => period.endMs + 1,
+      recordOperationalEvent: discardOperationalEvent,
     });
     assertEquals(failedView.digest.status, "failed");
     assertEquals(summarizer.calls.length, 1);
@@ -869,6 +884,7 @@ Deno.test("runForUser resummarizes a paid post after a free subscriber upgrades"
       connectorFactory,
       summarizer,
       now: () => period.endMs + 2,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(connector.calls, [{
@@ -898,6 +914,7 @@ Deno.test("runForUser resummarizes a paid post after a free subscriber upgrades"
       connectorFactory,
       summarizer,
       now: () => period.endMs + 3,
+      recordOperationalEvent: discardOperationalEvent,
     });
     assertEquals(connector.calls.length, 3);
     assertEquals(summarizer.calls.length, 2);
@@ -915,6 +932,7 @@ Deno.test("runForUser resummarizes a paid post after a free subscriber upgrades"
       connectorFactory,
       summarizer,
       now: () => period.endMs + 4,
+      recordOperationalEvent: discardOperationalEvent,
     });
     assertEquals(connector.calls.length, 4);
     assertEquals(summarizer.calls.length, 2);
@@ -932,7 +950,7 @@ Deno.test("runForUser resummarizes a paid post after a free subscriber upgrades"
   });
 });
 
-Deno.test("runForUser repairs a cached free-subscriber paid teaser without another model call", async () => {
+test("runForUser repairs a cached free-subscriber paid teaser without another model call", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -1008,6 +1026,7 @@ Deno.test("runForUser repairs a cached free-subscriber paid teaser without anoth
       connectorFactory,
       summarizer,
       now: () => period.endMs + 1,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(connector.calls, [{
@@ -1039,7 +1058,7 @@ Deno.test("runForUser repairs a cached free-subscriber paid teaser without anoth
   });
 });
 
-Deno.test("runForUser summarizes a public Substack podcast beside an inaccessible paid post", async () => {
+test("runForUser summarizes a public Substack podcast beside an inaccessible paid post", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -1189,6 +1208,7 @@ Deno.test("runForUser summarizes a public Substack podcast beside an inaccessibl
       connectorFactory,
       summarizer,
       now: () => period.endMs + 1,
+      recordOperationalEvent: discardOperationalEvent,
     });
 
     assertEquals(connectorCalls, [{

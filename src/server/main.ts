@@ -14,12 +14,20 @@ import {
   scheduleDigestJob,
   scheduleMediaHousekeeping,
 } from "../scheduler/digest-job.ts";
-import { DenoCronScheduler, type Scheduler } from "../scheduler/scheduler.ts";
-import { buildApp } from "./app.ts";
-type ServerRequestHandler = (request: Request) => Response | Promise<Response>;
-type ServerServeFunction = (
-  options: { hostname: string; port: number },
-  handler: ServerRequestHandler,
+import { CronScheduler, type Scheduler } from "../scheduler/scheduler.ts";
+import { buildApp, type ServerBindings } from "./app.ts";
+
+export type ServerRequestHandler = (
+  request: Request,
+  server: ServerBindings["server"],
+) => Response | Promise<Response>;
+
+export type ServerServeFunction = (
+  options: {
+    hostname: string;
+    port: number;
+    fetch: ServerRequestHandler;
+  },
 ) => unknown;
 
 export interface ServerBootDependencies {
@@ -47,7 +55,7 @@ export async function bootServer(
         config.allowRemoteSummarization,
       ),
     });
-  const scheduler = dependencies.scheduler ?? new DenoCronScheduler();
+  const scheduler = dependencies.scheduler ?? new CronScheduler();
   const app = buildApp(database, { digests: { summarizer } });
   const recoverStaleRuns = dependencies.recoverStaleRuns ??
     recoverStaleDigestRuns;
@@ -73,10 +81,20 @@ export async function bootServer(
     }`,
   );
   const serve: ServerServeFunction = dependencies.serve ??
-    ((options, handler) => {
-      Deno.serve({ hostname: options.hostname, port: options.port }, handler);
+    ((options) => {
+      Bun.serve({
+        hostname: options.hostname,
+        port: options.port,
+        fetch(request, server) {
+          return options.fetch(request, server);
+        },
+      });
     });
-  serve({ hostname: serverHostname, port: config.port }, app.fetch);
+  serve({
+    hostname: serverHostname,
+    port: config.port,
+    fetch: (request, server) => app.fetch(request, { server }),
+  });
 }
 
 if (import.meta.main) {

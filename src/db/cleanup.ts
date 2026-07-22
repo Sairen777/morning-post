@@ -10,7 +10,7 @@ const PROTECTED_DATABASE_NAMES = new Set([
 type Environment = Record<string, string | undefined>;
 
 export function resolveLocalDatabaseUrl(
-  environment: Environment = { DATABASE_URL: Deno.env.get("DATABASE_URL") },
+  environment: Environment = { DATABASE_URL: process.env["DATABASE_URL"] },
 ): string {
   const configuredUrl = environment.DATABASE_URL?.trim();
   if (!configuredUrl) {

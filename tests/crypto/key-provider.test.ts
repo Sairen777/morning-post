@@ -1,7 +1,10 @@
-import { assertEquals,
-assertNotEquals,
-assertRejects,
-assertThrows, } from "@std/assert"
+import { test } from "bun:test";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertThrows,
+} from "../assertions.ts";
 import {
   type CredentialOwner,
   EnvMasterKeyProvider,
@@ -24,7 +27,7 @@ function generateMasterKey(): Uint8Array {
 
 // --- Happy: wrap + unwrap round-trip ---
 
-Deno.test("EnvelopeMasterKeyProvider: wrapDataKey then unwrapDataKey round-trips", async () => {
+test("EnvelopeMasterKeyProvider: wrapDataKey then unwrapDataKey round-trips", async () => {
   const masterKey = generateMasterKey();
   const provider = new EnvMasterKeyProvider(masterKey);
 
@@ -36,7 +39,7 @@ Deno.test("EnvelopeMasterKeyProvider: wrapDataKey then unwrapDataKey round-trips
 });
 
 
-Deno.test("EnvelopeMasterKeyProvider: owner metadata does not change env wrap behavior", async () => {
+test("EnvelopeMasterKeyProvider: owner metadata does not change env wrap behavior", async () => {
   const masterKey = generateMasterKey();
   const provider = new EnvMasterKeyProvider(masterKey);
 
@@ -49,7 +52,7 @@ Deno.test("EnvelopeMasterKeyProvider: owner metadata does not change env wrap be
 
 // --- Scenario: two wraps produce different outputs ---
 
-Deno.test("EnvelopeMasterKeyProvider: two wrapDataKey calls produce different wrapped outputs", async () => {
+test("EnvelopeMasterKeyProvider: two wrapDataKey calls produce different wrapped outputs", async () => {
   const masterKey = generateMasterKey();
   const provider = new EnvMasterKeyProvider(masterKey);
 
@@ -63,7 +66,7 @@ Deno.test("EnvelopeMasterKeyProvider: two wrapDataKey calls produce different wr
 
 // --- Edge: tampered wrapped key ---
 
-Deno.test("EnvelopeMasterKeyProvider: tampered wrapped key throws", async () => {
+test("EnvelopeMasterKeyProvider: tampered wrapped key throws", async () => {
   const masterKey = generateMasterKey();
   const provider = new EnvMasterKeyProvider(masterKey);
 
@@ -82,7 +85,7 @@ Deno.test("EnvelopeMasterKeyProvider: tampered wrapped key throws", async () => 
 
 // --- Edge: too-short wrapped key ---
 
-Deno.test("EnvelopeMasterKeyProvider: too-short wrapped key throws", async () => {
+test("EnvelopeMasterKeyProvider: too-short wrapped key throws", async () => {
   const masterKey = generateMasterKey();
   const provider = new EnvMasterKeyProvider(masterKey);
 
@@ -94,10 +97,10 @@ Deno.test("EnvelopeMasterKeyProvider: too-short wrapped key throws", async () =>
 
 // --- Edge: missing env without constructor arg ---
 
-Deno.test("EnvelopeMasterKeyProvider: throws when CREDENTIAL_MASTER_KEY is unset and no arg provided", () => {
+test("EnvelopeMasterKeyProvider: throws when CREDENTIAL_MASTER_KEY is unset and no arg provided", () => {
   // Only run this test when the env var is genuinely absent.
   // If set in the test runner's environment, skip — we cannot delete it.
-  if (Deno.env.get("CREDENTIAL_MASTER_KEY")) {
+  if (process.env["CREDENTIAL_MASTER_KEY"]) {
     return;
   }
 
@@ -109,7 +112,7 @@ Deno.test("EnvelopeMasterKeyProvider: throws when CREDENTIAL_MASTER_KEY is unset
 
 // --- Edge: wrong key ---
 
-Deno.test("EnvelopeMasterKeyProvider: unwrapDataKey with wrong master key throws", async () => {
+test("EnvelopeMasterKeyProvider: unwrapDataKey with wrong master key throws", async () => {
   const masterKeyA = generateMasterKey();
   const masterKeyB = generateMasterKey();
   const providerA = new EnvMasterKeyProvider(masterKeyA);
@@ -126,7 +129,7 @@ Deno.test("EnvelopeMasterKeyProvider: unwrapDataKey with wrong master key throws
 
 // --- Edge: constructor throws for wrong key length ---
 
-Deno.test("EnvelopeMasterKeyProvider: throws when key is not 32 bytes", () => {
+test("EnvelopeMasterKeyProvider: throws when key is not 32 bytes", () => {
   assertThrows(
     () => new EnvMasterKeyProvider(new Uint8Array(16)),
     Error,
@@ -140,8 +143,8 @@ Deno.test("EnvelopeMasterKeyProvider: throws when key is not 32 bytes", () => {
 
 // --- Edge: constructor with empty key array falls through to env ---
 
-Deno.test("EnvelopeMasterKeyProvider: empty key array falls through to env check and throws", () => {
-  if (Deno.env.get("CREDENTIAL_MASTER_KEY")) {
+test("EnvelopeMasterKeyProvider: empty key array falls through to env check and throws", () => {
+  if (process.env["CREDENTIAL_MASTER_KEY"]) {
     return;
   }
 

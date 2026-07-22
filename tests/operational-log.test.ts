@@ -1,4 +1,6 @@
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { test } from "bun:test";
+import { readFile, rm } from "node:fs/promises";
+import { assertEquals, assertStringIncludes } from "./assertions.ts";
 import {
   appendOperationalLog,
   type OperationalLogEvent,
@@ -8,11 +10,7 @@ const directory = ".test-data/operational-log";
 const path = `${directory}/operations.jsonl`;
 
 async function resetDirectory(): Promise<void> {
-  await Deno.remove(directory, { recursive: true }).catch((error: unknown) => {
-    if (!(error instanceof Deno.errors.NotFound)) {
-      throw error;
-    }
-  });
+  await rm(directory, { recursive: true, force: true });
 }
 
 function event(
@@ -30,7 +28,7 @@ function event(
   };
 }
 
-Deno.test("appendOperationalLog writes redacted structured JSON lines", async () => {
+test("appendOperationalLog writes redacted structured JSON lines", async () => {
   await resetDirectory();
   try {
     await appendOperationalLog(
@@ -41,7 +39,7 @@ Deno.test("appendOperationalLog writes redacted structured JSON lines", async ()
       { path, now: () => 1_789_700_000_000 },
     );
 
-    const lines = (await Deno.readTextFile(path)).trim().split("\n");
+    const lines = (await readFile(path, "utf8")).trim().split("\n");
     assertEquals(lines.length, 1);
     const parsed = JSON.parse(lines[0]);
     assertEquals(parsed.timestampMs, 1_789_700_000_000);
@@ -58,7 +56,7 @@ Deno.test("appendOperationalLog writes redacted structured JSON lines", async ()
   }
 });
 
-Deno.test("appendOperationalLog keeps one bounded rotated file", async () => {
+test("appendOperationalLog keeps one bounded rotated file", async () => {
   await resetDirectory();
   try {
     await appendOperationalLog(
@@ -70,8 +68,8 @@ Deno.test("appendOperationalLog keeps one bounded rotated file", async () => {
       { path, maximumBytes: 300, now: () => 200 },
     );
 
-    const rotated = JSON.parse((await Deno.readTextFile(`${path}.1`)).trim());
-    const current = JSON.parse((await Deno.readTextFile(path)).trim());
+    const rotated = JSON.parse((await readFile(`${path}.1`, "utf8")).trim());
+    const current = JSON.parse((await readFile(path, "utf8")).trim());
     assertEquals(rotated.runId, "first-run");
     assertEquals(current.runId, "second-run");
   } finally {

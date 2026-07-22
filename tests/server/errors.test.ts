@@ -1,5 +1,6 @@
-import { assertEquals, assertNotEquals, assertExists } from "@std/assert"
-import { Hono } from "@hono/hono";
+import { test } from "bun:test";
+import { assertEquals, assertNotEquals, assertExists } from "../assertions.ts";
+import { Hono } from "hono";
 import {
   AuthError,
   ConflictError,
@@ -23,7 +24,7 @@ function testApp(registerRoutes: (app: Hono) => void): Hono {
 
 // --- happy path ---
 
-Deno.test("GET /health returns 200 { ok: true }", async () => {
+test("GET /health returns 200 { ok: true }", async () => {
   const app = buildApp(database);
 
   const response = await app.request("/health", { method: "GET" });
@@ -34,7 +35,7 @@ Deno.test("GET /health returns 200 { ok: true }", async () => {
 
 // --- error scenarios ---
 
-Deno.test("NotFoundError yields 404 with NOT_FOUND code", async () => {
+test("NotFoundError yields 404 with NOT_FOUND code", async () => {
   const app = testApp((a) => {
     a.get("/missing", () => {
       throw new NotFoundError("Resource not found");
@@ -46,7 +47,7 @@ Deno.test("NotFoundError yields 404 with NOT_FOUND code", async () => {
   assertEquals(body, { error: { code: "NOT_FOUND", message: "Resource not found" } });
 });
 
-Deno.test("ValidationError yields 422 with VALIDATION_ERROR code", async () => {
+test("ValidationError yields 422 with VALIDATION_ERROR code", async () => {
   const app = testApp((a) => {
     a.get("/invalid", () => {
       throw new ValidationError("Field 'name' is required");
@@ -60,7 +61,7 @@ Deno.test("ValidationError yields 422 with VALIDATION_ERROR code", async () => {
   });
 });
 
-Deno.test("AuthError yields 401 with UNAUTHORIZED code", async () => {
+test("AuthError yields 401 with UNAUTHORIZED code", async () => {
   const app = testApp((a) => {
     a.get("/secret", () => {
       throw new AuthError();
@@ -72,7 +73,7 @@ Deno.test("AuthError yields 401 with UNAUTHORIZED code", async () => {
   assertEquals(body, { error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
 });
 
-Deno.test("ConflictError yields 409 with CONFLICT code", async () => {
+test("ConflictError yields 409 with CONFLICT code", async () => {
   const app = testApp((a) => {
     a.post("/duplicate", () => {
       throw new ConflictError("Already exists");
@@ -84,7 +85,7 @@ Deno.test("ConflictError yields 409 with CONFLICT code", async () => {
   assertEquals(body, { error: { code: "CONFLICT", message: "Already exists" } });
 });
 
-Deno.test("unknown error yields 500 with generic message — no stack leak", async () => {
+test("unknown error yields 500 with generic message — no stack leak", async () => {
   const app = testApp((a) => {
     a.get("/boom", () => {
       throw new Error("boom — secret details");
@@ -98,7 +99,7 @@ Deno.test("unknown error yields 500 with generic message — no stack leak", asy
   });
 });
 
-Deno.test("error with cause does not leak internals", async () => {
+test("error with cause does not leak internals", async () => {
   const secret = "sk_live_secret_value";
   const app = testApp((a) => {
     a.get("/leak", () => {
@@ -115,7 +116,7 @@ Deno.test("error with cause does not leak internals", async () => {
   assertNotEquals(bodyText.includes("secret"), true);
 });
 
-Deno.test("malformed JSON body returns error, not 500", async () => {
+test("malformed JSON body returns error, not 500", async () => {
   const app = testApp((a) => {
     a.post("/parse-body", async (context) => {
       // Hono's built-in body parsing throws on malformed JSON
@@ -134,7 +135,7 @@ Deno.test("malformed JSON body returns error, not 500", async () => {
   assertExists(body.error);
 });
 
-Deno.test("error handler preserves response status after async error", async () => {
+test("error handler preserves response status after async error", async () => {
   const app = testApp((a) => {
     a.get("/async-boom", async () => {
       await Promise.resolve();
@@ -147,7 +148,7 @@ Deno.test("error handler preserves response status after async error", async () 
   assertEquals(body.error.code, "NOT_FOUND");
 });
 
-Deno.test("catch-all handler sanitizes \\nparams: from error messages", async () => {
+test("catch-all handler sanitizes \\nparams: from error messages", async () => {
   const logged: string[] = [];
   const originalConsoleError = globalThis.console.error;
   globalThis.console.error = (...args: unknown[]) => {
@@ -174,7 +175,7 @@ Deno.test("catch-all handler sanitizes \\nparams: from error messages", async ()
   }
 });
 
-Deno.test("buildApp applies secure response headers before routes", async () => {
+test("buildApp applies secure response headers before routes", async () => {
   const app = buildApp(database, {}, {
     allowedOrigins: ["http://127.0.0.1:5173"],
     maxRequestBodyBytes: 1_048_576,
@@ -187,7 +188,7 @@ Deno.test("buildApp applies secure response headers before routes", async () => 
   assertEquals(response.headers.get("content-security-policy"), null);
 });
 
-Deno.test("buildApp returns typed 413 for oversized request bodies", async () => {
+test("buildApp returns typed 413 for oversized request bodies", async () => {
   const app = buildApp(database, {}, {
     allowedOrigins: ["http://127.0.0.1:5173"],
     maxRequestBodyBytes: 4,
@@ -204,7 +205,7 @@ Deno.test("buildApp returns typed 413 for oversized request bodies", async () =>
   assertEquals(new PayloadTooLargeError().statusCode, 413);
 });
 
-Deno.test("operational redaction removes API keys, PEM keys, and URL userinfo", async () => {
+test("operational redaction removes API keys, PEM keys, and URL userinfo", async () => {
   const logged: string[] = [];
   const originalConsoleError = globalThis.console.error;
   globalThis.console.error = (...args: unknown[]) => {

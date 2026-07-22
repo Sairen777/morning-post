@@ -1,7 +1,8 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertThrows } from "../assertions.ts"
 import { resolveLocalDatabaseUrl } from "../../src/db/cleanup.ts";
 
-Deno.test("local database cleanup resolves a loopback development database", () => {
+test("local database cleanup resolves a loopback development database", () => {
   assertEquals(
     resolveLocalDatabaseUrl({
       DATABASE_URL: "  postgres://user:password@localhost:5432/morningpost  ",
@@ -10,31 +11,25 @@ Deno.test("local database cleanup resolves a loopback development database", () 
   );
 });
 
-Deno.test({
-  name: "local database cleanup reads only its permitted environment variable",
-  permissions: { env: ["DATABASE_URL"] },
-  fn() {
-    const originalDatabaseUrl = Deno.env.get("DATABASE_URL");
-    try {
-      Deno.env.set(
-        "DATABASE_URL",
-        "postgres://user:password@localhost:5432/morningpost",
-      );
-      assertEquals(
-        resolveLocalDatabaseUrl(),
-        "postgres://user:password@localhost:5432/morningpost",
-      );
-    } finally {
-      if (originalDatabaseUrl === undefined) {
-        Deno.env.delete("DATABASE_URL");
-      } else {
-        Deno.env.set("DATABASE_URL", originalDatabaseUrl);
-      }
+test("local database cleanup reads only its scoped environment variable", () => {
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+  try {
+    process.env.DATABASE_URL =
+      "postgres://user:password@localhost:5432/morningpost";
+    assertEquals(
+      resolveLocalDatabaseUrl(),
+      "postgres://user:password@localhost:5432/morningpost",
+    );
+  } finally {
+    if (originalDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = originalDatabaseUrl;
     }
-  },
+  }
 });
 
-Deno.test("local database cleanup rejects missing, remote, system, and test databases", () => {
+test("local database cleanup rejects missing, remote, system, and test databases", () => {
   assertThrows(
     () => resolveLocalDatabaseUrl({ DATABASE_URL: "  " }),
     Error,

@@ -1,6 +1,6 @@
-import { Hono } from "@hono/hono";
-import { bodyLimit } from "@hono/hono/body-limit";
-import { secureHeaders } from "@hono/hono/secure-headers";
+import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
+import { secureHeaders } from "hono/secure-headers";
 import type { Database } from "../db/client.ts";
 import { resolveAppSecurityOptions } from "../config.ts";
 import { errorHandler, PayloadTooLargeError } from "./errors.ts";
@@ -10,6 +10,14 @@ import { buildConnectorRoutes, type ConnectorRouteDependencies } from "./routes/
 import { buildDigestRoutes, type DigestRouteOptions } from "./routes/digests.ts";
 import { buildFeedRoutes, type FeedRouteDependencies } from "./routes/feeds.ts";
 import { buildSourceRoutes } from "./routes/sources.ts";
+
+export interface ServerBindings {
+  server: Bun.Server<undefined>;
+}
+
+export type ServerEnvironment = {
+  Bindings: ServerBindings;
+};
 
 export interface AppSecurityOptions {
   allowedOrigins: string[];
@@ -26,8 +34,8 @@ export function buildApp(
   database: Database,
   dependencies: AppDependencies = {},
   options: AppSecurityOptions = resolveAppSecurityOptions(),
-): Hono {
-  const app = new Hono();
+): Hono<ServerEnvironment> {
+  const app = new Hono<ServerEnvironment>();
 
   app.onError(errorHandler);
 

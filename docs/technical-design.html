@@ -390,7 +390,7 @@
         <p class="eyebrow">Morning Post · Technical Design Documentation</p>
         <h1>Current architecture, security posture, and scalability review</h1>
         <p
-          class="lede">This document captures the repository architecture as implemented on 2026-07-19 and records the security and scalability decisions for the current Deno/Hono API, SolidStart web UI, PostgreSQL persistence layer, Telegram and Substack connectors, and OpenAI-compatible summarization pipeline.</p>
+          class="lede">This document captures the repository architecture as implemented on 2026-07-21 and records the security and scalability decisions for the current Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence layer, Telegram and Substack connectors, and OpenAI-compatible summarization pipeline.</p>
         <p
           class="diagram-note">Diagrams are embedded as Mermaid source and intentionally do not load a CDN; this keeps the file offline and self-contained. Render with a local Mermaid tool if a graphical version is needed.</p>
         <div class="meta-grid" aria-label="document metadata">
@@ -412,7 +412,7 @@
           <div class="card">
             <div class="card-title">Review basis</div>
             <strong>Current code paths</strong>
-            <p><span class="path">src/server</span>, <span class="path">src/services</span>, <span class="path">src/repositories</span>, <span class="path">src/db/schema</span>, <span class="path">apps/web/src</span>, and <span class="path">deno.json</span>.</p>
+            <p><span class="path">src/server</span>, <span class="path">src/services</span>, <span class="path">src/repositories</span>, <span class="path">src/db/schema</span>, <span class="path">apps/web/src</span>, and <span class="path">package.json</span>.</p>
           </div>
         </div>
       </header>
@@ -447,9 +447,9 @@
           <div class="card">
             <div class="card-title">What blocks safe production scaling</div>
             <ul>
-              <li>Deno tasks grant broad network, filesystem, environment, system, and FFI permissions.</li>
+              <li>Bun processes inherit the operating-system privileges of their account; filesystem, environment, network, subprocess, and native-module boundaries must therefore be enforced by deployment isolation and application code.</li>
               <li>Rate limiting is process-local and trusts request forwarding headers without an app-level trusted-proxy policy.</li>
-              <li>Digest scheduling is single-process: <code>Deno.cron</code> plus an in-memory <code>runningUsers</code> set.</li>
+              <li>Croner prevents overlapping callbacks within a process, while PostgreSQL scheduler leases coordinate digest ticks across API instances.</li>
               <li>Summarization is a provider boundary with deployment-wide text and vision endpoints, deterministic text/item/image caps, and run-local vision fallback behavior.</li>
               <li>Telegram/media artifacts are written locally with no TTL, quota, or object-storage lifecycle.</li>
             </ul>
@@ -472,16 +472,16 @@
       <section id="context">
         <div class="section-kicker">System context</div>
         <h2>Morning Post is a multi-user digest service with external connector and LLM boundaries.</h2>
-        <p>The web UI calls the Deno API with cookie credentials. The API owns authentication, connector credential custody, feed subscription state, ingestion, summarization, digest assembly, and scheduled runs. PostgreSQL stores users, sessions, encrypted source credentials, feed subscriptions, item cache, summaries, digests, and digest-run audit rows.</p>
+        <p>The web UI calls the Bun API with cookie credentials. The API owns authentication, connector credential custody, feed subscription state, ingestion, summarization, digest assembly, and scheduled runs. PostgreSQL stores users, sessions, encrypted source credentials, feed subscriptions, item cache, summaries, digests, and digest-run audit rows.</p>
 
         <pre class="mermaid">flowchart LR
-  Browser["Browser\nSolidStart SPA"] -->|credentials: include| API["Deno + Hono API"]
+  Browser["Browser\nSolidStart SPA"] -->|credentials: include| API["Bun 1.3.14 + Hono API"]
   API -->|Drizzle/postgres.js| DB[("PostgreSQL")]
   API -->|MTProto / connector APIs| Telegram["Telegram"]
   API -->|public archive + authenticated post APIs| Substack["Substack publications"]
   API -->|/chat/completions| LLM["OpenAI-compatible text + vision providers\nconfigured deployment-wide"]
   API -->|read/write media| Media[("Local media dirs\nall connector dirs + media/")]
-  Scheduler["Deno scheduler"] --> API
+  Scheduler["Croner scheduler"] --> API
 
   classDef external fill:#fbeccf,stroke:#8a5a10,color:#342107;
   classDef storage fill:#e5efe6,stroke:#20603d,color:#0e2818;
@@ -496,7 +496,7 @@
               <li><strong>API → PostgreSQL:</strong> persistence for sensitive metadata and encrypted credentials. <code>DB_SSL_MODE</code> configures TLS (default <code>disable</code> for local loopback; <code>require</code> or <code>verify-full</code> for remote). Pool size, idle timeout, and connect timeout are explicitly configured from env vars.</li>
               <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
               <li><strong>API → Substack:</strong> users explicitly import <code>substack.sid</code> and may also provide <code>connect.sid</code> when their browser has it; Morning Post never accepts a Substack password or raw cookie header. Account-subscription discovery and paid/full post retrieval send only the provided session cookies to the fixed <code>https://substack.com</code> origin. Manual publication validation fetches public archives without cookies through the IP-pinned HTTPS boundary. The integration replays an unsupported browser session and may conflict with Substack terms; the UI discloses that risk before connection.</li>
-              <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), per-period cleanup, and weekly TTL sweep (<code>MEDIA_TTL_MS</code>). Media operations require <strong>both</strong> read and write Deno permissions on every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> (<code>telegram_media</code>, <code>substack_media</code>, <code>youtube_media</code>, <code>reddit_media</code>, <code>x_media</code>, <code>rss_media</code>) plus the shared/legacy <code>./media</code>: read for TTL sweeps that enumerate existing files, write for quota eviction and post-summarization cleanup. Weekly housekeeping traverses each path even when absent, so all connector media directories are covered. The <code>api</code>, <code>cli</code>, and <code>test</code> permission profiles grant both.</li>
+              <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), per-period cleanup, and weekly TTL sweep (<code>MEDIA_TTL_MS</code>). Bun's Node-compatible filesystem APIs operate with the process account's privileges rather than runtime permission flags. Deployment ownership and filesystem ACLs should restrict the process to every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> (<code>telegram_media</code>, <code>substack_media</code>, <code>youtube_media</code>, <code>reddit_media</code>, <code>x_media</code>, <code>rss_media</code>) plus the shared/legacy <code>./media</code>; application path validation, feed isolation, quotas, eviction, cleanup, and TTL traversal remain the in-process boundaries.</li>
               </div>
               <div>
                 <h3>Runtime entry points</h3>
@@ -505,24 +505,24 @@
                     <tr>
                       <th>Entry point</th>
                       <th>Purpose</th>
-                      <th>Observed permission posture</th>
+                      <th>Runtime and boundary posture</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr>
-                      <td><code>deno task dev:api</code></td>
+                      <td><code>bun run dev:api</code></td>
                       <td>Watched API server</td>
-                      <td>Named <code>-P=api</code> set. Network access is unrestricted because custom publication domains resolve to dynamic IPs; the archive transport validates global-unicast DNS answers and pins the chosen IP to the TCP connection before TLS.</td>
+                      <td>Bun 1.3.14 loads <code>.env.production.local</code> explicitly. The process has its operating-system account's network and filesystem privileges; custom publication archive access is constrained in application code by global-unicast DNS validation and an IP-pinned TCP/TLS connection that retains the original hostname for SNI and certificate verification.</td>
                     </tr>
                     <tr>
-                      <td><code>deno task start</code></td>
+                      <td><code>bun run start</code></td>
                       <td>Production API server (local)</td>
-                      <td>Named <code>-P=api</code> set; production deployments use <code>scripts/production-start.template.sh</code> with unrestricted network access and the same IP-pinned archive transport boundary.</td>
+                      <td>Bun 1.3.14 loads <code>.env.production.local</code> explicitly and starts Hono on <code>Bun.serve</code>. Production isolation must use a dedicated process account, filesystem ACLs, network policy, container, or service-manager sandbox as appropriate; Bun does not provide per-command runtime permission flags.</td>
                     </tr>
                     <tr>
-                      <td><code>deno task dev:cli</code></td>
-                      <td>One-shot CLI pipeline</td>
-                      <td>Named <code>-P=cli</code> set. Network access is intentionally unrestricted: Telegram DC addresses are dynamic and stored inside the session, and provider endpoints are user-configurable (<code>SUMMARIZER_BASE_URL</code>, <code>VISION_BASE_URL</code>). Env, read, write, FFI, and sys remain scoped.</td>
+                      <td><code>bun run dev:cli</code></td>
+                      <td>Watched one-shot CLI pipeline</td>
+                      <td>Bun loads <code>.env.production.local</code>. Telegram DC addresses are dynamic and provider endpoints are configurable (<code>SUMMARIZER_BASE_URL</code>, <code>VISION_BASE_URL</code>), so outbound access is broad at the process level; connector validation, provider configuration, media path controls, and deployment policy are the effective boundaries.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -532,26 +532,11 @@
 
               <section id="runtime-startup">
                 <div class="section-kicker">Runtime and startup</div>
-                <h2>Local startup is explicit about listener addresses, cron capability, and the browser proxy path.</h2>
-                <p>The verified local run reaches the backend health endpoint at
-        <code>http://127.0.0.1:3000/health</code> and renders the SolidStart
-        frontend at <code>http://127.0.0.1:5173</code>. The runbook contract
-        below records the startup failures reproduced during that verification
-        and the fixes that now keep the two listeners reachable.</p>
+                <h2>Local startup pins the Bun toolchain, listener addresses, scheduler semantics, and browser proxy path.</h2>
+                <p>The backend runtime and workspace package manager require Bun <code>1.3.14</code>; PostgreSQL and OpenSSL are service/cryptography prerequisites. Node.js <code>22.13+</code> remains a frontend and Playwright toolchain prerequisite because <code>apps/web</code> declares that engine; it is not the top-level package manager. <code>bun install</code> installs the root package and the <code>apps/web</code> workspace. Root backend scripts explicitly load <code>.env.production.local</code>, so startup does not depend on implicit environment-file discovery. Canonical operations are <code>bun run db:migrate</code>, <code>bun run dev:api</code>, <code>bun run start</code>, <code>bun run dev:cli</code>, <code>bun run test</code>, <code>bun run typecheck</code>, <code>bun run web:test</code>, and <code>bun run web:e2e</code>; generation, cleanup, fixture capture, web development, build, preview, and focused typecheck commands use the other exact scripts declared in <code>package.json</code>.</p>
 
-                <div class="callout warning">
-                  <strong>Reproduced blockers:</strong>
-                  <ol>
-                    <li>The server tasks registered <code>Deno.cron</code> without
-            enabling Deno's unstable cron capability. Startup therefore failed
-            before the API could serve health; both server tasks now include
-            <code>--unstable-cron</code>.</li>
-                    <li><code>Deno.serve</code> defaulted its listener hostname to
-            <code>0.0.0.0</code>, while the named <code>api</code> permission
-            set allowed only <code>127.0.0.1:3000</code>. The process therefore
-            failed before it could serve health; the server now passes the
-            resolved hostname explicitly.</li>
-                  </ol>
+                <div class="callout ok">
+                  <strong>Current runtime:</strong> Hono is served by <code>Bun.serve</code>. Croner <code>10.0.1</code> schedules retained jobs in UTC with five-part expressions, rejects duplicate job names, uses <code>protect: true</code> to skip overlapping callbacks within a process, sanitizes and logs callback errors through its <code>catch</code> handler, and stops and clears every retained job when <code>CronScheduler.stop()</code> is called. Digest ticks additionally acquire the existing PostgreSQL <code>scheduler_leases</code> lease so only one API instance performs the work.
                 </div>
 
                 <h3>Corrected startup contract</h3>
@@ -566,10 +551,9 @@
                   <tbody>
                     <tr>
                       <td>Backend</td>
-                      <td><code>deno task dev:api</code> and <code>deno task start</code>
-              load <code>.env.production.local</code>, pass
-              <code>--unstable-cron</code>, and serve with
-              <code>{ hostname, port }</code>. The hostname precedence is an
+                      <td><code>bun run dev:api</code> and <code>bun run start</code>
+              explicitly load <code>.env.production.local</code> and serve Hono with
+              <code>Bun.serve({ hostname, port, fetch })</code>. The hostname precedence is an
               explicit server override, then <code>SERVER_HOSTNAME</code>, then
               the default <code>127.0.0.1</code>; the local default port is
               <code>3000</code>.</td>
@@ -578,7 +562,7 @@
                     </tr>
                     <tr>
                       <td>Frontend</td>
-                      <td><code>npm run web:dev</code> invokes
+                      <td><code>bun run web:dev</code> invokes the web workspace's
               <code>vinxi dev --port 5173</code>. Vinxi's outer
               <code>HOST</code> defaults to <code>127.0.0.1</code>; the nested
               Vite server is strict on port <code>5173</code> and proxies
@@ -592,19 +576,18 @@
                     </tr>
                     <tr>
                       <td>Local database cleanup</td>
-                      <td><code>deno task db:cleanup</code> truncates every public table
+                      <td><code>bun run db:cleanup</code> truncates every public table
               in the development database selected by
               <code>DATABASE_URL</code>, resets identities, and preserves the
-              schema and migration history. The command has loopback-only
-              network permission and rejects PostgreSQL system databases plus
-              names ending in <code>_test</code> or <code>_e2e</code>.</td>
+              schema and migration history. Application guards require a loopback database and reject PostgreSQL system databases plus
+              names ending in <code>_test</code> or <code>_e2e</code>; Bun itself does not restrict network access.</td>
                       <td>All development application rows are removed without allowing
               the destructive command to connect to a remote, test, or E2E
               database.</td>
                     </tr>
                     <tr>
                       <td>Browser E2E</td>
-                      <td><code>npm run web:e2e</code> starts non-reusable API and web
+                      <td><code>bun run web:e2e</code> starts non-reusable API and web
               processes on ports <code>3100</code> and <code>5174</code>. The
               API derives a database ending in <code>_e2e</code> from
               <code>TEST_DATABASE_URL</code>, unless
@@ -617,15 +600,14 @@
               teardown.</td>
                     </tr>
                     <tr>
-                      <td>Production listener permissions</td>
-                      <td><code>SERVER_HOSTNAME</code> must exactly match the
-              <code>&lt;listener&gt;</code> host passed to
-              <code>scripts/production-start.template.sh</code>, because that
-              host is an explicit entry in <code>--allow-net</code>. Use
-              <code>127.0.0.1</code> for a reverse-proxy-bound loopback
-              process; use <code>0.0.0.0</code> for a directly exposed process.</td>
-                      <td>The process can bind only the reviewed listener and remains
-              reachable through the intended proxy or direct endpoint.</td>
+                      <td>Production process isolation</td>
+                      <td><code>SERVER_HOSTNAME</code> selects the explicit
+              <code>Bun.serve</code> listener. Use <code>127.0.0.1</code> for a
+              reverse-proxy-bound loopback process or <code>0.0.0.0</code> for a
+              directly exposed process. Run Bun under a dedicated operating-system
+              identity and apply filesystem ACLs, network policy, container, or
+              service-manager sandboxing to limit process privileges.</td>
+                      <td>The process is reachable through the intended proxy or direct endpoint, while deployment controls restrict resources that Bun could otherwise access with the process account.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -1029,8 +1011,8 @@
                           </tr>
                           <tr>
                             <td>Telegram client identity</td>
-                            <td><code>TelegramClient</code> receives nonempty <code>deviceModel</code> and <code>systemVersion</code> strings. Without them GramJS reads <code>node:os.type()</code> and <code>node:os.release()</code>, which triggers a <code>Deno.PermissionError</code> unless <code>--allow-sys</code> is granted.</td>
-                            <td>Supplying stable identity strings keeps sys out of the scoped permission profiles. Neither <code>api</code> nor <code>cli</code> grants <code>--allow-sys</code>.</td>
+                            <td><code>TelegramClient</code> receives nonempty <code>deviceModel</code> and <code>systemVersion</code> strings instead of deriving and disclosing host operating-system details through <code>node:os.type()</code> and <code>node:os.release()</code>.</td>
+                            <td>Supplying stable client identity strings minimizes host fingerprinting. Bun's Node-compatible system APIs use the process account's privileges, so deployment isolation—not runtime flags—controls access to host information.</td>
                           </tr>
                           <tr>
                             <td>Substack credential minimization</td>
@@ -1077,10 +1059,10 @@
                         </thead>
                         <tr>
                           <td><span class="badge critical">S1</span></td>
-                          <td>Deno runtime permissions must balance least privilege with dynamic destinations.</td>
-                          <td><code>test</code>, migration, and generation profiles remain scoped. The API, production launcher, and <strong>CLI</strong> require unrestricted network access: Telegram DC addresses are dynamic and stored inside the session (cannot be statically enumerated), and configurable provider endpoints (<code>SUMMARIZER_BASE_URL</code>, <code>VISION_BASE_URL</code>) resolve to user-chosen hosts. Media paths (every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> plus <code>./media</code>) require <strong>both</strong> read and write: read for TTL sweeps, write for quota eviction and post-summarization cleanup. Weekly housekeeping traverses each path even when absent, so all connector media directories are covered. The three runtime profiles (<code>api</code>, <code>cli</code>, <code>test</code>) grant both.</td>
-                          <td>Keep non-network permissions scoped. Treat the IP-pinned archive transport as the enforcement boundary for user-controlled destinations; never replace it with ordinary <code>fetch()</code> after a separate DNS check.</td>
-                          <td><strong>Remediated with an explicit exception.</strong> Named permission sets scope env, read, write, and FFI. API and CLI network access is intentionally unrestricted; <code>requestPinnedHttps()</code> connects only to prevalidated global-unicast IP literals and retains the domain for TLS SNI/certificate verification. The production template documents this boundary. Tests cover private-address rejection, pinned TCP destination, redirects, framing, encoding, and byte limits.</td>
+                          <td>Bun process privileges must be constrained around dynamic external destinations and local native/filesystem access.</td>
+                          <td>The API, CLI, tests, migrations, and generation commands inherit their operating-system account's environment, network, filesystem, subprocess, and native-module privileges. Telegram DC addresses are dynamic and stored inside the session, and configurable provider endpoints (<code>SUMMARIZER_BASE_URL</code>, <code>VISION_BASE_URL</code>) resolve to deployment-selected hosts. Media lifecycle code uses Node-compatible filesystem APIs and needs read and write access to every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> plus <code>./media</code>. The pinned archive transport uses Node-compatible DNS and TLS/socket APIs so the validated IP is the actual TCP destination while the original hostname remains the SNI and certificate-verification identity. Native dependencies include <code>sharp</code> and database/transport libraries operating through the same process boundary.</td>
+                          <td>Use a dedicated process identity and deployment-level filesystem, secret, subprocess, and network controls. Within the application, keep connector schemas, media path isolation and quotas, database ownership filters, and the IP-pinned archive transport as enforcement boundaries; never replace the latter with ordinary <code>fetch()</code> after a separate DNS check.</td>
+                          <td><strong>Implemented application boundary.</strong> <code>requestPinnedHttps()</code> accepts only prevalidated global-unicast IP literals, connects to the selected IP, and retains the original domain for TLS SNI and certificate verification. Tests cover private-address rejection, pinned TCP destination, redirects, framing, encoding, and byte limits. Process-wide least privilege remains a deployment responsibility because Bun exposes no per-script permission profile.</td>
                         </tr>
                         <tr>
                           <td><span class="badge high">S3</span></td>
@@ -1133,7 +1115,7 @@
                       </table>
 
                       <div class="callout danger">
-        <strong>Highest-impact security fix:</strong> narrow production Deno permissions. That single change reduces the blast radius of a compromised dependency, connector bug, or unexpected code-execution path more than most local code refactors.
+        <strong>Highest-impact deployment control:</strong> run Bun under a dedicated, minimally privileged operating-system identity and enforce filesystem, secret, subprocess, and network restrictions outside the runtime. This reduces the blast radius of a compromised dependency, connector bug, native module, or unexpected code-execution path while application-level validation protects each exposed boundary.
       </div>
                     </section>
 
@@ -1215,7 +1197,7 @@
                             <td>Scheduler coordination is process-local.</td>
                             <td><code>scheduleDigestJob()</code> registers a scheduler callback in each process. <code>runningUsers</code> is a module-level <code>Set</code> and only prevents overlap inside one runtime.</td>
                             <td>Before running multiple API instances or workers, guard scheduled work with Postgres advisory locks or a dedicated job table with leased rows.</td>
-                            <td><strong>Remediated.</strong> <code>scheduler_leases</code> table with primary key <code>name</code> supports atomic leader election. <code>tryAcquireSchedulerLease("digest-job")</code> runs before every tick; only the winner calls <code>runDigestTick</code>. <code>Deno.cron</code> triggers remain but database lease makes duplicates harmless. See <code>src/scheduler/digest-job.ts</code>, <code>src/scheduler/scheduler.ts</code>, <code>src/server/main.ts</code>. Tests in <code>tests/scheduler/digest-job.test.ts</code>.</td>
+                            <td><strong>Remediated.</strong> <code>CronScheduler</code> retains uniquely named Croner jobs configured with <code>timezone: "UTC"</code>, <code>mode: "5-part"</code>, <code>protect: true</code>, and a sanitizing <code>catch</code> handler; <code>stop()</code> stops and clears all retained jobs. The <code>scheduler_leases</code> table with primary key <code>name</code> provides cross-process coordination: <code>tryAcquireSchedulerLease("digest-job")</code> runs before every tick and only the winner calls <code>runDigestTick</code>. See <code>src/scheduler/digest-job.ts</code>, <code>src/scheduler/scheduler.ts</code>, <code>src/server/main.ts</code>. Tests in <code>tests/scheduler/digest-job.test.ts</code> and <code>tests/scheduler/scheduler.test.ts</code>.</td>
                           </tr>
                           <tr>
                             <td><span class="badge high">P4</span></td>
@@ -1286,10 +1268,10 @@
                         </thead>
                         <tbody>
                           <tr>
-                            <td>Scope Deno permissions for production tasks.</td>
-                            <td>Reduces blast radius across every component.</td>
-                            <td>Production <code>start</code> task whitelists network hosts, env names, read paths, and write paths. Tests cover startup with the scoped profile.</td>
-                            <td><strong>Completed.</strong> Named permission sets; production template at <code>scripts/production-start.template.sh</code>.</td>
+                            <td>Constrain Bun production process privileges.</td>
+                            <td>Reduces blast radius across every component, including Node-compatible native, filesystem, DNS, and TLS boundaries.</td>
+                            <td>Production runs under a dedicated process identity with deployment-level filesystem, environment-secret, subprocess, and network restrictions; application controls continue to validate connector destinations, pinned HTTPS, media paths, database ownership, and request rates.</td>
+                            <td><strong>Deployment responsibility.</strong> Bun has no named runtime permission profiles. Repository application boundaries are implemented; operators must apply operating-system, container, or service-manager isolation appropriate to the deployment.</td>
                           </tr>
                           <tr>
                             <td>Add HTTP hardening middleware.</td>
@@ -1441,8 +1423,8 @@
                         <dt>Media lifecycle</dt>
                         <dd><span class="path">src/connectors/telegram/telegram-connector.ts</span>, <span class="path">src/services/summarization-service.ts</span>.</dd>
 
-                        <dt>Runtime permissions and commands</dt>
-                        <dd><span class="path">deno.json</span>, <span class="path">README.md</span>, <span class="path">scripts/production-start.template.sh</span>.</dd>
+                        <dt>Runtime, workspaces, and commands</dt>
+                        <dd><span class="path">package.json</span>, <span class="path">bun.lock</span>, and <span class="path">README.md</span>.</dd>
                       </dl>
                       <div class="callout ok">
         <strong>Documentation status:</strong> This HTML document reflects the current implemented persistence, digest-run, API, web architecture, and production-hardening state observed in the repository. See <span class="path">ARCHITECTURE.md</span> for new sections on session lifecycle, database connectivity, rate limiting, scheduling, connector batching, summarizer budgets, media lifecycle, and cursor pagination.

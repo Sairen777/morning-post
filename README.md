@@ -9,49 +9,33 @@ git config core.hooksPath .githooks
 This activates the pre-push hook that runs tests before every push.
 
 
-### Deno permissions
+### Bun runtime and production boundary
 
-The checked-in tasks use Deno 2.5+ named permission sets (`-P=<name>`) rather
-than unscoped `--allow-*` flags. The local `api` and `test` sets allow only
-loopback API/database/test services plus
-`generativelanguage.googleapis.com`; they do not grant arbitrary Telegram or
-summarizer hosts. Read access is limited to repository source/config,
-`node_modules`, and migration directories. Writes are limited to
-`telegram_media`, `media`, and `.debug_logs`.
-FFI is limited to `./node_modules`; no system permission is granted by the
-baseline sets.
+The repository is pinned to Bun 1.3.14. Bun installs the root package and the
+`apps/web` workspace together, runs the backend and frontend scripts, and
+provides the backend test runner. Backend scripts explicitly load
+`.env.production.local`.
 
-The named sets are:
+Bun uses the ordinary process environment and Node-compatible filesystem,
+DNS, network, and native-module APIs; it does not enforce a runtime permission
+profile. Treat the application process as having the operating-system
+permissions of its account: run it as a dedicated, least-privileged user,
+restrict credential and media paths at the filesystem level, and enforce
+outbound network policy outside the runtime when deployment policy requires it.
 
-| Set | Intended use |
-| --- | --- |
-| `api` | Watched/local or task-based API server |
-| `migrate` | Database migrations (no write, media, or FFI permissions) |
-| `test` | Backend tests |
-| `cli` | One-shot local pipeline |
-
-For production, do not use the local `api` allowlist. Copy
-`scripts/production-start.template.sh` and pass an explicitly reviewed list
-containing `<database-host>,<telegram-dc-hosts>,<summarizer-host>,<listener>`.
-The template never derives permission hosts from `DATABASE_URL` or
-`SUMMARIZER_BASE_URL`, and it does not fall back to unscoped `--allow-net`.
-Production `start` tasks load `.env.production.local` and bind the backend to
-`127.0.0.1:3000` by default. `SERVER_HOSTNAME` selects the listener hostname:
-an explicit server override takes precedence, then `SERVER_HOSTNAME`, then the
-built-in default `127.0.0.1`. In production, the value must match the
-`<listener>` host passed to `scripts/production-start.template.sh`, because
-that host is included in the template's explicit `--allow-net` list. For a
-loopback-behind-proxy deployment, use `SERVER_HOSTNAME=127.0.0.1` and pass
-`127.0.0.1` as `<listener>`; the reverse proxy is the public endpoint. For a
-directly exposed listener, use `SERVER_HOSTNAME=0.0.0.0` and pass `0.0.0.0` as
-`<listener>`.
+The production server binds to `127.0.0.1:3000` by default.
+`SERVER_HOSTNAME` selects the listener hostname: an explicit server override
+takes precedence, then `SERVER_HOSTNAME`, then the loopback default. Keep the
+loopback default when a reverse proxy is the public endpoint; set
+`SERVER_HOSTNAME=0.0.0.0` only when intentionally exposing the listener
+directly.
 
 
 ## Running Locally
 
 ### Prerequisites
-- [Deno](https://deno.com/) 2.x+
-- [Node.js](https://nodejs.org/) 22.13+ and npm (for the SolidStart web frontend)
+- [Bun](https://bun.sh/) 1.3.14
+- [Node.js](https://nodejs.org/) 22.13+ (frontend and Playwright toolchain)
 - [PostgreSQL](https://www.postgresql.org/) 16+ (or Docker)
 - [OpenSSL](https://www.openssl.org/) (for generating the credential master key)
 
@@ -76,7 +60,7 @@ createdb morningpost_test
 ### Environment
 
 Copy `.env.example` to `.env.production.local` and configure the values needed
-by the integrations you use. Deno tasks load this file with
+by the integrations you use. Bun scripts load this file explicitly with
 `--env-file=.env.production.local`; do not commit the copied file because it
 contains deployment credentials. The main settings are:
 
@@ -166,35 +150,37 @@ configure `DB_POOL_MAX`, `DB_IDLE_TIMEOUT_SECONDS`, and
 ### Migrations
 
 ```sh
-deno task db:migrate
+bun run db:migrate
 ```
 
 ### Commands
-The local backend listens on loopback at `127.0.0.1:3000` by default. Both
-server tasks pass `--unstable-cron`, which is required for the digest and media
-housekeeping schedules.
+The local Hono backend runs on `Bun.serve` and listens on
+`127.0.0.1:3000` by default. Croner runs UTC five-field digest and media
+housekeeping schedules with in-process overlap protection; a PostgreSQL lease
+ensures that only one API instance performs each leader tick.
 
 | Task | What it does |
 | --- | --- |
-| `deno task dev:cli` | Run the pipeline once (fetch → summarize) with the `cli` permission set |
-| `deno task dev:api` | Start the watched API server on loopback `127.0.0.1:3000` by default with the `api` permission set and `--unstable-cron` |
-| `deno task start` | Start the API server with the local `api` permission set and `--unstable-cron`; use the production template for deployment |
-| `deno task test` | Run the full test suite with the `test` permission set |
-| `deno task db:generate` | Generate a Drizzle migration with the narrowly scoped `generate` set |
-| `deno task db:migrate` | Apply pending migrations with the `migrate` permission set |
+| `bun run dev:cli` | Run the pipeline once (fetch → summarize) with file watching |
+| `bun run dev:api` | Start the watched API server on loopback `127.0.0.1:3000` by default |
+| `bun run start` | Start the API server without watch mode |
+| `bun run test` | Run the 507-test backend suite with `bun:test` |
+| `bun run typecheck` | Type-check the backend and web workspace |
+| `bun run db:generate` | Generate a Drizzle migration |
+| `bun run db:migrate` | Apply pending migrations |
 
 ### Frontend
 
 The web frontend is a SolidStart SPA (client-side rendering only) served by
 Vinxi at `127.0.0.1:5173`. Its Vite proxy forwards API calls, including
-`/health`, to the Deno backend at `127.0.0.1:3000`.
+`/health`, to the Bun backend at `127.0.0.1:3000`.
 
 **Pre-flight.** Before the first frontend run:
 
 1. Install web dependencies:
 
    ```sh
-   npm install
+   bun install
    ```
 
 2. Postgres must be running (`docker compose up -d` or local service).
@@ -205,18 +191,18 @@ Vinxi at `127.0.0.1:5173`. Its Vite proxy forwards API calls, including
 4. Apply migrations:
 
    ```sh
-   deno task db:migrate
+   bun run db:migrate
    ```
 
 **Smoke test** (browser):
 
 ```sh
 # Terminal 1: backend
-deno task dev:api
+bun run dev:api
 
 # Terminal 2: frontend
-# `npm run web:dev` invokes `vinxi dev --port 5173`; the outer listener is fixed to 127.0.0.1
-npm run web:dev
+# `bun run web:dev` invokes `vinxi dev --port 5173`; the outer listener is fixed to 127.0.0.1
+bun run web:dev
 ```
 
 #### API pagination
@@ -250,14 +236,14 @@ and verify the digest appears with status `complete`.
 
 | Command | What it does |
 | --- | --- |
-| `deno task test` | Full backend test suite |
-| `deno task db:cleanup` | Destructively truncate every public table in the loopback development database from `DATABASE_URL` |
-| `npm run web:test` | Frontend unit/component tests (Vitest, 14 tests) |
-| `npm run web:typecheck` | TypeScript type checking |
-| `npm run web:build` | Production build |
-| `npm run web:e2e` | E2E smoke test with dedicated backend/frontend processes and an isolated database |
+| `bun run test` | Full backend suite (`bun:test`, 507 tests) |
+| `bun run db:cleanup` | Destructively truncate every public table in the loopback development database from `DATABASE_URL` |
+| `bun run web:test` | Frontend unit/component suite (Vitest, 73 tests) |
+| `bun run web:typecheck` | Web TypeScript type checking |
+| `bun run web:build` | Production web build |
+| `bun run web:e2e` | Four Playwright smoke tests with dedicated backend/frontend processes and an isolated database |
 
-`deno task db:cleanup` clears all application data from the local development
+`bun run db:cleanup` clears all application data from the local development
 database while preserving its schema and applied migration records. It refuses
 non-loopback hosts, PostgreSQL system databases, and database names ending in
 `_test` or `_e2e`. This command is destructive and cannot be undone.
@@ -296,10 +282,10 @@ from feeds order by created_at desc limit 10;
 ## Get Telegram Session String
 
 The app authenticates via QR code on first run and prints a session string so
-you don't have to log in again. Run `deno task dev:cli`.
+you don't have to log in again. Run `bun run dev:cli`.
 
 1. Leave `TELEGRAM_SESSION` empty in `.env.production.local`
-2. Run `deno task dev:cli`
+2. Run `bun run dev:cli`
 3. Scan the QR code in Telegram: **Settings → Devices → Link Desktop Device**
 4. The session string will be printed to the console — copy it
 5. Set it in `.env.production.local`:

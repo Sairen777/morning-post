@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects, assertStrictEquals } from "./assertions.ts";
 import type { TelegramClient } from "telegram";
 import {
   createClientFromSession,
@@ -10,7 +11,7 @@ function asTelegramClient(client: object): TelegramClient {
   return client as TelegramClient;
 }
 
-Deno.test("client factory supplies stable runtime identity without loading GramJS", async () => {
+test("client factory supplies stable runtime identity without loading GramJS", async () => {
   let capturedOptions: TelegramClientConstructionOptions | undefined;
   const client = asTelegramClient({
     connect: () => Promise.resolve(),
@@ -25,10 +26,10 @@ Deno.test("client factory supplies stable runtime identity without loading GramJ
 
   assertEquals(capturedOptions?.connectionRetries, 5);
   assertEquals(capturedOptions?.deviceModel, "Morning Post");
-  assertEquals(capturedOptions?.systemVersion, "Deno");
+  assertEquals(capturedOptions?.systemVersion, "Bun");
 });
 
-Deno.test("client factory destroys a constructed client exactly once when connect fails", async () => {
+test("client factory destroys a constructed client exactly once when connect fails", async () => {
   const connectFailure = new Error("connect failed");
   let destroyCount = 0;
   const client = asTelegramClient({
@@ -49,7 +50,7 @@ Deno.test("client factory destroys a constructed client exactly once when connec
   assertEquals(destroyCount, 1);
 });
 
-Deno.test("client factory preserves connect failure when destroy also fails", async () => {
+test("client factory preserves connect failure when destroy also fails", async () => {
   const connectFailure = new Error("connect failed");
   let destroyCount = 0;
   const client = asTelegramClient({
@@ -70,7 +71,7 @@ Deno.test("client factory preserves connect failure when destroy also fails", as
   assertEquals(destroyCount, 1);
 });
 
-Deno.test("CLI client destroys an acquired client when authorization check fails", async () => {
+test("CLI client destroys an acquired client when authorization check fails", async () => {
   const authorizationFailure = new Error("authorization check failed");
   let destroyCount = 0;
   const client = asTelegramClient({
@@ -92,7 +93,7 @@ Deno.test("CLI client destroys an acquired client when authorization check fails
   assertEquals(destroyCount, 1);
 });
 
-Deno.test("CLI client destroys an acquired client and preserves QR authorization failure", async () => {
+test("CLI client destroys an acquired client and preserves QR authorization failure", async () => {
   const qrFailure = new Error("QR authorization failed");
   let destroyCount = 0;
   const client = asTelegramClient({

@@ -1,5 +1,6 @@
 import { TelegramClient } from "telegram";
-import input from "input";
+import { stdin, stdout } from "node:process";
+import { createInterface } from "node:readline/promises";
 import qrcode from "qrcode-terminal";
 import {
   createClientFromSession,
@@ -17,10 +18,19 @@ export interface CreateTelegramClientDependencies {
   readCredentials?: () => TelegramApiCredentials;
 }
 
+async function promptForTwoFactorPassword(): Promise<string> {
+  const readline = createInterface({ input: stdin, output: stdout });
+  try {
+    return await readline.question("Enter your 2FA password: ");
+  } finally {
+    readline.close();
+  }
+}
+
 export async function createTelegramClient(
   dependencies: CreateTelegramClientDependencies = {},
 ): Promise<TelegramClient> {
-  const sessionString = Deno.env.get("TELEGRAM_SESSION") ?? "";
+  const sessionString = process.env["TELEGRAM_SESSION"] ?? "";
   const { apiId, apiHash } = (dependencies.readCredentials ??
     readTelegramApiCredentials)();
   const client = await (dependencies.acquireClient ?? createClientFromSession)(
@@ -40,7 +50,7 @@ export async function createTelegramClient(
 
           return Promise.resolve();
         },
-        password: async () => await input.text("Enter your 2FA password: "),
+        password: promptForTwoFactorPassword,
         onError: (err) => {
           logTelegramClientError(err);
           return Promise.resolve(true);

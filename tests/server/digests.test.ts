@@ -1,6 +1,8 @@
-import { assertEquals } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts";
+import { discardOperationalEvent } from "../operational-log-recorder.ts";
 import { sql } from "drizzle-orm";
-import type { Hono } from "@hono/hono";
+import type { Hono } from "hono";
 import { ConnectorId } from "../../src/constants.ts";
 import {
   CredentialCipher,
@@ -17,6 +19,7 @@ import {
 import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
 import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
 import type {
@@ -95,7 +98,7 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono, email: string): Promise<string> {
+async function register(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/register",
     jsonRequest("POST", {
@@ -109,7 +112,7 @@ async function register(app: Hono, email: string): Promise<string> {
   return json.id;
 }
 
-async function login(app: Hono, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/login",
     jsonRequest("POST", { email, password: PASSWORD }),
@@ -160,7 +163,7 @@ function normalizedItem(
   };
 }
 
-Deno.test("digest routes list and read user digests with grouped sections", async () => {
+test("digest routes list and read user digests with grouped sections", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const ownerId = await register(app, "digests-owner@example.com");
@@ -199,6 +202,7 @@ Deno.test("digest routes list and read user digests with grouped sections", asyn
       periodStartMs,
       periodEndMs,
       {
+        recordOperationalEvent: discardOperationalEvent,
         summarizer: new FakeSummarizer([
           [{ text: "rss bullet", sourceUrl: null }],
           [{ text: "telegram bullet", sourceUrl: null }],
@@ -251,7 +255,7 @@ Deno.test("digest routes list and read user digests with grouped sections", asyn
   });
 });
 
-Deno.test("DELETE /digests/:id deletes an owned digest", async () => {
+test("DELETE /digests/:id deletes an owned digest", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const ownerId = await register(app, "digests-delete-owner@example.com");
@@ -275,6 +279,7 @@ Deno.test("DELETE /digests/:id deletes an owned digest", async () => {
       periodStartMs,
       periodEndMs,
       {
+        recordOperationalEvent: discardOperationalEvent,
         summarizer: new FakeSummarizer([[{
           text: "delete bullet",
           sourceUrl: null,
@@ -319,7 +324,7 @@ Deno.test("DELETE /digests/:id deletes an owned digest", async () => {
   });
 });
 
-Deno.test("DELETE /digests/:id hides another user's digest", async () => {
+test("DELETE /digests/:id hides another user's digest", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const ownerId = await register(
@@ -354,6 +359,7 @@ Deno.test("DELETE /digests/:id hides another user's digest", async () => {
       periodStartMs,
       periodEndMs,
       {
+        recordOperationalEvent: discardOperationalEvent,
         summarizer: new FakeSummarizer([[{
           text: "kept bullet",
           sourceUrl: null,
@@ -381,7 +387,7 @@ Deno.test("DELETE /digests/:id hides another user's digest", async () => {
   });
 });
 
-Deno.test("GET /digests/:id.md renders markdown for deleted historical feeds", async () => {
+test("GET /digests/:id.md renders markdown for deleted historical feeds", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const ownerId = await register(app, "digests-markdown@example.com");
@@ -405,6 +411,7 @@ Deno.test("GET /digests/:id.md renders markdown for deleted historical feeds", a
       periodStartMs,
       periodEndMs,
       {
+        recordOperationalEvent: discardOperationalEvent,
         summarizer: new FakeSummarizer([[{
           text: "markdown bullet",
           sourceUrl: null,
@@ -426,7 +433,7 @@ Deno.test("GET /digests/:id.md renders markdown for deleted historical feeds", a
   });
 });
 
-Deno.test("POST /digests/run creates an empty digest for an authenticated user with no sources", async () => {
+test("POST /digests/run creates an empty digest for an authenticated user with no sources", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const userId = await register(app, "digests-run-empty@example.com");
@@ -456,7 +463,7 @@ Deno.test("POST /digests/run creates an empty digest for an authenticated user w
   });
 });
 
-Deno.test("POST /digests/run requires authentication", async () => {
+test("POST /digests/run requires authentication", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
 
@@ -473,7 +480,7 @@ Deno.test("POST /digests/run requires authentication", async () => {
   });
 });
 
-Deno.test("POST /digests/run rejects incomplete period input", async () => {
+test("POST /digests/run rejects incomplete period input", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     await register(app, "digests-run-incomplete@example.com");
@@ -487,7 +494,7 @@ Deno.test("POST /digests/run rejects incomplete period input", async () => {
   });
 });
 
-Deno.test("POST /digests/run rejects inverted periods", async () => {
+test("POST /digests/run rejects inverted periods", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     await register(app, "digests-run-inverted@example.com");
@@ -504,7 +511,7 @@ Deno.test("POST /digests/run rejects inverted periods", async () => {
   });
 });
 
-Deno.test("POST /digests/run rate-limits repeated runs", async () => {
+test("POST /digests/run rate-limits repeated runs", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     await register(app, "digests-run-ratelimit@example.com");
@@ -532,7 +539,7 @@ Deno.test("POST /digests/run rate-limits repeated runs", async () => {
   });
 });
 
-Deno.test("POST /digests/run creates a manual digest run record", async () => {
+test("POST /digests/run creates a manual digest run record", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const userId = await register(app, "digests-run-record@example.com");
@@ -557,7 +564,7 @@ Deno.test("POST /digests/run creates a manual digest run record", async () => {
   });
 });
 
-Deno.test("POST /digests/run conflict preserves the active run for recovery", async () => {
+test("POST /digests/run conflict preserves the active run for recovery", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const userId = await register(app, "digests-run-active-conflict@example.com");
@@ -604,7 +611,7 @@ Deno.test("POST /digests/run conflict preserves the active run for recovery", as
   });
 });
 
-Deno.test("GET /digests/runs requires authentication", async () => {
+test("GET /digests/runs requires authentication", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
 
@@ -615,7 +622,7 @@ Deno.test("GET /digests/runs requires authentication", async () => {
   });
 });
 
-Deno.test("GET /digests/runs returns only caller run records latest first", async () => {
+test("GET /digests/runs returns only caller run records latest first", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
 
@@ -676,7 +683,7 @@ Deno.test("GET /digests/runs returns only caller run records latest first", asyn
   });
 });
 
-Deno.test("GET /digests/runs/:id returns owned run with feed stages", async () => {
+test("GET /digests/runs/:id returns owned run with feed stages", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const userId = await register(app, "digests-run-detail@example.com");
@@ -748,7 +755,7 @@ Deno.test("GET /digests/runs/:id returns owned run with feed stages", async () =
   });
 });
 
-Deno.test("GET /digests/runs/:id hides another user's run", async () => {
+test("GET /digests/runs/:id hides another user's run", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
 
@@ -788,7 +795,7 @@ Deno.test("GET /digests/runs/:id hides another user's run", async () => {
   });
 });
 
-Deno.test("POST /digests/run forwards the entrypoint summarizer instance", async () => {
+test("POST /digests/run forwards the entrypoint summarizer instance", async () => {
   await withTestDb(async (database) => {
     const sharedSummarizer = new FakeSummarizer([]);
     let receivedSummarizer: SummarizerService | undefined;

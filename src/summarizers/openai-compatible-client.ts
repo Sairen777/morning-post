@@ -1,6 +1,16 @@
 import type { ModelEndpointConfig } from "../config.ts";
 import type { ContentPart } from "./summarizer.types.ts";
 
+/**
+ * A callable fetch-compatible function. Intentionally narrower than
+ * `typeof fetch` — exposes only the request/response contract, not
+ * fetch-static properties (e.g. Bun's `preconnect`).
+ */
+export type FetchFunction = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+
 export class ModelApiError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
@@ -87,10 +97,11 @@ function createRequestDeadline(options: CompletionOptions): RequestDeadline {
 export class OpenAICompatibleChatClient {
   private readonly endpoint: ModelEndpointConfig;
   private readonly retryBaseDelayMs: number;
+  private readonly _fetch: FetchFunction;
 
   constructor(
     endpoint: ModelEndpointConfig,
-    options: { retryBaseDelayMs?: number; allowRemote?: boolean } = {},
+    options: { retryBaseDelayMs?: number; allowRemote?: boolean; fetch?: FetchFunction } = {},
   ) {
     const baseUrl = endpoint.baseUrl.replace(/\/+$/, "");
     const allowRemote = options.allowRemote ?? false;
@@ -101,8 +112,8 @@ export class OpenAICompatibleChatClient {
     }
     this.endpoint = { ...endpoint, baseUrl };
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 1000;
+    this._fetch = options.fetch ?? globalThis.fetch;
   }
-
   public async complete(
     systemPrompt: string,
     content: ContentPart[] | string,
@@ -127,7 +138,7 @@ export class OpenAICompatibleChatClient {
       let responseData: unknown;
       let requestError: unknown;
       try {
-        response = await fetch(
+        response = await this._fetch(
           `${this.endpoint.baseUrl}/chat/completions`,
           {
             method: "POST",

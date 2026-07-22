@@ -1,8 +1,10 @@
-import { assertEquals } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts"
+import { readFile } from "node:fs/promises";
 import postgres from "postgres";
 
-Deno.test("summary content migration wraps legacy point arrays without data loss", async () => {
-  const databaseUrl = Deno.env.get("TEST_DATABASE_URL");
+test("summary content migration wraps legacy point arrays without data loss", async () => {
+  const databaseUrl = process.env.TEST_DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("TEST_DATABASE_URL environment variable is not set");
   }
@@ -32,8 +34,9 @@ Deno.test("summary content migration wraps legacy point arrays without data loss
       })
       `;
 
-      const migration = await Deno.readTextFile(
+      const migration = await readFile(
         "drizzle/0013_wandering_silver_fox.sql",
+        "utf8",
       );
       await transaction.unsafe(migration);
 

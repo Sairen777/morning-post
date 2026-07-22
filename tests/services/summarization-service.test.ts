@@ -1,4 +1,6 @@
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects, assertStringIncludes } from "../assertions.ts"
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -9,7 +11,10 @@ import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { feeds } from "../../src/db/schema/feed.ts";
-import type { OperationalLogEvent } from "../../src/observability/operational-log.ts";
+import {
+  createOperationalEventCapture,
+  discardOperationalEvent,
+} from "../operational-log-recorder.ts";
 import { composeSummaryRuleset } from "../../src/summarizers/compose-prompt.ts";
 import { DEFAULT_SYSTEM_PROMPT } from "../../src/summarizers/prompts.ts";
 import type {
@@ -128,7 +133,7 @@ function normalizedItem(
 const periodStartMs = 1_700_000_000_000;
 const periodEndMs = 1_700_086_400_000;
 
-Deno.test("composeSummaryRuleset layers base, user, feed, and kind prompts in order", () => {
+test("composeSummaryRuleset layers base, user, feed, and kind prompts in order", () => {
   const rules = composeSummaryRuleset({
     connectorId: ConnectorId.Telegram,
     kind: "discussion",
@@ -152,7 +157,7 @@ Deno.test("composeSummaryRuleset layers base, user, feed, and kind prompts in or
   );
 });
 
-Deno.test("summarizeFeedPeriod composes prompt layers and passes the run signal without a per-user model override", async () => {
+test("summarizeFeedPeriod composes prompt layers and passes the run signal without a per-user model override", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -170,7 +175,7 @@ Deno.test("summarizeFeedPeriod composes prompt layers and passes the run signal 
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 99 },
+      { summarizer, now: () => 99, recordOperationalEvent: discardOperationalEvent },
     );
 
     assertEquals(summary.feedNameSnapshot, feed.name);
@@ -194,7 +199,7 @@ Deno.test("summarizeFeedPeriod composes prompt layers and passes the run signal 
   });
 });
 
-Deno.test("summarizeFeedPeriod skips the model and stores an empty summary when the window has no items", async () => {
+test("summarizeFeedPeriod skips the model and stores an empty summary when the window has no items", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -211,7 +216,7 @@ Deno.test("summarizeFeedPeriod skips the model and stores an empty summary when 
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 11 },
+      { summarizer, now: () => 11, recordOperationalEvent: discardOperationalEvent },
     );
 
     assertEquals(summary.content, { kind: "aggregate", points: [] });
@@ -220,7 +225,7 @@ Deno.test("summarizeFeedPeriod skips the model and stores an empty summary when 
   });
 });
 
-Deno.test("summarizeFeedPeriod preserves feedNameSnapshot after later feed rename", async () => {
+test("summarizeFeedPeriod preserves feedNameSnapshot after later feed rename", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -238,7 +243,7 @@ Deno.test("summarizeFeedPeriod preserves feedNameSnapshot after later feed renam
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 21 },
+      { summarizer, now: () => 21, recordOperationalEvent: discardOperationalEvent },
     );
     await database.update(feeds).set({ name: "Renamed Channel", updatedAt: 22 })
       .where(eq(feeds.id, feed.id));
@@ -253,7 +258,7 @@ Deno.test("summarizeFeedPeriod preserves feedNameSnapshot after later feed renam
   });
 });
 
-Deno.test("summarizeFeedPeriod re-runs overwrite the same period row", async () => {
+test("summarizeFeedPeriod re-runs overwrite the same period row", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -272,7 +277,7 @@ Deno.test("summarizeFeedPeriod re-runs overwrite the same period row", async () 
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 31 },
+      { summarizer, now: () => 31, recordOperationalEvent: discardOperationalEvent },
     );
     const second = await summarizeFeedPeriod(
       database,
@@ -280,7 +285,7 @@ Deno.test("summarizeFeedPeriod re-runs overwrite the same period row", async () 
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 32 },
+      { summarizer, now: () => 32, recordOperationalEvent: discardOperationalEvent },
     );
 
     assertEquals(first.id, second.id);
@@ -292,7 +297,7 @@ Deno.test("summarizeFeedPeriod re-runs overwrite the same period row", async () 
   });
 });
 
-Deno.test("summarizeFeedPeriod keeps Substack articles isolated, ordered, and tagged with source metadata", async () => {
+test("summarizeFeedPeriod keeps Substack articles isolated, ordered, and tagged with source metadata", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -328,7 +333,7 @@ Deno.test("summarizeFeedPeriod keeps Substack articles isolated, ordered, and ta
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 35 },
+      { summarizer, now: () => 35, recordOperationalEvent: discardOperationalEvent },
     );
 
     assertEquals(summarizer.calls.length, 1);
@@ -371,7 +376,7 @@ Deno.test("summarizeFeedPeriod keeps Substack articles isolated, ordered, and ta
   });
 });
 
-Deno.test("summarizeFeedPeriod excludes inaccessible paid previews from model calls and persists paid article metadata", async () => {
+test("summarizeFeedPeriod excludes inaccessible paid previews from model calls and persists paid article metadata", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -418,7 +423,7 @@ Deno.test("summarizeFeedPeriod excludes inaccessible paid previews from model ca
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 36 },
+      { summarizer, now: () => 36, recordOperationalEvent: discardOperationalEvent },
     );
 
     assertEquals(
@@ -469,7 +474,7 @@ Deno.test("summarizeFeedPeriod excludes inaccessible paid previews from model ca
     );
   });
 });
-Deno.test("summarizeFeedPeriod rejects a nonempty Substack article with no points and persists nothing", async () => {
+test("summarizeFeedPeriod rejects a nonempty Substack article with no points and persists nothing", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -493,7 +498,7 @@ Deno.test("summarizeFeedPeriod rejects a nonempty Substack article with no point
           feed.id,
           periodStartMs,
           periodEndMs,
-          { summarizer: new FakeSummarizer([[]]) },
+          { summarizer: new FakeSummarizer([[]]), recordOperationalEvent: discardOperationalEvent },
         ),
       Error,
       "returned no points",
@@ -510,7 +515,7 @@ Deno.test("summarizeFeedPeriod rejects a nonempty Substack article with no point
   });
 });
 
-Deno.test("summarizeFeedPeriod does not persist an empty Substack summary after cancellation", async () => {
+test("summarizeFeedPeriod does not persist an empty Substack summary after cancellation", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -531,7 +536,7 @@ Deno.test("summarizeFeedPeriod does not persist an empty Substack summary after 
           feed.id,
           periodStartMs,
           periodEndMs,
-          { signal: controller.signal },
+          { signal: controller.signal, recordOperationalEvent: discardOperationalEvent },
         ),
       DOMException,
       "cancel empty article query",
@@ -548,7 +553,7 @@ Deno.test("summarizeFeedPeriod does not persist an empty Substack summary after 
   });
 });
 
-Deno.test("getOrSummarizeFeedPeriod enforces feed ownership on cached summaries", async () => {
+test("getOrSummarizeFeedPeriod enforces feed ownership on cached summaries", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -569,7 +574,7 @@ Deno.test("getOrSummarizeFeedPeriod enforces feed ownership on cached summaries"
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 40 },
+      { summarizer, now: () => 40, recordOperationalEvent: discardOperationalEvent },
     );
 
     await assertRejects(
@@ -580,6 +585,7 @@ Deno.test("getOrSummarizeFeedPeriod enforces feed ownership on cached summaries"
           feed.id,
           periodStartMs,
           periodEndMs,
+          { recordOperationalEvent: discardOperationalEvent },
         ),
       Error,
       "feed not found",
@@ -678,7 +684,7 @@ class HealthyRetryVisionHierarchyFakeSummarizer implements SummarizerService {
   }
 }
 
-Deno.test("summarizeOwnedFeedPeriod — abort signal before summarization rejects with AbortError", async () => {
+test("summarizeOwnedFeedPeriod — abort signal before summarization rejects with AbortError", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -698,7 +704,7 @@ Deno.test("summarizeOwnedFeedPeriod — abort signal before summarization reject
           feed.id,
           periodStartMs,
           periodEndMs,
-          { summarizer, signal },
+          { summarizer, signal, recordOperationalEvent: discardOperationalEvent },
         ),
       DOMException,
       "test abort",
@@ -706,7 +712,7 @@ Deno.test("summarizeOwnedFeedPeriod — abort signal before summarization reject
   });
 });
 
-Deno.test("summarizeOwnedFeedPeriod — timeout during summarization rejects with TimeoutError", async () => {
+test("summarizeOwnedFeedPeriod — timeout during summarization rejects with TimeoutError", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -723,7 +729,7 @@ Deno.test("summarizeOwnedFeedPeriod — timeout during summarization rejects wit
           feed.id,
           periodStartMs,
           periodEndMs,
-          { summarizer, timeoutMs: 5 },
+          { summarizer, timeoutMs: 5, recordOperationalEvent: discardOperationalEvent },
         ),
       DOMException,
       "Summarizer timed out",
@@ -731,7 +737,7 @@ Deno.test("summarizeOwnedFeedPeriod — timeout during summarization rejects wit
   });
 });
 
-Deno.test("summarizeOwnedFeedPeriod — watchdog rejects a signal-ignoring summarizer", async () => {
+test("summarizeOwnedFeedPeriod — watchdog rejects a signal-ignoring summarizer", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -750,6 +756,7 @@ Deno.test("summarizeOwnedFeedPeriod — watchdog rejects a signal-ignoring summa
           {
             summarizer: new SignalIgnoringNeverSettlingFakeSummarizer(),
             timeoutMs: 5,
+            recordOperationalEvent: discardOperationalEvent,
           },
         ),
       DOMException,
@@ -758,7 +765,7 @@ Deno.test("summarizeOwnedFeedPeriod — watchdog rejects a signal-ignoring summa
   });
 });
 
-Deno.test("summarizeOwnedFeedPeriod — passes a per-request timeout to the summarizer", async () => {
+test("summarizeOwnedFeedPeriod — passes a per-request timeout to the summarizer", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -776,23 +783,23 @@ Deno.test("summarizeOwnedFeedPeriod — passes a per-request timeout to the summ
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, timeoutMs: 5 },
+      { summarizer, timeoutMs: 5, recordOperationalEvent: discardOperationalEvent },
     );
 
     assertEquals(summarizer.calls[0].options?.requestTimeoutMs, 5);
   });
 });
 
-Deno.test("summarizeOwnedFeedPeriod — forwards configured chunk and image limits", async () => {
+test("summarizeOwnedFeedPeriod — forwards configured chunk and image limits", async () => {
   const variableNames = [
     "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
     "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
     "SUMMARIZER_MAX_IMAGE_BYTES",
   ] as const;
-  const previousValues = variableNames.map((name) => Deno.env.get(name));
-  Deno.env.set("SUMMARIZER_TEXT_BYTES_PER_CHUNK", "23456");
-  Deno.env.set("SUMMARIZER_MAX_ITEMS_PER_CHUNK", "12");
-  Deno.env.set("SUMMARIZER_MAX_IMAGE_BYTES", "34567");
+  const previousValues = variableNames.map((name) => process.env[name]);
+  process.env.SUMMARIZER_TEXT_BYTES_PER_CHUNK = "23456";
+  process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK = "12";
+  process.env.SUMMARIZER_MAX_IMAGE_BYTES = "34567";
 
   try {
     await withTestDb(async (database) => {
@@ -812,7 +819,7 @@ Deno.test("summarizeOwnedFeedPeriod — forwards configured chunk and image limi
         feed.id,
         periodStartMs,
         periodEndMs,
-        { summarizer },
+        { summarizer, recordOperationalEvent: discardOperationalEvent },
       );
 
       assertEquals(summarizer.calls[0].options?.maxTextBytesPerChunk, 23456);
@@ -823,15 +830,15 @@ Deno.test("summarizeOwnedFeedPeriod — forwards configured chunk and image limi
     for (let index = 0; index < variableNames.length; index++) {
       const previousValue = previousValues[index];
       if (previousValue === undefined) {
-        Deno.env.delete(variableNames[index]);
+        delete process.env[variableNames[index]];
       } else {
-        Deno.env.set(variableNames[index], previousValue);
+        process.env[variableNames[index]] = previousValue;
       }
     }
   }
 });
 
-Deno.test("summarizeOwnedFeedPeriod — healthy sequential requests may exceed one request timeout in total", async () => {
+test("summarizeOwnedFeedPeriod — healthy sequential requests may exceed one request timeout in total", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -846,14 +853,14 @@ Deno.test("summarizeOwnedFeedPeriod — healthy sequential requests may exceed o
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, timeoutMs: 30 },
+      { summarizer, timeoutMs: 30, recordOperationalEvent: discardOperationalEvent },
     );
 
     assertEquals(summarizer.completedRequestCount, 2);
   });
 });
 
-Deno.test("summarizeOwnedFeedPeriod — watchdog permits retry, vision, and hierarchical merge envelope", async () => {
+test("summarizeOwnedFeedPeriod — watchdog permits retry, vision, and hierarchical merge envelope", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -868,14 +875,14 @@ Deno.test("summarizeOwnedFeedPeriod — watchdog permits retry, vision, and hier
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, timeoutMs: 150 },
+      { summarizer, timeoutMs: 150, recordOperationalEvent: discardOperationalEvent },
     );
 
     assertEquals(summarizer.completed, true);
   });
 });
 
-Deno.test("summarizeOwnedFeedPeriod — records redacted feed timeout context", async () => {
+test("summarizeOwnedFeedPeriod — records redacted feed timeout context", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
@@ -883,7 +890,7 @@ Deno.test("summarizeOwnedFeedPeriod — records redacted feed timeout context", 
     );
     await upsertItems(database, feed.id, [normalizedItem()], 1);
     const summarizer = new NeverSettlingFakeSummarizer();
-    const events: OperationalLogEvent[] = [];
+    const { events, recordOperationalEvent } = createOperationalEventCapture();
 
     await assertRejects(
       () =>
@@ -897,10 +904,7 @@ Deno.test("summarizeOwnedFeedPeriod — records redacted feed timeout context", 
             summarizer,
             timeoutMs: 5,
             runId: "run-timeout",
-            recordOperationalEvent: (event) => {
-              events.push(event);
-              return Promise.resolve();
-            },
+            recordOperationalEvent,
           },
         ),
       DOMException,
@@ -919,16 +923,16 @@ Deno.test("summarizeOwnedFeedPeriod — records redacted feed timeout context", 
   });
 });
 
-Deno.test("cleanupFeedMedia — deletes files for media items in the window", async () => {
+test("cleanupFeedMedia — deletes files for media items in the window", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(
       database,
       "summarize-cleanup-file@example.com",
     );
     const testDir = "./media/test-summarization-cleanup";
-    await Deno.mkdir(testDir, { recursive: true });
+    await mkdir(testDir, { recursive: true });
     const mediaPath = `${testDir}/test-photo.jpg`;
-    await Deno.writeTextFile(mediaPath, "fake image bytes");
+    await writeFile(mediaPath, "fake image bytes");
 
     await upsertItems(database, feed.id, [normalizedItem({
       media: { type: "photo" as const, localPath: mediaPath },
@@ -937,19 +941,19 @@ Deno.test("cleanupFeedMedia — deletes files for media items in the window", as
     await cleanupFeedMedia(database, feed.id, periodStartMs, periodEndMs);
 
     // File should be gone
-    await assertRejects(() => Deno.stat(mediaPath), Deno.errors.NotFound);
-    await Deno.remove(testDir, { recursive: true }).catch(() => {});
+    await assertRejects(() => stat(mediaPath), Error, "ENOENT");
+    await rm(testDir, { recursive: true }).catch(() => {});
   });
 });
 
-Deno.test("cleanupFeedMedia — handles missing file without throwing", async () => {
+test("cleanupFeedMedia — handles missing file without throwing", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(
       database,
       "summarize-cleanup-missing@example.com",
     );
     const testDir = "./media/test-summarization-cleanup-missing";
-    await Deno.mkdir(testDir, { recursive: true });
+    await mkdir(testDir, { recursive: true });
     const missingPath = `${testDir}/nonexistent-media-file.jpg`;
 
     await upsertItems(database, feed.id, [normalizedItem({
@@ -958,23 +962,22 @@ Deno.test("cleanupFeedMedia — handles missing file without throwing", async ()
 
     // Should not throw despite file not existing
     await cleanupFeedMedia(database, feed.id, periodStartMs, periodEndMs);
-    await Deno.remove(testDir, { recursive: true }).catch(() => {});
+    await rm(testDir, { recursive: true }).catch(() => {});
   });
 });
 
-Deno.test("summarizeFeedPeriod — media cleanup after success does not fail the summarization", async () => {
+test("summarizeFeedPeriod — media cleanup after success does not fail the summarization", async () => {
   await withTestDb(async (database) => {
     const { user, feed } = await createFeed(
       database,
       "summarize-cleanup-nonfatal@example.com",
     );
     const testDir = "./media/test-summarization-cleanup-nonfatal";
-    await Deno.mkdir(testDir, { recursive: true });
-    await Deno.writeTextFile(`${testDir}/wont-be-deleted.jpg`, "image");
-    // Create a subdirectory with a file in it — Deno.remove on a non-empty
-    // directory fails (EPERM on macOS), simulating a nonfatal cleanup error.
-    await Deno.mkdir(`${testDir}/subdir`, { recursive: true });
-    await Deno.writeTextFile(`${testDir}/subdir/locked.jpg`, "locked");
+    await mkdir(testDir, { recursive: true });
+    await writeFile(`${testDir}/wont-be-deleted.jpg`, "image");
+    // Create a subdirectory with a file in it to exercise nested media cleanup.
+    await mkdir(`${testDir}/subdir`, { recursive: true });
+    await writeFile(`${testDir}/subdir/locked.jpg`, "locked");
     const mediaPath = `${testDir}/subdir/locked.jpg`;
 
     await upsertItems(database, feed.id, [normalizedItem({
@@ -986,16 +989,14 @@ Deno.test("summarizeFeedPeriod — media cleanup after success does not fail the
       sourceUrl: null,
     }]]);
 
-    // Summarization should succeed even though cleanup will fail
-    // (Deno.remove on a single file should succeed, but this test simulates
-    //  a scenario where the cleanup encounters an error)
+    // Summarization should succeed even when media cleanup is best-effort.
     const summary = await summarizeFeedPeriod(
       database,
       user.id,
       feed.id,
       periodStartMs,
       periodEndMs,
-      { summarizer, now: () => 55 },
+      { summarizer, now: () => 55, recordOperationalEvent: discardOperationalEvent },
     );
     assertEquals(summary.content.kind, "aggregate");
     if (summary.content.kind !== "aggregate") {
@@ -1004,6 +1005,6 @@ Deno.test("summarizeFeedPeriod — media cleanup after success does not fail the
     assertEquals(summary.content.points.length, 1);
     assertEquals(summary.content.points[0].text, "Keep me");
 
-    await Deno.remove(testDir, { recursive: true }).catch(() => {});
+    await rm(testDir, { recursive: true }).catch(() => {});
   });
 });

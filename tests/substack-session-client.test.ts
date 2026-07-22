@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects, assertThrows } from "./assertions.ts";
 import {
   SubstackSessionClient,
   SubstackSessionUpstreamError,
@@ -7,7 +8,7 @@ import {
 
 const credentials = { substackSessionId: "s%3Aprimary.signature" };
 
-Deno.test("session client validates a session without leaking credentials", async () => {
+test("session client validates a session without leaking credentials", async () => {
   const requests: Request[] = [];
   const client = new SubstackSessionClient(credentials, (input, init) => {
     const request = new Request(input, init);
@@ -28,7 +29,7 @@ Deno.test("session client validates a session without leaking credentials", asyn
   );
 });
 
-Deno.test("session client accepts the documented snake-case settings alias", async () => {
+test("session client accepts the documented snake-case settings alias", async () => {
   const client = new SubstackSessionClient(
     credentials,
     () =>
@@ -41,7 +42,7 @@ Deno.test("session client accepts the documented snake-case settings alias", asy
   assertEquals(await client.validateSession(), { userId: 43 });
 });
 
-Deno.test("session client sends an optional compatibility cookie only to substack.com", async () => {
+test("session client sends an optional compatibility cookie only to substack.com", async () => {
   const requests: Request[] = [];
   const client = new SubstackSessionClient({
     ...credentials,
@@ -68,7 +69,7 @@ Deno.test("session client sends an optional compatibility cookie only to substac
   );
 });
 
-Deno.test("session client reads paid entitlement conservatively from the response envelope", async () => {
+test("session client reads paid entitlement conservatively from the response envelope", async () => {
   const membershipStates: unknown[] = [
     "free_signup",
     "paid_subscriber",
@@ -100,7 +101,7 @@ Deno.test("session client reads paid entitlement conservatively from the respons
   assertEquals(results, [false, true, false, false]);
 });
 
-Deno.test("session client lists subscribed publications across pages", async () => {
+test("session client lists subscribed publications across pages", async () => {
   const requests: Request[] = [];
   const responses = [
     {
@@ -240,7 +241,7 @@ Deno.test("session client lists subscribed publications across pages", async () 
   }
 });
 
-Deno.test("session client accepts empty subscription pages", async () => {
+test("session client accepts empty subscription pages", async () => {
   const client = new SubstackSessionClient(
     credentials,
     () =>
@@ -251,7 +252,7 @@ Deno.test("session client accepts empty subscription pages", async () => {
   assertEquals(await client.listSubscribedPublications(), []);
 });
 
-Deno.test("session client rejects repeated subscription page cursors", async () => {
+test("session client rejects repeated subscription page cursors", async () => {
   let requestCount = 0;
   const client = new SubstackSessionClient(credentials, () => {
     requestCount++;
@@ -271,7 +272,7 @@ Deno.test("session client rejects repeated subscription page cursors", async () 
   assertEquals(requestCount, 2);
 });
 
-Deno.test("session client rejects invalid subscription page containers", async () => {
+test("session client rejects invalid subscription page containers", async () => {
   for (
     const body of [
       null,
@@ -294,7 +295,7 @@ Deno.test("session client rejects invalid subscription page containers", async (
   }
 });
 
-Deno.test("session client skips malformed subscription and publication leaves", async () => {
+test("session client skips malformed subscription and publication leaves", async () => {
   const client = new SubstackSessionClient(
     credentials,
     () =>
@@ -330,7 +331,7 @@ Deno.test("session client skips malformed subscription and publication leaves", 
   }]);
 });
 
-Deno.test("session client propagates subscription request aborts", async () => {
+test("session client propagates subscription request aborts", async () => {
   const controller = new AbortController();
   const abortError = new DOMException("cancelled", "AbortError");
   const client = new SubstackSessionClient(credentials, (_input, init) => {
@@ -346,7 +347,7 @@ Deno.test("session client propagates subscription request aborts", async () => {
   assertEquals(error, abortError);
 });
 
-Deno.test("session client maps response body stream failures to upstream errors", async () => {
+test("session client maps response body stream failures to upstream errors", async () => {
   const bodyError = new Error("private stream failure");
   const body = new ReadableStream<Uint8Array>({
     pull(controller) {
@@ -366,7 +367,7 @@ Deno.test("session client maps response body stream failures to upstream errors"
   assertEquals(error.message.includes(bodyError.message), false);
 });
 
-Deno.test("session client maps oversized response bodies to upstream errors", async () => {
+test("session client maps oversized response bodies to upstream errors", async () => {
   const body = new Uint8Array(5 * 1024 * 1024 + 1);
   const client = new SubstackSessionClient(
     credentials,
@@ -380,7 +381,7 @@ Deno.test("session client maps oversized response bodies to upstream errors", as
   );
 });
 
-Deno.test("session client preserves abort reasons during response reading", async () => {
+test("session client preserves abort reasons during response reading", async () => {
   const controller = new AbortController();
   const abortReason = new Error("stop response reading");
   const body = new ReadableStream<Uint8Array>({
@@ -405,7 +406,7 @@ Deno.test("session client preserves abort reasons during response reading", asyn
   assertEquals(error, abortReason);
 });
 
-Deno.test("session client rejects redirects and expired sessions safely", async () => {
+test("session client rejects redirects and expired sessions safely", async () => {
   const secret = "s%3Asecret.signature";
   const secretCredentials = { substackSessionId: secret };
   const redirected = new SubstackSessionClient(
@@ -438,7 +439,7 @@ Deno.test("session client rejects redirects and expired sessions safely", async 
   assertEquals(error.message.includes("private upstream body"), false);
 });
 
-Deno.test("session client distinguishes upstream failures from expired sessions", async () => {
+test("session client distinguishes upstream failures from expired sessions", async () => {
   const client = new SubstackSessionClient(
     credentials,
     () => Promise.resolve(new Response(null, { status: 403 })),
@@ -450,7 +451,7 @@ Deno.test("session client distinguishes upstream failures from expired sessions"
   );
 });
 
-Deno.test("session client maps unavailable posts to null", async () => {
+test("session client maps unavailable posts to null", async () => {
   for (const status of [403, 404]) {
     const client = new SubstackSessionClient(
       credentials,
@@ -460,7 +461,7 @@ Deno.test("session client maps unavailable posts to null", async () => {
   }
 });
 
-Deno.test("session client rejects malformed credentials and responses", async () => {
+test("session client rejects malformed credentials and responses", async () => {
   for (
     const value of [
       "",

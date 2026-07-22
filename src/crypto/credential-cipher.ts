@@ -1,5 +1,18 @@
 import type { CredentialOwner, KeyProvider } from "./key-provider.ts";
-import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
+function encodeBase64(value: Uint8Array): string {
+  return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64");
+}
+
+function decodeBase64(value: string): Uint8Array {
+  if (
+    value.length % 4 === 1 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value) ||
+    (value.includes("=") && !/=+$/.test(value))
+  ) {
+    throw new TypeError("Invalid base64");
+  }
+  return Buffer.from(value, "base64");
+}
 
 const textEncoder = new TextEncoder();
 

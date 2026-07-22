@@ -1,7 +1,8 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertThrows } from "./assertions.ts";
 import { resolveE2eDatabaseUrl } from "../scripts/e2e-environment.ts";
 
-Deno.test("resolveE2eDatabaseUrl derives a dedicated database from the backend test URL", () => {
+test("resolveE2eDatabaseUrl derives a dedicated database from the backend test URL", () => {
   assertEquals(
     resolveE2eDatabaseUrl({
       DATABASE_URL: "postgres://user:password@localhost:5432/morningpost",
@@ -12,7 +13,7 @@ Deno.test("resolveE2eDatabaseUrl derives a dedicated database from the backend t
   );
 });
 
-Deno.test("resolveE2eDatabaseUrl ignores a blank explicit override", () => {
+test("resolveE2eDatabaseUrl ignores a blank explicit override", () => {
   assertEquals(
     resolveE2eDatabaseUrl({
       TEST_DATABASE_URL:
@@ -23,7 +24,7 @@ Deno.test("resolveE2eDatabaseUrl ignores a blank explicit override", () => {
   );
 });
 
-Deno.test("resolveE2eDatabaseUrl ignores blank comparison URLs", () => {
+test("resolveE2eDatabaseUrl ignores blank comparison URLs", () => {
   assertEquals(
     resolveE2eDatabaseUrl({
       DATABASE_URL: "  ",
@@ -42,7 +43,7 @@ Deno.test("resolveE2eDatabaseUrl ignores blank comparison URLs", () => {
   );
 });
 
-Deno.test("resolveE2eDatabaseUrl accepts a dedicated explicit override", () => {
+test("resolveE2eDatabaseUrl accepts a dedicated explicit override", () => {
   assertEquals(
     resolveE2eDatabaseUrl({
       DATABASE_URL: "postgres://user:password@localhost:5432/morningpost",
@@ -54,7 +55,7 @@ Deno.test("resolveE2eDatabaseUrl accepts a dedicated explicit override", () => {
   );
 });
 
-Deno.test("resolveE2eDatabaseUrl rejects shared or ambiguously named databases", () => {
+test("resolveE2eDatabaseUrl rejects shared or ambiguously named databases", () => {
   assertThrows(
     () =>
       resolveE2eDatabaseUrl({

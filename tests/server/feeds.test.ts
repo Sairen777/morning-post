@@ -1,5 +1,6 @@
-import { assertEquals, assertExists } from "@std/assert"
-import type { Hono } from "@hono/hono";
+import { test } from "bun:test";
+import { assertEquals, assertExists } from "../assertions.ts";
+import type { Hono } from "hono";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -9,6 +10,7 @@ import type { AvailableFeed } from "../../src/connectors/connector.types.ts";
 import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 import type { FeedDiscoveryFactory, FeedDiscoveryHandle } from "../../src/services/feed-service.ts";
 
 const PASSWORD = "analytical-engine-1843";
@@ -56,7 +58,7 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono, email: string): Promise<RegisteredUser> {
+async function register(app: Hono<ServerEnvironment>, email: string): Promise<RegisteredUser> {
   const response = await app.request(
     "/auth/register",
     jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
@@ -66,7 +68,7 @@ async function register(app: Hono, email: string): Promise<RegisteredUser> {
   return { id: json.id, email: json.email };
 }
 
-async function login(app: Hono, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/login",
     jsonRequest("POST", { email, password: PASSWORD }),
@@ -76,7 +78,7 @@ async function login(app: Hono, email: string): Promise<string> {
 }
 
 async function registerAndLogin(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   email: string,
 ): Promise<{ user: RegisteredUser; cookie: string }> {
   const user = await register(app, email);
@@ -109,7 +111,7 @@ async function createOwnedSource(
   });
 }
 
-Deno.test("GET /sources/:id/available-feeds returns discovery results and disposes connector", async () => {
+test("GET /sources/:id/available-feeds returns discovery results and disposes connector", async () => {
   await withTestDb(async (database) => {
     const discoveryFactory = new FakeFeedDiscoveryFactory([
       { externalId: "channel", name: "Channel", kind: "news" },
@@ -127,7 +129,7 @@ Deno.test("GET /sources/:id/available-feeds returns discovery results and dispos
   });
 });
 
-Deno.test("generic discovery and subscription reject Substack sources", async () => {
+test("generic discovery and subscription reject Substack sources", async () => {
   await withTestDb(async (database) => {
     const discoveryFactory = new FakeFeedDiscoveryFactory([]);
     const app = buildApp(database, { feeds: { discoveryFactory } });
@@ -156,7 +158,7 @@ Deno.test("generic discovery and subscription reject Substack sources", async ()
   });
 });
 
-Deno.test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
+test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const { user, cookie } = await registerAndLogin(app, "feeds-lifecycle@example.com");
@@ -208,7 +210,7 @@ Deno.test("feed routes subscribe, list, patch, and unsubscribe feeds", async () 
   });
 });
 
-Deno.test("subscribing a soft-deleted feed revives the same row", async () => {
+test("subscribing a soft-deleted feed revives the same row", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const { user, cookie } = await registerAndLogin(app, "feeds-revive@example.com");
@@ -234,7 +236,7 @@ Deno.test("subscribing a soft-deleted feed revives the same row", async () => {
   });
 });
 
-Deno.test("subscribing a disconnected source is rejected", async () => {
+test("subscribing a disconnected source is rejected", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const { user, cookie } = await registerAndLogin(app, "feeds-disconnected-source@example.com");
@@ -272,7 +274,7 @@ Deno.test("subscribing a disconnected source is rejected", async () => {
   });
 });
 
-Deno.test("feed routes keep users scoped to their own sources and feeds", async () => {
+test("feed routes keep users scoped to their own sources and feeds", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const { user: owner, cookie: ownerCookie } = await registerAndLogin(app, "feeds-owner@example.com");
@@ -307,7 +309,7 @@ Deno.test("feed routes keep users scoped to their own sources and feeds", async 
   });
 });
 
-Deno.test("feed routes validate bodies and parameters", async () => {
+test("feed routes validate bodies and parameters", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const { user, cookie } = await registerAndLogin(app, "feeds-validation@example.com");

@@ -1,10 +1,11 @@
 /**
  * Connects to real Telegram and saves connector output as test fixtures.
- * Run via: deno task capture-fixtures
+ * Run via: bun run capture-fixtures
  *
  * Writes:
  *   tests/fixtures/normalized-data.json  — output of getNormalizedData()
  */
+import { mkdir, writeFile } from "node:fs/promises";
 import { createTelegramClient } from "../src/connectors/telegram/telegram-client.ts";
 import { TelegramConnector } from "../src/connectors/telegram/telegram-connector.ts";
 
@@ -19,12 +20,13 @@ console.log(
 const client = await createTelegramClient();
 const connector = new TelegramConnector(client);
 
-const normalized = await connector.getNormalizedData(from, to);
+const normalized = await connector.getNormalizedData(from.getTime(), to.getTime());
 
-await Deno.mkdir("tests/fixtures", { recursive: true });
-await Deno.writeTextFile(
+await mkdir("tests/fixtures", { recursive: true });
+await writeFile(
   "tests/fixtures/normalized-data.json",
   JSON.stringify(normalized, null, 2),
+  "utf8",
 );
 
 const entityCount = Object.keys(normalized).length;

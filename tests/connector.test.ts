@@ -1,4 +1,6 @@
-import { assertEquals } from "@std/assert"
+import { test } from "bun:test";
+import { mkdir, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { assertEquals } from "./assertions.ts";
 import { Api, type TelegramClient } from "telegram";
 import { TelegramConnector, enforceMediaQuota } from "../src/connectors/telegram/telegram-connector.ts";
 import { logTelegramClientError } from "../src/connectors/telegram/telegram-client.ts";
@@ -131,7 +133,7 @@ const TO_MS = 1_700_100_000_000;
 
 // --- tests ---
 
-Deno.test("listAvailableFeeds — returns channel and group feed details", async () => {
+test("listAvailableFeeds — returns channel and group feed details", async () => {
   const channel = fakeChannel({ id: 10 as unknown as Api.Channel["id"], title: "Announcements" });
   const megagroup = fakeChannel({
     id: 11 as unknown as Api.Channel["id"],
@@ -159,7 +161,7 @@ Deno.test("listAvailableFeeds — returns channel and group feed details", async
   ]);
 });
 
-Deno.test("listAvailableFeeds — falls back to entity id for missing dialog title", async () => {
+test("listAvailableFeeds — falls back to entity id for missing dialog title", async () => {
   const channel = fakeChannel({ id: 42 as unknown as Api.Channel["id"], title: "Entity Title" });
   const client = fakeTelegramClient({
     dialogs: [{ title: "", entity: channel, messages: [] }],
@@ -172,7 +174,7 @@ Deno.test("listAvailableFeeds — falls back to entity id for missing dialog tit
   ]);
 });
 
-Deno.test("listAvailableFeeds — excluded dialog titles are skipped", async () => {
+test("listAvailableFeeds — excluded dialog titles are skipped", async () => {
   const defaultChannel = fakeChannel({ title: "Telegram" });
   const subscribedChannel = fakeChannel({ id: 2 as unknown as Api.Channel["id"], title: "Subscribed" });
   const client = fakeTelegramClient({
@@ -189,7 +191,7 @@ Deno.test("listAvailableFeeds — excluded dialog titles are skipped", async () 
   ]);
 });
 
-Deno.test("getNormalizedData — channel message becomes a NormalizedItem", async () => {
+test("getNormalizedData — channel message becomes a NormalizedItem", async () => {
   const channel = fakeChannel({ title: "TestChannel", username: "test" });
   const message = fakeApiMessage({
     id: 1,
@@ -216,7 +218,7 @@ Deno.test("getNormalizedData — channel message becomes a NormalizedItem", asyn
   assertEquals(item.meta, { isGroup: false });
 });
 
-Deno.test("getNormalizedData — excluded dialog titles are skipped", async () => {
+test("getNormalizedData — excluded dialog titles are skipped", async () => {
   const channel = fakeChannel({ title: "Telegram" });
   const message = fakeApiMessage({
     id: 1,
@@ -235,7 +237,7 @@ Deno.test("getNormalizedData — excluded dialog titles are skipped", async () =
   assertEquals(Object.keys(result), []);
 });
 
-Deno.test("getNormalizedData — feedExternalIds filter returns only selected feeds", async () => {
+test("getNormalizedData — feedExternalIds filter returns only selected feeds", async () => {
   const firstChannel = fakeChannel({ id: 1 as unknown as Api.Channel["id"], title: "First" });
   const secondChannel = fakeChannel({ id: 2 as unknown as Api.Channel["id"], title: "Second" });
   const client = fakeTelegramClient({
@@ -255,7 +257,7 @@ Deno.test("getNormalizedData — feedExternalIds filter returns only selected fe
   assertEquals(result["channel:2"][0].text, "second");
 });
 
-Deno.test("getNormalizedData — empty feedExternalIds filter fetches nothing", async () => {
+test("getNormalizedData — empty feedExternalIds filter fetches nothing", async () => {
   const channel = fakeChannel({ title: "TestChannel" });
   const client = fakeTelegramClient({
     dialogs: [{ title: "TestChannel", entity: channel, messages: [fakeApiMessage({ date: IN_RANGE_S, message: "ignored" })] }],
@@ -266,7 +268,7 @@ Deno.test("getNormalizedData — empty feedExternalIds filter fetches nothing", 
   assertEquals(result, {});
 });
 
-Deno.test("getNormalizedData — megagroup channel marks items as isGroup", async () => {
+test("getNormalizedData — megagroup channel marks items as isGroup", async () => {
   const group = fakeChannel({ title: "MyGroup", megagroup: true });
   const message = fakeApiMessage({
     id: 1,
@@ -285,7 +287,7 @@ Deno.test("getNormalizedData — megagroup channel marks items as isGroup", asyn
   assertEquals(result["channel:1"][0].meta, { isGroup: true });
 });
 
-Deno.test("getNormalizedData — message without replyTo leaves text unchanged", async () => {
+test("getNormalizedData — message without replyTo leaves text unchanged", async () => {
   const channel = fakeChannel({ title: "TestChannel" });
   const message = fakeApiMessage({
     id: 1,
@@ -304,7 +306,7 @@ Deno.test("getNormalizedData — message without replyTo leaves text unchanged",
   assertEquals(result["channel:1"][0].text, "no reply");
 });
 
-Deno.test("getNormalizedData — replyTo without a matching quote leaves text unchanged", async () => {
+test("getNormalizedData — replyTo without a matching quote leaves text unchanged", async () => {
   const channel = fakeChannel({ title: "TestChannel" });
   const message = fakeApiMessage({
     id: 1,
@@ -325,7 +327,7 @@ Deno.test("getNormalizedData — replyTo without a matching quote leaves text un
   assertEquals(result["channel:1"][0].text, "reply");
 });
 
-Deno.test("getNormalizedData — matching quote is prepended to the message body", async () => {
+test("getNormalizedData — matching quote is prepended to the message body", async () => {
   const channel = fakeChannel({ title: "TestChannel" });
   const message = fakeApiMessage({
     id: 1,
@@ -350,7 +352,7 @@ Deno.test("getNormalizedData — matching quote is prepended to the message body
   );
 });
 
-Deno.test("getNormalizedData — messages sharing a groupedId fold to one item", async () => {
+test("getNormalizedData — messages sharing a groupedId fold to one item", async () => {
   const channel = fakeChannel({ title: "TestChannel" });
   const groupedId = {
     toString: () => "g1",
@@ -386,7 +388,7 @@ Deno.test("getNormalizedData — messages sharing a groupedId fold to one item",
   assertEquals(result["channel:1"][0].text, "caption");
 });
 
-Deno.test("Telegram client operational errors redact provider secrets before logging", () => {
+test("Telegram client operational errors redact provider secrets before logging", () => {
   const logged: string[] = [];
   const originalConsoleError = console.error;
   console.error = (...args: unknown[]) => {
@@ -405,7 +407,7 @@ Deno.test("Telegram client operational errors redact provider secrets before log
   }
 });
 
-Deno.test("getNormalizedData — pre-aborted signal returns no data", async () => {
+test("getNormalizedData — pre-aborted signal returns no data", async () => {
   const channel = fakeChannel({ title: "TestChannel", username: "test" });
   const message = fakeApiMessage({
     id: 1,
@@ -429,13 +431,12 @@ Deno.test("getNormalizedData — pre-aborted signal returns no data", async () =
   assertEquals(Object.keys(result).length, 0);
 });
 
-Deno.test("enforceMediaQuota — deletes oldest files across subdirectories", async () => {
+test("enforceMediaQuota — deletes oldest files across subdirectories", async () => {
   const tmpDir = `./media/quota-test-${crypto.randomUUID()}`;
   try {
-    await Deno.mkdir(`${tmpDir}/feed1`, { recursive: true });
-    await Deno.mkdir(`${tmpDir}/feed2`, { recursive: true });
+    await mkdir(`${tmpDir}/feed1`, { recursive: true });
+    await mkdir(`${tmpDir}/feed2`, { recursive: true });
 
-    const { writeFile, utime } = Deno;
     const fileA = `${tmpDir}/feed1/oldest.txt`;
     const fileB = `${tmpDir}/feed2/mid.txt`;
     const fileC = `${tmpDir}/feed1/newest.txt`;
@@ -443,24 +444,24 @@ Deno.test("enforceMediaQuota — deletes oldest files across subdirectories", as
     await writeFile(fileB, new Uint8Array(100));
     await writeFile(fileC, new Uint8Array(100));
     // Set consistent mtimes so sorting is deterministic
-    await utime(fileA, 0, 1000);
-    await utime(fileB, 0, 2000);
-    await utime(fileC, 0, 3000);
+    await utimes(fileA, 0, 1000);
+    await utimes(fileB, 0, 2000);
+    await utimes(fileC, 0, 3000);
 
     // 300 bytes used, quota 250, new file 50 bytes: need 350, must evict 100
     await enforceMediaQuota(tmpDir, 250, 50);
 
     const survivors: string[] = [];
-    for await (const dirEntry of Deno.readDir(tmpDir + "/feed1")) {
+    for (const dirEntry of await readdir(tmpDir + "/feed1", { withFileTypes: true })) {
       survivors.push(`feed1/${dirEntry.name}`);
     }
-    for await (const dirEntry of Deno.readDir(tmpDir + "/feed2")) {
+    for (const dirEntry of await readdir(tmpDir + "/feed2", { withFileTypes: true })) {
       survivors.push(`feed2/${dirEntry.name}`);
     }
     survivors.sort();
 
     assertEquals(survivors, ["feed1/newest.txt", "feed2/mid.txt"]);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    await rm(tmpDir, { recursive: true }).catch(() => {});
   }
 });

@@ -93,12 +93,11 @@ early deadline. See `src/connectors/connector-factory.ts`,
 `src/services/feed-service.ts`, `src/cli/run-once.ts`,
 `src/connectors/telegram/login-session.ts`.
 
-**Device identity avoids sys permission.** The Telegram connector passes
-nonempty `deviceModel` and `systemVersion` strings to the `TelegramClient`
-constructor. Without them GramJS reads `node:os.type()` and `node:os.release()`
-at runtime, which triggers a `Deno.PermissionError` unless `--allow-sys` is
-granted. Supplying stable identity strings keeps the Deno permission profile
-tighter: the `cli` and `api` sets do not include sys access.
+**Device identity is explicit.** The Telegram connector passes stable, nonempty
+`deviceModel` and `systemVersion` strings to the `TelegramClient` constructor
+rather than deriving host details through `node:os`. Bun otherwise exposes the
+ordinary process environment and Node-compatible system APIs; isolation and
+filesystem access are controlled by the operating-system account and deployment.
 
 ### 2. Summarizer
 
@@ -406,6 +405,11 @@ expiry without changing the token. See `src/auth/session-service.ts` and
 `src/repositories/session-repository.ts`. {/* Tests:
 tests/server/session.test.ts, tests/server/security-audit.test.ts */}
 
+**HTTP runtime.** `src/server/main.ts` passes the Hono application's `fetch`
+handler to `Bun.serve`, preserving Bun's request server binding for direct
+client-address resolution. Listener hostname and port come from validated
+configuration and default to `127.0.0.1:3000`.
+
 ### 6. Database connectivity
 
 `src/db/client.ts` creates the Postgres connection pool with explicit options:
@@ -442,8 +446,9 @@ leader election.
 `tryAcquireSchedulerLease(database, "digest-job",
 ownerId, now, leaseMs)` uses
 an atomic insert/upsert; only the acquiring process calls `runDigestTick`.
-`Deno.cron` triggers the callback in every process, but the database lease makes
-duplicate callbacks harmless. See `src/scheduler/digest-job.ts`,
+Croner invokes the UTC five-field callback in every process with in-process
+overlap protection, while the database lease ensures only the leader calls
+`runDigestTick`. See `src/scheduler/digest-job.ts`,
 `src/scheduler/scheduler.ts`, `src/server/main.ts`.
 
 **Active-run uniqueness.** A partial unique index on
@@ -544,15 +549,13 @@ Telegram photo files are written under
 across feeds. Per-connector media quota (`MEDIA_QUOTA_BYTES`, default 500 MiB)
 is enforced before writes by deleting oldest files until the new file fits.
 
-Media operations — download, cleanup, TTL sweep — require **both** read and
-write Deno permissions on every connector-specific media directory from
-`CONNECTORS_MEDIA_DIR` (`telegram_media`, `substack_media`, `youtube_media`,
-`reddit_media`, `x_media`, `rss_media`) plus the shared/legacy `./media`. Read
-permission alone is insufficient for quota eviction and post-summarization
-cleanup; write permission alone is insufficient for TTL sweeps that enumerate
-operations. The `api` and `test` permission sets grant both. The `cli` set also
-grants both (read + write) plus unrestricted network access — see CLI exception
-below.
+Media operations — download, cleanup, quota eviction, and TTL sweep — use Bun's
+ordinary Node-compatible filesystem boundary for every connector-specific
+directory from `CONNECTORS_MEDIA_DIR` (`telegram_media`, `substack_media`,
+`youtube_media`, `reddit_media`, `x_media`, `rss_media`) plus the shared/legacy
+`./media`. The application account therefore needs read and write access to
+these paths; deployment filesystem ownership and sandboxing provide the
+least-privilege boundary.
 
 After each successful feed summarization, `cleanupFeedMedia()` deletes the
 period's media files (best-effort, never fail the digest). A weekly scheduler
@@ -593,17 +596,15 @@ plans:
 - **Automatic feed theme classification.** Per-feed `customPrompt` handles
   manual steering; LLM-inferred theming is deferred.
 
-### 14. CLI exception
+### 14. Runtime network boundary
 
-The `cli` permission set (`deno.json` → `permissions.cli`) grants unrestricted
-network access (`"net": true`), matching the `api` set. This is an intentional
-exception: Telegram DC IPs are dynamic and stored inside the session; they
-cannot be statically enumerated in the allow list. Configurable provider
-endpoints (`SUMMARIZER_BASE_URL`, `VISION_BASE_URL`) also resolve to user-chosen
-hosts. Other permissions remain scoped — env, read, write, and FFI are
-explicitly listed; no `--allow-sys` is granted because
-`deviceModel`/`systemVersion` are supplied to GramJS (see Telegram client
-lifecycle above).
+Bun does not provide named runtime permission sets. Telegram DC endpoints and
+configurable summarizer endpoints may require broad outbound connectivity, so
+deployment network policy is external to the process. The Substack publication
+reader implements a narrower application-level boundary: it resolves with
+Node-compatible DNS APIs, rejects non-public addresses, and connects directly
+to a validated IP with Node TLS while preserving hostname verification. This
+avoids an HTTP proxy hop and DNS rebinding between validation and connection.
 
 ---
 

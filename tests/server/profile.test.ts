@@ -1,8 +1,10 @@
-import { assert, assertEquals } from "@std/assert"
+import { test } from "bun:test";
+import { assert, assertEquals } from "../assertions.ts";
 import { buildApp } from "../../src/server/app.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
-import type { Hono } from "@hono/hono";
+import type { ServerEnvironment } from "../../src/server/app.ts";
+import type { Hono } from "hono";
 
 const PASSWORD = "analytical-engine-1843";
 
@@ -26,7 +28,7 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono, email: string): Promise<RegisteredUser> {
+async function register(app: Hono<ServerEnvironment>, email: string): Promise<RegisteredUser> {
   const response = await app.request(
     "/auth/register",
     jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
@@ -36,7 +38,7 @@ async function register(app: Hono, email: string): Promise<RegisteredUser> {
   return { id: json.id, email: json.email, systemPrompt: json.systemPrompt };
 }
 
-async function login(app: Hono, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/login",
     jsonRequest("POST", { email, password: PASSWORD }),
@@ -48,7 +50,7 @@ async function login(app: Hono, email: string): Promise<string> {
 async function authenticatedApp(
   database: Database,
   email: string,
-): Promise<{ app: Hono; cookie: string; user: RegisteredUser }> {
+): Promise<{ app: Hono<ServerEnvironment>; cookie: string; user: RegisteredUser }> {
   const app = buildApp(database);
   const user = await register(app, email);
   const cookie = await login(app, email);
@@ -56,7 +58,7 @@ async function authenticatedApp(
 }
 
 async function patchProfile(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   cookie: string,
   body: unknown,
 ): Promise<Response> {
@@ -66,7 +68,7 @@ async function patchProfile(
   });
 }
 
-Deno.test("PATCH /auth/me updates systemPrompt and GET /auth/me reflects it", async () => {
+test("PATCH /auth/me updates systemPrompt and GET /auth/me reflects it", async () => {
   await withTestDb(async (database: Database) => {
     const { app, cookie, user } = await authenticatedApp(database, "profile-happy@example.com");
     const systemPrompt = "Prefer terse summaries with risks first.";
@@ -85,7 +87,7 @@ Deno.test("PATCH /auth/me updates systemPrompt and GET /auth/me reflects it", as
   });
 });
 
-Deno.test("partial profile patch leaves unspecified fields intact", async () => {
+test("partial profile patch leaves unspecified fields intact", async () => {
   await withTestDb(async (database: Database) => {
     const { app, cookie, user } = await authenticatedApp(database, "profile-partial@example.com");
 
@@ -99,7 +101,7 @@ Deno.test("partial profile patch leaves unspecified fields intact", async () => 
   });
 });
 
-Deno.test("unauthenticated PATCH /auth/me is rejected", async () => {
+test("unauthenticated PATCH /auth/me is rejected", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
 
@@ -111,7 +113,7 @@ Deno.test("unauthenticated PATCH /auth/me is rejected", async () => {
   });
 });
 
-Deno.test("PATCH /auth/me rejects email and passwordHash mutation attempts", async () => {
+test("PATCH /auth/me rejects email and passwordHash mutation attempts", async () => {
   await withTestDb(async (database: Database) => {
     const { app, cookie } = await authenticatedApp(database, "profile-sensitive@example.com");
 
@@ -125,7 +127,7 @@ Deno.test("PATCH /auth/me rejects email and passwordHash mutation attempts", asy
   });
 });
 
-Deno.test("PATCH /auth/me rejects oversized systemPrompt", async () => {
+test("PATCH /auth/me rejects oversized systemPrompt", async () => {
   await withTestDb(async (database: Database) => {
     const { app, cookie } = await authenticatedApp(database, "profile-oversized@example.com");
     const oversizedPrompt = "x".repeat(8 * 1024 + 1);
@@ -136,7 +138,7 @@ Deno.test("PATCH /auth/me rejects oversized systemPrompt", async () => {
   });
 });
 
-Deno.test("PATCH /auth/me allows an empty systemPrompt and round-trips it", async () => {
+test("PATCH /auth/me allows an empty systemPrompt and round-trips it", async () => {
   await withTestDb(async (database: Database) => {
     const { app, cookie } = await authenticatedApp(database, "profile-empty@example.com");
 
@@ -152,7 +154,7 @@ Deno.test("PATCH /auth/me allows an empty systemPrompt and round-trips it", asyn
   });
 });
 
-Deno.test("PATCH /auth/me trims name and language; unknown model fields are rejected", async () => {
+test("PATCH /auth/me trims name and language; unknown model fields are rejected", async () => {
   await withTestDb(async (database: Database) => {
     const { app, cookie } = await authenticatedApp(database, "profile-trim@example.com");
 
@@ -171,7 +173,7 @@ Deno.test("PATCH /auth/me trims name and language; unknown model fields are reje
   });
 });
 
-Deno.test("PATCH /auth/me rejects the removed defaultModel field", async () => {
+test("PATCH /auth/me rejects the removed defaultModel field", async () => {
   await withTestDb(async (database) => {
     const { app, cookie } = await authenticatedApp(database, "profile-removed-model@example.com");
     const response = await patchProfile(app, cookie, { defaultModel: "ignored" });

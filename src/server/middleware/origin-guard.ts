@@ -1,5 +1,5 @@
-import type { MiddlewareHandler } from "@hono/hono";
-import { getCookie } from "@hono/hono/cookie";
+import type { MiddlewareHandler } from "hono";
+import { getCookie } from "hono/cookie";
 import { SESSION_COOKIE } from "../../auth/session-service.ts";
 import { AuthError } from "../errors.ts";
 

@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -38,7 +39,7 @@ function userInput(email: string) {
   };
 }
 
-Deno.test("SubstackSessionService validates before encrypted source upsert", async () => {
+test("SubstackSessionService validates before encrypted source upsert", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -69,7 +70,7 @@ Deno.test("SubstackSessionService validates before encrypted source upsert", asy
   });
 });
 
-Deno.test("SubstackSessionService leaves state unchanged when validation fails", async () => {
+test("SubstackSessionService leaves state unchanged when validation fails", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -98,7 +99,7 @@ Deno.test("SubstackSessionService leaves state unchanged when validation fails",
   });
 });
 
-Deno.test("SubstackSessionService does not misclassify provider failures as expired", async () => {
+test("SubstackSessionService does not misclassify provider failures as expired", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -131,7 +132,7 @@ Deno.test("SubstackSessionService does not misclassify provider failures as expi
   });
 });
 
-Deno.test("SubstackSessionService reconnect replaces credentials without duplicating source", async () => {
+test("SubstackSessionService reconnect replaces credentials without duplicating source", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -161,7 +162,7 @@ Deno.test("SubstackSessionService reconnect replaces credentials without duplica
   });
 });
 
-Deno.test("SubstackSessionService does not persist after its signal is aborted", async () => {
+test("SubstackSessionService does not persist after its signal is aborted", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,

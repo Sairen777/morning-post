@@ -1,4 +1,5 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertThrows } from "./assertions.ts";
 import {
   getConfig,
   getSummarizerBudgetConfig,
@@ -43,20 +44,20 @@ function withClearedEnvironment<T>(
   callback: () => T,
 ): T {
   const previousValues = new Map(
-    keys.map((key) => [key, Deno.env.get(key)]),
+    keys.map((key) => [key, process.env[key]]),
   );
   try {
-    for (const key of keys) Deno.env.delete(key);
+    for (const key of keys) delete process.env[key];
     return callback();
   } finally {
     for (const [key, value] of previousValues) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   }
 }
 
-Deno.test("config defaults cover runtime boundaries", () => {
+test("config defaults cover runtime boundaries", () => {
   const config = withClearedEnvironment(ENV_KEYS, getConfig);
   assertEquals(config.port, 3000);
   assertEquals(config.allowedOrigins, [
@@ -82,7 +83,7 @@ Deno.test("config defaults cover runtime boundaries", () => {
   assertEquals(config.schedulerLeaseMs, 90_000);
 });
 
-Deno.test("summarizer budget resolver reads only scoped limit settings", () => {
+test("summarizer budget resolver reads only scoped limit settings", () => {
   const budget = withClearedEnvironment(
     [
       "ALLOWED_ORIGINS",
@@ -91,10 +92,10 @@ Deno.test("summarizer budget resolver reads only scoped limit settings", () => {
       "SUMMARIZER_MAX_IMAGE_BYTES",
     ],
     () => {
-      Deno.env.set("ALLOWED_ORIGINS", "not a valid origin list");
-      Deno.env.set("SUMMARIZER_TEXT_BYTES_PER_CHUNK", "9000");
-      Deno.env.set("SUMMARIZER_MAX_ITEMS_PER_CHUNK", "7");
-      Deno.env.set("SUMMARIZER_MAX_IMAGE_BYTES", "8000");
+      process.env["ALLOWED_ORIGINS"] = "not a valid origin list";
+      process.env["SUMMARIZER_TEXT_BYTES_PER_CHUNK"] = "9000";
+      process.env["SUMMARIZER_MAX_ITEMS_PER_CHUNK"] = "7";
+      process.env["SUMMARIZER_MAX_IMAGE_BYTES"] = "8000";
       return getSummarizerBudgetConfig();
     },
   );
@@ -106,18 +107,18 @@ Deno.test("summarizer budget resolver reads only scoped limit settings", () => {
   });
 });
 
-Deno.test("server hostname resolver uses loopback and strict precedence", () => {
-  const previous = Deno.env.get("SERVER_HOSTNAME");
+test("server hostname resolver uses loopback and strict precedence", () => {
+  const previous = process.env["SERVER_HOSTNAME"];
   try {
-    Deno.env.delete("SERVER_HOSTNAME");
+    delete process.env["SERVER_HOSTNAME"];
     assertEquals(resolveServerHostname(), "127.0.0.1");
 
-    Deno.env.set("SERVER_HOSTNAME", "  192.0.2.10  ");
+    process.env["SERVER_HOSTNAME"] = "  192.0.2.10  ";
     assertEquals(resolveServerHostname(), "192.0.2.10");
 
     assertEquals(resolveServerHostname(" 198.51.100.7 "), "198.51.100.7");
 
-    Deno.env.set("SERVER_HOSTNAME", "   ");
+    process.env["SERVER_HOSTNAME"] = "   ";
     assertThrows(
       () => resolveServerHostname(),
       Error,
@@ -129,14 +130,14 @@ Deno.test("server hostname resolver uses loopback and strict precedence", () => 
       "Invalid SERVER_HOSTNAME",
     );
   } finally {
-    if (previous === undefined) Deno.env.delete("SERVER_HOSTNAME");
-    else Deno.env.set("SERVER_HOSTNAME", previous);
+    if (previous === undefined) delete process.env["SERVER_HOSTNAME"];
+    else process.env["SERVER_HOSTNAME"] = previous;
   }
-  assertEquals(Deno.env.get("SERVER_HOSTNAME"), previous);
+  assertEquals(process.env["SERVER_HOSTNAME"], previous);
 });
 
-Deno.test("environment values override defaults and parse strictly", () => {
-  const previous = new Map(ENV_KEYS.map((key) => [key, Deno.env.get(key)]));
+test("environment values override defaults and parse strictly", () => {
+  const previous = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
   try {
     const values: Record<EnvKey, string> = {
       PORT: "4310",
@@ -165,7 +166,7 @@ Deno.test("environment values override defaults and parse strictly", () => {
       DIGEST_RUN_STALE_AFTER_MS: "10000",
       SCHEDULER_LEASE_MS: "11000",
     };
-    for (const [key, value] of Object.entries(values)) Deno.env.set(key, value);
+    for (const [key, value] of Object.entries(values)) process.env[key] = value;
     const config = getConfig();
     assertEquals(config.port, 4310);
     assertEquals(config.allowedOrigins, [
@@ -191,13 +192,13 @@ Deno.test("environment values override defaults and parse strictly", () => {
     assertEquals(config.schedulerLeaseMs, 11000);
   } finally {
     for (const [key, value] of previous) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   }
 });
 
-Deno.test("constructor values take precedence over environment", () => {
+test("constructor values take precedence over environment", () => {
   const previous = new Map(
     [
       "PORT",
@@ -205,14 +206,14 @@ Deno.test("constructor values take precedence over environment", () => {
       "MAX_REQUEST_BODY_BYTES",
       "DB_SSL_MODE",
       "ALLOW_REMOTE_SUMMARIZATION",
-    ].map((key) => [key, Deno.env.get(key)]),
+    ].map((key) => [key, process.env[key]]),
   );
   try {
-    Deno.env.set("PORT", "4310");
-    Deno.env.set("ALLOWED_ORIGINS", "https://env.example");
-    Deno.env.set("MAX_REQUEST_BODY_BYTES", "100");
-    Deno.env.set("DB_SSL_MODE", "require");
-    Deno.env.set("ALLOW_REMOTE_SUMMARIZATION", "true");
+    process.env["PORT"] = "4310";
+    process.env["ALLOWED_ORIGINS"] = "https://env.example";
+    process.env["MAX_REQUEST_BODY_BYTES"] = "100";
+    process.env["DB_SSL_MODE"] = "require";
+    process.env["ALLOW_REMOTE_SUMMARIZATION"] = "true";
     const config = getConfig({
       port: 4311,
       allowedOrigins: ["https://constructor.example"],
@@ -231,15 +232,15 @@ Deno.test("constructor values take precedence over environment", () => {
     });
   } finally {
     for (const [key, value] of previous) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   }
 });
 
-Deno.test("invalid numeric and boolean values fail at startup", () => {
+test("invalid numeric and boolean values fail at startup", () => {
   for (const key of ENV_KEYS) {
-    const previous = Deno.env.get(key);
+    const previous = process.env[key];
     try {
       if (
         key === "ALLOWED_ORIGINS" ||
@@ -252,36 +253,36 @@ Deno.test("invalid numeric and boolean values fail at startup", () => {
         key === "VISION_BASE_URL" ||
         key === "VISION_API_KEY"
       ) continue;
-      Deno.env.set(key, "not-a-number");
+      process.env[key] = "not-a-number";
       assertThrows(() => getConfig(), Error, `Invalid ${key}`);
     } finally {
-      if (previous === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, previous);
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
     }
   }
-  const previous = Deno.env.get("ALLOW_REMOTE_SUMMARIZATION");
+  const previous = process.env["ALLOW_REMOTE_SUMMARIZATION"];
   try {
-    Deno.env.set("ALLOW_REMOTE_SUMMARIZATION", "yes");
+    process.env["ALLOW_REMOTE_SUMMARIZATION"] = "yes";
     assertThrows(
       () => getConfig(),
       Error,
       "Invalid ALLOW_REMOTE_SUMMARIZATION",
     );
   } finally {
-    if (previous === undefined) Deno.env.delete("ALLOW_REMOTE_SUMMARIZATION");
-    else Deno.env.set("ALLOW_REMOTE_SUMMARIZATION", previous);
+    if (previous === undefined) delete process.env["ALLOW_REMOTE_SUMMARIZATION"];
+    else process.env["ALLOW_REMOTE_SUMMARIZATION"] = previous;
   }
 });
 
-Deno.test("database SSL mode accepts only supported values", () => {
-  const previous = Deno.env.get("DB_SSL_MODE");
+test("database SSL mode accepts only supported values", () => {
+  const previous = process.env["DB_SSL_MODE"];
   try {
     for (const mode of ["disable", "require", "verify-full"] as const) {
       assertEquals(getConfig({ databaseSslMode: mode }).databaseSslMode, mode);
-      Deno.env.set("DB_SSL_MODE", mode);
+      process.env["DB_SSL_MODE"] = mode;
       assertEquals(getConfig().databaseSslMode, mode);
     }
-    Deno.env.set("DB_SSL_MODE", "prefer");
+    process.env["DB_SSL_MODE"] = "prefer";
     assertThrows(() => getConfig(), Error, "Invalid DB_SSL_MODE");
     assertThrows(
       () => getConfig({ databaseSslMode: "prefer" as never }),
@@ -289,12 +290,12 @@ Deno.test("database SSL mode accepts only supported values", () => {
       "Invalid DB_SSL_MODE",
     );
   } finally {
-    if (previous === undefined) Deno.env.delete("DB_SSL_MODE");
-    else Deno.env.set("DB_SSL_MODE", previous);
+    if (previous === undefined) delete process.env["DB_SSL_MODE"];
+    else process.env["DB_SSL_MODE"] = previous;
   }
 });
 
-Deno.test("summarizer runtime resolver validates and normalizes provider settings", () => {
+test("summarizer runtime resolver validates and normalizes provider settings", () => {
   const keys = [
     "SUMMARIZER_MODEL",
     "SUMMARIZER_BASE_URL",
@@ -303,9 +304,9 @@ Deno.test("summarizer runtime resolver validates and normalizes provider setting
     "VISION_BASE_URL",
     "VISION_API_KEY",
   ];
-  const previous = new Map(keys.map((key) => [key, Deno.env.get(key)]));
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
   try {
-    for (const key of keys) Deno.env.delete(key);
+    for (const key of keys) delete process.env[key];
     assertEquals(getSummarizerRuntimeConfig(), {
       summarizer: {
         model: "local-model",
@@ -327,22 +328,22 @@ Deno.test("summarizer runtime resolver validates and normalizes provider setting
       for (
         const [requiredKey, requiredValue] of Object.entries(requiredValues)
       ) {
-        Deno.env.set(requiredKey, requiredValue);
+        process.env[requiredKey] = requiredValue;
       }
-      Deno.env.set(key, "   ");
+      process.env[key] = "   ";
       assertThrows(() => getSummarizerRuntimeConfig(), Error, `Invalid ${key}`);
     }
 
-    Deno.env.set("SUMMARIZER_MODEL", "summary");
-    Deno.env.set("SUMMARIZER_BASE_URL", "http://localhost:1234/v1");
-    Deno.env.set("VISION_MODEL", "vision");
+    process.env["SUMMARIZER_MODEL"] = "summary";
+    process.env["SUMMARIZER_BASE_URL"] = "http://localhost:1234/v1";
+    process.env["VISION_MODEL"] = "vision";
 
-    Deno.env.set("SUMMARIZER_MODEL", " summary-model ");
-    Deno.env.set("SUMMARIZER_BASE_URL", " https://summary.example/v1/// ");
-    Deno.env.set("SUMMARIZER_API_KEY", " summary-key ");
-    Deno.env.set("VISION_MODEL", " vision-model ");
-    Deno.env.set("VISION_BASE_URL", " https://vision.example/v1/// ");
-    Deno.env.set("VISION_API_KEY", " vision-key ");
+    process.env["SUMMARIZER_MODEL"] = " summary-model ";
+    process.env["SUMMARIZER_BASE_URL"] = " https://summary.example/v1/// ";
+    process.env["SUMMARIZER_API_KEY"] = " summary-key ";
+    process.env["VISION_MODEL"] = " vision-model ";
+    process.env["VISION_BASE_URL"] = " https://vision.example/v1/// ";
+    process.env["VISION_API_KEY"] = " vision-key ";
     assertEquals(getSummarizerRuntimeConfig(), {
       summarizer: {
         model: "summary-model",
@@ -357,31 +358,31 @@ Deno.test("summarizer runtime resolver validates and normalizes provider setting
       sameModel: false,
     });
 
-    Deno.env.set("VISION_MODEL", " summary-model ");
-    Deno.env.set("VISION_BASE_URL", "   ");
-    Deno.env.set("VISION_API_KEY", "   ");
+    process.env["VISION_MODEL"] = " summary-model ";
+    process.env["VISION_BASE_URL"] = "   ";
+    process.env["VISION_API_KEY"] = "   ";
     assertEquals(getSummarizerRuntimeConfig().vision, {
       model: "summary-model",
       baseUrl: "https://summary.example/v1",
       apiKey: "summary-key",
     });
 
-    Deno.env.set("VISION_BASE_URL", "https://summary.example/v1");
+    process.env["VISION_BASE_URL"] = "https://summary.example/v1";
     assertThrows(
       () => getSummarizerRuntimeConfig(),
       Error,
       "Invalid VISION_BASE_URL",
     );
-    Deno.env.set("VISION_BASE_URL", "   ");
-    Deno.env.set("VISION_API_KEY", "different-key");
+    process.env["VISION_BASE_URL"] = "   ";
+    process.env["VISION_API_KEY"] = "different-key";
     assertThrows(
       () => getSummarizerRuntimeConfig(),
       Error,
       "Invalid VISION_API_KEY",
     );
 
-    Deno.env.set("VISION_MODEL", "vision-model");
-    Deno.env.delete("VISION_BASE_URL");
+    process.env["VISION_MODEL"] = "vision-model";
+    delete process.env["VISION_BASE_URL"];
     assertThrows(
       () => getSummarizerRuntimeConfig(),
       Error,
@@ -389,28 +390,28 @@ Deno.test("summarizer runtime resolver validates and normalizes provider setting
     );
   } finally {
     for (const [key, value] of previous) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   }
 });
 
-Deno.test("remote summarization resolver honors override and strict environment values", () => {
-  const previous = Deno.env.get("ALLOW_REMOTE_SUMMARIZATION");
+test("remote summarization resolver honors override and strict environment values", () => {
+  const previous = process.env["ALLOW_REMOTE_SUMMARIZATION"];
   try {
-    Deno.env.set("ALLOW_REMOTE_SUMMARIZATION", "true");
+    process.env["ALLOW_REMOTE_SUMMARIZATION"] = "true";
     assertEquals(resolveAllowRemoteSummarization(), true);
     assertEquals(resolveAllowRemoteSummarization(false), false);
-    Deno.env.set("ALLOW_REMOTE_SUMMARIZATION", "false");
+    process.env["ALLOW_REMOTE_SUMMARIZATION"] = "false";
     assertEquals(resolveAllowRemoteSummarization(), false);
-    Deno.env.set("ALLOW_REMOTE_SUMMARIZATION", "yes");
+    process.env["ALLOW_REMOTE_SUMMARIZATION"] = "yes";
     assertThrows(
       () => resolveAllowRemoteSummarization(),
       Error,
       "Invalid ALLOW_REMOTE_SUMMARIZATION",
     );
   } finally {
-    if (previous === undefined) Deno.env.delete("ALLOW_REMOTE_SUMMARIZATION");
-    else Deno.env.set("ALLOW_REMOTE_SUMMARIZATION", previous);
+    if (previous === undefined) delete process.env["ALLOW_REMOTE_SUMMARIZATION"];
+    else process.env["ALLOW_REMOTE_SUMMARIZATION"] = previous;
   }
 });

@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertExists } from "@std/assert"
+import { test } from "bun:test";
+import { assert, assertEquals, assertExists } from "../assertions.ts";
 import { buildApp } from "../../src/server/app.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { findUserByEmail } from "../../src/repositories/user-repository.ts";
@@ -32,7 +33,7 @@ async function postRegister(
   });
 }
 
-Deno.test("POST /auth/register returns 201 with the public user", async () => {
+test("POST /auth/register returns 201 with the public user", async () => {
   await withTestDb(async (database) => {
     const body = registerBody();
     const response = await postRegister(database, body);
@@ -47,7 +48,7 @@ Deno.test("POST /auth/register returns 201 with the public user", async () => {
   });
 });
 
-Deno.test("POST /auth/register persists an argon2id-hashed user", async () => {
+test("POST /auth/register persists an argon2id-hashed user", async () => {
   await withTestDb(async (database) => {
     const body = registerBody({ email: "grace@example.com" });
     const response = await postRegister(database, body);
@@ -64,7 +65,7 @@ Deno.test("POST /auth/register persists an argon2id-hashed user", async () => {
   });
 });
 
-Deno.test("POST /auth/register response never leaks the password or hash", async () => {
+test("POST /auth/register response never leaks the password or hash", async () => {
   await withTestDb(async (database) => {
     const body = registerBody({ email: "secret@example.com" });
     const response = await postRegister(database, body);
@@ -77,7 +78,7 @@ Deno.test("POST /auth/register response never leaks the password or hash", async
   });
 });
 
-Deno.test("POST /auth/register rejects a duplicate email with 409", async () => {
+test("POST /auth/register rejects a duplicate email with 409", async () => {
   await withTestDb(async (database) => {
     const body = registerBody({ email: "dup@example.com" });
     const first = await postRegister(database, body);
@@ -93,7 +94,7 @@ Deno.test("POST /auth/register rejects a duplicate email with 409", async () => 
   });
 });
 
-Deno.test("POST /auth/register rejects an invalid email with 422", async () => {
+test("POST /auth/register rejects an invalid email with 422", async () => {
   await withTestDb(async (database) => {
     const response = await postRegister(database, registerBody({ email: "not-an-email" }));
     assertEquals(response.status, 422);
@@ -101,7 +102,7 @@ Deno.test("POST /auth/register rejects an invalid email with 422", async () => {
   });
 });
 
-Deno.test("POST /auth/register rejects a short password with 422", async () => {
+test("POST /auth/register rejects a short password with 422", async () => {
   await withTestDb(async (database) => {
     const response = await postRegister(database, registerBody({ password: "short" }));
     assertEquals(response.status, 422);
@@ -109,7 +110,7 @@ Deno.test("POST /auth/register rejects a short password with 422", async () => {
   });
 });
 
-Deno.test("POST /auth/register rejects an empty name with 422", async () => {
+test("POST /auth/register rejects an empty name with 422", async () => {
   await withTestDb(async (database) => {
     const response = await postRegister(database, registerBody({ name: "   " }));
     assertEquals(response.status, 422);

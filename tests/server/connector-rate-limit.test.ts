@@ -1,7 +1,9 @@
-import { assertEquals } from "@std/assert";
-import type { Hono } from "@hono/hono";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts";
 import { createRateLimitMiddleware } from "../../src/server/middleware/rate-limit.ts";
 import { buildApp } from "../../src/server/app.ts";
+import type { Hono } from "hono";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
 import {
@@ -47,7 +49,7 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono, email: string): Promise<void> {
+async function register(app: Hono<ServerEnvironment>, email: string): Promise<void> {
   const response = await app.request(
     "/auth/register",
     jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
@@ -55,7 +57,7 @@ async function register(app: Hono, email: string): Promise<void> {
   assertEquals(response.status, 201);
 }
 
-async function login(app: Hono, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/login",
     jsonRequest("POST", { email, password: PASSWORD }),
@@ -117,7 +119,7 @@ class FakeTelegramLoginClient implements TelegramLoginClient {
   }
 }
 
-Deno.test("telegram login start and 2fa routes are rate limited", async () => {
+test("telegram login start and 2fa routes are rate limited", async () => {
   await withTestDb(async (database: Database) => {
     let now = 1_000;
     const clientFactory = new FakeTelegramLoginClientFactory();
@@ -219,7 +221,7 @@ Deno.test("telegram login start and 2fa routes are rate limited", async () => {
   });
 });
 
-Deno.test("Substack session, publication, and discovery routes use separate rate-limit buckets", async () => {
+test("Substack session, publication, and discovery routes use separate rate-limit buckets", async () => {
   await withTestDb(async (database: Database) => {
     const now = 1_000;
     const source: PublicSource = {

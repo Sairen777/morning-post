@@ -1,5 +1,6 @@
 {
   "private": true,
+  "name": "morning-post-web",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -12,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "node ../../node_modules/@playwright/test/cli.js test"
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@solidjs/router": "0.16.1",

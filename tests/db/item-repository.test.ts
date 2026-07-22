@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import {
   CredentialCipher,
@@ -79,7 +80,7 @@ function normalizedItem(
   };
 }
 
-Deno.test("item repository upserts and lists feed items in window", async () => {
+test("item repository upserts and lists feed items in window", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(database, "items-list@example.com");
     await upsertItems(database, feed.id, [
@@ -110,7 +111,7 @@ Deno.test("item repository upserts and lists feed items in window", async () => 
   });
 });
 
-Deno.test("item repository updates edited items without duplicating rows", async () => {
+test("item repository updates edited items without duplicating rows", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(database, "items-upsert@example.com");
     await upsertItems(
@@ -136,7 +137,7 @@ Deno.test("item repository updates edited items without duplicating rows", async
   });
 });
 
-Deno.test("item repository preserves fetchedAt when a refresh is unchanged", async () => {
+test("item repository preserves fetchedAt when a refresh is unchanged", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(
       database,
@@ -156,7 +157,7 @@ Deno.test("item repository preserves fetchedAt when a refresh is unchanged", asy
   });
 });
 
-Deno.test("item repository rejects invalid normalized item payloads before writing", async () => {
+test("item repository rejects invalid normalized item payloads before writing", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(database, "items-invalid@example.com");
     await assertRejects(
@@ -171,7 +172,7 @@ Deno.test("item repository rejects invalid normalized item payloads before writi
   });
 });
 
-Deno.test("paid item lookup is bounded by feed ownership and window", async () => {
+test("paid item lookup is bounded by feed ownership and window", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(
       database,

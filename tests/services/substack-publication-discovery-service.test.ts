@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -29,7 +30,7 @@ function userInput(email: string) {
   };
 }
 
-Deno.test("SubstackPublicationDiscoveryService decrypts, validates, and canonicalizes subscribed publications", async () => {
+test("SubstackPublicationDiscoveryService decrypts, validates, and canonicalizes subscribed publications", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -103,7 +104,7 @@ Deno.test("SubstackPublicationDiscoveryService decrypts, validates, and canonica
   });
 });
 
-Deno.test("SubstackPublicationDiscoveryService preserves connection and provider error distinctions", async () => {
+test("SubstackPublicationDiscoveryService preserves connection and provider error distinctions", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -195,7 +196,7 @@ Deno.test("SubstackPublicationDiscoveryService preserves connection and provider
   });
 });
 
-Deno.test("SubstackPublicationDiscoveryService scopes ownership and rejects undecryptable credentials", async () => {
+test("SubstackPublicationDiscoveryService scopes ownership and rejects undecryptable credentials", async () => {
   await withTestDb(async (database) => {
     const owner = await createUser(
       database,

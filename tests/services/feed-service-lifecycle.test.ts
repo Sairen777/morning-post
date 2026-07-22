@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -15,7 +16,7 @@ const cipher = new CredentialCipher(
   new EnvMasterKeyProvider(new Uint8Array(32).fill(37)),
 );
 
-Deno.test("default Telegram feed discovery destroys its client when connector work throws", async () => {
+test("default Telegram feed discovery destroys its client when connector work throws", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, {
       name: "Feed Discovery Owner",

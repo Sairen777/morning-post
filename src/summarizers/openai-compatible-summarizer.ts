@@ -1,3 +1,4 @@
+import { readFile, stat } from "node:fs/promises";
 import { jsonrepair } from "jsonrepair";
 import type { NormalizedItem } from "../connectors/connector.types.ts";
 import { ConnectorId } from "../constants.ts";
@@ -821,10 +822,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
   ): Promise<ImagePart | null> {
     try {
       if (maxImageBytes > 0) {
-        const stat = await Deno.stat(localPath);
-        if (stat.size > maxImageBytes) return null;
+        const fileStat = await stat(localPath);
+        if (fileStat.size > maxImageBytes) return null;
       }
-      const bytes = await Deno.readFile(localPath);
+      const bytes = await readFile(localPath);
       if (maxImageBytes > 0 && bytes.length > maxImageBytes) return null;
       const b64 = encodeBytesAsBase64(bytes);
       const extension = localPath.toLowerCase().split(".").pop();

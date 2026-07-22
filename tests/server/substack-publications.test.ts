@@ -1,10 +1,12 @@
-import { assertEquals, assertExists } from "@std/assert";
-import type { Hono, MiddlewareHandler } from "@hono/hono";
+import { test } from "bun:test";
+import { assertEquals, assertExists } from "../assertions.ts";
+import type { Hono, MiddlewareHandler } from "hono";
 import { ConnectorId } from "../../src/constants.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { PublicFeed } from "../../src/repositories/feed-repository.ts";
 import type { PublicSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 import type {
   SubstackPublicationDiscoveryServiceLike,
   SubstackPublicationServiceLike,
@@ -30,7 +32,7 @@ function passRateLimit(): MiddlewareHandler {
 }
 
 async function registerAndLogin(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   email: string,
 ): Promise<{ userId: string; cookie: string }> {
   const registration = await app.request(
@@ -53,7 +55,7 @@ async function registerAndLogin(
   return { userId: user.id, cookie: setCookie.split(";")[0] };
 }
 
-Deno.test("POST /connectors/substack/publications creates a canonical publication feed", async () => {
+test("POST /connectors/substack/publications creates a canonical publication feed", async () => {
   await withTestDb(async (database) => {
     const calls: Array<{ userId: string; publicationUrl: string }> = [];
     const service: SubstackPublicationServiceLike = {
@@ -115,7 +117,7 @@ Deno.test("POST /connectors/substack/publications creates a canonical publicatio
   });
 });
 
-Deno.test("Substack publication route cancels its deadline before a deferred feed commit", async () => {
+test("Substack publication route cancels its deadline before a deferred feed commit", async () => {
   await withTestDb(async (database) => {
     const mutationStarted = Promise.withResolvers<void>();
     const mutation = Promise.withResolvers<
@@ -212,7 +214,7 @@ Deno.test("Substack publication route cancels its deadline before a deferred fee
   });
 });
 
-Deno.test("Substack publication route blocks a late feed commit after the deadline wins", async () => {
+test("Substack publication route blocks a late feed commit after the deadline wins", async () => {
   await withTestDb(async (database) => {
     const remoteProbeStarted = Promise.withResolvers<void>();
     const finishRemoteProbe = Promise.withResolvers<void>();
@@ -301,7 +303,7 @@ Deno.test("Substack publication route blocks a late feed commit after the deadli
   });
 });
 
-Deno.test("Substack publication route rejects schema-invalid bodies", async () => {
+test("Substack publication route rejects schema-invalid bodies", async () => {
   await withTestDb(async (database) => {
     const service: SubstackPublicationServiceLike = {
       add: () => Promise.reject(new Error("must not be called")),
@@ -328,7 +330,7 @@ Deno.test("Substack publication route rejects schema-invalid bodies", async () =
   });
 });
 
-Deno.test("GET /connectors/substack/publications requires auth and returns a direct array", async () => {
+test("GET /connectors/substack/publications requires auth and returns a direct array", async () => {
   await withTestDb(async (database) => {
     const calls: string[] = [];
     const discoveryService: SubstackPublicationDiscoveryServiceLike = {
@@ -369,7 +371,7 @@ Deno.test("GET /connectors/substack/publications requires auth and returns a dir
   });
 });
 
-Deno.test("GET /connectors/substack/publications uses the connector deadline", async () => {
+test("GET /connectors/substack/publications uses the connector deadline", async () => {
   await withTestDb(async (database) => {
     const started = Promise.withResolvers<void>();
     const finish = Promise.withResolvers<never>();

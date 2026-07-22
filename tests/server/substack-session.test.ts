@@ -1,9 +1,11 @@
-import { assertEquals, assertExists } from "@std/assert";
-import type { Hono, MiddlewareHandler } from "@hono/hono";
+import { test } from "bun:test";
+import { assertEquals, assertExists } from "../assertions.ts";
+import type { Hono, MiddlewareHandler } from "hono";
 import { ConnectorId } from "../../src/constants.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { PublicSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 import type { SubstackSessionServiceLike } from "../../src/server/routes/connectors.ts";
 
 const PASSWORD = "analytical-engine-1843";
@@ -26,7 +28,7 @@ function passRateLimit(): MiddlewareHandler {
 }
 
 async function registerAndLogin(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   email: string,
 ): Promise<{ userId: string; cookie: string }> {
   const registration = await app.request(
@@ -49,7 +51,7 @@ async function registerAndLogin(
   return { userId: user.id, cookie: setCookie.split(";")[0] };
 }
 
-Deno.test("POST /connectors/substack/session validates and returns a secret-free source", async () => {
+test("POST /connectors/substack/session validates and returns a secret-free source", async () => {
   await withTestDb(async (database) => {
     const calls: Array<{ userId: string; credentials: unknown }> = [];
     const service: SubstackSessionServiceLike = {
@@ -101,7 +103,7 @@ Deno.test("POST /connectors/substack/session validates and returns a secret-free
   });
 });
 
-Deno.test("Substack session route enforces Morning Post auth and strict body validation", async () => {
+test("Substack session route enforces Morning Post auth and strict body validation", async () => {
   await withTestDb(async (database) => {
     const service: SubstackSessionServiceLike = {
       connect: () => Promise.reject(new Error("must not be called")),
@@ -143,7 +145,7 @@ Deno.test("Substack session route enforces Morning Post auth and strict body val
   });
 });
 
-Deno.test("Substack session route bounds services that ignore abort", async () => {
+test("Substack session route bounds services that ignore abort", async () => {
   await withTestDb(async (database) => {
     const service: SubstackSessionServiceLike = {
       connect: () => Promise.withResolvers<PublicSource>().promise,
@@ -175,7 +177,7 @@ Deno.test("Substack session route bounds services that ignore abort", async () =
   });
 });
 
-Deno.test("Substack session route cancels its deadline before a deferred credential commit", async () => {
+test("Substack session route cancels its deadline before a deferred credential commit", async () => {
   await withTestDb(async (database) => {
     const mutationStarted = Promise.withResolvers<void>();
     const mutation = Promise.withResolvers<PublicSource>();
@@ -259,7 +261,7 @@ Deno.test("Substack session route cancels its deadline before a deferred credent
   });
 });
 
-Deno.test("Substack session route blocks a late credential commit after the deadline wins", async () => {
+test("Substack session route blocks a late credential commit after the deadline wins", async () => {
   await withTestDb(async (database) => {
     const remoteValidationStarted = Promise.withResolvers<void>();
     const finishRemoteValidation = Promise.withResolvers<void>();

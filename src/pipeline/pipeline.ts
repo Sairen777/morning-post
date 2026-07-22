@@ -1,3 +1,4 @@
+import { mkdir, writeFile } from "node:fs/promises";
 import type { Connector } from "../connectors/connector.types.ts";
 import type {
   SummarizerService,
@@ -42,8 +43,8 @@ export class Pipeline {
   }
 
   private async writeDebugLog(name: string, data: unknown): Promise<void> {
-    await Deno.mkdir(".debug_logs", { recursive: true });
-    await Deno.writeTextFile(
+    await mkdir(".debug_logs", { recursive: true });
+    await writeFile(
       `.debug_logs/${name}`,
       JSON.stringify(data, null, 2),
     );

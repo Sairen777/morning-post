@@ -1,4 +1,4 @@
-import type { Context } from "@hono/hono";
+import type { Context } from "hono";
 import { sanitizeErrorForOps } from "./error-sanitizer.ts";
 export type StatusCode = 400 | 401 | 403 | 404 | 409 | 413 | 422 | 429 | 500;
 

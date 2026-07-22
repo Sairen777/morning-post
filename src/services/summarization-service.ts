@@ -1,3 +1,5 @@
+import { readdir, rm, stat, unlink } from "node:fs/promises";
+import { isFileNotFoundError } from "../platform/filesystem-errors.ts";
 import type { Database } from "../db/client.ts";
 import {
   findFeedById,
@@ -71,9 +73,9 @@ export async function cleanupFeedMedia(
   );
   for (const filePath of paths) {
     try {
-      await Deno.remove(filePath);
+      await unlink(filePath);
     } catch (err: unknown) {
-      if (err instanceof Deno.errors.NotFound) {
+      if (isFileNotFoundError(err)) {
         // File already removed — not a concern
         continue;
       }
@@ -105,31 +107,31 @@ export async function cleanupExpiredMedia(
     now: number,
     ttlMs: number,
   ): Promise<void> {
-    let entries: Deno.DirEntry[];
+    let entries;
     try {
-      entries = [...Deno.readDirSync(dir)];
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
 
     for (const entry of entries) {
       const fullPath = `${dir}/${entry.name}`;
-      if (entry.isDirectory) {
+      if (entry.isDirectory()) {
         await cleanupExpiredMediaInDir(fullPath, now, ttlMs);
         // After cleaning child dirs, try removing the directory itself if empty
         try {
-          await Deno.remove(fullPath);
+          await rm(fullPath);
         } catch {
           // Directory not empty or permission denied — leave it
         }
         continue;
       }
-      if (!entry.isFile) continue;
+      if (!entry.isFile()) continue;
 
       try {
-        const stat = await Deno.stat(fullPath);
-        if (stat.mtime && (now - stat.mtime.getTime()) > ttlMs) {
-          await Deno.remove(fullPath);
+        const fileStat = await stat(fullPath);
+        if ((now - fileStat.mtimeMs) > ttlMs) {
+          await unlink(fullPath);
         }
       } catch (err: unknown) {
         console.warn(

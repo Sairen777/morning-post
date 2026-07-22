@@ -1,5 +1,6 @@
-import { assert, assertEquals, assertExists } from "@std/assert";
-import type { Hono } from "@hono/hono";
+import { test } from "bun:test";
+import { assert, assertEquals, assertExists } from "../assertions.ts";
+import type { Hono } from "hono";
 import { and, eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import { telegramCredentialSchema } from "../../src/connectors/credential-schemas.ts";
@@ -17,6 +18,7 @@ import {
   upsertSourceCredentials,
 } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 import {
   type TelegramLoginClient,
   type TelegramLoginClientFactory,
@@ -35,7 +37,7 @@ interface RegisteredUser {
 }
 
 interface LoginHarness {
-  app: Hono;
+  app: Hono<ServerEnvironment>;
   manager: TelegramLoginSessionManager;
   factory: FakeTelegramLoginClientFactory;
   credentialCipher: CredentialCipher;
@@ -62,7 +64,7 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono, email: string): Promise<RegisteredUser> {
+async function register(app: Hono<ServerEnvironment>, email: string): Promise<RegisteredUser> {
   const response = await app.request(
     "/auth/register",
     jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
@@ -72,7 +74,7 @@ async function register(app: Hono, email: string): Promise<RegisteredUser> {
   return { id: json.id, email: json.email };
 }
 
-async function login(app: Hono, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/login",
     jsonRequest("POST", { email, password: PASSWORD }),
@@ -82,7 +84,7 @@ async function login(app: Hono, email: string): Promise<string> {
 }
 
 async function registerAndLogin(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   email: string,
 ): Promise<{ user: RegisteredUser; cookie: string }> {
   const user = await register(app, email);
@@ -109,7 +111,7 @@ function buildHarness(
 }
 
 async function startTelegramLogin(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   cookie: string,
 ): Promise<Record<string, unknown>> {
   const response = await app.request("/connectors/telegram/login", {
@@ -121,7 +123,7 @@ async function startTelegramLogin(
 }
 
 async function pollTelegramLogin(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   cookie: string,
   loginSessionId: string,
 ): Promise<Record<string, unknown>> {
@@ -136,7 +138,7 @@ async function pollTelegramLogin(
 }
 
 async function submitTwoFactorAuthentication(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   cookie: string,
   loginSessionId: string,
   password: string,
@@ -152,7 +154,7 @@ async function submitTwoFactorAuthentication(
 }
 
 async function waitForCompleteStatus(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   cookie: string,
   loginSessionId: string,
 ): Promise<Record<string, unknown>> {
@@ -294,7 +296,7 @@ class FakeTelegramLoginClient implements TelegramLoginClient {
   }
 }
 
-Deno.test("Telegram QR login stores encrypted source credentials after approval", async () => {
+test("Telegram QR login stores encrypted source credentials after approval", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
     const { user, cookie } = await registerAndLogin(
@@ -324,7 +326,7 @@ Deno.test("Telegram QR login stores encrypted source credentials after approval"
   });
 });
 
-Deno.test("completed Telegram login sessions release clients, plaintext sessions, and capacity", async () => {
+test("completed Telegram login sessions release clients, plaintext sessions, and capacity", async () => {
   await withTestDb(async (database) => {
     const { app, manager, factory } = buildHarness(database);
     const { user, cookie } = await registerAndLogin(
@@ -364,7 +366,7 @@ Deno.test("completed Telegram login sessions release clients, plaintext sessions
   });
 });
 
-Deno.test("Telegram QR login supports two-factor authentication and rejects a wrong password without writing a source", async () => {
+test("Telegram QR login supports two-factor authentication and rejects a wrong password without writing a source", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
     const { user, cookie } = await registerAndLogin(
@@ -431,7 +433,7 @@ Deno.test("Telegram QR login supports two-factor authentication and rejects a wr
   });
 });
 
-Deno.test("Telegram reconnect updates an existing source without duplicating it", async () => {
+test("Telegram reconnect updates an existing source without duplicating it", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
     const { user, cookie } = await registerAndLogin(
@@ -477,7 +479,7 @@ Deno.test("Telegram reconnect updates an existing source without duplicating it"
   });
 });
 
-Deno.test("Telegram login approval after expiry does not persist Telegram credentials", async () => {
+test("Telegram login approval after expiry does not persist Telegram credentials", async () => {
   await withTestDb(async (database) => {
     let now = 1_000;
     const { app, manager, factory, credentialCipher } = buildHarness(
@@ -532,7 +534,7 @@ Deno.test("Telegram login approval after expiry does not persist Telegram creden
   });
 });
 
-Deno.test("Telegram login destroys a client created after the reservation expired", async () => {
+test("Telegram login destroys a client created after the reservation expired", async () => {
   await withTestDb(async (database) => {
     let now = 1_000;
     const { app, factory } = buildHarness(database, () => now);
@@ -563,7 +565,7 @@ Deno.test("Telegram login destroys a client created after the reservation expire
   });
 });
 
-Deno.test("Telegram login expiry returns expired once, then unknown session is hidden", async () => {
+test("Telegram login expiry returns expired once, then unknown session is hidden", async () => {
   await withTestDb(async (database) => {
     let now = 1_000;
     const { app, factory } = buildHarness(database, () => now);
@@ -606,7 +608,7 @@ Deno.test("Telegram login expiry returns expired once, then unknown session is h
   });
 });
 
-Deno.test("Telegram login enforces three concurrent sessions per user", async () => {
+test("Telegram login enforces three concurrent sessions per user", async () => {
   await withTestDb(async (database) => {
     const { app, factory } = buildHarness(database);
     const { cookie } = await registerAndLogin(app, "telegram-cap@example.com");
@@ -626,7 +628,7 @@ Deno.test("Telegram login enforces three concurrent sessions per user", async ()
   });
 });
 
-Deno.test("Telegram login reserves capacity before awaiting client creation", async () => {
+test("Telegram login reserves capacity before awaiting client creation", async () => {
   await withTestDb(async (database) => {
     const { app, factory } = buildHarness(database);
     const { cookie } = await registerAndLogin(
@@ -684,7 +686,7 @@ Deno.test("Telegram login reserves capacity before awaiting client creation", as
   });
 });
 
-Deno.test("Telegram login session ownership is hidden from other users", async () => {
+test("Telegram login session ownership is hidden from other users", async () => {
   await withTestDb(async (database) => {
     const { app, factory } = buildHarness(database);
     const { cookie: ownerCookie } = await registerAndLogin(

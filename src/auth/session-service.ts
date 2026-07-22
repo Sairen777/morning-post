@@ -1,7 +1,5 @@
-import type { Context } from "@hono/hono";
-import { deleteCookie, getCookie, setCookie } from "@hono/hono/cookie";
-import { encodeBase64Url } from "@std/encoding/base64url";
-import { encodeHex } from "@std/encoding/hex";
+import type { Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { Database } from "../db/client.ts";
 import {
   createSession as persistSession,
@@ -36,7 +34,7 @@ async function hashToken(token: string): Promise<string> {
     "SHA-256",
     new TextEncoder().encode(token),
   );
-  return encodeHex(new Uint8Array(digest));
+  return Buffer.from(digest).toString("hex");
 }
 
 export interface CreatedSession {
@@ -61,7 +59,11 @@ export async function createSession(
   ttlMs: number = DEFAULT_SESSION_TTL_MS,
 ): Promise<CreatedSession> {
   const bytes = crypto.getRandomValues(new Uint8Array(TOKEN_BYTE_LENGTH));
-  const token = encodeBase64Url(bytes);
+  const token = Buffer.from(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength,
+  ).toString("base64url");
   const tokenHash = await hashToken(token);
   const expiresAt = Date.now() + ttlMs;
   await persistSession(database, { userId, tokenHash, expiresAt });

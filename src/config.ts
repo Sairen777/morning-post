@@ -114,7 +114,7 @@ function numberSetting(
       ? parseNonNegativeInteger(name, override)
       : parsePositiveInteger(name, override);
   }
-  const raw = Deno.env.get(envName);
+  const raw = process.env[envName];
   if (raw === undefined) return fallback;
   return allowZero
     ? parseNonNegativeInteger(name, raw)
@@ -133,7 +133,7 @@ function booleanSetting(
     }
     return override;
   }
-  const raw = Deno.env.get(envName);
+  const raw = process.env[envName];
   if (raw === undefined) return fallback;
   const normalized = raw.trim().toLowerCase();
   if (normalized === "true") return true;
@@ -150,7 +150,7 @@ function requiredStringSetting(
   override: string | undefined,
   fallback: string,
 ): string {
-  const raw = override ?? Deno.env.get(name);
+  const raw = override ?? process.env[name];
   if (raw === undefined) {
     return fallback;
   }
@@ -165,7 +165,7 @@ function optionalStringSetting(
   name: string,
   override: string | undefined,
 ): { value: string | undefined; explicitlyConfigured: boolean } {
-  const raw = override ?? Deno.env.get(name);
+  const raw = override ?? process.env[name];
   const value = raw?.trim() ?? "";
   return {
     value: value === "" ? undefined : value,
@@ -272,7 +272,7 @@ function originsSetting(override: string[] | undefined): string[] {
     }
     return override.map((origin) => origin.trim());
   }
-  const raw = Deno.env.get("ALLOWED_ORIGINS");
+  const raw = process.env["ALLOWED_ORIGINS"];
   if (raw === undefined) return [...DEFAULT_ALLOWED_ORIGINS];
   const origins = raw.split(",").map((origin) => origin.trim());
   if (origins.length === 0 || origins.some((origin) => origin === "")) {
@@ -287,7 +287,7 @@ function originsSetting(override: string[] | undefined): string[] {
 function sslModeSetting(
   override: DatabaseSslMode | undefined,
 ): DatabaseSslMode {
-  const raw = override ?? Deno.env.get("DB_SSL_MODE") ?? "disable";
+  const raw = override ?? process.env["DB_SSL_MODE"] ?? "disable";
   if (raw === "disable" || raw === "require" || raw === "verify-full") {
     return raw;
   }
@@ -298,7 +298,7 @@ function sslModeSetting(
 }
 
 export function resolveServerHostname(override?: string): string {
-  const serverHostname = override ?? Deno.env.get("SERVER_HOSTNAME") ??
+  const serverHostname = override ?? process.env["SERVER_HOSTNAME"] ??
     DEFAULT_SERVER_HOSTNAME;
   const normalizedServerHostname = serverHostname.trim();
   if (normalizedServerHostname === "") {
@@ -336,7 +336,7 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
   const port = numberSetting("PORT", "PORT", overrides.port, DEFAULT_PORT);
   if (port > 65_535) throw invalidConfig("PORT", "expected a valid TCP port");
   return {
-    databaseUrl: overrides.databaseUrl ?? Deno.env.get("DATABASE_URL") ?? "",
+    databaseUrl: overrides.databaseUrl ?? process.env["DATABASE_URL"] ?? "",
     port,
     allowedOrigins: originsSetting(overrides.allowedOrigins),
     trustedProxyCount: numberSetting(

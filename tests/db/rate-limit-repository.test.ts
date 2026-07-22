@@ -1,10 +1,11 @@
-import { assertEquals } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import { rateLimitBuckets } from "../../src/db/schema/rate-limit.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { consumeRateLimit } from "../../src/repositories/rate-limit-repository.ts";
 
-Deno.test("consumeRateLimit allows up to the limit and records the resulting count", async () => {
+test("consumeRateLimit allows up to the limit and records the resulting count", async () => {
   await withTestDb(async (database) => {
     const key = "rate-limit-repository-threshold";
     const now = 1_000;
@@ -20,7 +21,7 @@ Deno.test("consumeRateLimit allows up to the limit and records the resulting cou
   });
 });
 
-Deno.test("consumeRateLimit resets an expired window atomically", async () => {
+test("consumeRateLimit resets an expired window atomically", async () => {
   await withTestDb(async (database) => {
     const key = "rate-limit-repository-expiry";
     const now = 10_000;
@@ -36,7 +37,7 @@ Deno.test("consumeRateLimit resets an expired window atomically", async () => {
   });
 });
 
-Deno.test("consumeRateLimit serializes concurrent requests for one bucket", async () => {
+test("consumeRateLimit serializes concurrent requests for one bucket", async () => {
   await withTestDb(async (database) => {
     const key = "rate-limit-repository-concurrency";
     const results = await Promise.all(
@@ -55,7 +56,7 @@ Deno.test("consumeRateLimit serializes concurrent requests for one bucket", asyn
   });
 });
 
-Deno.test("consumeRateLimit cleanup removes only a bounded batch of expired buckets", async () => {
+test("consumeRateLimit cleanup removes only a bounded batch of expired buckets", async () => {
   await withTestDb(async (database) => {
     const now = 50_000;
     await database.insert(rateLimitBuckets).values(

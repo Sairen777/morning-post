@@ -523,12 +523,12 @@
       </div>
       <aside class="hero-panel" aria-label="Project status">
         <div class="status-grid">
-          <div class="status-pill"><strong>Runtime</strong>Deno + Hono API</div>
+          <div class="status-pill"><strong>Runtime</strong>Bun 1.3.14 + Hono on Bun.serve</div>
           <div class="status-pill"><strong>Database</strong>PostgreSQL + Drizzle migrations</div>
           <div class="status-pill"><strong>Domain model</strong>User, Source, Feed, Item, Summary, Digest</div>
           <div class="status-pill"><strong>Auth</strong>Email/password, Argon2id, server sessions</div>
           <div class="status-pill"><strong>Credential custody</strong>Envelope encryption, owner-bound AEAD</div>
-          <div class="status-pill"><strong>Final gate observed</strong>200 tests passing</div>
+          <div class="status-pill"><strong>Final gate observed</strong>507 backend + 73 web + 4 Playwright tests</div>
         </div>
         <p class="small">Generated from the current repository implementation, not only from the older design docs. Some older docs still say parts are planned; the code now contains the backend implementation.</p>
       </aside>
@@ -585,7 +585,7 @@
         </div>
         <div class="phase">
           <strong>Orchestration and scheduling</strong>
-          The orchestrator groups feeds by source, reuses one connector per source, skips already-ingested feeds, isolates source/feed failures, summarizes successful feeds, and assembles the digest. The scheduler computes the next period per user and prevents overlapping runs for the same user.
+          The orchestrator groups feeds by source, reuses one connector per source, skips already-ingested feeds, isolates source/feed failures, summarizes successful feeds, and assembles the digest. Croner runs UTC five-field schedules with in-process overlap protection; PostgreSQL leases coordinate API instances and per-user uniqueness prevents overlapping digest runs.
         </div>
         <div class="phase">
           <strong>Security audit</strong>
@@ -661,7 +661,7 @@
 
           <rect x="260" y="336" width="190" height="88" rx="18" fill="#f7f0fb" stroke="#6d587e" filter="url(#softShadow)"/>
           <text x="355" y="371" text-anchor="middle" font-family="Georgia" font-size="20" font-weight="700" fill="#17130e">Scheduler</text>
-          <text x="355" y="398" text-anchor="middle" font-family="monospace" font-size="13" fill="#6b6256">Deno.cron adapter</text>
+          <text x="355" y="398" text-anchor="middle" font-family="monospace" font-size="13" fill="#6b6256">Croner UTC + DB lease</text>
 
           <line x1="206" y1="64" x2="250" y2="64" stroke="#7e301c" stroke-width="2" marker-end="url(#arrow)"/>
           <line x1="450" y1="64" x2="494" y2="64" stroke="#7e301c" stroke-width="2" marker-end="url(#arrow)"/>
@@ -687,6 +687,10 @@
 
       <div class="note">
         <strong>Important naming decision:</strong> a connector result map key is a feed's connector-native external id, not a database <code>Source</code>. It is only unique inside one source. Runtime items use <code>feedExternalId</code>; persistence resolves it with the current <code>Source.id</code> plus <code>Feed.externalId</code>, or directly through <code>Feed.id</code> after subscription.
+      </div>
+
+      <div class="note">
+        <strong>Runtime boundaries:</strong> Hono is served directly by <code>Bun.serve</code>. Bun uses the ordinary process environment and Node-compatible filesystem APIs, so OS account permissions and deployment sandboxing control local access. Substack HTTPS resolves and rejects non-public addresses, then connects directly to the validated IP through Node TLS while preserving hostname verification; no HTTP proxy hop sits between validation and transport.
       </div>
     </section>
 
@@ -941,6 +945,7 @@
       <h3>4. Scheduled digest run</h3>
       <div class="timeline">
         <div class="step"><div class="step-body"><strong>Pick users.</strong> The scheduler lists users and skips a user if another run is already in progress for them.</div></div>
+        <div class="step"><div class="step-body"><strong>Coordinate the tick.</strong> Croner evaluates UTC five-field schedules with overlap protection in each process; an atomic PostgreSQL lease permits only one instance to execute the leader tick.</div></div>
         <div class="step"><div class="step-body"><strong>Compute period.</strong> If the user has a previous digest, start at <code>latestDigest.periodEndMs + 1</code>; otherwise use a one-day cadence fallback.</div></div>
         <div class="step"><div class="step-body"><strong>Group by source.</strong> The orchestrator lists enabled sources and enabled feeds, grouped by source so one connector instance can serve multiple feeds.</div></div>
         <div class="step"><div class="step-body"><strong>Ingest feed windows.</strong> Each feed fetches <code>lastFetchedPeriodEndMs + 1</code> through the period end, or a default lookback for new feeds.</div></div>
@@ -1056,7 +1061,8 @@
         <div class="card">
           <h3>Prerequisites</h3>
           <ul>
-            <li>Deno 2.x+</li>
+            <li>Bun 1.3.14</li>
+            <li>Node.js 22.13+ for the frontend and Playwright toolchain</li>
             <li>PostgreSQL 16+ or Docker Compose</li>
             <li>OpenSSL to generate a credential master key</li>
             <li>Telegram API ID/hash from <a href="https://my.telegram.org/apps">my.telegram.org/apps</a></li>
@@ -1065,7 +1071,7 @@
         </div>
         <div class="card">
           <h3>Environment</h3>
-          <p>The configured Deno tasks use <code>--env-file=.env.production.local</code>. README also references <code>.env</code>; keep your actual local file aligned with the task you run.</p>
+          <p>Repository scripts explicitly load <code>.env.production.local</code> through Bun. Keep that credential-bearing file local and configure it for the command you run.</p>
           <pre>DATABASE_URL=postgres://morningpost:morningpost@localhost:5432/morningpost
 TEST_DATABASE_URL=postgres://morningpost:morningpost@localhost:5432/morningpost_test
 CREDENTIAL_MASTER_KEY=&lt;openssl rand -base64 32&gt;
@@ -1081,12 +1087,15 @@ PORT=3000</pre>
         <thead><tr><th>Command</th><th>Meaning</th></tr></thead>
         <tbody>
           <tr><td><code>docker compose up -d</code></td><td>Start local Postgres with app and test databases.</td></tr>
-          <tr><td><code>deno task db:migrate</code></td><td>Apply Drizzle migrations.</td></tr>
-          <tr><td><code>deno task db:generate</code></td><td>Generate migration SQL after schema changes.</td></tr>
-          <tr><td><code>deno task dev:api</code></td><td>Start API server with file watching.</td></tr>
-          <tr><td><code>deno task start</code></td><td>Start API server without watch mode.</td></tr>
-          <tr><td><code>deno task dev:cli</code></td><td>Run the legacy one-shot CLI pipeline.</td></tr>
-          <tr><td><code>deno task test</code></td><td>Run the full test suite.</td></tr>
+          <tr><td><code>bun install</code></td><td>Install root and web workspace dependencies.</td></tr>
+          <tr><td><code>bun run db:migrate</code></td><td>Apply Drizzle migrations.</td></tr>
+          <tr><td><code>bun run db:generate</code></td><td>Generate migration SQL after schema changes.</td></tr>
+          <tr><td><code>bun run dev:api</code></td><td>Start the Bun.serve API server with file watching.</td></tr>
+          <tr><td><code>bun run start</code></td><td>Start the API server without watch mode.</td></tr>
+          <tr><td><code>bun run dev:cli</code></td><td>Run the one-shot CLI pipeline with file watching.</td></tr>
+          <tr><td><code>bun run test</code></td><td>Run 507 backend tests with bun:test.</td></tr>
+          <tr><td><code>bun run web:test</code></td><td>Run 73 web unit/component tests.</td></tr>
+          <tr><td><code>bun run web:e2e</code></td><td>Run four Playwright smoke tests.</td></tr>
         </tbody>
       </table>
 
@@ -1095,7 +1104,7 @@ PORT=3000</pre>
         <div>
           <ol>
             <li>Run Postgres and migrations.</li>
-            <li>Start <code>deno task dev:api</code>.</li>
+            <li>Start <code>bun run dev:api</code>.</li>
             <li>Register a user and log in.</li>
             <li>Start Telegram QR login, scan in Telegram, and wait for completion.</li>
             <li>List sources and available feeds.</li>

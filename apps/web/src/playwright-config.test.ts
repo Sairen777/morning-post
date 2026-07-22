@@ -11,12 +11,12 @@ describe("Playwright environment isolation", () => {
       : [config.webServer];
     expect(webServers).toHaveLength(2);
     expect(webServers[0]).toMatchObject({
-      command: "deno task e2e:api",
+      command: "bun run e2e:api",
       url: "http://127.0.0.1:3100/health",
       reuseExistingServer: false,
     });
     expect(webServers[1]).toMatchObject({
-      command: "npm --workspace apps/web run e2e:server",
+      command: "bun run --cwd apps/web e2e:server",
       url: "http://127.0.0.1:5174",
       reuseExistingServer: false,
       env: {

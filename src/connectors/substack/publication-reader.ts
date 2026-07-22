@@ -1,3 +1,4 @@
+import { resolve4, resolve6 } from "node:dns/promises";
 import ipaddr from "ipaddr.js";
 import { requestPinnedHttps } from "./pinned-https.ts";
 
@@ -102,34 +103,43 @@ async function resolveAddressFamily(
   recordType: "A" | "AAAA",
   signal?: AbortSignal,
 ): Promise<string[]> {
-  if (signal?.aborted) {
-    throw abortReason(signal);
-  }
+  if (signal?.aborted) throw abortReason(signal);
   try {
-    const records = await Deno.resolveDns(host, recordType);
-    if (signal?.aborted) {
-      throw abortReason(signal);
-    }
-    return records;
+    const lookup = recordType === "A" ? resolve4(host) : resolve6(host);
+    return await abortableDnsLookup(lookup, signal);
   } catch (error) {
-    if (signal?.aborted) {
-      throw abortReason(signal);
-    }
-    if (isDnsNotFoundError(error)) {
-      return [];
-    }
+    if (signal?.aborted) throw abortReason(signal);
+    if (isDnsNotFoundError(error)) return [];
     throw error;
   }
 }
 
+async function abortableDnsLookup(
+  lookup: Promise<string[]>,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (!signal) return await lookup;
+  const { promise, resolve, reject } = Promise.withResolvers<string[]>();
+  const onAbort = () => reject(abortReason(signal));
+  signal.addEventListener("abort", onAbort, { once: true });
+  lookup.then(
+    (addresses) => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(addresses);
+    },
+    (error: unknown) => {
+      signal.removeEventListener("abort", onAbort);
+      reject(error);
+    },
+  );
+  if (signal.aborted) onAbort();
+  return await promise;
+}
+
 export function isDnsNotFoundError(error: unknown): boolean {
-  if (error instanceof Deno.errors.NotFound) return true;
-  if (!(error instanceof Error)) return false;
-  const message = error.message.toLowerCase();
-  return error.name === "NotFound" ||
-    message.includes("not found") ||
-    message.includes("no such") ||
-    message.includes("nxdomain");
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  const code = error.code;
+  return code === "ENOTFOUND" || code === "ENODATA";
 }
 
 function isGlobalUnicast(address: string): boolean {

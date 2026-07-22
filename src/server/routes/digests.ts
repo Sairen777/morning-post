@@ -1,4 +1,4 @@
-import { Hono } from "@hono/hono";
+import { Hono } from "hono";
 import { z } from "zod";
 import { getConfig } from "../../config.ts";
 import type { Database } from "../../db/client.ts";

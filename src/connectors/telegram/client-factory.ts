@@ -9,8 +9,8 @@ export interface TelegramApiCredentials {
 
 export function readTelegramApiCredentials(): TelegramApiCredentials {
   return {
-    apiId: Number(Deno.env.get("TELEGRAM_API_ID")),
-    apiHash: Deno.env.get("TELEGRAM_API_HASH") ?? "",
+    apiId: Number(process.env["TELEGRAM_API_ID"]),
+    apiHash: process.env["TELEGRAM_API_HASH"] ?? "",
   };
 }
 
@@ -33,7 +33,7 @@ export interface TelegramClientConstructionOptions {
 const TELEGRAM_CLIENT_OPTIONS: TelegramClientConstructionOptions = {
   connectionRetries: 5,
   deviceModel: "Morning Post",
-  systemVersion: "Deno",
+  systemVersion: "Bun",
 };
 
 export interface TelegramClientFactoryDependencies {

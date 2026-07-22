@@ -1,4 +1,4 @@
-import { Hono, type MiddlewareHandler } from "@hono/hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { Database } from "../../db/client.ts";
 import { getConfig } from "../../config.ts";

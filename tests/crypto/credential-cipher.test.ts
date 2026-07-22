@@ -1,6 +1,9 @@
-import { assertEquals,
-assertNotEquals,
-assertRejects, } from "@std/assert"
+import { test } from "bun:test";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+} from "../assertions.ts";
 import {
   type CredentialOwner,
   EnvMasterKeyProvider,
@@ -34,7 +37,7 @@ function generateCipher(): CredentialCipher {
 
 // --- Happy: encrypt then decrypt round-trips ---
 
-Deno.test("CredentialCipher: decrypt(encrypt(s)) === s for ASCII", async () => {
+test("CredentialCipher: decrypt(encrypt(s)) === s for ASCII", async () => {
   const cipher = generateCipher();
   const plaintext = "Hello, Morning Post!";
   const blob = await cipher.encrypt(plaintext, owner);
@@ -42,7 +45,7 @@ Deno.test("CredentialCipher: decrypt(encrypt(s)) === s for ASCII", async () => {
   assertEquals(result, plaintext);
 });
 
-Deno.test("CredentialCipher: decrypt(encrypt(s)) === s for Unicode", async () => {
+test("CredentialCipher: decrypt(encrypt(s)) === s for Unicode", async () => {
   const cipher = generateCipher();
   const plaintext = "Привіт 🌍 — こんにちは 🎉";
   const blob = await cipher.encrypt(plaintext, owner);
@@ -50,7 +53,7 @@ Deno.test("CredentialCipher: decrypt(encrypt(s)) === s for Unicode", async () =>
   assertEquals(result, plaintext);
 });
 
-Deno.test("CredentialCipher: decrypt(encrypt(s)) === s for emoji-heavy string", async () => {
+test("CredentialCipher: decrypt(encrypt(s)) === s for emoji-heavy string", async () => {
   const cipher = generateCipher();
   const plaintext = "😀😃😄😁😆😅🤣😂🙂🙃😉😊😇🥰😍🤩😘";
   const blob = await cipher.encrypt(plaintext, owner);
@@ -58,7 +61,7 @@ Deno.test("CredentialCipher: decrypt(encrypt(s)) === s for emoji-heavy string", 
   assertEquals(result, plaintext);
 });
 
-Deno.test("CredentialCipher: realistic Telegram session string round-trips", async () => {
+test("CredentialCipher: realistic Telegram session string round-trips", async () => {
   const cipher = generateCipher();
   // Realistic Telegram session string length (~350 chars of base64-like data).
   const plaintext =
@@ -76,7 +79,7 @@ Deno.test("CredentialCipher: realistic Telegram session string round-trips", asy
   assertEquals(result, plaintext);
 });
 
-Deno.test("CredentialCipher: empty string round-trips", async () => {
+test("CredentialCipher: empty string round-trips", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("", owner);
   const result = await cipher.decrypt(blob, owner);
@@ -85,7 +88,7 @@ Deno.test("CredentialCipher: empty string round-trips", async () => {
 
 // --- Scenario: fresh keys per encrypt ---
 
-Deno.test("CredentialCipher: two encrypt calls produce different iv, ciphertext, and wrappedDataKey", async () => {
+test("CredentialCipher: two encrypt calls produce different iv, ciphertext, and wrappedDataKey", async () => {
   const cipher = generateCipher();
   const plaintext = "same plaintext";
 
@@ -97,7 +100,7 @@ Deno.test("CredentialCipher: two encrypt calls produce different iv, ciphertext,
   assertNotEquals(blob1.wrappedDataKey, blob2.wrappedDataKey);
 });
 
-Deno.test("CredentialCipher: version field is 1", async () => {
+test("CredentialCipher: version field is 1", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("test", owner);
   assertEquals(blob.v, 1);
@@ -105,7 +108,7 @@ Deno.test("CredentialCipher: version field is 1", async () => {
 
 // --- Edge: tampered ciphertext ---
 
-Deno.test("CredentialCipher: tampered ciphertext throws on decrypt", async () => {
+test("CredentialCipher: tampered ciphertext throws on decrypt", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("secret", owner);
 
@@ -122,7 +125,7 @@ Deno.test("CredentialCipher: tampered ciphertext throws on decrypt", async () =>
 
 // --- Edge: tampered IV ---
 
-Deno.test("CredentialCipher: tampered IV throws on decrypt", async () => {
+test("CredentialCipher: tampered IV throws on decrypt", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("secret", owner);
 
@@ -138,7 +141,7 @@ Deno.test("CredentialCipher: tampered IV throws on decrypt", async () => {
 
 // --- Edge: tampered wrappedDataKey ---
 
-Deno.test("CredentialCipher: tampered wrappedDataKey throws on decrypt", async () => {
+test("CredentialCipher: tampered wrappedDataKey throws on decrypt", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("secret", owner);
 
@@ -154,7 +157,7 @@ Deno.test("CredentialCipher: tampered wrappedDataKey throws on decrypt", async (
 
 // --- Edge: wrong version ---
 
-Deno.test("CredentialCipher: unsupported version throws", async () => {
+test("CredentialCipher: unsupported version throws", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("secret", owner);
 
@@ -169,7 +172,7 @@ Deno.test("CredentialCipher: unsupported version throws", async () => {
 
 // --- Edge: malformed base64 ---
 
-Deno.test("CredentialCipher: malformed base64 in ciphertext throws", async () => {
+test("CredentialCipher: malformed base64 in ciphertext throws", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("secret", owner);
 
@@ -182,7 +185,7 @@ Deno.test("CredentialCipher: malformed base64 in ciphertext throws", async () =>
   );
 });
 
-Deno.test("CredentialCipher: malformed base64 in iv throws", async () => {
+test("CredentialCipher: malformed base64 in iv throws", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("secret", owner);
 
@@ -195,7 +198,7 @@ Deno.test("CredentialCipher: malformed base64 in iv throws", async () => {
   );
 });
 
-Deno.test("CredentialCipher: malformed base64 in wrappedDataKey throws", async () => {
+test("CredentialCipher: malformed base64 in wrappedDataKey throws", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("secret", owner);
 
@@ -211,7 +214,7 @@ Deno.test("CredentialCipher: malformed base64 in wrappedDataKey throws", async (
 
 // --- Edge: decrypt with different owner metadata ---
 
-Deno.test("CredentialCipher: decrypt with wrong owner throws", async () => {
+test("CredentialCipher: decrypt with wrong owner throws", async () => {
   const cipher = generateCipher();
   const blob = await cipher.encrypt("secret", owner);
 
@@ -231,26 +234,24 @@ Deno.test("CredentialCipher: decrypt with wrong owner throws", async () => {
   );
 });
 
-Deno.test(
-  "CredentialCipher: unambiguous owner encoding — userId/connectorId pipe collision throws",
-  async () => {
-    const cipher = generateCipher();
-    const blob = await cipher.encrypt(
-      "secret",
-      { userId: "u|telegram", connectorId: "rss" },
-    );
+test("CredentialCipher: unambiguous owner encoding — userId/connectorId pipe collision throws",
+async () => {
+  const cipher = generateCipher();
+  const blob = await cipher.encrypt(
+    "secret",
+    { userId: "u|telegram", connectorId: "rss" },
+  );
 
-    await assertRejects(
-      () => cipher.decrypt(blob, { userId: "u", connectorId: "telegram|rss" }),
-      Error,
-      "key is wrong",
-    );
-  },
-);
+  await assertRejects(
+    () => cipher.decrypt(blob, { userId: "u", connectorId: "telegram|rss" }),
+    Error,
+    "key is wrong",
+  );
+},);
 
 // --- Edge: decrypt with different cipher (different master key) ---
 
-Deno.test("CredentialCipher: decrypt with wrong master key throws", async () => {
+test("CredentialCipher: decrypt with wrong master key throws", async () => {
   const cipherA = generateCipher();
   const cipherB = generateCipher();
 

@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import {
@@ -53,7 +54,7 @@ function unwrapPostgresMessage(error: unknown): string {
   return String(error);
 }
 
-Deno.test("createDigestRun round-trips all fields", async () => {
+test("createDigestRun round-trips all fields", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
 
@@ -78,7 +79,7 @@ Deno.test("createDigestRun round-trips all fields", async () => {
   });
 });
 
-Deno.test("finishDigestRun sets finishedAt, status", async () => {
+test("finishDigestRun sets finishedAt, status", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
     const run = await createDigestRun(database, runInput(user.id));
@@ -100,7 +101,7 @@ Deno.test("finishDigestRun sets finishedAt, status", async () => {
   });
 });
 
-Deno.test("finishDigestRun with partial status and errorMessage", async () => {
+test("finishDigestRun with partial status and errorMessage", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
     const run = await createDigestRun(database, runInput(user.id));
@@ -117,7 +118,7 @@ Deno.test("finishDigestRun with partial status and errorMessage", async () => {
   });
 });
 
-Deno.test("finishDigestRun of a missing id throws", async () => {
+test("finishDigestRun of a missing id throws", async () => {
   await withTestDb(async (database) => {
     await assertRejects(
       () =>
@@ -130,7 +131,7 @@ Deno.test("finishDigestRun of a missing id throws", async () => {
   });
 });
 
-Deno.test("startDigestRunFeed round-trips fields", async () => {
+test("startDigestRunFeed round-trips fields", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
     const run = await createDigestRun(database, runInput(user.id));
@@ -169,7 +170,7 @@ Deno.test("startDigestRunFeed round-trips fields", async () => {
   });
 });
 
-Deno.test("finishDigestRunFeed sets finishedAt, status, itemCount", async () => {
+test("finishDigestRunFeed sets finishedAt, status, itemCount", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
     const run = await createDigestRun(database, runInput(user.id));
@@ -200,7 +201,7 @@ Deno.test("finishDigestRunFeed sets finishedAt, status, itemCount", async () => 
   });
 });
 
-Deno.test("finishDigestRunFeed with failed status and errorMessage", async () => {
+test("finishDigestRunFeed with failed status and errorMessage", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
     const run = await createDigestRun(database, runInput(user.id));
@@ -225,7 +226,7 @@ Deno.test("finishDigestRunFeed with failed status and errorMessage", async () =>
   });
 });
 
-Deno.test("finishDigestRunFeed of a missing id throws", async () => {
+test("finishDigestRunFeed of a missing id throws", async () => {
   await withTestDb(async (database) => {
     await assertRejects(
       () =>
@@ -240,7 +241,7 @@ Deno.test("finishDigestRunFeed of a missing id throws", async () => {
   });
 });
 
-Deno.test("listDigestRunsForUser returns only that user's runs, ordered desc", async () => {
+test("listDigestRunsForUser returns only that user's runs, ordered desc", async () => {
   await withTestDb(async (database) => {
     const alice = await createUser(
       database,
@@ -275,7 +276,7 @@ Deno.test("listDigestRunsForUser returns only that user's runs, ordered desc", a
   });
 });
 
-Deno.test("listDigestRunsForUser respects limit", async () => {
+test("listDigestRunsForUser respects limit", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
 
@@ -290,7 +291,7 @@ Deno.test("listDigestRunsForUser respects limit", async () => {
   });
 });
 
-Deno.test("createDigestRun surfaces a typed conflict for an active run", async () => {
+test("createDigestRun surfaces a typed conflict for an active run", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -306,7 +307,7 @@ Deno.test("createDigestRun surfaces a typed conflict for an active run", async (
   });
 });
 
-Deno.test("recoverStaleDigestRuns atomically fails only stale runs and their running stages", async () => {
+test("recoverStaleDigestRuns atomically fails only stale runs and their running stages", async () => {
   await withTestDb(async (database) => {
     const staleUser = await createUser(
       database,
@@ -436,7 +437,7 @@ Deno.test("recoverStaleDigestRuns atomically fails only stale runs and their run
   });
 });
 
-Deno.test("invalid digest run status insert is rejected at DB level", async () => {
+test("invalid digest run status insert is rejected at DB level", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
 
@@ -459,7 +460,7 @@ Deno.test("invalid digest run status insert is rejected at DB level", async () =
   });
 });
 
-Deno.test("invalid digest run trigger insert is rejected at DB level", async () => {
+test("invalid digest run trigger insert is rejected at DB level", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
 
@@ -482,7 +483,7 @@ Deno.test("invalid digest run trigger insert is rejected at DB level", async () 
   });
 });
 
-Deno.test("invalid digest run feed stage insert is rejected at DB level", async () => {
+test("invalid digest run feed stage insert is rejected at DB level", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
     const run = await createDigestRun(database, runInput(user.id));
@@ -506,7 +507,7 @@ Deno.test("invalid digest run feed stage insert is rejected at DB level", async 
   });
 });
 
-Deno.test("invalid digest run feed status insert is rejected at DB level", async () => {
+test("invalid digest run feed status insert is rejected at DB level", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
     const run = await createDigestRun(database, runInput(user.id));
@@ -530,7 +531,7 @@ Deno.test("invalid digest run feed status insert is rejected at DB level", async
   });
 });
 
-Deno.test("period order constraint rejects start > end", async () => {
+test("period order constraint rejects start > end", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, userInput());
 

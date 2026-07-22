@@ -1,4 +1,4 @@
-import { Hono } from "@hono/hono";
+import { Hono } from "hono";
 import { z } from "zod";
 import { ConnectorId } from "../../constants.ts";
 import type { Database } from "../../db/client.ts";

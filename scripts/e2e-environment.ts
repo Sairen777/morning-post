@@ -9,7 +9,7 @@ const E2E_WEB_ORIGIN = "http://127.0.0.1:5174";
 type Environment = Record<string, string | undefined>;
 
 export function resolveE2eDatabaseUrl(
-  environment: Environment = Deno.env.toObject(),
+  environment: Environment = process.env,
 ): string {
   const explicitUrl = environment.E2E_DATABASE_URL?.trim() || undefined;
   const sourceUrl = explicitUrl ?? environment.TEST_DATABASE_URL?.trim() ??
@@ -84,7 +84,7 @@ function sameDatabase(
 
 function createClient(url: string) {
   const parsedUrl = parsePostgresUrl(url);
-  const sslMode = Deno.env.get("DB_SSL_MODE") ?? "disable";
+  const sslMode = process.env.DB_SSL_MODE ?? "disable";
   if (
     sslMode !== "disable" && sslMode !== "require" && sslMode !== "verify-full"
   ) {
@@ -153,9 +153,9 @@ async function prepareE2eDatabase(): Promise<string> {
 
 async function startE2eApi(): Promise<void> {
   const databaseUrl = await prepareE2eDatabase();
-  Deno.env.set("DATABASE_URL", databaseUrl);
-  Deno.env.set("PORT", String(E2E_API_PORT));
-  Deno.env.set("ALLOWED_ORIGINS", E2E_WEB_ORIGIN);
+  process.env.DATABASE_URL = databaseUrl;
+  process.env.PORT = String(E2E_API_PORT);
+  process.env.ALLOWED_ORIGINS = E2E_WEB_ORIGIN;
   const { bootServer } = await import("../src/server/main.ts");
   await bootServer();
 }
@@ -167,7 +167,7 @@ async function cleanupE2eDatabase(): Promise<void> {
 }
 
 if (import.meta.main) {
-  const command = Deno.args[0];
+  const command = process.argv[2];
   if (command === "start-api") {
     await startE2eApi();
   } else if (command === "cleanup") {

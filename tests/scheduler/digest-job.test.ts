@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts"
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
 import {
@@ -48,7 +49,7 @@ function userInput(email: string): CreateUserInput {
   };
 }
 
-Deno.test("computeDigestPeriod starts from latest digest end or default cadence", async () => {
+test("computeDigestPeriod starts from latest digest end or default cadence", async () => {
   await withTestDb(async (database: Database) => {
     const firstUser = await createUser(
       database,
@@ -76,7 +77,7 @@ Deno.test("computeDigestPeriod starts from latest digest end or default cadence"
   });
 });
 
-Deno.test("runDigestTick triggers one run per user and isolates errors", async () => {
+test("runDigestTick triggers one run per user and isolates errors", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
     const firstUser = await createUser(
@@ -127,7 +128,7 @@ Deno.test("runDigestTick triggers one run per user and isolates errors", async (
   });
 });
 
-Deno.test("runDigestTick skips users that are already running", async () => {
+test("runDigestTick skips users that are already running", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
     const user = await createUser(
@@ -186,7 +187,7 @@ Deno.test("runDigestTick skips users that are already running", async () => {
   });
 });
 
-Deno.test("scheduleDigestJob registers the default cron and handler", async () => {
+test("scheduleDigestJob registers the default cron and handler", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
     const scheduler = new FakeScheduler();
@@ -223,7 +224,7 @@ Deno.test("scheduleDigestJob registers the default cron and handler", async () =
   });
 });
 
-Deno.test("runDigestTick forwards the shared summarizer to scheduled execution", async () => {
+test("runDigestTick forwards the shared summarizer to scheduled execution", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database) => {
     const sharedSummarizer = {} as SummarizerService;
@@ -258,7 +259,7 @@ Deno.test("runDigestTick forwards the shared summarizer to scheduled execution",
   });
 });
 
-Deno.test("scheduleMediaHousekeeping registers the weekly Sunday cron", () => {
+test("scheduleMediaHousekeeping registers the weekly Sunday cron", () => {
   const scheduler = new FakeScheduler();
   scheduleMediaHousekeeping(scheduler);
   assertEquals(scheduler.jobs.length, 1);
@@ -267,7 +268,7 @@ Deno.test("scheduleMediaHousekeeping registers the weekly Sunday cron", () => {
   assertEquals(scheduler.jobs[0].cron, "0 6 * * SUN");
 });
 
-Deno.test("scheduleDigestJob skips digest work when the lease is held by another worker", async () => {
+test("scheduleDigestJob skips digest work when the lease is held by another worker", async () => {
   await withTestDb(async (database: Database) => {
     const scheduler = new FakeScheduler();
     let runCalls = 0;
@@ -297,7 +298,7 @@ Deno.test("scheduleDigestJob skips digest work when the lease is held by another
   });
 });
 
-Deno.test("bootServer injects scheduler and serve after stale recovery", async () => {
+test("bootServer injects scheduler and serve after stale recovery", async () => {
   await withTestDb(async (database: Database) => {
     const scheduler = new FakeScheduler();
     let served = 0;
@@ -328,7 +329,7 @@ Deno.test("bootServer injects scheduler and serve after stale recovery", async (
         digestRunStaleAfterMs: 1,
         schedulerLeaseMs: 1,
       },
-      serve: (_options, _handler) => {
+      serve: (_options) => {
         served++;
       },
       log: () => {},
@@ -337,7 +338,7 @@ Deno.test("bootServer injects scheduler and serve after stale recovery", async (
     assertEquals(served, 1);
   });
 });
-Deno.test("leader tick recovers stale runs before processing users", async () => {
+test("leader tick recovers stale runs before processing users", async () => {
   await withTestDb(async (database: Database) => {
     const scheduler = new FakeScheduler();
     const events: string[] = [];
@@ -379,7 +380,7 @@ Deno.test("leader tick recovers stale runs before processing users", async () =>
   });
 });
 
-Deno.test("scheduler skips an already-running user without logging a tick failure", async () => {
+test("scheduler skips an already-running user without logging a tick failure", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
     await createUser(
@@ -420,7 +421,7 @@ Deno.test("scheduler skips an already-running user without logging a tick failur
     assertEquals(errors, []);
   });
 });
-Deno.test("runDigestTick pages users and respects bounded concurrency", async () => {
+test("runDigestTick pages users and respects bounded concurrency", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
     const users: User[] = [];
@@ -474,7 +475,7 @@ Deno.test("runDigestTick pages users and respects bounded concurrency", async ()
   });
 });
 
-Deno.test("runDigestTick creates scheduled digest run records", async () => {
+test("runDigestTick creates scheduled digest run records", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database: Database) => {
     const user = await createUser(

@@ -1,5 +1,6 @@
-import { assert, assertEquals, assertExists } from "@std/assert";
-import type { Hono } from "@hono/hono";
+import { test } from "bun:test";
+import { assert, assertEquals, assertExists } from "../assertions.ts";
+import type { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -19,6 +20,7 @@ import {
   findSourceById,
 } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const TELEGRAM_REVOKE_MESSAGE =
@@ -54,7 +56,7 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono, email: string): Promise<RegisteredUser> {
+async function register(app: Hono<ServerEnvironment>, email: string): Promise<RegisteredUser> {
   const response = await app.request(
     "/auth/register",
     jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
@@ -64,7 +66,7 @@ async function register(app: Hono, email: string): Promise<RegisteredUser> {
   return { id: json.id, email: json.email };
 }
 
-async function login(app: Hono, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/login",
     jsonRequest("POST", { email, password: PASSWORD }),
@@ -74,7 +76,7 @@ async function login(app: Hono, email: string): Promise<string> {
 }
 
 async function registerAndLogin(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   email: string,
 ): Promise<{ user: RegisteredUser; cookie: string }> {
   const user = await register(app, email);
@@ -120,7 +122,7 @@ async function createEncryptedSource(
   });
 }
 
-Deno.test("GET /sources returns only the caller sources ordered by position then createdAt without credentials", async () => {
+test("GET /sources returns only the caller sources ordered by position then createdAt without credentials", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -200,7 +202,7 @@ Deno.test("GET /sources returns only the caller sources ordered by position then
   });
 });
 
-Deno.test("PATCH /sources/:id updates position and enabled", async () => {
+test("PATCH /sources/:id updates position and enabled", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -242,7 +244,7 @@ Deno.test("PATCH /sources/:id updates position and enabled", async () => {
   });
 });
 
-Deno.test("PATCH /sources/:id validates and persists Substack paid-post title preferences", async () => {
+test("PATCH /sources/:id validates and persists Substack paid-post title preferences", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -320,7 +322,7 @@ Deno.test("PATCH /sources/:id validates and persists Substack paid-post title pr
   });
 });
 
-Deno.test("sources routes keep users scoped to their own rows", async () => {
+test("sources routes keep users scoped to their own rows", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -377,7 +379,7 @@ Deno.test("sources routes keep users scoped to their own rows", async () => {
   });
 });
 
-Deno.test("sources routes reject invalid UUID parameters with 422", async () => {
+test("sources routes reject invalid UUID parameters with 422", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const { cookie } = await registerAndLogin(
@@ -403,7 +405,7 @@ Deno.test("sources routes reject invalid UUID parameters with 422", async () => 
   });
 });
 
-Deno.test("PATCH /sources/:id rejects unsupported fields", async () => {
+test("PATCH /sources/:id rejects unsupported fields", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -430,7 +432,7 @@ Deno.test("PATCH /sources/:id rejects unsupported fields", async () => {
   });
 });
 
-Deno.test("PATCH /sources/:id rejects positions outside the PostgreSQL integer range", async () => {
+test("PATCH /sources/:id rejects positions outside the PostgreSQL integer range", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -467,7 +469,7 @@ Deno.test("PATCH /sources/:id rejects positions outside the PostgreSQL integer r
   });
 });
 
-Deno.test("DELETE /sources/:id disconnects telegram sources and preserves the row for history", async () => {
+test("DELETE /sources/:id disconnects telegram sources and preserves the row for history", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -536,7 +538,7 @@ Deno.test("DELETE /sources/:id disconnects telegram sources and preserves the ro
   });
 });
 
-Deno.test("PATCH /sources/:id rejects re-enabling a disconnected source", async () => {
+test("PATCH /sources/:id rejects re-enabling a disconnected source", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -581,7 +583,7 @@ Deno.test("PATCH /sources/:id rejects re-enabling a disconnected source", async 
   });
 });
 
-Deno.test("DELETE /sources/:id returns revokeTelegramSession false for non-telegram sources", async () => {
+test("DELETE /sources/:id returns revokeTelegramSession false for non-telegram sources", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
@@ -610,7 +612,7 @@ Deno.test("DELETE /sources/:id returns revokeTelegramSession false for non-teleg
   });
 });
 
-Deno.test("sources routes require authentication", async () => {
+test("sources routes require authentication", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);

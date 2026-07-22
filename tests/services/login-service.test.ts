@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert"
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts"
 import { withTestDb } from "../../src/db/testing.ts";
 import { hashPassword } from "../../src/auth/password.ts";
 import { createUser, updateUser } from "../../src/repositories/user-repository.ts";
@@ -17,7 +18,7 @@ async function createStoredUser(database: Database, email: string) {
   });
 }
 
-Deno.test("authenticateUser returns the user for the correct email and password", async () => {
+test("authenticateUser returns the user for the correct email and password", async () => {
   await withTestDb(async (database) => {
     const createdUser = await createStoredUser(database, "ada@example.com");
 
@@ -30,7 +31,7 @@ Deno.test("authenticateUser returns the user for the correct email and password"
   });
 });
 
-Deno.test("authenticateUser returns null for a correct email and wrong password", async () => {
+test("authenticateUser returns null for a correct email and wrong password", async () => {
   await withTestDb(async (database) => {
     await createStoredUser(database, "ada@example.com");
 
@@ -43,7 +44,7 @@ Deno.test("authenticateUser returns null for a correct email and wrong password"
   });
 });
 
-Deno.test("authenticateUser returns null for a missing email", async () => {
+test("authenticateUser returns null for a missing email", async () => {
   await withTestDb(async (database) => {
     const authenticatedUser = await authenticateUser(database, {
       email: "missing@example.com",
@@ -54,7 +55,7 @@ Deno.test("authenticateUser returns null for a missing email", async () => {
   });
 });
 
-Deno.test("authenticateUser returns null when the stored password hash is invalid", async () => {
+test("authenticateUser returns null when the stored password hash is invalid", async () => {
   await withTestDb(async (database) => {
     const createdUser = await createStoredUser(database, "ada@example.com");
     await updateUser(database, createdUser.id, {
@@ -70,6 +71,6 @@ Deno.test("authenticateUser returns null when the stored password hash is invali
   });
 });
 
-Deno.test("DUMMY_PASSWORD_HASH is a precomputed Argon2id string", () => {
+test("DUMMY_PASSWORD_HASH is a precomputed Argon2id string", () => {
   assertEquals(DUMMY_PASSWORD_HASH.startsWith("$argon2id$"), true);
 });

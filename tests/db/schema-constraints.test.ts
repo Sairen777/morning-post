@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
@@ -29,7 +30,7 @@ async function constraintExists(
   return rows.length === 1;
 }
 
-Deno.test("database schema exposes required performance indexes", async () => {
+test("database schema exposes required performance indexes", async () => {
   await withTestDb(async (database) => {
     assertEquals(
       await indexExists(database, "sessions_token_hash_unique"),
@@ -69,7 +70,7 @@ Deno.test("database schema exposes required performance indexes", async () => {
   });
 });
 
-Deno.test("database schema rejects invalid persisted states", async () => {
+test("database schema rejects invalid persisted states", async () => {
   await withTestDb(async (database) => {
     assertEquals(
       await constraintExists(
@@ -156,7 +157,7 @@ Deno.test("database schema rejects invalid persisted states", async () => {
   });
 });
 
-Deno.test("database schema rejects invalid connector id", async () => {
+test("database schema rejects invalid connector id", async () => {
   await withTestDb(async (database) => {
     const now = Date.now();
     await assertRejects(

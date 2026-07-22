@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -49,7 +50,7 @@ async function connectedSubstackSource(
   });
 }
 
-Deno.test("SubstackPublicationService probes then creates one canonical feed", async () => {
+test("SubstackPublicationService probes then creates one canonical feed", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -93,7 +94,7 @@ Deno.test("SubstackPublicationService probes then creates one canonical feed", a
   });
 });
 
-Deno.test("SubstackPublicationService accepts empty archives and revives deleted feeds", async () => {
+test("SubstackPublicationService accepts empty archives and revives deleted feeds", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -119,7 +120,7 @@ Deno.test("SubstackPublicationService accepts empty archives and revives deleted
   });
 });
 
-Deno.test("SubstackPublicationService requires a connected owned source and writes nothing on probe failure", async () => {
+test("SubstackPublicationService requires a connected owned source and writes nothing on probe failure", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -147,7 +148,7 @@ Deno.test("SubstackPublicationService requires a connected owned source and writ
   });
 });
 
-Deno.test("SubstackPublicationService does not persist after its signal is aborted", async () => {
+test("SubstackPublicationService does not persist after its signal is aborted", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,

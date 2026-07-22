@@ -1,10 +1,11 @@
-import { assertEquals } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { tryAcquireSchedulerLease } from "../../src/repositories/scheduler-lease-repository.ts";
 
-Deno.test("scheduler lease schema has the fixed lease fields", async () => {
+test("scheduler lease schema has the fixed lease fields", async () => {
   await withTestDb(async (database: Database) => {
     const rows = await database.execute(sql`
       select column_name, data_type
@@ -29,7 +30,7 @@ Deno.test("scheduler lease schema has the fixed lease fields", async () => {
   });
 });
 
-Deno.test("scheduler lease acquisition elects exactly one concurrent worker", async () => {
+test("scheduler lease acquisition elects exactly one concurrent worker", async () => {
   await withTestDb(async (database: Database) => {
     const results = await Promise.all([
       tryAcquireSchedulerLease(database, "digest-job", "worker-a", 1_000, 90_000),
@@ -39,7 +40,7 @@ Deno.test("scheduler lease acquisition elects exactly one concurrent worker", as
   });
 });
 
-Deno.test("scheduler lease acquisition replaces an expired owner", async () => {
+test("scheduler lease acquisition replaces an expired owner", async () => {
   await withTestDb(async (database: Database) => {
     await database.execute(sql`
       insert into scheduler_leases (name, owner_id, expires_at)
@@ -61,7 +62,7 @@ Deno.test("scheduler lease acquisition replaces an expired owner", async () => {
   });
 });
 
-Deno.test("scheduler lease acquisition rejects a non-expired owner", async () => {
+test("scheduler lease acquisition rejects a non-expired owner", async () => {
   await withTestDb(async (database: Database) => {
     await database.execute(sql`
       insert into scheduler_leases (name, owner_id, expires_at)

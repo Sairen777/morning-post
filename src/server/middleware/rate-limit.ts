@@ -1,5 +1,5 @@
-import type { Context, MiddlewareHandler } from "@hono/hono";
-import { getConnInfo } from "@hono/hono/deno";
+import type { Context, MiddlewareHandler } from "hono";
+import { getConnInfo } from "hono/bun";
 import type { Database } from "../../db/client.ts";
 import { consumeRateLimit } from "../../repositories/rate-limit-repository.ts";
 import { RateLimitError } from "../errors.ts";
@@ -24,8 +24,8 @@ export function resolveClientAddress(context: Context, trustedProxyCount: number
   try {
     directAddress = getConnInfo(context).remote.address?.trim() || undefined;
   } catch {
-    // Hono's in-memory Request adapter has no Deno remoteAddr. Production
-    // Deno.serve requests always provide one.
+    // Hono's in-memory Request adapter has no Bun server binding. Production
+    // Bun.serve requests always provide one.
   }
 
   if (trustedProxyCount <= 0) {

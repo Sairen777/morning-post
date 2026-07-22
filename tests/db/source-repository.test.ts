@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts"
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -56,7 +57,7 @@ async function encryptedTelegramCredentials(
   return await cipher.encrypt(JSON.stringify(parsed), { userId, connectorId });
 }
 
-Deno.test("source repository encrypts at rest and decrypts with owner-bound context", async () => {
+test("source repository encrypts at rest and decrypts with owner-bound context", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(
@@ -100,7 +101,7 @@ Deno.test("source repository encrypts at rest and decrypts with owner-bound cont
   });
 });
 
-Deno.test("source repository enforces one connector source per user only", async () => {
+test("source repository enforces one connector source per user only", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const firstUser = await createUser(
@@ -138,7 +139,7 @@ Deno.test("source repository enforces one connector source per user only", async
   });
 });
 
-Deno.test("source repository hides credentials in public list shape", async () => {
+test("source repository hides credentials in public list shape", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(
@@ -160,7 +161,7 @@ Deno.test("source repository hides credentials in public list shape", async () =
   });
 });
 
-Deno.test("source repository finds, updates, and orders public source rows", async () => {
+test("source repository finds, updates, and orders public source rows", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(
@@ -202,7 +203,7 @@ Deno.test("source repository finds, updates, and orders public source rows", asy
   });
 });
 
-Deno.test("source paid-post title preference defaults false and updates only owned Substack sources", async () => {
+test("source paid-post title preference defaults false and updates only owned Substack sources", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const owner = await createUser(
@@ -259,7 +260,7 @@ Deno.test("source paid-post title preference defaults false and updates only own
   });
 });
 
-Deno.test("source repository rejects paid-post title preference for non-Substack sources", async () => {
+test("source repository rejects paid-post title preference for non-Substack sources", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(
@@ -288,7 +289,7 @@ Deno.test("source repository rejects paid-post title preference for non-Substack
   });
 });
 
-Deno.test("getDecryptedCredentials rejects non-owners as not found", async () => {
+test("getDecryptedCredentials rejects non-owners as not found", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const owner = await createUser(
@@ -313,7 +314,7 @@ Deno.test("getDecryptedCredentials rejects non-owners as not found", async () =>
   });
 });
 
-Deno.test("deleteSourceCredentials disconnects by wiping credentials and disabling source", async () => {
+test("deleteSourceCredentials disconnects by wiping credentials and disabling source", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(
@@ -351,7 +352,7 @@ Deno.test("deleteSourceCredentials disconnects by wiping credentials and disabli
   });
 });
 
-Deno.test("getDecryptedCredentials surfaces invalid encrypted blob shape clearly", async () => {
+test("getDecryptedCredentials surfaces invalid encrypted blob shape clearly", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(
@@ -379,7 +380,7 @@ Deno.test("getDecryptedCredentials surfaces invalid encrypted blob shape clearly
   });
 });
 
-Deno.test("getDecryptedCredentials fails when blob was encrypted for a different owner context", async () => {
+test("getDecryptedCredentials fails when blob was encrypted for a different owner context", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(
@@ -405,7 +406,7 @@ Deno.test("getDecryptedCredentials fails when blob was encrypted for a different
   });
 });
 
-Deno.test("source check constraint rejects enabled source with null credentials", async () => {
+test("source check constraint rejects enabled source with null credentials", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(
@@ -426,7 +427,7 @@ Deno.test("source check constraint rejects enabled source with null credentials"
   });
 });
 
-Deno.test("Substack credential schema is strict and validates named cookie values", () => {
+test("Substack credential schema is strict and validates named cookie values", () => {
   const schema = credentialSchemaFor(ConnectorId.Substack);
   const credentials = {
     substackSessionId: "s%3Asubstack.signature",
@@ -467,7 +468,7 @@ Deno.test("Substack credential schema is strict and validates named cookie value
   );
 });
 
-Deno.test("source repository decrypts Substack credentials only in the owner context", async () => {
+test("source repository decrypts Substack credentials only in the owner context", async () => {
   await withTestDb(async (database) => {
     const cipher = generateCipher();
     const user = await createUser(

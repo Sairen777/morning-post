@@ -1,12 +1,13 @@
-import { assert, assertEquals } from "@std/assert"
-import { encodeHex } from "@std/encoding/hex";
+import { test } from "bun:test";
+import { assert, assertEquals } from "../assertions.ts";
 import { eq } from "drizzle-orm";
 import { buildApp } from "../../src/server/app.ts";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { sessions } from "../../src/db/schema/session.ts";
 import { createSession, validateSessionToken } from "../../src/auth/session-service.ts";
 import type { Database } from "../../src/db/client.ts";
-import type { Hono } from "@hono/hono";
+import type { Hono } from "hono";
 
 const PASSWORD = "analytical-engine-1843";
 
@@ -15,7 +16,7 @@ async function sha256Hex(value: string): Promise<string> {
     "SHA-256",
     new TextEncoder().encode(value),
   );
-  return encodeHex(new Uint8Array(digest));
+  return Buffer.from(digest).toString("hex");
 }
 
 function jsonBody(body: unknown): RequestInit {
@@ -41,7 +42,7 @@ interface RegisteredUser {
 }
 
 async function register(
-  app: Hono,
+  app: Hono<ServerEnvironment>,
   email: string,
 ): Promise<RegisteredUser> {
   const response = await app.request(
@@ -53,11 +54,11 @@ async function register(
   return { id: json.id, email };
 }
 
-async function login(app: Hono, email: string, password: string): Promise<Response> {
+async function login(app: Hono<ServerEnvironment>, email: string, password: string): Promise<Response> {
   return await app.request("/auth/login", jsonBody({ email, password }));
 }
 
-Deno.test("login sets a session cookie and /auth/me returns the user", async () => {
+test("login sets a session cookie and /auth/me returns the user", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const user = await register(app, "happy@example.com");
@@ -88,7 +89,7 @@ Deno.test("login sets a session cookie and /auth/me returns the user", async () 
   });
 });
 
-Deno.test("logout revokes the session — the same cookie is then rejected", async () => {
+test("logout revokes the session — the same cookie is then rejected", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const user = await register(app, "logout@example.com");
@@ -107,7 +108,7 @@ Deno.test("logout revokes the session — the same cookie is then rejected", asy
   });
 });
 
-Deno.test("wrong password and unknown email return an identical 401", async () => {
+test("wrong password and unknown email return an identical 401", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     await register(app, "real@example.com");
@@ -128,7 +129,7 @@ Deno.test("wrong password and unknown email return an identical 401", async () =
   });
 });
 
-Deno.test("an expired session is rejected with 401", async () => {
+test("an expired session is rejected with 401", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const user = await register(app, "expired@example.com");
@@ -143,7 +144,7 @@ Deno.test("an expired session is rejected with 401", async () => {
   });
 });
 
-Deno.test("active use refreshes idle expiry without rotating the bearer token", async () => {
+test("active use refreshes idle expiry without rotating the bearer token", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const user = await register(app, "refresh@example.com");
@@ -164,7 +165,7 @@ Deno.test("active use refreshes idle expiry without rotating the bearer token", 
   });
 });
 
-Deno.test("parallel requests carrying the old cookie remain valid", async () => {
+test("parallel requests carrying the old cookie remain valid", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const user = await register(app, "parallel@example.com");
@@ -183,7 +184,7 @@ Deno.test("parallel requests carrying the old cookie remain valid", async () => 
   });
 });
 
-Deno.test("a tampered/garbage cookie is rejected with 401", async () => {
+test("a tampered/garbage cookie is rejected with 401", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const user = await register(app, "tampered@example.com");
@@ -205,7 +206,7 @@ Deno.test("a tampered/garbage cookie is rejected with 401", async () => {
   });
 });
 
-Deno.test("the DB stores only the token hash, never the raw cookie token", async () => {
+test("the DB stores only the token hash, never the raw cookie token", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const user = await register(app, "hashed@example.com");
@@ -226,7 +227,7 @@ Deno.test("the DB stores only the token hash, never the raw cookie token", async
   });
 });
 
-Deno.test("a guarded route with no cookie is rejected with 401", async () => {
+test("a guarded route with no cookie is rejected with 401", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const meResponse = await app.request("/auth/me");

@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts"
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -95,7 +96,7 @@ function feedInput(
   };
 }
 
-Deno.test("feed repository creates feeds and lists them by source then feed ordering", async () => {
+test("feed repository creates feeds and lists them by source then feed ordering", async () => {
   await withTestDb(async (database) => {
     const { user, source: telegram } = await createOwnedSource(
       database,
@@ -159,7 +160,7 @@ Deno.test("feed repository creates feeds and lists them by source then feed orde
   });
 });
 
-Deno.test("softDeleteFeed hides feeds by default while preserving the row for history", async () => {
+test("softDeleteFeed hides feeds by default while preserving the row for history", async () => {
   await withTestDb(async (database) => {
     const { user, source } = await createOwnedSource(
       database,
@@ -184,7 +185,7 @@ Deno.test("softDeleteFeed hides feeds by default while preserving the row for hi
   });
 });
 
-Deno.test("feed external id uniqueness is per source and subscribe is idempotent for active duplicates", async () => {
+test("feed external id uniqueness is per source and subscribe is idempotent for active duplicates", async () => {
   await withTestDb(async (database) => {
     const { user, source: telegram } = await createOwnedSource(
       database,
@@ -231,7 +232,7 @@ Deno.test("feed external id uniqueness is per source and subscribe is idempotent
   });
 });
 
-Deno.test("feed repository scopes reads and writes by source owner", async () => {
+test("feed repository scopes reads and writes by source owner", async () => {
   await withTestDb(async (database) => {
     const owner = await createOwnedSource(database, "feed-owner@example.com");
     const other = await createOwnedSource(database, "feed-other@example.com");
@@ -276,7 +277,7 @@ Deno.test("feed repository scopes reads and writes by source owner", async () =>
   });
 });
 
-Deno.test("createOrReviveFeed revives a soft-deleted feed instead of creating a duplicate", async () => {
+test("createOrReviveFeed revives a soft-deleted feed instead of creating a duplicate", async () => {
   await withTestDb(async (database) => {
     const { user, source } = await createOwnedSource(
       database,
@@ -318,7 +319,7 @@ Deno.test("createOrReviveFeed revives a soft-deleted feed instead of creating a 
   });
 });
 
-Deno.test("createOrReviveFeed rejects disconnected sources", async () => {
+test("createOrReviveFeed rejects disconnected sources", async () => {
   await withTestDb(async (database) => {
     const { user, source } = await createOwnedSource(
       database,
@@ -358,7 +359,7 @@ Deno.test("createOrReviveFeed rejects disconnected sources", async () => {
   });
 });
 
-Deno.test("feed row validation rejects unknown feed kinds at repository boundary", async () => {
+test("feed row validation rejects unknown feed kinds at repository boundary", async () => {
   await withTestDb(async (database) => {
     const { source } = await createOwnedSource(
       database,
@@ -381,7 +382,7 @@ Deno.test("feed row validation rejects unknown feed kinds at repository boundary
   });
 });
 
-Deno.test("setLastFetched advances the cursor monotonically", async () => {
+test("setLastFetched advances the cursor monotonically", async () => {
   await withTestDb(async (database) => {
     const { user, source } = await createOwnedSource(
       database,
@@ -423,7 +424,7 @@ Deno.test("setLastFetched advances the cursor monotonically", async () => {
   });
 });
 
-Deno.test("feed check constraint rejects invalid feed kind at database level", async () => {
+test("feed check constraint rejects invalid feed kind at database level", async () => {
   await withTestDb(async (database) => {
     const { user, source } = await createOwnedSource(
       database,

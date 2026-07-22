@@ -1,5 +1,7 @@
-import { assertEquals } from "@std/assert";
-import type { Hono } from "@hono/hono";
+import { test } from "bun:test";
+import { assertEquals } from "../assertions.ts";
+import { discardOperationalEvent } from "../operational-log-recorder.ts";
+import type { Hono } from "hono";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -11,6 +13,7 @@ import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
+import type { ServerEnvironment } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
 import { getOrSummarizeFeedPeriod } from "../../src/services/summarization-service.ts";
 import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
@@ -64,7 +67,7 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono, email: string): Promise<string> {
+async function register(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/register",
     jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
@@ -74,7 +77,7 @@ async function register(app: Hono, email: string): Promise<string> {
   return json.id;
 }
 
-async function login(app: Hono, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
   const response = await app.request(
     "/auth/login",
     jsonRequest("POST", { email, password: PASSWORD }),
@@ -96,7 +99,7 @@ function normalizedItem(feedExternalId: string, externalId: string, text: string
   };
 }
 
-Deno.test("security audit enforces authz and does not leak secrets in GET responses or logs", async () => {
+test("security audit enforces authz and does not leak secrets in GET responses or logs", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
     const ownerId = await register(app, "security-owner@example.com");
@@ -119,6 +122,7 @@ Deno.test("security audit enforces authz and does not leak secrets in GET respon
     });
     await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "secure")], 1);
     const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, {
+      recordOperationalEvent: discardOperationalEvent,
       summarizer: new FakeSummarizer(),
       now: () => 300,
     });
@@ -139,7 +143,7 @@ Deno.test("security audit enforces authz and does not leak secrets in GET respon
       assertEquals(unauthorizedMarkdownResponse.status, 404);
 
       await createUser(database, userInput("security-third@example.com"));
-      const summaryAccessError = await getOrSummarizeFeedPeriod(database, otherId, feed.id, periodStartMs, periodEndMs)
+      const summaryAccessError = await getOrSummarizeFeedPeriod(database, otherId, feed.id, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent })
         .then(() => null)
         .catch((error) => error as Error);
       assertEquals(summaryAccessError?.message, "feed not found");

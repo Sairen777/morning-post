@@ -1,3 +1,4 @@
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { Api, TelegramClient } from "telegram";
 import type {
   AvailableFeed,
@@ -301,11 +302,9 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
 
   private async downloadPhoto(message: Api.Message, feedKey?: string): Promise<Media> {
     const subDir = feedKey ? `${CONNECTORS_MEDIA_DIR.Telegram}/${feedKey}` : CONNECTORS_MEDIA_DIR.Telegram;
-    await Deno.mkdir(subDir, { recursive: true });
+    await mkdir(subDir, { recursive: true });
     const buffer = (await this.client.downloadMedia(message, {})) as Uint8Array;
-    // Lazy-import sharp: heavy native dep that wants --allow-sys/--allow-ffi.
-    // Keeping it out of the module top means tests can import the connector
-    // without the native binding having to load.
+    // Lazy-import sharp so the native binding loads only when an image is processed.
     const { default: sharp } = await import("sharp");
     // `fit: "inside"` scales to fit within 512x512 while preserving aspect ratio
     // (no crop, no squash).
@@ -317,7 +316,7 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     // Enforce quota before write: delete oldest files under the connector media root
     // until the new file fits.
     await enforceMediaQuota(CONNECTORS_MEDIA_DIR.Telegram, getConfig().mediaQuotaBytes, resized.length);
-    await Deno.writeFile(localPath, resized);
+    await writeFile(localPath, resized);
     return { type: "photo", localPath };
   }
 
@@ -365,24 +364,22 @@ async function collectFilesRecursive(
   dir: string,
 ): Promise<{ path: string; size: number; mtime: number }[]> {
   const files: { path: string; size: number; mtime: number }[] = [];
-  let entries: Deno.DirEntry[];
+  let entries;
   try {
-    entries = [...Deno.readDirSync(dir)];
+    entries = await readdir(dir, { withFileTypes: true });
   } catch {
     return files;
   }
 
   for (const entry of entries) {
     const fullPath = `${dir}/${entry.name}`;
-    if (entry.isDirectory) {
+    if (entry.isDirectory()) {
       const nested = await collectFilesRecursive(fullPath);
       files.push(...nested);
-    } else if (entry.isFile) {
+    } else if (entry.isFile()) {
       try {
-        const stat = await Deno.stat(fullPath);
-        if (stat.size !== null) {
-          files.push({ path: fullPath, size: stat.size, mtime: stat.mtime?.getTime() ?? 0 });
-        }
+        const fileStat = await stat(fullPath);
+        files.push({ path: fullPath, size: fileStat.size, mtime: fileStat.mtimeMs });
       } catch {
         // stat failed — skip this file
       }
@@ -407,7 +404,7 @@ export async function enforceMediaQuota(
   for (const file of files) {
     if (currentTotal + newFileBytes <= quotaBytes) break;
     try {
-      await Deno.remove(file.path);
+      await unlink(file.path);
       currentTotal -= file.size;
     } catch {
       // deletion failure — continue with next file

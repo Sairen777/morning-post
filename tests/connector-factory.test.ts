@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "./assertions.ts";
 import { ConnectorId } from "../src/constants.ts";
 import {
   ConnectorFactory,
@@ -112,7 +113,7 @@ async function createUserAndSource(
   return { user, source };
 }
 
-Deno.test("ConnectorFactory builds a Telegram connector from encrypted credentials and disposes it", async () => {
+test("ConnectorFactory builds a Telegram connector from encrypted credentials and disposes it", async () => {
   await withTestDb(async (database) => {
     const { user, source } = await createUserAndSource(
       database,
@@ -135,7 +136,7 @@ Deno.test("ConnectorFactory builds a Telegram connector from encrypted credentia
   });
 });
 
-Deno.test("ConnectorFactory builds an individual Substack connector from encrypted credentials", async () => {
+test("ConnectorFactory builds an individual Substack connector from encrypted credentials", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -165,7 +166,7 @@ Deno.test("ConnectorFactory builds an individual Substack connector from encrypt
   });
 });
 
-Deno.test("ConnectorFactory rejects non-owner and disconnected sources without exposing credentials", async () => {
+test("ConnectorFactory rejects non-owner and disconnected sources without exposing credentials", async () => {
   await withTestDb(async (database) => {
     const { source } = await createUserAndSource(
       database,
@@ -195,7 +196,7 @@ Deno.test("ConnectorFactory rejects non-owner and disconnected sources without e
   });
 });
 
-Deno.test("ConnectorFactory rejects unsupported connectors", async () => {
+test("ConnectorFactory rejects unsupported connectors", async () => {
   await withTestDb(async (database) => {
     const { user, source } = await createUserAndSource(
       database,

@@ -2,11 +2,11 @@
 
 When planning a feature implementation, always think about test cases. Write test cases in the plan, think about edge cases feature-wise and app-wise (new user, user with unorthodox settings, user with a different language/timezone, etc).
 
-When implementing a feature, always write tests for the feature. Try to write unit, e2e and integration tests for all the features. If a certain type of test does not exist in the project yet, notify user about it and add to the plan adding the support for it.
+When implementing a feature, always write tests for the feature first. Try to write unit, e2e and integration tests for all the features. If a certain type of test does not exist in the project yet, notify user about it and add to the plan adding the support for it.
 
 Never change existing test logic if they were passing before changes. If a test stopped passing, try to find case for it in the new code.
 
-If during implementation you catched an unexpected behaviour tha you had to fix, make sure to write tests for that behaviour.
+If during implementation you catched an unexpected behaviour that you had to fix, make sure to write tests for that behaviour.
 
 # Code style
 
@@ -14,28 +14,6 @@ If during implementation you catched an unexpected behaviour tha you had to fix,
 
 Methods should follow a single responsibility principle. If a method does
 different things, move logic into separate methods.
-
-BAD:
-
-```js
-const processEverything = async () => {
-  const messages = await api.getMessages();
-
-  messages.filter(message => {...// big logic here a lot of LOC });
-
-  messages.forEach(message => { fs.writeFileSync(message.attachments); // also lots of LOC });
-};
-```
-
-GOOD:
-
-```js
-const processEverything = async () => {
-  let messages = await api.getMessages();
-  messages = this.filterMessages(messages);
-  this.downloadMessagesMedia(messages);
-};
-```
 
 ## Naming
 

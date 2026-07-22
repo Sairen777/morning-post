@@ -1,4 +1,13 @@
-import { decodeBase64 } from "@std/encoding/base64";
+function decodeBase64(value: string): Uint8Array {
+  if (
+    value.length % 4 === 1 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value) ||
+    (value.includes("=") && !/=+$/.test(value))
+  ) {
+    throw new TypeError("Invalid base64");
+  }
+  return Buffer.from(value, "base64");
+}
 
 /**
  * KeyProvider wraps and unwraps per-user data keys.
@@ -87,7 +96,7 @@ export class EnvMasterKeyProvider implements KeyProvider {
     if (masterKeyBytes !== undefined && masterKeyBytes.length > 0) {
       raw = masterKeyBytes;
     } else {
-      const encoded = Deno.env.get("CREDENTIAL_MASTER_KEY");
+      const encoded = process.env["CREDENTIAL_MASTER_KEY"];
       if (!encoded) {
         throw new Error(
           "CREDENTIAL_MASTER_KEY environment variable is not set and no key was " +

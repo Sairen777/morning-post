@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertExists, assertRejects } from "@std/assert"
+import { test } from "bun:test";
+import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts"
 import { withTestDb } from "../../src/db/testing.ts";
 import {
   createUser,
@@ -26,7 +27,7 @@ function userInput(overrides: Partial<CreateUserInput> = {}): CreateUserInput {
   };
 }
 
-Deno.test("createUser then findUserById round-trips all fields", async () => {
+test("createUser then findUserById round-trips all fields", async () => {
   await withTestDb(async (database) => {
     const created = await createUser(database, userInput());
 
@@ -46,7 +47,7 @@ Deno.test("createUser then findUserById round-trips all fields", async () => {
   });
 });
 
-Deno.test("createUser stores email lowercased; findUserByEmail is case-insensitive", async () => {
+test("createUser stores email lowercased; findUserByEmail is case-insensitive", async () => {
   await withTestDb(async (database) => {
     const created = await createUser(database, userInput({ email: "Foo@X.com" }));
     assertEquals(created.email, "foo@x.com");
@@ -61,7 +62,7 @@ Deno.test("createUser stores email lowercased; findUserByEmail is case-insensiti
   });
 });
 
-Deno.test("findUserById / findUserByEmail return null when absent", async () => {
+test("findUserById / findUserByEmail return null when absent", async () => {
   await withTestDb(async (database) => {
     const byId = await findUserById(database, "00000000-0000-0000-0000-000000000000");
     assertEquals(byId, null);
@@ -71,7 +72,7 @@ Deno.test("findUserById / findUserByEmail return null when absent", async () => 
   });
 });
 
-Deno.test("duplicate email insert throws ConflictError", async () => {
+test("duplicate email insert throws ConflictError", async () => {
   await withTestDb(async (database) => {
     await createUser(database, userInput({ email: "dup@example.com" }));
 
@@ -84,7 +85,7 @@ Deno.test("duplicate email insert throws ConflictError", async () => {
   });
 });
 
-Deno.test("updateUser of a missing id throws NotFoundError", async () => {
+test("updateUser of a missing id throws NotFoundError", async () => {
   await withTestDb(async (database) => {
     await assertRejects(
       () =>
@@ -96,7 +97,7 @@ Deno.test("updateUser of a missing id throws NotFoundError", async () => {
   });
 });
 
-Deno.test("partial update leaves other fields intact and bumps updatedAt", async () => {
+test("partial update leaves other fields intact and bumps updatedAt", async () => {
   await withTestDb(async (database) => {
     const created = await createUser(database, userInput());
 
@@ -121,7 +122,7 @@ Deno.test("partial update leaves other fields intact and bumps updatedAt", async
   });
 });
 
-Deno.test("systemPrompt accepts empty string and a multi-KB value", async () => {
+test("systemPrompt accepts empty string and a multi-KB value", async () => {
   await withTestDb(async (database) => {
     const empty = await createUser(
       database,

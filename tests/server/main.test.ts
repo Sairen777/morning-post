@@ -1,4 +1,5 @@
-import { assertEquals, assertExists, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertExists, assertRejects } from "../assertions.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { bootServer } from "../../src/server/main.ts";
@@ -38,11 +39,11 @@ const MODEL_ENV_KEYS = [
   "VISION_API_KEY",
 ];
 
-Deno.test("bootServer waits for stale recovery before registering jobs and serving", async () => {
+test("bootServer waits for stale recovery before registering jobs and serving", async () => {
   const scheduler = new FakeScheduler();
   let servedOptions: { hostname: string; port: number } | undefined;
   let requestHandler:
-    | ((request: Request) => Response | Promise<Response>)
+    | ((request: Request, server: Bun.Server<undefined>) => Response | Promise<Response>)
     | undefined;
   const recoveryGate = Promise.withResolvers<number>();
   const recoveryCalls: Array<
@@ -50,10 +51,10 @@ Deno.test("bootServer waits for stale recovery before registering jobs and servi
   > = [];
 
   const previousModelEnvironment = new Map(
-    MODEL_ENV_KEYS.map((key) => [key, Deno.env.get(key)]),
+    MODEL_ENV_KEYS.map((key) => [key, process.env[key]]),
   );
   try {
-    for (const key of MODEL_ENV_KEYS) Deno.env.delete(key);
+    for (const key of MODEL_ENV_KEYS) delete process.env[key];
     const bootPromise = bootServer({
       serverHostname: " 192.0.2.20 ",
       database: {} as Database,
@@ -86,9 +87,9 @@ Deno.test("bootServer waits for stale recovery before registering jobs and servi
         digestRunStaleAfterMs: 1,
         schedulerLeaseMs: 1,
       },
-      serve: (options, handler) => {
-        servedOptions = options;
-        requestHandler = handler;
+      serve: (options) => {
+        servedOptions = { hostname: options.hostname, port: options.port };
+        requestHandler = options.fetch;
       },
       log: () => {},
     });
@@ -103,8 +104,8 @@ Deno.test("bootServer waits for stale recovery before registering jobs and servi
     await bootPromise;
   } finally {
     for (const [key, value] of previousModelEnvironment) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   }
 
@@ -118,12 +119,13 @@ Deno.test("bootServer waits for stale recovery before registering jobs and servi
 
   const response = await requestHandler(
     new Request("http://192.0.2.20:31001/health"),
+    {} as Bun.Server<undefined>,
   );
   assertEquals(response.status, 200);
   assertEquals(await response.json(), { ok: true });
 });
 
-Deno.test("bootServer recovers stale runs before serving registration", async () => {
+test("bootServer recovers stale runs before serving registration", async () => {
   await withTestDb(async (database) => {
     const interruptedUser = await createUser(database, {
       name: "Interrupted",
@@ -148,13 +150,13 @@ Deno.test("bootServer recovers stale runs before serving registration", async ()
     const recoveryTime = 10_000;
     const scheduler = new FakeScheduler();
     let requestHandler:
-      | ((request: Request) => Response | Promise<Response>)
+      | ((request: Request, server: Bun.Server<undefined>) => Response | Promise<Response>)
       | undefined;
     const previousModelEnvironment = new Map(
-      MODEL_ENV_KEYS.map((key) => [key, Deno.env.get(key)]),
+      MODEL_ENV_KEYS.map((key) => [key, process.env[key]]),
     );
     try {
-      for (const key of MODEL_ENV_KEYS) Deno.env.delete(key);
+      for (const key of MODEL_ENV_KEYS) delete process.env[key];
       await bootServer({
         database,
         scheduler,
@@ -181,8 +183,8 @@ Deno.test("bootServer recovers stale runs before serving registration", async ()
           digestRunStaleAfterMs: 5_000,
           schedulerLeaseMs: 1,
         },
-        serve: (_options, handler) => {
-          requestHandler = handler;
+        serve: (options) => {
+          requestHandler = options.fetch;
         },
         log: () => {},
       });
@@ -216,22 +218,23 @@ Deno.test("bootServer recovers stale runs before serving registration", async ()
             password: "analytical-engine-1843",
           }),
         }),
+        {} as Bun.Server<undefined>,
       );
       assertEquals(response.status, 201);
     } finally {
       for (const [key, value] of previousModelEnvironment) {
-        if (value === undefined) Deno.env.delete(key);
-        else Deno.env.set(key, value);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
       }
     }
   });
 });
 
-Deno.test("bootServer rejects invalid model configuration before serving", async () => {
-  const previous = Deno.env.get("SUMMARIZER_MODEL");
+test("bootServer rejects invalid model configuration before serving", async () => {
+  const previous = process.env["SUMMARIZER_MODEL"];
   let served = false;
   try {
-    Deno.env.set("SUMMARIZER_MODEL", "   ");
+    process.env["SUMMARIZER_MODEL"] = "   ";
     await assertRejects(
       () =>
         bootServer({
@@ -248,7 +251,7 @@ Deno.test("bootServer rejects invalid model configuration before serving", async
     );
     assertEquals(served, false);
   } finally {
-    if (previous === undefined) Deno.env.delete("SUMMARIZER_MODEL");
-    else Deno.env.set("SUMMARIZER_MODEL", previous);
+    if (previous === undefined) delete process.env["SUMMARIZER_MODEL"];
+    else process.env["SUMMARIZER_MODEL"] = previous;
   }
 });

@@ -1,4 +1,4 @@
-import { createMiddleware } from "@hono/hono/factory";
+import { createMiddleware } from "hono/factory";
 import type { Database } from "../../db/client.ts";
 import { AuthError } from "../errors.ts";
 import {

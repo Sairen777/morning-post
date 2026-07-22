@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { test } from "bun:test";
+import { assertEquals, assertRejects } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import {
   CredentialCipher,
@@ -99,7 +100,7 @@ const articlesContent = {
   }],
 };
 
-Deno.test("summary repository round-trips aggregate content", async () => {
+test("summary repository round-trips aggregate content", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(database, "summary-find@example.com");
     const summary = await upsertSummaryForPeriod(database, {
@@ -125,7 +126,7 @@ Deno.test("summary repository round-trips aggregate content", async () => {
   });
 });
 
-Deno.test("summary repository round-trips article content", async () => {
+test("summary repository round-trips article content", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(database, "summary-articles@example.com");
     const summary = await upsertSummaryForPeriod(database, {
@@ -149,7 +150,7 @@ Deno.test("summary repository round-trips article content", async () => {
   });
 });
 
-Deno.test("summary repository round-trips paid articles and projects the source title preference", async () => {
+test("summary repository round-trips paid articles and projects the source title preference", async () => {
   await withTestDb(async (database) => {
     const { user, source, feed } = await createFeed(
       database,
@@ -202,7 +203,7 @@ Deno.test("summary repository round-trips paid articles and projects the source 
   });
 });
 
-Deno.test("summary repository overwrites repeated feed periods without duplicating rows", async () => {
+test("summary repository overwrites repeated feed periods without duplicating rows", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(
       database,
@@ -253,7 +254,7 @@ Deno.test("summary repository overwrites repeated feed periods without duplicati
   });
 });
 
-Deno.test("listSummariesForUserPeriod orders feeds by configured position", async () => {
+test("listSummariesForUserPeriod orders feeds by configured position", async () => {
   await withTestDb(async (database) => {
     const { user, source, feed: secondFeed } = await createFeed(
       database,
@@ -300,7 +301,7 @@ Deno.test("listSummariesForUserPeriod orders feeds by configured position", asyn
   });
 });
 
-Deno.test("listSummariesForUserPeriod includes soft-deleted feeds for history and scopes to owner", async () => {
+test("listSummariesForUserPeriod includes soft-deleted feeds for history and scopes to owner", async () => {
   await withTestDb(async (database) => {
     const first = await createFeed(
       database,
@@ -348,7 +349,7 @@ Deno.test("listSummariesForUserPeriod includes soft-deleted feeds for history an
   });
 });
 
-Deno.test("summary repository rejects invalid tagged content at the boundary", async () => {
+test("summary repository rejects invalid tagged content at the boundary", async () => {
   await withTestDb(async (database) => {
     const { feed, user } = await createFeed(
       database,
@@ -436,7 +437,7 @@ Deno.test("summary repository rejects invalid tagged content at the boundary", a
   });
 });
 
-Deno.test("summary check constraint rejects reversed period order", async () => {
+test("summary check constraint rejects reversed period order", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(
       database,

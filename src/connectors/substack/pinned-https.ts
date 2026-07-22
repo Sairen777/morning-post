@@ -1,3 +1,5 @@
+import { Socket } from "node:net";
+import { connect as connectTls, type TLSSocket } from "node:tls";
 import ipaddr from "ipaddr.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -10,11 +12,83 @@ export interface TransportConnection {
   close(): void;
 }
 
+class NodeTransportConnection implements TransportConnection {
+  private transferred = false;
+
+  constructor(private readonly socket: Socket | TLSSocket) {}
+
+  takeSocket(): Socket {
+    if (this.transferred || this.socket.destroyed) {
+      throw new Error("publication connection is not available for TLS");
+    }
+    this.transferred = true;
+    return this.socket;
+  }
+
+  async read(buffer: Uint8Array): Promise<number | null> {
+    const available = this.socket.read(buffer.byteLength) as Buffer | null;
+    if (available) {
+      buffer.set(available);
+      return available.byteLength;
+    }
+    if (this.socket.readableEnded || this.socket.destroyed) return null;
+
+    const { promise, resolve, reject } = Promise.withResolvers<number | null>();
+    const cleanup = () => {
+      this.socket.off("readable", onReadable);
+      this.socket.off("end", onEnd);
+      this.socket.off("close", onClose);
+      this.socket.off("error", onError);
+    };
+    const onReadable = () => {
+      const chunk = this.socket.read(buffer.byteLength) as Buffer | null;
+      if (!chunk) return;
+      cleanup();
+      buffer.set(chunk);
+      resolve(chunk.byteLength);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve(null);
+    };
+    const onClose = () => {
+      cleanup();
+      resolve(null);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    this.socket.on("readable", onReadable);
+    this.socket.once("end", onEnd);
+    this.socket.once("close", onClose);
+    this.socket.once("error", onError);
+    return await promise;
+  }
+
+  async write(buffer: Uint8Array): Promise<number> {
+    if (this.socket.destroyed) {
+      throw new Error("publication connection is closed");
+    }
+    const { promise, resolve, reject } = Promise.withResolvers<number>();
+    this.socket.write(buffer, (error?: Error | null) => {
+      if (error) reject(error);
+      else resolve(buffer.byteLength);
+    });
+    return await promise;
+  }
+
+  close(): void {
+    if (!this.transferred) this.socket.destroy();
+  }
+}
+
 export interface PinnedHttpsDependencies {
   connect?: (address: string, signal?: AbortSignal) => Promise<TransportConnection>;
   startTls?: (
     connection: TransportConnection,
     hostname: string,
+    signal?: AbortSignal,
   ) => Promise<TransportConnection>;
   maxResponseBytes?: number;
 }
@@ -22,13 +96,80 @@ export interface PinnedHttpsDependencies {
 const defaultConnect = (
   address: string,
   signal?: AbortSignal,
-): Promise<TransportConnection> => Deno.connect({ hostname: address, port: 443, signal });
+): Promise<TransportConnection> => {
+  const { promise, resolve, reject } = Promise.withResolvers<TransportConnection>();
+  if (signal?.aborted) {
+    reject(abortReason(signal));
+    return promise;
+  }
+  const socket = new Socket();
+  const cleanup = () => {
+    socket.off("connect", onConnect);
+    socket.off("error", onError);
+    signal?.removeEventListener("abort", onAbort);
+  };
+  const onConnect = () => {
+    cleanup();
+    resolve(new NodeTransportConnection(socket));
+  };
+  const onError = (error: Error) => {
+    cleanup();
+    socket.destroy();
+    reject(error);
+  };
+  const onAbort = () => {
+    cleanup();
+    socket.destroy();
+    reject(abortReason(signal));
+  };
+  socket.once("connect", onConnect);
+  socket.once("error", onError);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  socket.connect({ host: address, port: 443, family: ipaddr.parse(address).kind() === "ipv6" ? 6 : 4 });
+  return promise;
+}
 
 const defaultStartTls = (
   connection: TransportConnection,
   hostname: string,
-): Promise<TransportConnection> =>
-  Deno.startTls(connection as Deno.TcpConn, { hostname });
+  signal?: AbortSignal,
+): Promise<TransportConnection> => {
+  const { promise, resolve, reject } = Promise.withResolvers<TransportConnection>();
+  if (!(connection instanceof NodeTransportConnection)) {
+    reject(new TypeError("default TLS requires the default Node transport connection"));
+    return promise;
+  }
+  const socket = connection.takeSocket();
+  const tlsSocket = connectTls({
+    socket,
+    servername: hostname,
+    rejectUnauthorized: true,
+  });
+  const cleanup = () => {
+    tlsSocket.off("secureConnect", onSecureConnect);
+    tlsSocket.off("error", onError);
+    signal?.removeEventListener("abort", onAbort);
+  };
+  const onSecureConnect = () => {
+    cleanup();
+    resolve(new NodeTransportConnection(tlsSocket));
+  };
+  const onError = (error: Error) => {
+    cleanup();
+    tlsSocket.destroy();
+    reject(error);
+  };
+  const onAbort = () => {
+    cleanup();
+    tlsSocket.destroy();
+    reject(abortReason(signal));
+  };
+  tlsSocket.once("secureConnect", onSecureConnect);
+  tlsSocket.once("error", onError);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  return promise;
+}
 
 export async function requestPinnedHttps(
   url: URL,
@@ -113,7 +254,7 @@ async function connectTlsToAddress(
       connection = await connect(address, signal);
       setActiveConnection(connection);
       if (signal?.aborted) throw abortReason(signal);
-      const tlsConnection = await startTls(connection, hostname);
+      const tlsConnection = await startTls(connection, hostname, signal);
       connection = undefined;
       setActiveConnection(tlsConnection);
       return tlsConnection;

@@ -1,8 +1,9 @@
+import { test } from "bun:test";
 import {
   assertEquals,
   assertRejects,
   assertThrows,
-} from "@std/assert";
+} from "./assertions.ts";
 import {
   readPublicArchive,
   normalizePublicationUrl,
@@ -35,7 +36,7 @@ function responseFrom(body: string, status = 200): Response {
   });
 }
 
-Deno.test("normalizePublicationUrl canonicalizes publication inputs", () => {
+test("normalizePublicationUrl canonicalizes publication inputs", () => {
   assertEquals(
     normalizePublicationUrl("https://example.substack.com/p/hello?x=1#part"),
     "https://example.substack.com",
@@ -53,19 +54,21 @@ Deno.test("normalizePublicationUrl canonicalizes publication inputs", () => {
   assertThrows(() => normalizePublicationUrl(`https://example.com/${"x".repeat(2049)}`));
 });
 
-Deno.test("validateArchivePage requires every archive member to be valid", () => {
+test("validateArchivePage requires every archive member to be valid", () => {
   assertEquals(validateArchivePage(JSON.stringify(archivePage))[0].publicationName, "Example Letter");
   assertThrows(() => validateArchivePage(JSON.stringify([{ ...archivePage[0], publication_id: undefined }])));
   assertThrows(() => validateArchivePage(JSON.stringify([{}])));
   assertThrows(() => validateArchivePage("{}"));
 });
 
-Deno.test("DNS NotFound errors are treated as an absent address family", () => {
-  assertEquals(isDnsNotFoundError(new Deno.errors.NotFound("No records found")), true);
+test("DNS ENOTFOUND and ENODATA errors are treated as an absent address family", () => {
+  assertEquals(isDnsNotFoundError({ code: "ENOTFOUND" }), true);
+  assertEquals(isDnsNotFoundError({ code: "ENODATA" }), true);
+  assertEquals(isDnsNotFoundError({ code: "EAI_AGAIN" }), false);
   assertEquals(isDnsNotFoundError(new Error("resolver failed")), false);
 });
 
-Deno.test("readBoundedResponse enforces exact limits and cancels overflow", async () => {
+test("readBoundedResponse enforces exact limits and cancels overflow", async () => {
   const exact = await readBoundedResponse(
     new Response(new Uint8Array(5 * 1024 * 1024)),
     5 * 1024 * 1024,
@@ -89,7 +92,7 @@ Deno.test("readBoundedResponse enforces exact limits and cancels overflow", asyn
   assertEquals(cancelled, true);
 });
 
-Deno.test("readBoundedResponse cancels a pending body on abort", async () => {
+test("readBoundedResponse cancels a pending body on abort", async () => {
   let cancelled = false;
   const stalled = new ReadableStream<Uint8Array>({
     cancel() {
@@ -103,7 +106,7 @@ Deno.test("readBoundedResponse cancels a pending body on abort", async () => {
   assertEquals(cancelled, true);
 });
 
-Deno.test("readPublicArchive resolves A and AAAA independently", async () => {
+test("readPublicArchive resolves A and AAAA independently", async () => {
   const recordTypes: string[] = [];
   const requests: Request[] = [];
   const result = await readPublicArchive("https://example.substack.com/feed", {
@@ -125,7 +128,7 @@ Deno.test("readPublicArchive resolves A and AAAA independently", async () => {
   assertEquals(requests[0].headers.get("authorization"), null);
 });
 
-Deno.test("readPublicArchive passes validated addresses to the pinned transport", async () => {
+test("readPublicArchive passes validated addresses to the pinned transport", async () => {
   const requests: Array<{ url: string; addresses: string[] }> = [];
   const result = await readPublicArchive("https://letter.example.com", {
     resolveDns: (_host, recordType) => Promise.resolve(
@@ -143,7 +146,7 @@ Deno.test("readPublicArchive passes validated addresses to the pinned transport"
   }]);
 });
 
-Deno.test("readPublicArchive rejects missing, mixed, and failed DNS answers", async () => {
+test("readPublicArchive rejects missing, mixed, and failed DNS answers", async () => {
   const fetcher = () => Promise.resolve(responseFrom(JSON.stringify(archivePage)));
   await assertRejects(
     () => readPublicArchive("https://example.com", {
@@ -175,7 +178,7 @@ Deno.test("readPublicArchive rejects missing, mixed, and failed DNS answers", as
   );
 });
 
-Deno.test("readPublicArchive revalidates redirect hosts without credentials", async () => {
+test("readPublicArchive revalidates redirect hosts without credentials", async () => {
   const hosts: string[] = [];
   const requests: Request[] = [];
   const result = await readPublicArchive("https://example.substack.com/p/post", {
@@ -205,7 +208,7 @@ Deno.test("readPublicArchive revalidates redirect hosts without credentials", as
   assertEquals(requests[1].headers.get("cookie"), null);
 });
 
-Deno.test("readPublicArchive rejects private redirect destinations before fetching them", async () => {
+test("readPublicArchive rejects private redirect destinations before fetching them", async () => {
   let fetchCount = 0;
   await assertRejects(
     () => readPublicArchive("https://example.substack.com", {
@@ -226,7 +229,7 @@ Deno.test("readPublicArchive rejects private redirect destinations before fetchi
   assertEquals(fetchCount, 1);
 });
 
-Deno.test("readPublicArchive rejects missing locations and too many redirects", async () => {
+test("readPublicArchive rejects missing locations and too many redirects", async () => {
   const resolveDns = () => Promise.resolve(["93.184.216.34"]);
   await assertRejects(
     () => readPublicArchive("https://example.substack.com", {
