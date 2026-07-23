@@ -22,6 +22,7 @@ const updateSourceBodySchema = z.object({
     .nullable().optional(),
   enabled: z.boolean().optional(),
   showPaidPostTitles: z.boolean().optional(),
+  relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),
 }).strict();
 
 function disconnectMessage(connectorId: string): string {

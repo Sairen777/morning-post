@@ -36,6 +36,7 @@ const ENV_KEYS = [
   "DIGEST_RUN_STALE_AFTER_MS",
   "SCHEDULER_LEASE_MS",
 ] as const;
+type EnvKey = (typeof ENV_KEYS)[number];
 
 console.log("3");
 

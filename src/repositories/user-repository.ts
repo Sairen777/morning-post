@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, or } from "drizzle-orm";
+import { and, asc, eq, gt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { users } from "../db/schema/user.ts";
@@ -17,6 +17,10 @@ const userRowSchema = z.object({
   passwordHash: z.string(),
   systemPrompt: z.string(),
   defaultLanguage: z.string().nullable(),
+  defaultRelevanceFilterMode: z.enum(["personalized", "include_all"]),
+  relevanceThreshold: z.number().int().min(0).max(100),
+  maximumStoriesPerDigest: z.number().int().positive().nullable(),
+  interestProfileVersion: z.number().int().positive(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -29,6 +33,9 @@ export interface CreateUserInput {
   passwordHash: string;
   systemPrompt: string;
   defaultLanguage?: string | null;
+  defaultRelevanceFilterMode?: "personalized" | "include_all";
+  relevanceThreshold?: number;
+  maximumStoriesPerDigest?: number | null;
 }
 
 export type UpdateUserInput = Partial<{
@@ -37,6 +44,9 @@ export type UpdateUserInput = Partial<{
   passwordHash: string;
   systemPrompt: string;
   defaultLanguage: string | null;
+  defaultRelevanceFilterMode: "personalized" | "include_all";
+  relevanceThreshold: number;
+  maximumStoriesPerDigest: number | null;
 }>;
 
 
@@ -58,6 +68,9 @@ export async function createUser(
         passwordHash: input.passwordHash,
         systemPrompt: input.systemPrompt,
         defaultLanguage: input.defaultLanguage ?? null,
+        defaultRelevanceFilterMode: input.defaultRelevanceFilterMode ?? "personalized",
+        relevanceThreshold: input.relevanceThreshold ?? 60,
+        maximumStoriesPerDigest: input.maximumStoriesPerDigest ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -140,8 +153,12 @@ export async function updateUser(
   database: Database,
   id: string,
   partial: UpdateUserInput,
+  options: { incrementInterestProfileVersion?: boolean } = {},
 ): Promise<User> {
   const updates: Record<string, unknown> = { ...partial, updatedAt: Date.now() };
+  if (options.incrementInterestProfileVersion) {
+    updates.interestProfileVersion = sql`${users.interestProfileVersion} + 1`;
+  }
   if (partial.email !== undefined) {
     updates.email = partial.email.toLowerCase();
   }

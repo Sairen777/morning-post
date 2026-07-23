@@ -67,6 +67,7 @@ test("POST /connectors/substack/session validates and returns a secret-free sour
             showPaidPostTitles: false,
             enabled: true,
             connected: true,
+            relevanceFilterMode: "inherit",
             createdAt: now,
             updatedAt: now,
           } satisfies PublicSource,
@@ -192,6 +193,7 @@ test("Substack session route cancels its deadline before a deferred credential c
       showPaidPostTitles: false,
       enabled: true,
       connected: true,
+      relevanceFilterMode: "inherit",
       createdAt: now,
       updatedAt: now,
     };
@@ -277,6 +279,7 @@ test("Substack session route blocks a late credential commit after the deadline 
       showPaidPostTitles: false,
       enabled: true,
       connected: true,
+      relevanceFilterMode: "inherit",
       createdAt: now,
       updatedAt: now,
     };

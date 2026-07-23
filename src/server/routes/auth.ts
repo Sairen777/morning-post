@@ -29,6 +29,10 @@ export interface PublicUser {
   email: string;
   systemPrompt: string;
   defaultLanguage: string | null;
+  defaultRelevanceFilterMode: "personalized" | "include_all";
+  relevanceThreshold: number;
+  maximumStoriesPerDigest: number | null;
+  interestProfileVersion: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -43,6 +47,10 @@ export function toPublicUser(user: User): PublicUser {
     email: user.email,
     systemPrompt: user.systemPrompt,
     defaultLanguage: user.defaultLanguage,
+    defaultRelevanceFilterMode: user.defaultRelevanceFilterMode,
+    relevanceThreshold: user.relevanceThreshold,
+    maximumStoriesPerDigest: user.maximumStoriesPerDigest,
+    interestProfileVersion: user.interestProfileVersion,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };

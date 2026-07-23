@@ -232,6 +232,7 @@ test("Substack session, publication, and discovery routes use separate rate-limi
       enabled: true,
       showPaidPostTitles: false,
       connected: true,
+      relevanceFilterMode: "inherit",
       createdAt: now,
       updatedAt: now,
     };
@@ -244,6 +245,7 @@ test("Substack session, publication, and discovery routes use separate rate-limi
       customPrompt: null,
       position: null,
       enabled: true,
+      relevanceFilterMode: "inherit",
       deletedAt: null,
       lastFetchedPeriodEndMs: null,
       createdAt: now,

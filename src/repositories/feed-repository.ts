@@ -18,6 +18,7 @@ const publicFeedRowSchema = z.object({
   customPrompt: z.string().nullable(),
   position: z.number().nullable(),
   enabled: z.boolean(),
+  relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]),
   deletedAt: z.number().nullable(),
   lastFetchedPeriodEndMs: z.number().nullable(),
   createdAt: z.number(),
@@ -32,6 +33,7 @@ const createFeedInputSchema = z.object({
   kind: feedKindSchema,
   customPrompt: z.string().nullable().optional(),
   position: z.number().int().nullable().optional(),
+  relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),
 });
 
 const updateFeedInputSchema = z.object({
@@ -39,6 +41,7 @@ const updateFeedInputSchema = z.object({
   customPrompt: z.string().nullable().optional(),
   position: z.number().int().nullable().optional(),
   enabled: z.boolean().optional(),
+  relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),
 });
 
 export type PublicFeed = z.infer<typeof publicFeedRowSchema>;
@@ -51,6 +54,7 @@ export interface CreateOrReviveFeedInput {
   kind: FeedKind;
   customPrompt?: string | null;
   position?: number | null;
+  relevanceFilterMode?: "inherit" | "personalized" | "include_all";
 }
 
 export type UpdateFeedInput = Partial<{
@@ -58,6 +62,7 @@ export type UpdateFeedInput = Partial<{
   customPrompt: string | null;
   position: number | null;
   enabled: boolean;
+  relevanceFilterMode: "inherit" | "personalized" | "include_all";
 }>;
 
 export interface ListFeedsForUserOptions {
@@ -74,6 +79,7 @@ function publicColumns() {
     customPrompt: feeds.customPrompt,
     position: feeds.position,
     enabled: feeds.enabled,
+    relevanceFilterMode: feeds.relevanceFilterMode,
     deletedAt: feeds.deletedAt,
     lastFetchedPeriodEndMs: feeds.lastFetchedPeriodEndMs,
     createdAt: feeds.createdAt,
@@ -182,6 +188,7 @@ async function reviveFeed(
       kind: input.kind,
       customPrompt: input.customPrompt ?? null,
       position: input.position ?? null,
+      relevanceFilterMode: input.relevanceFilterMode ?? "inherit",
       enabled: true,
       deletedAt: null,
       updatedAt: Date.now(),
@@ -207,6 +214,7 @@ async function insertFeed(
         customPrompt: input.customPrompt ?? null,
         position: input.position ?? null,
         enabled: true,
+        relevanceFilterMode: input.relevanceFilterMode ?? "inherit",
         createdAt: now,
         updatedAt: now,
       })

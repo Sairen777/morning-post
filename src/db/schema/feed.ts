@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { bigint, boolean, check, index, integer, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import type { FeedKind } from "../../connectors/connector.types.ts";
+import type { RelevanceFilterOverride } from "../../personalization/personalization.types.ts";
 import { sources } from "./source.ts";
 
 export const feeds = pgTable(
@@ -16,6 +17,10 @@ export const feeds = pgTable(
     customPrompt: text("custom_prompt"),
     position: integer("position"),
     enabled: boolean("enabled").notNull().default(true),
+    relevanceFilterMode: text("relevance_filter_mode")
+      .$type<RelevanceFilterOverride>()
+      .notNull()
+      .default("inherit"),
     deletedAt: bigint("deleted_at", { mode: "number" }),
     lastFetchedPeriodEndMs: bigint("last_fetched_period_end_ms", { mode: "number" }),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
@@ -26,6 +31,10 @@ export const feeds = pgTable(
     index("feeds_source_id_idx").on(table.sourceId),
     index("feeds_source_order_idx").on(table.sourceId, table.position, table.name),
     check("feeds_kind_check", sql`${table.kind} in ('news', 'discussion')`),
+    check(
+      "feeds_relevance_filter_mode_check",
+      sql`${table.relevanceFilterMode} in ('inherit', 'personalized', 'include_all')`,
+    ),
   ],
 );
 

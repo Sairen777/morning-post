@@ -1,5 +1,6 @@
 // Schema barrel — domain tables added in Phase 1+.
 export * from "./user.ts";
+export * from "./interest-rule.ts";
 export * from "./session.ts";
 export * from "./source.ts";
 export * from "./feed.ts";

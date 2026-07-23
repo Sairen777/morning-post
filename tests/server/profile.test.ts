@@ -181,3 +181,41 @@ test("PATCH /auth/me rejects the removed defaultModel field", async () => {
     await response.body?.cancel();
   });
 });
+
+test("PATCH /auth/me updates filtering settings and increments only for filtering changes", async () => {
+  await withTestDb(async (database: Database) => {
+    const { app, cookie } = await authenticatedApp(database, "profile-filtering@example.com");
+
+    const initialResponse = await app.request("/auth/me", { headers: { cookie } });
+    const initial = await initialResponse.json();
+    assertEquals(initial.defaultRelevanceFilterMode, "personalized");
+    assertEquals(initial.relevanceThreshold, 60);
+    assertEquals(initial.maximumStoriesPerDigest, null);
+
+    const ordinaryResponse = await patchProfile(app, cookie, { name: "Ada Byron" });
+    const ordinary = await ordinaryResponse.json();
+    assertEquals(ordinary.interestProfileVersion, initial.interestProfileVersion);
+
+    const filteringResponse = await patchProfile(app, cookie, {
+      defaultRelevanceFilterMode: "include_all",
+      relevanceThreshold: 75,
+      maximumStoriesPerDigest: 12,
+    });
+    assertEquals(filteringResponse.status, 200);
+    const filtering = await filteringResponse.json();
+    assertEquals(filtering.defaultRelevanceFilterMode, "include_all");
+    assertEquals(filtering.relevanceThreshold, 75);
+    assertEquals(filtering.maximumStoriesPerDigest, 12);
+    assertEquals(filtering.interestProfileVersion, initial.interestProfileVersion + 1);
+
+    for (const invalid of [
+      { defaultRelevanceFilterMode: "inherit" },
+      { relevanceThreshold: 101 },
+      { maximumStoriesPerDigest: 0 },
+    ]) {
+      const response = await patchProfile(app, cookie, invalid);
+      assertEquals(response.status, 422);
+      await response.body?.cancel();
+    }
+  });
+});

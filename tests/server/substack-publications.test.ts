@@ -70,6 +70,7 @@ test("POST /connectors/substack/publications creates a canonical publication fee
           showPaidPostTitles: false,
           enabled: true,
           connected: true,
+          relevanceFilterMode: "inherit",
           createdAt: now,
           updatedAt: now,
         };
@@ -82,6 +83,7 @@ test("POST /connectors/substack/publications creates a canonical publication fee
           customPrompt: null,
           position: null,
           enabled: true,
+          relevanceFilterMode: "inherit",
           deletedAt: null,
           lastFetchedPeriodEndMs: null,
           createdAt: now,
@@ -134,6 +136,7 @@ test("Substack publication route cancels its deadline before a deferred feed com
       showPaidPostTitles: false,
       enabled: true,
       connected: true,
+      relevanceFilterMode: "inherit",
       createdAt: now,
       updatedAt: now,
     };
@@ -146,6 +149,7 @@ test("Substack publication route cancels its deadline before a deferred feed com
       customPrompt: null,
       position: null,
       enabled: true,
+      relevanceFilterMode: "inherit",
       deletedAt: null,
       lastFetchedPeriodEndMs: null,
       createdAt: now,
@@ -230,6 +234,7 @@ test("Substack publication route blocks a late feed commit after the deadline wi
       showPaidPostTitles: false,
       enabled: true,
       connected: true,
+      relevanceFilterMode: "inherit",
       createdAt: now,
       updatedAt: now,
     };
@@ -242,6 +247,7 @@ test("Substack publication route blocks a late feed commit after the deadline wi
       customPrompt: null,
       position: null,
       enabled: true,
+      relevanceFilterMode: "inherit",
       deletedAt: null,
       lastFetchedPeriodEndMs: null,
       createdAt: now,

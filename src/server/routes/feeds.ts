@@ -48,6 +48,7 @@ const updateFeedBodySchema = z.object({
   customPrompt: z.string().max(MAXIMUM_CUSTOM_PROMPT_LENGTH).nullable().optional(),
   position: z.number().int().min(POSTGRES_INTEGER_MIN).max(POSTGRES_INTEGER_MAX).nullable().optional(),
   enabled: z.boolean().optional(),
+  relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),
 }).strict();
 
 export interface FeedRouteDependencies {

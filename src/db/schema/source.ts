@@ -12,6 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { EncryptedBlob } from "../../crypto/credential-cipher.ts";
+import type { RelevanceFilterOverride } from "../../personalization/personalization.types.ts";
 import { users } from "./user.ts";
 
 /**
@@ -34,6 +35,10 @@ export const sources = pgTable(
     showPaidPostTitles: boolean("show_paid_post_titles").notNull().default(
       false,
     ),
+    relevanceFilterMode: text("relevance_filter_mode")
+      .$type<RelevanceFilterOverride>()
+      .notNull()
+      .default("inherit"),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
   },
@@ -50,6 +55,10 @@ export const sources = pgTable(
     check(
       "sources_credentials_disabled_check",
       sql`${table.credentials} is not null or ${table.enabled} = false`,
+    ),
+    check(
+      "sources_relevance_filter_mode_check",
+      sql`${table.relevanceFilterMode} in ('inherit', 'personalized', 'include_all')`,
     ),
   ],
 );

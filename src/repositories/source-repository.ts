@@ -33,6 +33,7 @@ const publicSourceRowSchema = z.object({
   position: z.number().nullable(),
   enabled: z.boolean(),
   showPaidPostTitles: z.boolean(),
+  relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]),
   connected: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
@@ -53,12 +54,14 @@ export interface CreateSourceInput {
   credentials: EncryptedBlob;
   position?: number | null;
   enabled?: boolean;
+  relevanceFilterMode?: "inherit" | "personalized" | "include_all";
 }
 
 export type UpdateSourceInput = Partial<{
   position: number | null;
   enabled: boolean;
   showPaidPostTitles: boolean;
+  relevanceFilterMode: "inherit" | "personalized" | "include_all";
   credentials: EncryptedBlob | null;
 }>;
 
@@ -77,6 +80,7 @@ function selectableColumns() {
     position: sources.position,
     enabled: sources.enabled,
     showPaidPostTitles: sources.showPaidPostTitles,
+    relevanceFilterMode: sources.relevanceFilterMode,
     credentials: sources.credentials,
     createdAt: sources.createdAt,
     updatedAt: sources.updatedAt,
@@ -128,6 +132,7 @@ export async function createSource(
         credentials,
         position: input.position ?? null,
         enabled: input.enabled ?? true,
+        relevanceFilterMode: input.relevanceFilterMode ?? "inherit",
         createdAt: now,
         updatedAt: now,
       })

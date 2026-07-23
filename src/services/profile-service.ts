@@ -21,6 +21,9 @@ const updateProfileSchema = z.object({
     `systemPrompt must be at most ${SYSTEM_PROMPT_MAX_LENGTH} characters`,
   ).optional(),
   defaultLanguage: nullableTrimmedString.optional(),
+  defaultRelevanceFilterMode: z.enum(["personalized", "include_all"]).optional(),
+  relevanceThreshold: z.number().int().min(0).max(100).optional(),
+  maximumStoriesPerDigest: z.number().int().positive().nullable().optional(),
 }).strict();
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
@@ -55,5 +58,10 @@ export async function updateProfile(
 ): Promise<User> {
   rejectSensitiveProfileFields(input);
   const updates = validate(updateProfileSchema, input);
-  return await updateUser(database, userId, updates);
+  const affectsFiltering = updates.defaultRelevanceFilterMode !== undefined ||
+    updates.relevanceThreshold !== undefined ||
+    updates.maximumStoriesPerDigest !== undefined;
+  return await updateUser(database, userId, updates, {
+    incrementInterestProfileVersion: affectsFiltering,
+  });
 }
