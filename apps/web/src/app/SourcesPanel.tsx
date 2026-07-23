@@ -1,5 +1,11 @@
 import { createSignal, For, Show } from "solid-js";
-import type { PublicSource, PublicFeed, AvailableFeed, DisconnectSourceResponse } from "../api/types";
+import type {
+  PublicSource,
+  PublicFeed,
+  AvailableFeed,
+  DisconnectSourceResponse,
+  RelevanceFilterOverride,
+} from "../api/types";
 import { ApiClientError } from "../api/client";
 
 interface SourcesPanelProps {
@@ -9,6 +15,10 @@ interface SourcesPanelProps {
   sourceFeeds: Record<string, PublicFeed[]>;
   onToggleSource: (id: string, enabled: boolean) => Promise<void>;
   onUpdateSourcePosition: (id: string, position: number | null) => Promise<void>;
+  onUpdateSource?: (
+    id: string,
+    input: { relevanceFilterMode: RelevanceFilterOverride },
+  ) => Promise<void>;
   onDisconnectSource: (id: string) => Promise<DisconnectSourceResponse>;
   onDiscoverFeeds: (sourceId: string) => Promise<AvailableFeed[]>;
   onLoadSourceFeeds: (sourceId: string) => Promise<PublicFeed[]>;
@@ -83,6 +93,26 @@ export default function SourcesPanel(props: SourcesPanelProps) {
       } else if (err instanceof Error) {
         setSourceError(id, err.message);
       }
+    }
+  };
+  const handlePolicyChange = async (
+    sourceId: string,
+    relevanceFilterMode: RelevanceFilterOverride,
+  ) => {
+    const updateSource = props.onUpdateSource;
+    if (!updateSource) return;
+    clearSourceError(sourceId);
+    setLoadingKey(sourceId, "policy");
+    try {
+      await updateSource(sourceId, { relevanceFilterMode });
+    } catch (err: unknown) {
+      if (is401(err)) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setSourceError(sourceId, err.message);
+      }
+    } finally {
+      clearLoading(sourceId);
     }
   };
 
@@ -231,6 +261,27 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                     Reconnect this source from the Connections tab before enabling it.
                   </p>
                 </Show>
+                <div class="form-group" style="margin-top: 0.75rem;">
+                  <label for={`source-policy-${source.id}`}>Relevance filtering</label>
+                  <select
+                    id={`source-policy-${source.id}`}
+                    aria-label={`Relevance filtering for ${source.connectorId}`}
+                    value={source.relevanceFilterMode}
+                    disabled={isLoading("policy") || !props.onUpdateSource}
+                    onChange={(e) =>
+                      handlePolicyChange(
+                        source.id,
+                        e.currentTarget.value as RelevanceFilterOverride,
+                      )}
+                  >
+                    <option value="inherit">Inherit profile setting</option>
+                    <option value="personalized">Personalized</option>
+                    <option value="include_all">Include all</option>
+                  </select>
+                  <div class="hint">
+                    Inherit follows your profile; an override applies to every feed from this source.
+                  </div>
+                </div>
 
                 {/* Position */}
                 <div class="form-group" style="margin-top: 0.75rem;">

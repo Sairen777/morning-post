@@ -19,6 +19,7 @@ import type {
   StoryPreferenceRule,
   StoryRelevanceDecision,
 } from "../personalization/story.types.ts";
+import { personalizationLabelsSchema } from "../personalization/personalization-label.ts";
 import { OpenAICompatibleChatClient } from "../summarizers/openai-compatible-client.ts";
 import type { FetchFunction } from "../summarizers/openai-compatible-client.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
@@ -68,8 +69,8 @@ const analysisSchema = z.object({
   i: z.number().int().nonnegative(),
   language: z.string().nullable(),
   canonicalUrls: z.array(z.string()),
-  topics: z.array(z.string()),
-  entities: z.array(z.string()),
+  topics: personalizationLabelsSchema,
+  entities: personalizationLabelsSchema,
   storyKey: z.string().min(1),
   storyTitle: z.string().min(1),
   developmentKey: z.string().min(1),

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, max, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, max, ne, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { ConnectorId } from "../constants.ts";
 import type { Database } from "../db/client.ts";
@@ -8,6 +8,7 @@ import { feeds } from "../db/schema/feed.ts";
 import { items } from "../db/schema/item.ts";
 import { sources } from "../db/schema/source.ts";
 import type { DigestStoryContent, ItemAnalysisContent, PersistedStoryCandidate, ResolvedStoryCandidate, StoryReference, StorySource } from "../personalization/story.types.ts";
+import { personalizationLabelsSchema } from "../personalization/personalization-label.ts";
 import { normalizedItemSchema, type StoredItem } from "./item-repository.ts";
 import { summaryPointSchema } from "./summary-repository.ts";
 
@@ -15,7 +16,7 @@ const keySchema = z.string().trim().min(1).transform((value) =>
   value.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "")
 ).pipe(z.string().min(1));
 const analysisSchema = z.object({
-  language: z.string().nullable(), canonicalUrls: z.array(z.string()), topics: z.array(z.string()), entities: z.array(z.string()),
+  language: z.string().nullable(), canonicalUrls: z.array(z.string()), topics: personalizationLabelsSchema, entities: personalizationLabelsSchema,
   storyKey: z.string().min(1), storyTitle: z.string().min(1), developmentKey: z.string().min(1), developmentType: z.string().min(1),
   developmentTitle: z.string().min(1), mediaDescription: z.string().nullable(),
 }).strict();
@@ -27,7 +28,7 @@ const developmentSchema = z.object({
   canonicalKey: keySchema, type: z.string().min(1), title: z.string().min(1), occurredAt: z.number().int().nonnegative(), items: z.array(analyzedItemSchema),
 }).strict();
 const candidateSchema = z.object({
-  canonicalKey: keySchema, title: z.string().min(1), topics: z.array(z.string()), entities: z.array(z.string()), developments: z.array(developmentSchema),
+  canonicalKey: keySchema, title: z.string().min(1), topics: personalizationLabelsSchema, entities: personalizationLabelsSchema, developments: z.array(developmentSchema),
 }).strict().superRefine((candidate, context) => {
   const developmentKeys = new Set<string>(); const itemIds = new Set<string>();
   for (const development of candidate.developments) {
@@ -43,7 +44,7 @@ const storySourceSchema: z.ZodType<StorySource> = z.object({
   itemId: z.string().uuid(), connectorId: z.nativeEnum(ConnectorId), sourceId: z.string().uuid(), feedId: z.string().uuid(), feedName: z.string(),
   title: z.string().nullable(), url: z.string().nullable(), publishedAt: z.number().int().nonnegative(),
 }).strict();
-const digestContentSchema = z.object({ storyId: z.string().uuid(), storyVersion: z.number().int().positive(), title: z.string(), topics: z.array(z.string()), entities: z.array(z.string()), points: z.array(summaryPointSchema), sources: z.array(storySourceSchema), relevanceScore: z.number().int().min(0).max(100), matchedInterestRuleIds: z.array(z.string().uuid()) }).strict();
+const digestContentSchema = z.object({ storyId: z.string().uuid(), storyVersion: z.number().int().positive(), title: z.string(), topics: personalizationLabelsSchema, entities: personalizationLabelsSchema, points: z.array(summaryPointSchema), sources: z.array(storySourceSchema), relevanceScore: z.number().int().min(0).max(100), matchedInterestRuleIds: z.array(z.string().uuid()) }).strict();
 
 export interface UpsertItemAnalysisInput { itemId: string; fingerprint: string; analyzerVersion: string; analysis: ItemAnalysisContent; analyzedAt?: number }
 export interface StoredItemAnalysis extends Required<UpsertItemAnalysisInput> {}
@@ -72,8 +73,8 @@ export async function listRecentStoryReferences(database: Database, userId: stri
     id: z.string().uuid(),
     canonicalKey: z.string().min(1),
     title: z.string(),
-    topics: z.array(z.string()),
-    entities: z.array(z.string()),
+    topics: personalizationLabelsSchema,
+    entities: personalizationLabelsSchema,
     lastUpdatedAt: z.number().int().nonnegative(),
   }).strict();
   return rows.map((row) => schema.parse(row));
@@ -236,20 +237,90 @@ export async function listStoryMembers(database: Database, userId: string, story
   return rows.map((row) => ({ ...row, item: z.object({ id: z.string().uuid(), feedId: z.string().uuid(), externalId: z.string(), date: z.number(), payload: normalizedItemSchema, fetchedAt: z.number() }).parse(row.item) }));
 }
 
-export async function replaceDigestStories(database: Database, userId: string, digestId: string, inputs: UpsertDigestStoryInput[]): Promise<StoredDigestStory[]> {
-  const validUserId = z.string().uuid().parse(userId); const validDigestId = z.string().uuid().parse(digestId);
-  const parsed = inputs.map((input) => ({ content: digestContentSchema.parse(input.content), profileVersion: z.number().int().positive().parse(input.profileVersion), generatedAt: z.number().int().nonnegative().parse(input.generatedAt ?? Date.now()) }));
+export async function replaceDigestStories(
+  database: Database,
+  userId: string,
+  digestId: string,
+  inputs: UpsertDigestStoryInput[],
+): Promise<StoredDigestStory[]> {
+  const validUserId = z.string().uuid().parse(userId);
+  const validDigestId = z.string().uuid().parse(digestId);
+  const parsed = inputs.map((input) => ({
+    content: digestContentSchema.parse(input.content),
+    profileVersion: z.number().int().positive().parse(input.profileVersion),
+    generatedAt: z.number().int().nonnegative().parse(input.generatedAt ?? Date.now()),
+  }));
   return await database.transaction(async (tx) => {
-    const db = tx as Database; const digest = (await db.select({ id: digests.id }).from(digests).where(and(eq(digests.id, validDigestId), eq(digests.userId, validUserId))).limit(1))[0];
+    const db = tx as Database;
+    const digest = (await db
+      .select({ id: digests.id })
+      .from(digests)
+      .where(and(eq(digests.id, validDigestId), eq(digests.userId, validUserId)))
+      .limit(1))[0];
     if (!digest) throw new Error("digest is not owned by user");
+
     if (parsed.length) {
-      const ownedStories = await db.select({ id: stories.id }).from(stories).where(and(eq(stories.userId, validUserId), inArray(stories.id, parsed.map((value) => value.content.storyId))));
-      if (ownedStories.length !== new Set(parsed.map((value) => value.content.storyId)).size) throw new Error("digest stories must be owned by user");
+      const storyIds = parsed.map((value) => value.content.storyId);
+      const ownedStories = await db
+        .select({ id: stories.id })
+        .from(stories)
+        .where(and(eq(stories.userId, validUserId), inArray(stories.id, storyIds)));
+      if (ownedStories.length !== new Set(storyIds).size) {
+        throw new Error("digest stories must be owned by user");
+      }
+      await db.delete(digestStories).where(and(
+        eq(digestStories.digestId, validDigestId),
+        or(...parsed.map(({ content }) => and(
+          eq(digestStories.storyId, content.storyId),
+          ne(digestStories.storyVersion, content.storyVersion),
+        ))),
+      ));
+      await db
+        .insert(digestStories)
+        .values(parsed.map(({ content, profileVersion, generatedAt }) => ({
+          digestId: validDigestId,
+          storyId: content.storyId,
+          storyVersion: content.storyVersion,
+          profileVersion,
+          title: content.title,
+          topics: content.topics,
+          entities: content.entities,
+          points: content.points,
+          sources: content.sources,
+          relevanceScore: content.relevanceScore,
+          matchedInterestRuleIds: content.matchedInterestRuleIds,
+          generatedAt,
+        })))
+        .onConflictDoUpdate({
+          target: [digestStories.digestId, digestStories.storyId],
+          set: {
+            storyVersion: sql`excluded.story_version`,
+            profileVersion: sql`excluded.profile_version`,
+            title: sql`excluded.title`,
+            topics: sql`excluded.topics`,
+            entities: sql`excluded.entities`,
+            points: sql`excluded.points`,
+            sources: sql`excluded.sources`,
+            relevanceScore: sql`excluded.relevance_score`,
+            matchedInterestRuleIds: sql`excluded.matched_interest_rule_ids`,
+            generatedAt: sql`excluded.generated_at`,
+          },
+        });
+      await db
+        .delete(digestStories)
+        .where(and(
+          eq(digestStories.digestId, validDigestId),
+          notInArray(digestStories.storyId, storyIds),
+        ));
+    } else {
+      await db.delete(digestStories).where(eq(digestStories.digestId, validDigestId));
     }
-    await db.update(digests).set({ contentMode: "stories" }).where(eq(digests.id, validDigestId));
-    await db.delete(digestStories).where(eq(digestStories.digestId, validDigestId));
-    if (parsed.length) await db.insert(digestStories).values(parsed.map(({ content, profileVersion, generatedAt }) => ({ digestId: validDigestId, storyId: content.storyId, storyVersion: content.storyVersion, profileVersion, title: content.title, topics: content.topics, entities: content.entities, points: content.points, sources: content.sources, relevanceScore: content.relevanceScore, matchedInterestRuleIds: content.matchedInterestRuleIds, generatedAt })));
-    return listDigestStories(db, validUserId, validDigestId);
+
+    await db
+      .update(digests)
+      .set({ contentMode: "stories" })
+      .where(eq(digests.id, validDigestId));
+    return await listDigestStories(db, validUserId, validDigestId);
   });
 }
 

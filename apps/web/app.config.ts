@@ -37,7 +37,17 @@ export default defineConfig({
           changeOrigin: true,
           secure: false,
         },
+        "/interests": {
+          target: backendOrigin,
+          changeOrigin: true,
+          secure: false,
+        },
         "/digests": {
+          target: backendOrigin,
+          changeOrigin: true,
+          secure: false,
+        },
+        "/stories": {
           target: backendOrigin,
           changeOrigin: true,
           secure: false,

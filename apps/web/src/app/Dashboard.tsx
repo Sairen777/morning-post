@@ -1,9 +1,12 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import {
   ApiClientError,
+  createInterest,
   deleteDigest,
+  deleteInterest,
   disconnectSource,
   getDigest,
+  getCurrentUser,
   getDigestRunDetail,
   getFeed,
   listAvailableFeeds,
@@ -11,13 +14,16 @@ import {
   listDigests,
   listFeeds,
   listFeedsForSource,
+  listInterests,
   listSources,
   logoutUser,
   runDigest,
+  submitStoryFeedback,
   subscribeFeed,
   unsubscribeFeed,
   updateCurrentUser,
   updateFeed,
+  updateInterest,
   updateSource,
 } from "../api/client";
 import type {
@@ -25,11 +31,15 @@ import type {
   DigestRunDetail,
   DigestView,
   DisconnectSourceResponse,
+  InterestRuleDisposition,
+  InterestRuleKind,
   PublicDigest,
   PublicDigestRun,
   PublicFeed,
+  PublicInterestRule,
   PublicSource,
   PublicUser,
+  RelevanceFilterOverride,
 } from "../api/types";
 import DigestRunnerCard from "./DigestRunnerCard";
 import SourcesPanel from "./SourcesPanel";
@@ -77,6 +87,12 @@ export default function Dashboard(props: DashboardProps) {
   const [sourceFeeds, setSourceFeeds] = createSignal<
     Record<string, PublicFeed[]>
   >({});
+  const [interests, setInterests] = createSignal<PublicInterestRule[]>([]);
+  const [interestsLoading, setInterestsLoading] = createSignal(true);
+  const [interestMutationId, setInterestMutationId] = createSignal<string | null>(
+    null,
+  );
+  const [interestsError, setInterestsError] = createSignal<string | null>(null);
   const [isCheckingDigestRunStatus, setIsCheckingDigestRunStatus] =
     createSignal(
       true,
@@ -115,6 +131,24 @@ export default function Dashboard(props: DashboardProps) {
       if (err instanceof ApiClientError && err.status === 401) {
         props.onAuthError();
       }
+    }
+  };
+
+  const refreshInterests = async () => {
+    setInterestsLoading(true);
+    try {
+      setInterests(await listInterests());
+      setInterestsError(null);
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setInterestsError(err.message);
+      } else {
+        setInterestsError("We couldn't load your interests.");
+      }
+    } finally {
+      setInterestsLoading(false);
     }
   };
 
@@ -244,6 +278,7 @@ export default function Dashboard(props: DashboardProps) {
     refreshSources();
     refreshFeeds();
     refreshDigests();
+    refreshInterests();
     void (async () => {
       await refreshDigestRuns();
       setIsCheckingDigestRunStatus(false);
@@ -275,6 +310,14 @@ export default function Dashboard(props: DashboardProps) {
     await refreshFeeds();
     await refreshSourceFeedsIfLoaded(id);
     return result;
+  };
+
+  const handleUpdateSource = async (
+    id: string,
+    input: { relevanceFilterMode: RelevanceFilterOverride },
+  ) => {
+    await updateSource(id, input);
+    await refreshSources();
   };
 
   const handleDiscoverFeeds = async (
@@ -322,6 +365,7 @@ export default function Dashboard(props: DashboardProps) {
       customPrompt?: string | null;
       position?: number | null;
       enabled?: boolean;
+      relevanceFilterMode?: RelevanceFilterOverride;
     },
   ) => {
     const updated = await updateFeed(id, input);
@@ -333,6 +377,57 @@ export default function Dashboard(props: DashboardProps) {
     const deleted = await unsubscribeFeed(id);
     await refreshFeeds();
     await refreshSourceFeedsIfLoaded(deleted.sourceId);
+  };
+  const handleCreateInterest = async (input: {
+    label: string;
+    kind: InterestRuleKind;
+    disposition: InterestRuleDisposition;
+    strength?: number;
+    expiresAt?: number | null;
+  }) => {
+    setInterestMutationId("new");
+    try {
+      const created = await createInterest(input);
+      setInterests((prev) => [...prev, created]);
+      setInterestsError(null);
+    } finally {
+      setInterestMutationId(null);
+    }
+  };
+
+  const handleUpdateInterest = async (
+    id: string,
+    input: Partial<{
+      label: string;
+      kind: InterestRuleKind;
+      disposition: InterestRuleDisposition;
+      strength: number;
+      expiresAt: number | null;
+    }>,
+  ) => {
+    setInterestMutationId(id);
+    try {
+      const updated = await updateInterest(id, input);
+      setInterests((prev) => prev.map((rule) => rule.id === id ? updated : rule));
+      setInterestsError(null);
+    } finally {
+      setInterestMutationId(null);
+    }
+  };
+
+  const handleDeleteInterest = async (id: string) => {
+    const previous = interests();
+    setInterestMutationId(id);
+    setInterests((prev) => prev.filter((rule) => rule.id !== id));
+    try {
+      await deleteInterest(id);
+      setInterestsError(null);
+    } catch (err: unknown) {
+      setInterests(previous);
+      throw err;
+    } finally {
+      setInterestMutationId(null);
+    }
   };
 
   const handleRunDigest = async (body: {
@@ -354,6 +449,19 @@ export default function Dashboard(props: DashboardProps) {
     await refreshDigestRuns();
   };
 
+  const refreshProfileAndPreferences = async () => {
+    await Promise.all([
+      refreshInterests(),
+      getCurrentUser()
+        .then((user) => props.onUserUpdate(user))
+        .catch((err: unknown) => {
+          if (err instanceof ApiClientError && err.status === 401) {
+            props.onAuthError();
+          }
+        }),
+    ]);
+  };
+
   const handleSelectRun = async (id: string): Promise<DigestRunDetail> => {
     return await getDigestRunDetail(id);
   };
@@ -361,7 +469,11 @@ export default function Dashboard(props: DashboardProps) {
   const handleSaveProfile = async (input: {
     name?: string;
     systemPrompt?: string;
+    summaryPrompt?: string;
     defaultLanguage?: string | null;
+    defaultRelevanceFilterMode?: "personalized" | "include_all";
+    relevanceThreshold?: number;
+    maximumStoriesPerDigest?: number | null;
   }): Promise<PublicUser> => {
     const updated = await updateCurrentUser(input);
     props.onUserUpdate(updated);
@@ -447,6 +559,8 @@ export default function Dashboard(props: DashboardProps) {
             onSelectDigest={handleSelectDigest}
             onDeleteDigest={handleDeleteDigest}
             onAuthError={props.onAuthError}
+            onSubmitFeedback={submitStoryFeedback}
+            onFeedbackSuccess={refreshProfileAndPreferences}
             nextCursor={digestCursor()}
             loadingMore={loadingMoreDigests()}
             onLoadMore={handleLoadMoreDigests}
@@ -492,6 +606,7 @@ export default function Dashboard(props: DashboardProps) {
           sourceFeeds={sourceFeeds()}
           onToggleSource={handleToggleSource}
           onUpdateSourcePosition={handleUpdateSourcePosition}
+          onUpdateSource={handleUpdateSource}
           onDisconnectSource={handleDisconnectSource}
           onDiscoverFeeds={handleDiscoverFeeds}
           onLoadSourceFeeds={handleLoadSourceFeeds}
@@ -515,6 +630,13 @@ export default function Dashboard(props: DashboardProps) {
         <ProfilePanel
           user={props.user}
           onSave={handleSaveProfile}
+          interests={interests()}
+          interestsLoading={interestsLoading()}
+          interestMutationId={interestMutationId()}
+          interestsError={interestsError()}
+          onCreateInterest={handleCreateInterest}
+          onUpdateInterest={handleUpdateInterest}
+          onDeleteInterest={handleDeleteInterest}
           onSaved={props.onUserUpdate}
           onAuthError={props.onAuthError}
         />

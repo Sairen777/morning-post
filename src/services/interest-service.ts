@@ -5,6 +5,10 @@ import type {
   InterestRuleKind,
 } from "../personalization/personalization.types.ts";
 import {
+  MAXIMUM_PERSONALIZATION_LABEL_LENGTH,
+  personalizationLabelSchema,
+} from "../personalization/personalization-label.ts";
+import {
   dismissOwnedInterestRule,
   listActiveInterestRules,
   saveExplicitInterestRule,
@@ -12,9 +16,10 @@ import {
   type PublicInterestRule,
 } from "../repositories/interest-rule-repository.ts";
 
-export const MAXIMUM_INTEREST_LABEL_LENGTH = 200;
+export const MAXIMUM_INTEREST_LABEL_LENGTH =
+  MAXIMUM_PERSONALIZATION_LABEL_LENGTH;
 
-const labelSchema = z.string().trim().min(1).max(MAXIMUM_INTEREST_LABEL_LENGTH);
+const labelSchema = personalizationLabelSchema;
 const kindSchema = z.enum(["topic", "entity", "phrase", "story_type"]);
 const dispositionSchema = z.enum(["prioritize", "show_less", "mute"]);
 const expirySchema = z.number().int().nonnegative().nullable();

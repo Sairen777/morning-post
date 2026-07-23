@@ -1,5 +1,14 @@
 import { createSignal, For, Show } from "solid-js";
-import type { DigestSection, DigestView, PublicDigest } from "../api/types";
+import type {
+  DigestSection,
+  DigestStory,
+  DigestView,
+  PublicDigest,
+  StoryFeedbackInput,
+  StoryFeedbackStoryAction,
+  StoryFeedbackTarget,
+  StoryFeedbackTargetAction,
+} from "../api/types";
 import StatusBadge from "./StatusBadge";
 import FormatTime from "./FormatTime";
 function safeHttpUrl(value: string | null): string | undefined {
@@ -148,12 +157,281 @@ function DigestSectionView(props: { section: DigestSection }) {
   );
 }
 
+const storyActions: ReadonlyArray<{
+  action: StoryFeedbackStoryAction;
+  label: string;
+}> = [
+  { action: "relevant", label: "Relevant" },
+  { action: "not_relevant", label: "Not for me" },
+  { action: "already_known", label: "Already knew" },
+  { action: "too_repetitive", label: "Too repetitive" },
+];
+
+const targetActions: ReadonlyArray<{
+  action: StoryFeedbackTargetAction;
+  label: string;
+}> = [
+  { action: "follow_topic", label: "Follow" },
+  { action: "show_less_topic", label: "Show less" },
+  { action: "mute_topic", label: "Mute" },
+];
+
+interface StoryFeedbackState {
+  kind: "pending" | "success" | "error";
+  message: string;
+}
+
+function storyFeedbackKey(
+  storyId: string,
+  input: StoryFeedbackInput,
+): string {
+  return JSON.stringify([
+    storyId,
+    input.action,
+    input.target?.kind ?? "",
+    input.target?.label ?? "",
+  ]);
+}
+
+interface StoryCardProps {
+  story: DigestStory;
+  feedbackAvailable: boolean;
+  feedbackState: (input: StoryFeedbackInput) => StoryFeedbackState | undefined;
+  isPending: (input: StoryFeedbackInput) => boolean;
+  onSubmit: (input: StoryFeedbackInput) => void;
+}
+
+function StoryCard(props: StoryCardProps) {
+  const targets: StoryFeedbackTarget[] = [
+    ...props.story.topics.map((label) => ({ kind: "topic" as const, label })),
+    ...props.story.entities.map((label) => ({ kind: "entity" as const, label })),
+  ];
+  const headingId = `story-${props.story.id}-title`;
+  const feedbackInputs: StoryFeedbackInput[] = [
+    ...storyActions.map(({ action }) => ({
+      digestStoryId: props.story.id,
+      action,
+    })),
+    ...targets.flatMap((target) =>
+      targetActions.map(({ action }) => ({
+        digestStoryId: props.story.id,
+        action,
+        target,
+      }))
+    ),
+  ];
+  const feedbackMessages = () =>
+    feedbackInputs.flatMap((input) => {
+      const state = props.feedbackState(input);
+      return state ? [state] : [];
+    });
+
+  return (
+    <article class="story-card" aria-labelledby={headingId}>
+      <h4 class="story-heading" id={headingId}>{props.story.title}</h4>
+      <div class="story-meta" aria-label="Story relevance">
+        <span>{props.story.relevanceScore}% relevance</span>
+        <span aria-hidden="true">·</span>
+        <span>
+          {props.story.sources.length}{" "}
+          {props.story.sources.length === 1 ? "source" : "sources"}
+        </span>
+        <Show when={props.story.matchedInterestRuleIds.length > 0}>
+          <span aria-hidden="true">·</span>
+          <span>
+            {props.story.matchedInterestRuleIds.length} matched{" "}
+            {props.story.matchedInterestRuleIds.length === 1 ? "interest" : "interests"}
+          </span>
+        </Show>
+      </div>
+
+      <Show
+        when={props.story.points.length > 0}
+        fallback={<p class="hint digest-empty">No summary points available.</p>}
+      >
+        <ul class="bullet-list story-points">
+          <For each={props.story.points}>
+            {(point) => (
+              <li>
+                {point.text}
+                <Show when={safeHttpUrl(point.sourceUrl)}>
+                  {(sourceUrl) => (
+                    <>
+                      {" "}
+                      <a
+                        href={sourceUrl()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        source
+                      </a>
+                    </>
+                  )}
+                </Show>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+
+      <Show when={props.story.topics.length > 0 || props.story.entities.length > 0}>
+        <dl class="story-labels">
+          <Show when={props.story.topics.length > 0}>
+            <div class="story-label-group">
+              <dt>Topics</dt>
+              <dd>
+                <For each={props.story.topics}>
+                  {(topic) => <span class="badge">{topic}</span>}
+                </For>
+              </dd>
+            </div>
+          </Show>
+          <Show when={props.story.entities.length > 0}>
+            <div class="story-label-group">
+              <dt>Entities</dt>
+              <dd>
+                <For each={props.story.entities}>
+                  {(entity) => <span class="badge">{entity}</span>}
+                </For>
+              </dd>
+            </div>
+          </Show>
+        </dl>
+      </Show>
+
+      <section class="story-sources" aria-labelledby={`story-${props.story.id}-sources`}>
+        <h5 id={`story-${props.story.id}-sources`}>Sources</h5>
+        <Show
+          when={props.story.sources.length > 0}
+          fallback={<p class="hint digest-empty">No source details available.</p>}
+        >
+          <ul class="story-source-list">
+            <For each={props.story.sources}>
+              {(source) => (
+                <li class="story-source">
+                  <Show
+                    when={safeHttpUrl(source.url)}
+                    fallback={<span>{source.title ?? "Untitled source"}</span>}
+                  >
+                    {(sourceUrl) => (
+                      <a
+                        href={sourceUrl()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {source.title ?? source.feedName}
+                      </a>
+                    )}
+                  </Show>
+                  <Show when={source.title !== null}>
+                    <span class="story-source-feed">{source.feedName}</span>
+                  </Show>
+                  <span class="badge">{source.connectorId}</span>
+                  <FormatTime ms={source.publishedAt} />
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+      </section>
+
+      <section
+        class="story-feedback"
+        aria-labelledby={`story-${props.story.id}-feedback`}
+      >
+        <h5 id={`story-${props.story.id}-feedback`}>Tune this story</h5>
+        <div class="story-feedback-actions" role="group" aria-label="Story feedback">
+          <For each={storyActions}>
+            {(action) => {
+              const input: StoryFeedbackInput = {
+                digestStoryId: props.story.id,
+                action: action.action,
+              };
+              const pending = () => props.isPending(input);
+              return (
+                <button
+                  type="button"
+                  aria-label={`${action.label}: ${props.story.title}`}
+                  aria-busy={pending()}
+                  disabled={!props.feedbackAvailable || pending()}
+                  onClick={() => props.onSubmit(input)}
+                >
+                  {pending() ? "Saving…" : action.label}
+                </button>
+              );
+            }}
+          </For>
+        </div>
+
+        <Show when={targets.length > 0}>
+          <ul class="story-target-list" aria-label="Topic and entity feedback">
+            <For each={targets}>
+              {(target) => (
+                <li class="story-target-row">
+                  <span class="story-target-label">
+                    <span class="badge">{target.kind}</span>{" "}
+                    {target.label}
+                  </span>
+                  <div
+                    class="story-target-actions"
+                    role="group"
+                    aria-label={`Feedback for ${target.kind} ${target.label}`}
+                  >
+                    <For each={targetActions}>
+                      {(action) => {
+                        const input: StoryFeedbackInput = {
+                          digestStoryId: props.story.id,
+                          action: action.action,
+                          target,
+                        };
+                        const pending = () => props.isPending(input);
+                        return (
+                          <button
+                            type="button"
+                            aria-label={`${action.label} ${target.kind} ${target.label}`}
+                            aria-busy={pending()}
+                            disabled={!props.feedbackAvailable || pending()}
+                            onClick={() => props.onSubmit(input)}
+                          >
+                            {pending() ? "Saving…" : action.label}
+                          </button>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+
+        <For each={feedbackMessages()}>
+          {(state) => (
+            <p
+              class={`story-feedback-state ${state.kind}`}
+              role={state.kind === "error" ? "alert" : "status"}
+              aria-live="polite"
+            >
+              {state.message}
+            </p>
+          )}
+        </For>
+      </section>
+    </article>
+  );
+}
+
 interface DigestsPanelProps {
   digests: PublicDigest[];
   onSelectDigest: (id: string) => Promise<DigestView>;
   onDeleteDigest: (id: string) => Promise<void>;
   onAuthError: () => void;
   nextCursor?: string;
+  onSubmitFeedback?: (
+    storyId: string,
+    input: StoryFeedbackInput,
+  ) => Promise<unknown>;
+  onFeedbackSuccess?: () => void | Promise<void>;
   loadingMore?: boolean;
   onLoadMore?: () => Promise<void>;
 }
@@ -164,6 +442,12 @@ export default function DigestsPanel(props: DigestsPanelProps) {
   const [loading, setLoading] = createSignal(false);
   const [deletingId, setDeletingId] = createSignal<string | null>(null);
   const [error, setError] = createSignal<string | null>(null);
+  const [pendingFeedback, setPendingFeedback] = createSignal<
+    Record<string, true>
+  >({});
+  const [feedbackStates, setFeedbackStates] = createSignal<
+    Record<string, StoryFeedbackState>
+  >({});
 
   const handleSelect = async (id: string) => {
     setSelectedId(id);
@@ -215,6 +499,60 @@ export default function DigestsPanel(props: DigestsPanelProps) {
       setError(message);
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleStoryFeedback = async (
+    story: DigestStory,
+    input: StoryFeedbackInput,
+  ) => {
+    const submitFeedback = props.onSubmitFeedback;
+    if (!submitFeedback) return;
+    const feedbackKey = storyFeedbackKey(story.id, input);
+    if (pendingFeedback()[feedbackKey]) return;
+
+    setPendingFeedback((current) => ({ ...current, [feedbackKey]: true }));
+    setFeedbackStates((current) => ({
+      ...current,
+      [feedbackKey]: { kind: "pending", message: "Saving feedback…" },
+    }));
+
+    try {
+      await submitFeedback(story.storyId, input);
+      setFeedbackStates((current) => ({
+        ...current,
+        [feedbackKey]: { kind: "success", message: "Feedback saved." },
+      }));
+      try {
+        await props.onFeedbackSuccess?.();
+      } catch {
+        // The feedback is durable even when a follow-up profile refresh fails.
+      }
+    } catch (err: unknown) {
+      const status = err instanceof Error && "status" in err &&
+          typeof err.status === "number"
+        ? err.status
+        : undefined;
+      if (status === 401) {
+        props.onAuthError();
+      }
+      setFeedbackStates((current) => ({
+        ...current,
+        [feedbackKey]: {
+          kind: "error",
+          message: status === 401
+            ? "Your session expired before feedback could be saved."
+            : err instanceof Error
+            ? err.message
+            : "Feedback could not be saved.",
+        },
+      }));
+    } finally {
+      setPendingFeedback((current) => {
+        const next = { ...current };
+        delete next[feedbackKey];
+        return next;
+      });
     }
   };
 
@@ -318,27 +656,58 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                 View markdown
               </a>
             </div>
-            <For
-              each={view().groups.filter((group) =>
-                group.sections.some(hasVisibleDigestSection)
-              )}
+            <Show
+              when={view().digest.contentMode === "stories" ||
+                (view().stories?.length ?? 0) > 0}
+              fallback={
+                <For
+                  each={view().groups.filter((group) =>
+                    group.sections.some(hasVisibleDigestSection)
+                  )}
+                >
+                  {(group) => (
+                    <section class="digest-group">
+                      <div class="meta-row">
+                        <dt>Source</dt>
+                        <dd>{group.sourceId}</dd>
+                      </div>
+                      <div class="meta-row">
+                        <dt>Connector</dt>
+                        <dd>{group.connectorId}</dd>
+                      </div>
+                      <For each={group.sections.filter(hasVisibleDigestSection)}>
+                        {(section) => <DigestSectionView section={section} />}
+                      </For>
+                    </section>
+                  )}
+                </For>
+              }
             >
-              {(group) => (
-                <section class="digest-group">
-                  <div class="meta-row">
-                    <dt>Source</dt>
-                    <dd>{group.sourceId}</dd>
-                  </div>
-                  <div class="meta-row">
-                    <dt>Connector</dt>
-                    <dd>{group.connectorId}</dd>
-                  </div>
-                  <For each={group.sections.filter(hasVisibleDigestSection)}>
-                    {(section) => <DigestSectionView section={section} />}
+              <Show
+                when={(view().stories?.length ?? 0) > 0}
+                fallback={
+                  <p class="hint digest-empty" role="status">
+                    No stories met this digest's delivery criteria.
+                  </p>
+                }
+              >
+                <div class="story-list">
+                  <For each={view().stories ?? []}>
+                    {(story) => (
+                      <StoryCard
+                        story={story}
+                        feedbackAvailable={props.onSubmitFeedback !== undefined}
+                        feedbackState={(input) =>
+                          feedbackStates()[storyFeedbackKey(story.id, input)]}
+                        isPending={(input) =>
+                          pendingFeedback()[storyFeedbackKey(story.id, input)] === true}
+                        onSubmit={(input) => void handleStoryFeedback(story, input)}
+                      />
+                    )}
                   </For>
-                </section>
-              )}
-            </For>
+                </div>
+              </Show>
+            </Show>
             <Show when={view().paidPosts.length > 0}>
               <section class="paid-posts" aria-labelledby="paid-posts-title">
                 <h3 id="paid-posts-title">Paid posts</h3>

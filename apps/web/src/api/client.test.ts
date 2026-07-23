@@ -3,19 +3,25 @@ import {
   addSubstackPublication,
   ApiClientError,
   connectSubstackSession,
+  createInterest,
   deleteDigest,
+  deleteInterest,
   disconnectSource,
   getDigestRunDetail,
   getFeed,
   getTelegramLoginStatus,
   listDigestRuns,
   listFeedsForSource,
+  listInterests,
   listSubstackPublications,
   startTelegramLogin,
+  submitStoryFeedback,
   submitTelegramTwoFactorAuthentication,
   unsubscribeFeed,
   updateCurrentUser,
+  updateInterest,
   updateSource,
+  updateFeed,
 } from "../api/client";
 
 describe("ApiClientError", () => {
@@ -42,6 +48,7 @@ describe("updateCurrentUser", () => {
               name: "Test",
               email: "t@t.com",
               systemPrompt: "",
+              summaryPrompt: "",
               defaultLanguage: null,
               createdAt: 0,
               updatedAt: 0,
@@ -95,6 +102,143 @@ describe("updateSource", () => {
       expect(fetchCalls[0][1]?.method).toBe("PATCH");
       expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({
         showPaidPostTitles: true,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("interest CRUD", () => {
+  it("uses typed list, create, update, and dismiss endpoints", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<[string, RequestInit?]> = [];
+    try {
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        calls.push([url, opts]);
+        const rule = {
+          id: "rule-1",
+          label: "Machine learning",
+          kind: "topic",
+          disposition: "mute",
+          origin: "explicit",
+          state: "active",
+          strength: 60,
+          expiresAt: null,
+          createdAt: 0,
+          updatedAt: 0,
+        };
+        return Promise.resolve(new Response(
+          JSON.stringify(calls.length === 1 ? [] : rule),
+          { status: calls.length === 2 ? 201 : 200 },
+        ));
+      }) as typeof fetch;
+      await listInterests();
+      await createInterest({
+        label: "Machine learning",
+        kind: "topic",
+        disposition: "mute",
+        expiresAt: null,
+      });
+      await updateInterest("rule-1", { disposition: "show_less" });
+      await deleteInterest("rule-1");
+      expect(calls.map(([url]) => url)).toEqual([
+        "/interests",
+        "/interests",
+        "/interests/rule-1",
+        "/interests/rule-1",
+      ]);
+      expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+        label: "Machine learning",
+        kind: "topic",
+        disposition: "mute",
+        expiresAt: null,
+      });
+      expect(calls[3][1]?.method).toBe("DELETE");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("submitStoryFeedback", () => {
+  it("posts story and targeted feedback with the delivered story row id", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<[string, RequestInit?]> = [];
+    try {
+      globalThis.fetch = ((url: string, options?: RequestInit) => {
+        calls.push([url, options]);
+        return Promise.resolve(new Response(JSON.stringify({
+          feedback: {
+            id: `feedback-${calls.length}`,
+            digestStoryId: "delivered-story-1",
+            storyId: "story-1",
+            storyVersion: 3,
+            action: calls.length === 1 ? "relevant" : "mute_topic",
+            createdAt: 1_700_000_000_000,
+          },
+          interestRules: [],
+        }), { status: 200 }));
+      }) as typeof fetch;
+
+      await submitStoryFeedback("story/1", {
+        digestStoryId: "delivered-story-1",
+        action: "relevant",
+      });
+      await submitStoryFeedback("story/1", {
+        digestStoryId: "delivered-story-1",
+        action: "mute_topic",
+        target: { kind: "entity", label: "Example Corp" },
+      });
+
+      expect(calls.map(([url]) => url)).toEqual([
+        "/stories/story%2F1/feedback",
+        "/stories/story%2F1/feedback",
+      ]);
+      expect(calls.map(([, options]) => options?.method)).toEqual([
+        "POST",
+        "POST",
+      ]);
+      expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+        digestStoryId: "delivered-story-1",
+        action: "relevant",
+      });
+      expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+        digestStoryId: "delivered-story-1",
+        action: "mute_topic",
+        target: { kind: "entity", label: "Example Corp" },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("profile and feed policy payloads", () => {
+  it("sends global filtering settings and feed overrides", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<[string, RequestInit?]> = [];
+    try {
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        calls.push([url, opts]);
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+      }) as typeof fetch;
+      await updateCurrentUser({
+        summaryPrompt: "Use concise bullets.",
+        defaultRelevanceFilterMode: "include_all",
+        relevanceThreshold: 75,
+        maximumStoriesPerDigest: 12,
+      });
+      await updateSource("source-1", { relevanceFilterMode: "personalized" });
+      await updateFeed("feed-1", { relevanceFilterMode: "include_all" });
+      expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+        summaryPrompt: "Use concise bullets.",
+        defaultRelevanceFilterMode: "include_all",
+        relevanceThreshold: 75,
+        maximumStoriesPerDigest: 12,
+      });
+      expect(JSON.parse(calls[2][1]?.body as string)).toEqual({
+        relevanceFilterMode: "include_all",
       });
     } finally {
       globalThis.fetch = originalFetch;

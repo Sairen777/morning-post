@@ -1,5 +1,5 @@
 import { createSignal, For, Show } from "solid-js";
-import type { PublicFeed, FeedKind } from "../api/types";
+import type { PublicFeed, FeedKind, RelevanceFilterOverride } from "../api/types";
 import { ApiClientError } from "../api/client";
 import FormatTime from "./FormatTime";
 
@@ -14,6 +14,7 @@ interface FeedsPanelProps {
       customPrompt?: string | null;
       position?: number | null;
       enabled?: boolean;
+      relevanceFilterMode?: RelevanceFilterOverride;
     },
   ) => Promise<void>;
   onUnsubscribeFeed: (id: string) => Promise<void>;
@@ -29,6 +30,7 @@ export default function FeedsPanel(props: FeedsPanelProps) {
   const [feedEdits, setFeedEdits] = createSignal<
     Record<string, { kind: FeedKind; customPrompt: string; position: string }>
   >({});
+  const [updatingPolicy, setUpdatingPolicy] = createSignal<Record<string, boolean>>({});
 
   const feedsBySource = () => {
     const map: Record<string, PublicFeed[]> = {};
@@ -55,6 +57,29 @@ export default function FeedsPanel(props: FeedsPanelProps) {
       } else if (err instanceof Error) {
         setErrors((e) => ({ ...e, [id]: err.message }));
       }
+    }
+  };
+
+  const handlePolicyChange = async (
+    id: string,
+    relevanceFilterMode: RelevanceFilterOverride,
+  ) => {
+    setUpdatingPolicy((p) => ({ ...p, [id]: true }));
+    try {
+      await props.onUpdateFeed(id, { relevanceFilterMode });
+      setErrors((e) => {
+        const next = { ...e };
+        delete next[id];
+        return next;
+      });
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setErrors((e) => ({ ...e, [id]: err.message }));
+      }
+    } finally {
+      setUpdatingPolicy((p) => ({ ...p, [id]: false }));
     }
   };
 
@@ -188,6 +213,27 @@ export default function FeedsPanel(props: FeedsPanelProps) {
                         />
                         <span>Enabled</span>
                       </label>
+                    </div>
+                    <div class="form-group" style="margin-top: 0.75rem;">
+                      <label for={`feed-policy-${feed.id}`}>Relevance filtering</label>
+                      <select
+                        id={`feed-policy-${feed.id}`}
+                        aria-label={`Relevance filtering for ${feed.name}`}
+                        value={feed.relevanceFilterMode}
+                        disabled={updatingPolicy()[feed.id]}
+                        onChange={(e) =>
+                          handlePolicyChange(
+                            feed.id,
+                            e.currentTarget.value as RelevanceFilterOverride,
+                          )}
+                      >
+                        <option value="inherit">Inherit source/profile setting</option>
+                        <option value="personalized">Personalized</option>
+                        <option value="include_all">Include all</option>
+                      </select>
+                      <div class="hint">
+                        Inherit follows the source override, then your profile setting.
+                      </div>
                     </div>
 
                     <div class="form-row" style="gap: 0.5rem; margin: 0.5rem 0;">

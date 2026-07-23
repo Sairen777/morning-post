@@ -64,6 +64,18 @@ async function incrementProfileVersion(database: Database, userId: string): Prom
   if (!rows[0]) throw new NotFoundError("user not found");
 }
 
+async function lockUserForInterestMutation(
+  database: Database,
+  userId: string,
+): Promise<void> {
+  const rows = await database
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, userId))
+    .for("update");
+  if (!rows[0]) throw new NotFoundError("user not found");
+}
+
 export async function listActiveInterestRules(
   database: Database,
   userId: string,
@@ -83,6 +95,7 @@ export async function saveExplicitInterestRule(
 ): Promise<PublicInterestRule> {
   return await database.transaction(async (transaction) => {
     const tx = transaction as Database;
+    await lockUserForInterestMutation(tx, input.userId);
     const now = Date.now();
     const rows = await tx.insert(interestRules).values({
       ...input,
@@ -117,6 +130,7 @@ export async function updateOwnedInterestRule(
   try {
     return await database.transaction(async (transaction) => {
       const tx = transaction as Database;
+      await lockUserForInterestMutation(tx, userId);
       const rows = await tx.update(interestRules).set({
         ...input,
         origin: "explicit",
@@ -143,6 +157,7 @@ export async function dismissOwnedInterestRule(
 ): Promise<PublicInterestRule> {
   return await database.transaction(async (transaction) => {
     const tx = transaction as Database;
+    await lockUserForInterestMutation(tx, userId);
     const rows = await tx.update(interestRules).set({ state: "dismissed", updatedAt: Date.now() }).where(and(
       eq(interestRules.id, id), eq(interestRules.userId, userId),
     )).returning(publicColumns());

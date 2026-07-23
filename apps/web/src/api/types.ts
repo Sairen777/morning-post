@@ -1,9 +1,17 @@
+export type RelevanceFilterMode = "personalized" | "include_all";
+export type RelevanceFilterOverride = "inherit" | RelevanceFilterMode;
+
 export interface PublicUser {
   id: string;
   name: string;
   email: string;
   systemPrompt: string;
+  summaryPrompt: string;
   defaultLanguage: string | null;
+  defaultRelevanceFilterMode: RelevanceFilterMode;
+  relevanceThreshold: number;
+  maximumStoriesPerDigest: number | null;
+  interestProfileVersion: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -15,6 +23,7 @@ export interface PublicSource {
   position: number | null;
   enabled: boolean;
   showPaidPostTitles: boolean;
+  relevanceFilterMode: RelevanceFilterOverride;
   connected: boolean;
   createdAt: number;
   updatedAt: number;
@@ -37,8 +46,26 @@ export interface PublicFeed {
   customPrompt: string | null;
   position: number | null;
   enabled: boolean;
+  relevanceFilterMode: RelevanceFilterOverride;
   deletedAt: number | null;
   lastFetchedPeriodEndMs: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type InterestRuleKind = "topic" | "entity" | "phrase" | "story_type";
+export type InterestRuleDisposition = "prioritize" | "show_less" | "mute";
+export type InterestRuleOrigin = "explicit" | "inferred";
+
+export interface PublicInterestRule {
+  id: string;
+  label: string;
+  kind: InterestRuleKind;
+  disposition: InterestRuleDisposition;
+  origin: InterestRuleOrigin;
+  state: "active" | "dismissed";
+  strength: number;
+  expiresAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -51,6 +78,11 @@ export interface PublicDigest {
   periodStartMs: number;
   periodEndMs: number;
   status: DigestStatus;
+  /**
+   * Historical digest rows predate content modes, so older API fixtures may
+   * omit this field. A missing mode is rendered as a legacy digest.
+   */
+  contentMode?: "legacy" | "stories";
   createdAt: number;
   updatedAt: number;
 }
@@ -97,6 +129,82 @@ export interface DigestSourceGroup {
   connectorId: string;
   sections: DigestSection[];
 }
+
+export interface DigestStorySource {
+  itemId: string;
+  connectorId: ConnectorId;
+  sourceId: string;
+  feedId: string;
+  feedName: string;
+  title: string | null;
+  url: string | null;
+  publishedAt: number;
+}
+
+export interface DigestStory {
+  /** Delivered-card identifier used to validate feedback ownership. */
+  id: string;
+  digestId: string;
+  storyId: string;
+  storyVersion: number;
+  profileVersion: number;
+  title: string;
+  topics: string[];
+  entities: string[];
+  points: SummaryPoint[];
+  sources: DigestStorySource[];
+  relevanceScore: number;
+  matchedInterestRuleIds: string[];
+  generatedAt: number;
+}
+
+export type StoryFeedbackStoryAction =
+  | "relevant"
+  | "not_relevant"
+  | "already_known"
+  | "too_repetitive";
+
+export type StoryFeedbackTargetAction =
+  | "follow_topic"
+  | "show_less_topic"
+  | "mute_topic";
+
+export type StoryFeedbackAction =
+  | StoryFeedbackStoryAction
+  | StoryFeedbackTargetAction;
+
+export interface StoryFeedbackTarget {
+  kind: "topic" | "entity";
+  label: string;
+}
+
+export type StoryFeedbackInput =
+  | {
+    digestStoryId: string;
+    action: StoryFeedbackStoryAction;
+    target?: never;
+  }
+  | {
+    digestStoryId: string;
+    action: StoryFeedbackTargetAction;
+    target: StoryFeedbackTarget;
+  };
+
+export interface StoryFeedbackRecord {
+  id: string;
+  digestStoryId: string;
+  storyId: string;
+  storyVersion: number;
+  action: StoryFeedbackAction;
+  target?: StoryFeedbackTarget;
+  createdAt: number;
+}
+
+export interface StoryFeedbackResponse {
+  feedback: StoryFeedbackRecord;
+  interestRules: PublicInterestRule[];
+}
+
 export interface PaidPost {
   newsletterName: string;
   title: string;
@@ -106,6 +214,8 @@ export interface PaidPost {
 
 export interface DigestView {
   digest: PublicDigest;
+  /** Story-mode payload; absent from historical legacy responses. */
+  stories?: DigestStory[];
   sections: DigestSection[];
   groups: DigestSourceGroup[];
   paidPosts: PaidPost[];

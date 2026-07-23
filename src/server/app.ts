@@ -11,6 +11,7 @@ import { buildDigestRoutes, type DigestRouteOptions } from "./routes/digests.ts"
 import { buildFeedRoutes, type FeedRouteDependencies } from "./routes/feeds.ts";
 import { buildInterestRoutes } from "./routes/interests.ts";
 import { buildSourceRoutes } from "./routes/sources.ts";
+import { buildStoryFeedbackRoutes } from "./routes/story-feedback.ts";
 
 export interface ServerBindings {
   server: Bun.Server<undefined>;
@@ -63,6 +64,7 @@ export function buildApp(
   app.route("/digests", buildDigestRoutes(database, dependencies.digests));
   app.route("/", buildFeedRoutes(database, dependencies.feeds));
   app.route("/", buildInterestRoutes(database));
+  app.route("/", buildStoryFeedbackRoutes(database));
 
   return app;
 }

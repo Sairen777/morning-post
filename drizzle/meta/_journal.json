@@ -120,6 +120,13 @@
       "when": 1784825987415,
       "tag": "0016_flat_frank_castle",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784826755935,
+      "tag": "0017_abandoned_kang",
+      "breakpoints": true
     }
   ]
 }

@@ -9,12 +9,17 @@ import type {
   PublicDigest,
   PublicDigestRun,
   PublicFeed,
+  PublicInterestRule,
   PublicSource,
   PublicUser,
+  RelevanceFilterMode,
+  RelevanceFilterOverride,
   SubstackPublicationInput,
   SubstackPublicationResponse,
   SubstackSessionInput,
   SubstackSessionResponse,
+  StoryFeedbackInput,
+  StoryFeedbackResponse,
   TelegramLoginSessionStatus,
   TelegramLoginStart,
 } from "./types.ts";
@@ -94,7 +99,11 @@ export function logoutUser(): Promise<void> {
 export function updateCurrentUser(input: {
   name?: string;
   systemPrompt?: string;
+  summaryPrompt?: string;
   defaultLanguage?: string | null;
+  defaultRelevanceFilterMode?: RelevanceFilterMode;
+  relevanceThreshold?: number;
+  maximumStoriesPerDigest?: number | null;
 }): Promise<PublicUser> {
   return apiRequest<PublicUser>("/auth/me", {
     method: "PATCH",
@@ -166,6 +175,7 @@ export function updateSource(
     enabled?: boolean;
     position?: number | null;
     showPaidPostTitles?: boolean;
+    relevanceFilterMode?: RelevanceFilterOverride;
   },
 ): Promise<PublicSource> {
   return apiRequest<PublicSource>(`/sources/${id}`, {
@@ -178,6 +188,45 @@ export function disconnectSource(
   id: string,
 ): Promise<DisconnectSourceResponse> {
   return apiRequest<DisconnectSourceResponse>(`/sources/${id}`, {
+    method: "DELETE",
+  });
+}
+// Interests
+export function listInterests(): Promise<PublicInterestRule[]> {
+  return apiRequest<PublicInterestRule[]>("/interests");
+}
+
+export function createInterest(input: {
+  label: string;
+  kind: PublicInterestRule["kind"];
+  disposition: PublicInterestRule["disposition"];
+  strength?: number;
+  expiresAt?: number | null;
+}): Promise<PublicInterestRule> {
+  return apiRequest<PublicInterestRule>("/interests", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateInterest(
+  id: string,
+  input: Partial<{
+    label: string;
+    kind: PublicInterestRule["kind"];
+    disposition: PublicInterestRule["disposition"];
+    strength: number;
+    expiresAt: number | null;
+  }>,
+): Promise<PublicInterestRule> {
+  return apiRequest<PublicInterestRule>(`/interests/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteInterest(id: string): Promise<PublicInterestRule> {
+  return apiRequest<PublicInterestRule>(`/interests/${id}`, {
     method: "DELETE",
   });
 }
@@ -202,6 +251,7 @@ export function updateFeed(
     customPrompt?: string | null;
     position?: number | null;
     enabled?: boolean;
+    relevanceFilterMode?: RelevanceFilterOverride;
   },
 ): Promise<PublicFeed> {
   return apiRequest<PublicFeed>(`/feeds/${id}`, {
@@ -273,6 +323,19 @@ export function runDigest(input: {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export function submitStoryFeedback(
+  storyId: string,
+  input: StoryFeedbackInput,
+): Promise<StoryFeedbackResponse> {
+  return apiRequest<StoryFeedbackResponse>(
+    `/stories/${encodeURIComponent(storyId)}/feedback`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 // Digest runs

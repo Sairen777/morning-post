@@ -16,6 +16,7 @@ const source: PublicSource = {
   position: null,
   enabled: true,
   showPaidPostTitles: false,
+  relevanceFilterMode: "inherit",
   connected: true,
   createdAt: 0,
   updatedAt: 0,
@@ -26,7 +27,12 @@ const user: PublicUser = {
   name: "Dashboard Reader",
   email: "dashboard-reader@example.com",
   systemPrompt: "",
+  summaryPrompt: "",
   defaultLanguage: null,
+  defaultRelevanceFilterMode: "personalized",
+  relevanceThreshold: 60,
+  maximumStoriesPerDigest: null,
+  interestProfileVersion: 1,
   createdAt: 0,
   updatedAt: 0,
 };
@@ -41,6 +47,7 @@ function feed(id: string, externalId: string, name: string): PublicFeed {
     customPrompt: null,
     position: null,
     enabled: true,
+    relevanceFilterMode: "inherit",
     deletedAt: null,
     lastFetchedPeriodEndMs: null,
     createdAt: 0,
@@ -98,6 +105,7 @@ describe("Dashboard Substack refresh ordering", () => {
 
       globalThis.fetch = vi.fn((input, init) => {
         const path = String(input);
+        if (path === "/interests") return Promise.resolve(jsonResponse([]));
         if (path === "/sources") return Promise.resolve(jsonResponse([source]));
         if (path.startsWith("/digests") || path.startsWith("/digest-runs")) {
           return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
@@ -217,6 +225,7 @@ function dashboardResponse(
   digestResponse: unknown = emptyDigestPage(),
 ) {
   if (path === "/sources") return jsonResponse([]);
+  if (path === "/interests") return jsonResponse([]);
   if (path === "/feeds") return jsonResponse([]);
   if (path === "/digests/runs") return jsonResponse(digestRunsResponse);
   if (path === "/digests") return jsonResponse(digestResponse);
