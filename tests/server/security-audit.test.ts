@@ -1,6 +1,5 @@
 import { test } from "bun:test";
 import { assertEquals } from "../assertions.ts";
-import { discardOperationalEvent } from "../operational-log-recorder.ts";
 import type { Hono } from "hono";
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
@@ -11,11 +10,9 @@ import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
 import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
 import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
-import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
-import { getOrSummarizeFeedPeriod } from "../../src/services/summarization-service.ts";
 import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
 import { fixtureStoryIntelligence } from "../services/fixture-story-intelligence.ts";
 
@@ -31,15 +28,6 @@ class FakeSummarizer implements SummarizerService {
   }
 }
 
-function userInput(email: string): CreateUserInput {
-  return {
-    name: "Security Owner",
-    email,
-    passwordHash: "$argon2id$fakehash",
-    systemPrompt: "Summarize tersely.",
-    defaultLanguage: "en",
-  };
-}
 
 function credentialCipher(): CredentialCipher {
   return new CredentialCipher(new EnvMasterKeyProvider(MASTER_KEY_BYTES));
@@ -105,7 +93,7 @@ test("security audit enforces authz and does not leak secrets in GET responses o
     const app = buildApp(database);
     const ownerId = await register(app, "security-owner@example.com");
     const ownerCookie = await login(app, "security-owner@example.com");
-    const otherId = await register(app, "security-other@example.com");
+    await register(app, "security-other@example.com");
     const otherCookie = await login(app, "security-other@example.com");
 
     const source = await createSource(database, {
@@ -122,7 +110,7 @@ test("security audit enforces authz and does not leak secrets in GET responses o
       kind: "news",
     });
     await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "secure")], 1);
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer(), intelligence: fixtureStoryIntelligence, now: () => 300, });
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer(), intelligence: fixtureStoryIntelligence, now: () => 300, });
 
     const originalConsoleError = console.error;
     const capturedLogs: string[] = [];
@@ -139,11 +127,6 @@ test("security audit enforces authz and does not leak secrets in GET responses o
       const unauthorizedMarkdownResponse = await app.request(`/digests/${digest.digest.id}.md`, { headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" } });
       assertEquals(unauthorizedMarkdownResponse.status, 404);
 
-      await createUser(database, userInput("security-third@example.com"));
-      const summaryAccessError = await getOrSummarizeFeedPeriod(database, otherId, feed.id, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent })
-        .then(() => null)
-        .catch((error) => error as Error);
-      assertEquals(summaryAccessError?.message, "feed not found");
 
       const responses = await Promise.all([
         app.request("/auth/me", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } }),

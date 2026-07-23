@@ -8,7 +8,7 @@ import type { DigestView } from "../services/digest-service.ts";
 import type { OrchestratorDependencies } from "../services/orchestrator.ts";
 import type { DigestPeriod } from "../services/orchestrator.ts";
 import type { Scheduler } from "./scheduler.ts";
-import { cleanupExpiredMedia } from "../services/summarization-service.ts";
+import { cleanupExpiredMedia } from "../services/media-cleanup-service.ts";
 import { getConfig } from "../config.ts";
 
 export const DEFAULT_DIGEST_CRON = "0 6 * * *";

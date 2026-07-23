@@ -390,7 +390,7 @@
         <p class="eyebrow">Morning Post · Technical Design Documentation</p>
         <h1>Current architecture, security posture, and scalability review</h1>
         <p
-          class="lede">This document captures the repository architecture as implemented on 2026-07-21 and records the security and scalability decisions for the current Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence layer, Telegram and Substack connectors, and OpenAI-compatible summarization pipeline.</p>
+          class="lede">This document captures the repository architecture as implemented on 2026-07-23 and records the security and scalability decisions for the current Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence layer, connector-neutral story pipeline, Telegram and Substack connectors, and OpenAI-compatible analysis and summarization boundary.</p>
         <p
           class="diagram-note">Diagrams are embedded as Mermaid source and intentionally do not load a CDN; this keeps the file offline and self-contained. Render with a local Mermaid tool if a graphical version is needed.</p>
         <div class="meta-grid" aria-label="document metadata">
@@ -402,7 +402,7 @@
           <div class="card">
             <div class="card-title">Primary assets</div>
             <strong>Credentials, sessions, messages</strong>
-            <p>Telegram session strings, imported Substack session-cookie values, Morning Post session cookies, user prompts, message/post text and media, summaries, and digest history.</p>
+            <p>Telegram session strings, imported Substack session-cookie values, Morning Post session cookies, user prompts and interest rules, message/post text and media, story analyses, summaries, feedback, and digest history.</p>
           </div>
           <div class="card">
             <div class="card-title">Main risk</div>
@@ -440,8 +440,8 @@
               <li>Repository functions consistently accept <code>userId</code> and scope reads/writes to ownership.</li>
               <li>Session tokens are random 256-bit values; only SHA-256 token hashes are stored.</li>
               <li>Connector credentials use envelope encryption with AES-256-GCM and owner-bound AAD.</li>
-              <li>Item and summary writes are idempotent through database unique constraints and upserts.</li>
-              <li>Service seams are simple: connectors fetch/normalize, summarizers summarize, repositories persist.</li>
+              <li>Item analyses, stories, delivered story cards, feedback, and digests use database uniqueness constraints and idempotent upserts.</li>
+              <li>Service seams are explicit: connectors fetch and normalize, story intelligence analyzes/resolves/classifies, summarizers write story points, and repositories persist.</li>
             </ul>
           </div>
           <div class="card">
@@ -450,8 +450,8 @@
               <li>Bun processes inherit the operating-system privileges of their account; filesystem, environment, network, subprocess, and native-module boundaries must therefore be enforced by deployment isolation and application code.</li>
               <li>Rate limiting is process-local and trusts request forwarding headers without an app-level trusted-proxy policy.</li>
               <li>Croner prevents overlapping callbacks within a process, while PostgreSQL scheduler leases coordinate digest ticks across API instances.</li>
-              <li>Summarization is a provider boundary with deployment-wide text and vision endpoints, deterministic text/item/image caps, and run-local vision fallback behavior.</li>
-              <li>Telegram/media artifacts are written locally with no TTL, quota, or object-storage lifecycle.</li>
+              <li>Story analysis and summarization are provider boundaries with deployment-wide text and vision endpoints, deterministic text/item/image caps, and run-local media-description fallback behavior.</li>
+              <li>Connector media remain local, but per-connector quotas and a weekly TTL sweep bound retention on a single host.</li>
             </ul>
           </div>
           <div class="card">
@@ -472,7 +472,7 @@
       <section id="context">
         <div class="section-kicker">System context</div>
         <h2>Morning Post is a multi-user digest service with external connector and LLM boundaries.</h2>
-        <p>The web UI calls the Bun API with cookie credentials. The API owns authentication, connector credential custody, feed subscription state, ingestion, summarization, digest assembly, and scheduled runs. PostgreSQL stores users, sessions, encrypted source credentials, feed subscriptions, item cache, summaries, digests, and digest-run audit rows.</p>
+        <p>The web UI calls the Bun API with cookie credentials. The API owns authentication, connector credential custody, feed subscription state, ingestion, connector-neutral item analysis, cross-feed story resolution, relevance classification, story summarization, feedback, digest assembly, and scheduled runs. PostgreSQL stores users, sessions, encrypted source credentials, feed subscriptions, item and analysis caches, personalized rules, evolving stories and developments, delivered story snapshots, durable feedback, historical legacy summaries, digests, and digest-run audit rows.</p>
 
         <pre class="mermaid">flowchart LR
   Browser["Browser\nSolidStart SPA"] -->|credentials: include| API["Bun 1.3.14 + Hono API"]
@@ -496,7 +496,7 @@
               <li><strong>API → PostgreSQL:</strong> persistence for sensitive metadata and encrypted credentials. <code>DB_SSL_MODE</code> configures TLS (default <code>disable</code> for local loopback; <code>require</code> or <code>verify-full</code> for remote). Pool size, idle timeout, and connect timeout are explicitly configured from env vars.</li>
               <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
               <li><strong>API → Substack:</strong> users explicitly import <code>substack.sid</code> and may also provide <code>connect.sid</code> when their browser has it; Morning Post never accepts a Substack password or raw cookie header. Account-subscription discovery and paid/full post retrieval send only the provided session cookies to the fixed <code>https://substack.com</code> origin. Manual publication validation fetches public archives without cookies through the IP-pinned HTTPS boundary. The integration replays an unsupported browser session and may conflict with Substack terms; the UI discloses that risk before connection.</li>
-              <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), per-period cleanup, and weekly TTL sweep (<code>MEDIA_TTL_MS</code>). Bun's Node-compatible filesystem APIs operate with the process account's privileges rather than runtime permission flags. Deployment ownership and filesystem ACLs should restrict the process to every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> (<code>telegram_media</code>, <code>substack_media</code>, <code>youtube_media</code>, <code>reddit_media</code>, <code>x_media</code>, <code>rss_media</code>) plus the shared/legacy <code>./media</code>; application path validation, feed isolation, quotas, eviction, cleanup, and TTL traversal remain the in-process boundaries.</li>
+              <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), and a weekly TTL sweep (<code>MEDIA_TTL_MS</code>). Bun's Node-compatible filesystem APIs operate with the process account's privileges rather than runtime permission flags. Deployment ownership and filesystem ACLs should restrict the process to every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> (<code>telegram_media</code>, <code>substack_media</code>, <code>youtube_media</code>, <code>reddit_media</code>, <code>x_media</code>, <code>rss_media</code>) plus the shared/legacy <code>./media</code>; application path validation, feed isolation, quotas, eviction, and TTL traversal remain the in-process boundaries.</li>
               </div>
               <div>
                 <h3>Runtime entry points</h3>
@@ -619,28 +619,28 @@
 
                 <pre class="mermaid">flowchart TB
   subgraph Web["apps/web/src"]
-    UI["Solid components"]
+    UI["Dashboard, preference panels, story cards"]
     Client["api/client.ts"]
     UI --> Client
   end
 
   subgraph API["src/server"]
     App["app.ts"]
-    AuthRoutes["routes/auth.ts"]
-    ConnectorRoutes["routes/connectors.ts"]
-    SourceRoutes["routes/sources.ts"]
-    FeedRoutes["routes/feeds.ts"]
+    AuthRoutes["auth/connectors/sources/feeds routes"]
     DigestRoutes["routes/digests.ts"]
+    InterestRoutes["routes/interests.ts"]
+    FeedbackRoutes["routes/story-feedback.ts"]
     RequireAuth["middleware/require-auth.ts"]
-    RateLimit["middleware/rate-limit.ts"]
   end
 
   subgraph Domain["src/services"]
-    Login["login/registration/profile services"]
     Orchestrator["orchestrator.ts"]
     Ingestion["ingestion-service.ts"]
-    DigestService["digest-service.ts"]
-    Summarization["summarization-service.ts"]
+    StoryDigest["story-digest-service.ts"]
+    StoryIntelligence["story-intelligence-service.ts"]
+    Feedback["story-feedback-service.ts"]
+    DigestView["digest-service.ts"]
+    MediaCleanup["media-cleanup-service.ts"]
   end
 
   subgraph Integrations["src/connectors + src/summarizers"]
@@ -651,34 +651,31 @@
   end
 
   subgraph Persistence["src/repositories + src/db/schema"]
-    Repos["Repository modules"]
+    Repos["User-scoped repositories"]
     Schema["Drizzle schema"]
     DB[("PostgreSQL")]
   end
 
   Client --> App
   App --> AuthRoutes
-  App --> ConnectorRoutes
-  App --> SourceRoutes
-  App --> FeedRoutes
   App --> DigestRoutes
-  AuthRoutes --> RateLimit
-  ConnectorRoutes --> RateLimit
-  DigestRoutes --> RateLimit
-  SourceRoutes --> RequireAuth
-  FeedRoutes --> RequireAuth
+  App --> InterestRoutes
+  App --> FeedbackRoutes
   DigestRoutes --> RequireAuth
-  AuthRoutes --> Login
-  ConnectorRoutes --> Factory
+  InterestRoutes --> RequireAuth
+  FeedbackRoutes --> RequireAuth
   DigestRoutes --> Orchestrator
   Orchestrator --> Ingestion
-  Orchestrator --> DigestService
-  DigestService --> Summarization
-  Summarization --> Summarizer
+  Orchestrator --> StoryDigest
+  StoryDigest --> StoryIntelligence
+  StoryDigest --> Summarizer
+  StoryDigest --> DigestView
+  FeedbackRoutes --> Feedback
+  StoryIntelligence --> Prompts
   Summarizer --> Prompts
-  Ingestion --> Connector
+  Ingestion --> Factory
+  Factory --> Connector
   Domain --> Repos
-  Factory --> Repos
   Repos --> Schema
   Schema --> DB</pre>
 
@@ -693,38 +690,38 @@
                   <tbody>
                     <tr>
                       <td>Frontend</td>
-                      <td>SolidStart SPA, dashboard panels, API client, cookie-authenticated fetches.</td>
-                      <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>. Auth state is client loaded via <code>/auth/me</code>.</td>
+                      <td>SolidStart SPA, preference editors, story-mode and historical digest views, provenance links, and story/topic feedback controls.</td>
+                      <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>; Vinxi proxies authenticated API namespaces including <code>/interests</code> and <code>/stories</code>.</td>
                     </tr>
                     <tr>
                       <td>Server routes</td>
-                      <td>HTTP shape, auth middleware, rate limit attachment, request parsing, response projection.</td>
-                      <td>Routes are thin. Known errors go through centralized Hono <code>errorHandler</code>.</td>
+                      <td>HTTP shape, authentication, ownership-scoped request parsing, response projection, and feedback validation.</td>
+                      <td>Routes are thin. Known errors go through the centralized Hono <code>errorHandler</code>.</td>
                     </tr>
                     <tr>
                       <td>Services</td>
-                      <td>Registration, login, source/profile workflows, ingestion orchestration, digest assembly, summarization.</td>
-                      <td>Digest flow is readable and testable; expensive stages are mostly sequential today.</td>
+                      <td>Connector ingestion, global story assembly, relevance policy resolution, summary generation, feedback-to-interest transitions, and digest projection.</td>
+                      <td>All new digests use story mode. The legacy summary path is read-only for historical digest rows.</td>
+                    </tr>
+                    <tr>
+                      <td>Story intelligence and summarizer</td>
+                      <td>Analyze connector-neutral item features, resolve evolving stories/developments, classify relevance, describe sparse media, and produce sourced story points.</td>
+                      <td>Prompt construction is centralized in <code>src/summarizers/prompts.ts</code>; model calls are bounded and strict JSON is repaired then validated.</td>
                     </tr>
                     <tr>
                       <td>Connectors</td>
                       <td>External service fetching and normalization into <code>NormalizedItem[]</code>.</td>
-                      <td>Connector output stays connector-agnostic; connector-specific data belongs in <code>meta</code>.</td>
-                    </tr>
-                    <tr>
-                      <td>Summarizer</td>
-                      <td>Builds OpenAI-compatible request content and parses JSON points.</td>
-                      <td>The class is domain-agnostic; prompt construction is centralized in <code>src/summarizers/prompts.ts</code>.</td>
+                      <td>Connector-specific fields remain in <code>meta</code>; story identity and relevance consume the common payload.</td>
                     </tr>
                     <tr>
                       <td>Repositories</td>
-                      <td>Drizzle queries, ownership filters, JSON shape parsing, upserts, soft delete behavior.</td>
-                      <td>Repository boundaries are the strongest IDOR defense; keep them user-scoped by default.</td>
+                      <td>Ownership filters, cached analyses, story/development versioning, stable delivered-card replacement, feedback identity, and transactional profile invalidation.</td>
+                      <td>User-row locks establish a common mutation order for explicit and feedback-derived interest changes.</td>
                     </tr>
                     <tr>
                       <td>Scheduler</td>
-                      <td>Daily digest tick, user paging, bounded per-process user concurrency.</td>
-                      <td>Safe for one process; needs distributed locks before multiple API instances run the scheduler.</td>
+                      <td>Daily digest ticks, user paging, distributed leases, bounded user concurrency, stale-run recovery, and weekly media TTL cleanup.</td>
+                      <td>PostgreSQL leases coordinate scheduler leaders across API processes.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -732,51 +729,61 @@
 
               <section id="domain-model">
                 <div class="section-kicker">Domain model</div>
-                <h2>The persistence model is generic across connectors.</h2>
-                <p>The app models connector accounts as <strong>sources</strong> and individual subscriptions as <strong>feeds</strong>. Items and summaries are cached per feed. Digests are user-facing period aggregates derived from summaries. Digest-run tables are operational audit trails for each manual or scheduled run.</p>
+                <h2>The story model is connector-neutral and user-scoped.</h2>
+                <p>Sources represent connector accounts and feeds represent subscriptions. Connector items are cached once, analyzed into common topics/entities/story and development keys, then linked into evolving user-owned stories. New digests persist selected story-version snapshots with every source; historical pre-story summaries remain read-only so old digests continue to render. Interest rules and feed/source policy overrides control zero-to-all relevance filtering. Feedback records the delivered digest/story/version identity and can update the same interest profile transactionally.</p>
 
                 <pre class="mermaid">erDiagram
   users ||--o{ sessions : owns
   users ||--o{ sources : owns
+  users ||--o{ interest_rules : configures
+  users ||--o{ stories : owns
   users ||--o{ digests : owns
   users ||--o{ digest_runs : owns
   sources ||--o{ feeds : contains
   feeds ||--o{ items : caches
-  feeds ||--o{ summaries : summarized_by
+  feeds ||--o{ summaries : historical
+  items ||--o| item_analyses : analyzed_as
+  stories ||--o{ story_developments : evolves_through
+  story_developments ||--o{ story_items : groups
+  items ||--o| story_items : participates_in
+  digests ||--o{ digest_stories : delivers
+  stories ||--o{ digest_stories : snapshots
+  digests ||--o{ story_feedback : scopes
+  stories ||--o{ story_feedback : receives
   digests ||--o{ digest_runs : linked_from
   digest_runs ||--o{ digest_run_feeds : records
-  sources ||--o{ digest_run_feeds : snapshots
-  feeds ||--o{ digest_run_feeds : snapshots
 
   users {
     uuid id PK
     text email UK
-    text password_hash
     text system_prompt
-    bigint created_at
+    text summary_prompt
+    text default_relevance_filter_mode
+    integer relevance_threshold
+    integer interest_profile_version
   }
-  sessions {
+  interest_rules {
     uuid id PK
     uuid user_id FK
-    text token_hash UK
-    bigint expires_at
-    bigint last_seen_at
+    text kind
+    text disposition
+    text origin
+    text state
+    text normalized_label
   }
   sources {
     uuid id PK
     uuid user_id FK
     text connector_id
     jsonb credentials
-    boolean enabled
-    boolean show_paid_post_titles
+    text relevance_filter_mode
   }
   feeds {
     uuid id PK
     uuid source_id FK
     text external_id
-    text kind
+    text relevance_filter_mode
     bigint last_fetched_period_end_ms
-    bigint deleted_at
   }
   items {
     uuid id PK
@@ -785,26 +792,52 @@
     bigint date
     jsonb payload
   }
-  summaries {
+  item_analyses {
+    uuid item_id PK
+    text fingerprint
+    text analyzer_version
+    jsonb analysis
+  }
+  stories {
     uuid id PK
-    uuid feed_id FK
-    bigint period_start_ms
-    bigint period_end_ms
-    jsonb content
+    uuid user_id FK
+    text canonical_key
+    integer version
+    jsonb topics
+    jsonb entities
+  }
+  story_developments {
+    uuid id PK
+    uuid story_id FK
+    text canonical_key
+    integer version
+    bigint occurred_at
+  }
+  digest_stories {
+    uuid id PK
+    uuid digest_id FK
+    uuid story_id FK
+    integer story_version
+    integer profile_version
+    jsonb points
+    jsonb sources
+  }
+  story_feedback {
+    uuid id PK
+    uuid user_id FK
+    uuid digest_id FK
+    uuid digest_story_id
+    uuid story_id FK
+    integer story_version
+    text action
+    text target_kind
+    text target_label
   }
   digests {
     uuid id PK
     uuid user_id FK
-    bigint period_start_ms
-    bigint period_end_ms
+    text content_mode
     text status
-  }
-  digest_runs {
-    uuid id PK
-    uuid user_id FK
-    uuid digest_id FK
-    text status
-    text trigger
   }</pre>
 
                 <table>
@@ -818,8 +851,8 @@
                   <tbody>
                     <tr>
                       <td>User</td>
-                      <td>Owns all sensitive objects; public projection must not leak password hash.</td>
-                      <td><code>toPublicUser()</code> enumerates safe fields explicitly.</td>
+                      <td>Owns every personalized object; prompts and policy changes must invalidate generated story snapshots without leaking the password hash.</td>
+                      <td>The public projection enumerates safe fields. <code>interestProfileVersion</code> increments for effective filtering/summary configuration or interest-policy changes.</td>
                     </tr>
                     <tr>
                       <td>Session</td>
@@ -842,19 +875,39 @@
                       <td>Unique <code>(feedId, externalId)</code> and indexed <code>(feedId, date, externalId)</code>.</td>
                     </tr>
                     <tr>
-                      <td>Summary</td>
-                      <td>One summary per feed and period; summaries snapshot feed names for history.</td>
-                      <td>Upsert on <code>(feedId, periodStartMs, periodEndMs)</code>; <code>content</code> is a strict Zod tagged union. Migration 0013 renamed <code>points</code> and wrapped historical arrays as aggregate content.</td>
+                      <td>Historical summary</td>
+                      <td>Legacy digest history must survive feed removal even though new per-feed generation is disabled.</td>
+                      <td><code>summaries</code> and its repository remain read-only inputs for <code>contentMode = legacy</code> digest projection.</td>
+                    </tr>
+                    <tr>
+                      <td>Interest rule</td>
+                      <td>Explicit preferences outrank inference; dismissed inferred rules are tombstones; mute is a hard exclusion.</td>
+                      <td>Unique <code>(userId, kind, normalizedLabel)</code>. User-row locks precede rule writes so explicit edits and feedback use one deadlock-safe order.</td>
+                    </tr>
+                    <tr>
+                      <td>Story and development</td>
+                      <td>An item belongs to one development; an evolving story version changes when membership, fingerprints, or persisted metadata change.</td>
+                      <td>User-scoped canonical keys, first-class development rows, item fingerprints, bounded recent-story references, and batch upserts under one user advisory lock.</td>
+                    </tr>
+                    <tr>
+                      <td>Delivered story</td>
+                      <td>A digest stores exactly the version and provenance shown to the user.</td>
+                      <td>Unique <code>(digestId, storyId)</code>. Ordinary reruns upsert same-version cards to preserve IDs; version changes rotate card IDs so stale tabs cannot submit against a newer snapshot.</td>
+                    </tr>
+                    <tr>
+                      <td>Story feedback</td>
+                      <td>Feedback must be owned, version-attached, durable across card replacement, and idempotent.</td>
+                      <td>The route validates the owned delivered card. Durable uniqueness uses <code>(userId, digestId, storyId, storyVersion, action, targetKind, targetLabel)</code>; <code>digestStoryId</code> is an audit snapshot, not a cascading foreign key.</td>
                     </tr>
                     <tr>
                       <td>Digest</td>
-                      <td>One digest per user and period; derived sections stay queryable by ownership.</td>
-                      <td>Unique <code>(userId, periodStartMs, periodEndMs)</code>; atomic upsert with <code>onConflictDoUpdate</code>.</td>
+                      <td>One digest per user/period; all new assembly is story-based while legacy reads remain compatible.</td>
+                      <td>Atomic user-period upsert plus <code>contentMode</code>. Story cards carry profile version, score, matched rules, points, topics/entities, and every source.</td>
                     </tr>
                     <tr>
                       <td>Digest run</td>
-                      <td>Operational state for observability, partial failures, and retries.</td>
-                      <td>Run and per-feed rows track stages, status, item counts, timing, and sanitized error messages. An outer <code>runForUser()</code> lifecycle boundary finalizes unexpected in-process failures before rethrowing the original error.</td>
+                      <td>Operational state supports partial ingestion, summary failure, recovery, and retries.</td>
+                      <td>Run/feed rows track connector and ingestion state. Story-summary failure marks the run partial and preserves a prior valid same-digest card when available.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -911,65 +964,85 @@
   participant S as Scheduler or /digests/run
   participant O as runForUser
   participant C as ConnectorFactory/Connector
-  participant I as Item repository
-  participant G as Summarizer
+  participant I as Story intelligence
+  participant G as Story summarizer
   participant DB as PostgreSQL
 
   S->>O: userId + period
   O->>DB: create digest_run(status=running)
   O->>DB: load enabled sources and feeds
-  loop each source
-    O->>C: create connector handle from decrypted source credentials
-    loop each feed needing ingestion
-      O->>DB: start digest_run_feed(stage=ingestion)
-      O->>C: getNormalizedData(from,to,[feed.externalId])
-      O->>I: upsert items and advance lastFetchedPeriodEndMs
-      O->>DB: finish digest_run_feed
-    end
+  loop each enabled source
+    O->>C: create one connector handle
+    O->>C: batch feeds, or fetch individual feeds with bounded concurrency
+    O->>DB: upsert normalized items and finish ingestion feed rows
     O->>C: dispose connector handle
   end
-  O->>DB: upsert digest(status=pending)
-  loop each successful feed without a current summary
-    O->>DB: start digest_run_feed(stage=summarization)
-    O->>O: choose strategy from connectorId
-    alt Substack
-      loop each ordered article
-        alt only_paid preview and meta.hasPaidSubscription == false
-          O->>O: persist contentAccess=paid and points=[]; do not call model
-        else explicit entitlement or no proven inaccessible state
-          O->>G: summarize exactly one article in article mode
-        end
-      end
-      O->>O: build articles content with source metadata
-    else Telegram or another connector
-      O->>G: summarize all feed-period items in aggregate mode
-      O->>O: build aggregate content
-    end
-    O->>DB: upsert tagged summary content
-    O->>DB: finish digest_run_feed
+  O->>DB: upsert digest(status=pending, contentMode=stories)
+  O->>DB: load accessible items across all successful feeds
+  O->>DB: load analyses by item fingerprint + analyzer version
+  O->>I: analyze cache misses in bounded batches
+  O->>DB: persist item analyses
+  O->>DB: load bounded recent story references
+  O->>I: resolve stories globally across connectors, feeds, and prior runs
+  O->>DB: batch upsert stories, developments, membership, and versions
+  O->>DB: load interest rules and feed/source/user filter policy
+  alt personalized stories
+    O->>I: classify every candidate with rules + interest instructions
+  else include_all stories
+    O->>I: apply deterministic hard mutes only
   end
+  O->>O: suppress already-delivered versions; sort; apply optional max
+  par bounded selected-story workers
+    O->>G: summarize every development with all source items
+  end
+  O->>DB: upsert same-version cards; rotate changed-version IDs; remove deselected cards
   O->>DB: set digest status; finish digest_run
-  O-->>S: derived DigestView</pre>
+  O-->>S: DigestView with stories, provenance, and paid title projections</pre>
+
+                <h3>Story feedback and preference learning</h3>
+                <pre class="mermaid">sequenceDiagram
+  participant B as Story card
+  participant A as POST /stories/:storyId/feedback
+  participant F as Story feedback service
+  participant DB as PostgreSQL
+
+  B->>A: digestStoryId + story or topic/entity action
+  A->>F: authenticated userId + validated body
+  F->>DB: lock user, then owned delivered card
+  F->>F: validate target against persisted delivered topics/entities
+  F->>DB: insert idempotent feedback keyed by digest/story/version/action/target
+  alt relevant or not_relevant
+    F->>DB: infer prioritize or show_less topic rules
+  else follow/show less/mute target
+    F->>DB: create or update an explicit topic/entity rule
+  end
+  F->>DB: bump interestProfileVersion once if rules changed
+  F-->>B: feedback + active rules
+  B->>B: announce per-action result; refresh profile and interests</pre>
 
                 <p>One running digest per user is intentional. After a Dashboard reload, the initial run-status check restores any persisted running state and duplicate submission remains blocked until that check settles. While a run is active, the Dashboard polls its status every five seconds without overlapping requests and refreshes the digest list when the run reaches a terminal state. If <code>POST /digests/run</code> loses a race and returns <code>409</code>, the Dashboard maps the conflict to the active-run UI instead of displaying raw error text.</p>
 
                 <p>API startup and every scheduler leader tick call <code>recoverStaleDigestRuns()</code>. The recovery transaction marks only runs older than <code>DIGEST_RUN_STALE_AFTER_MS</code> and their still-running feed stages as <code>failed</code>; terminal feed stages remain unchanged. Fresh running rows are preserved so a rolling multi-instance deployment cannot fail work owned by another live process.</p>
 
-                <p>Substack archive ingestion accepts both <code>newsletter</code> articles and <code>podcast</code> episodes as summarizable posts; unrelated archive entry types remain excluded. Paid access is an explicit entitlement boundary, not a body-shape heuristic. An authenticated <code>GET /api/v1/posts/by-id/:id</code> can return a nonempty teaser in <code>post.body_html</code> to a free subscriber, so neither body presence nor text length proves access. <code>SubstackSessionClient</code> reads <code>subscription.membership_state</code>; only the exact value <code>paid_subscriber</code> is affirmative. Missing or unknown evidence is normalized conservatively to <code>meta.hasPaidSubscription: false</code>. For an <code>only_paid</code> archive item without entitlement, normalization falls back to the preview and emits <code>meta.contentAccess: "preview"</code> plus <code>meta.hasPaidSubscription: false</code>. Entitled paid responses must contain a nonempty normalized private body; otherwise ingestion fails rather than summarizing or caching the public teaser. Inaccessible paid posts persist as <code>contentAccess: "paid"</code> with no points and never trigger a model call.</p>
+                <p>Substack archive ingestion accepts both <code>newsletter</code> articles and <code>podcast</code> episodes as story inputs; unrelated archive entry types remain excluded. Paid access is an explicit entitlement boundary, not a body-shape heuristic. Only exact <code>paid_subscriber</code> membership is affirmative. Missing or unknown evidence is normalized conservatively to <code>meta.hasPaidSubscription: false</code>. An inaccessible <code>only_paid</code> item emits <code>meta.contentAccess: "preview"</code>; it is excluded before story analysis and summarization, so preview/body text never reaches the model. Entitled paid responses must contain a nonempty normalized private body or ingestion fails.</p>
 
-                <p>Every digest rerun authoritatively re-ingests the full requested period for each feed containing an <code>only_paid</code> Substack Item, even when its cursor already covers that period. This symmetric refresh observes free-to-paid upgrades and paid-to-free downgrades. Historical refreshes preserve the maximum cursor endpoint instead of moving it backward. The same path repairs legacy Items whose entitlement flag is absent without guessing or a destructive migration. Item <code>fetchedAt</code> advances only when the payload changes, making it a durable content-version timestamp. Any changed or newly inserted Item newer than its cached Summary forces regeneration, including public podcasts first discovered during paid-feed repair; if the model call fails, persisted timestamps remain stale and the next run retries.</p>
+                <p>Every digest rerun authoritatively re-ingests the full requested period for a feed containing an <code>only_paid</code> Substack item, even when its cursor already covers that period. This observes free-to-paid upgrades and paid-to-free downgrades without guessing. Story-analysis cache identity is the item payload fingerprint plus analyzer version; changed access/body content is reanalyzed, changes story membership/version when necessary, and retries summarization after a failed run. Unchanged story and profile versions reuse the current valid digest card without another summary call.</p>
 
-                <p>Every <code>DigestView</code> includes <code>paidPosts</code>. Digest projection partitions paid articles out of ordinary sections, preserving stable digest/article order for title projection only when the owning Substack source has <code>showPaidPostTitles</code> enabled. An Item's explicit <code>meta.hasPaidSubscription === false</code> overrides stale cached summary points during projection; a missing flag is never guessed to mean either paid access or inaccessibility. The API can retain a genuinely empty article section, but the web digest omits empty Substack publication sections instead of rendering <code>No articles available.</code>. Within a rendered Substack article, the linked title is the source, so article summary bullets do not repeat point-level source links; aggregate connector bullets retain source links. The Markdown API representation and web digest append a final <strong>Paid posts</strong> section. Paid posts are grouped by newsletter: within the section, each unique newsletter name (from <code>summary.feedNameSnapshot</code> captured at generation time) appears once as a newsletter header, followed by that newsletter's title-only article bullets in their original digest/article order. Only safe HTTP(S) titles are linked. Paid article preview/body text is never rendered there.</p>
+                <p>Every <code>DigestView</code> includes <code>paidPosts</code>. In story mode, projection suppresses a stored story if any source item has since become an inaccessible paid preview, preventing a stale full-body summary leak. When the owning Substack source enables <code>showPaidPostTitles</code>, safe HTTP(S) titles are projected separately and never include preview text. Historical <code>contentMode = legacy</code> digests retain their summary-backed read projection under the same current-access suppression. Story cards render every safe provenance link, connector/feed label, persisted topic/entity, and summary point.</p>
 
                 <div class="risk-grid">
                   <div class="card">
                     <div class="card-title">Current failure isolation</div>
-                    <p>A connector creation failure records a failed connector-stage run feed. Per-feed ingestion and summarization failures are caught and recorded; successful feeds still contribute to a partial digest. If an unexpected error escapes those boundaries after the run row exists, <code>runForUser()</code> makes a best-effort transition of that exact run to <code>failed</code> with sanitized error text, then preserves and rethrows the original error.</p>
+                    <p>A connector creation or feed-ingestion failure is recorded on the affected run-feed row while successful feeds can still contribute. Story analysis/resolution errors fail assembly; selected-story summary errors are isolated by bounded workers, mark the digest/run partial, and retain a prior valid card for that story when one exists. If an unexpected error escapes after run creation, <code>runForUser()</code> best-effort finalizes that exact run as <code>failed</code> with sanitized text and rethrows the original error.</p>
                   </div>
                   <div class="card">
                     <div
                       class="card-title">Connector-specific ingestion and bounded deadlines</div>
-                    <p>Telegram handles use source batching through <code>ingestFeedsForSource()</code>. Substack handles use <code>ingestFeedsIndividually()</code> with default concurrency four, one deadline per publication, and per-feed failure isolation. Feed-ingestion deadlines are <strong>hard races</strong> — they do not rely on connector <code>AbortSignal</code> cooperation. Both batched and per-feed deadlines race the connector call against a <code>Promise.withResolvers</code> reject via <code>Promise.race</code>. Either path produces per-feed <code>connector deadline exceeded</code> errors without persisting late data or
+                    <p>Telegram handles batch feeds by source through <code>ingestFeedsForSource()</code>. Substack handles use <code>ingestFeedsIndividually()</code> with bounded concurrency and one deadline per publication. Both paths hard-race connector calls, so a late provider return cannot persist data or advance cursors after <code>connector deadline exceeded</code>.</p>
+                  </div>
+                </div>
+              </section>
+
                     <section id="security">
                       <div class="section-kicker">Security review</div>
                       <h2>Primary risks are permission breadth, provider boundaries, and edge hardening.</h2>
@@ -1057,6 +1130,7 @@
                             <th>Status</th>
                           </tr>
                         </thead>
+                  <tbody>
                         <tr>
                           <td><span class="badge critical">S1</span></td>
                           <td>Bun process privileges must be constrained around dynamic external destinations and local native/filesystem access.</td>
@@ -1121,7 +1195,7 @@
 
                     <section id="scalability">
                       <div class="section-kicker">Scalability review</div>
-                      <h2>The current shape supports one process and moderate usage; the next bottlenecks are connector batching, LLM payload limits, and distributed coordination.</h2>
+                      <h2>The current shape supports moderate usage; the next bottlenecks are global story-pair adjudication, provider throughput, and multi-host media storage.</h2>
 
                       <h3>Scalability strengths</h3>
                       <table>
@@ -1149,19 +1223,19 @@
                             <td>Overlapping windows can refresh changed items without duplicate rows.</td>
                           </tr>
                           <tr>
-                            <td>Idempotent summaries and digests</td>
-                            <td>Summary and digest repositories use <code>onConflictDoUpdate</code>.</td>
-                            <td>Retries can converge to one row per feed-period or user-period.</td>
+                            <td>Idempotent story assembly and digests</td>
+                            <td>Analysis fingerprints, canonical story keys, versioned membership, stable same-version digest cards, and atomic digest upserts converge across retries.</td>
+                            <td>Unchanged item/story/profile state avoids repeat analysis and summary work.</td>
                           </tr>
                           <tr>
-                            <td>Partial failure model</td>
-                            <td>Digest-run feed rows track connector, ingestion, and summarization stages.</td>
-                            <td>Operators can see which feed failed without throwing away successful feeds.</td>
+                            <td>Bounded global work</td>
+                            <td>Analysis, relation adjudication, and classification partition by item/byte caps; selected story summaries use a bounded worker pool.</td>
+                            <td>Cross-feed resolution remains global without an unbounded provider request or <code>Promise.all</code>.</td>
                           </tr>
                           <tr>
                             <td>Historical digest resilience</td>
-                            <td>Feed soft delete and summary feed-name snapshots preserve old digests.</td>
-                            <td>User history survives feed removal and upstream rename.</td>
+                            <td>Story digests snapshot all provenance. Legacy summaries and feed-name snapshots remain readable after clean cutover.</td>
+                            <td>User history survives feed removal, upstream rename, and the per-feed generation removal.</td>
                           </tr>
                         </tbody>
                       </table>
@@ -1211,7 +1285,7 @@
                             <td>Local media retention is unbounded.</td>
                             <td>Connector media paths use local media directories; README notes Telegram photos are downloaded for channels. No TTL, quota, or cleanup worker is present in the reviewed flow.</td>
                             <td>Add lifecycle: content-addressed paths or per-run dirs, reference counting or age-based cleanup, disk quota alerts, and eventual object storage if multi-host.</td>
-                            <td><strong>Remediated.</strong> Feed-isolated paths (<code>telegram_media/&lt;feed-key&gt;/&lt;message-id&gt;.jpg</code>). Per-connector quota (<code>MEDIA_QUOTA_BYTES</code>, default 500MiB) evicts oldest before writes. Best-effort per-period cleanup after successful summarization. Weekly TTL sweep deletes files older than <code>MEDIA_TTL_MS</code> (default 7 days). Object storage deferred. See <code>src/connectors/telegram/telegram-connector.ts</code>, <code>src/services/summarization-service.ts</code>. Tests cover quota eviction, TTL cleanup, success/failure cases.</td>
+                            <td><strong>Remediated for one host.</strong> Feed-isolated connector paths and <code>MEDIA_QUOTA_BYTES</code> (default 500 MiB) bound writes. <code>media-cleanup-service.ts</code> performs the weekly recursive TTL sweep using <code>MEDIA_TTL_MS</code> (default 7 days), including orphaned files. Object storage remains deferred.</td>
                           </tr>
                           <tr>
                             <td><span class="badge high">P6</span></td>
@@ -1222,10 +1296,10 @@
                           </tr>
                           <tr>
                             <td><span class="badge medium">P7</span></td>
-                            <td>Summaries are generated sequentially per feed.</td>
-                            <td><code>assembleDigestForPeriod()</code> loops feeds and awaits <code>summarizeOwnedFeedPeriod()</code> one at a time.</td>
-                            <td>Add small configurable summarizer concurrency after context caps are in place. Keep per-provider rate limits and per-user fairness.</td>
-                            <td><strong>Remediated.</strong> <code>SUMMARIZATION_CONCURRENCY</code> (default 2) with worker-pool helper. Shared <code>OpenAICompatibleSummarizerService</code> handles per-request retries; no unbounded <code>Promise.all</code>. See <code>src/services/digest-service.ts</code>. Tests in <code>tests/services/digest-service.test.ts</code>.</td>
+                            <td>Selected story summaries need bounded concurrency.</td>
+                            <td>Story resolution and relevance operate globally, but one digest can still select several independent stories.</td>
+                            <td>Use a small worker pool after global ranking and maximum-story selection; retain provider backoff and per-user fairness.</td>
+                            <td><strong>Remediated.</strong> <code>story-digest-service.ts</code> bounds selected-story summary workers (default 2), applies the maximum only after relevance, and never launches unbounded provider calls.</td>
                           </tr>
                           <tr>
                             <td><span class="badge medium">P8</span></td>
@@ -1368,16 +1442,16 @@
                             <td><strong>Not yet addressed.</strong> Depends on scheduled-run persistence integration.</td>
                           </tr>
                           <tr>
-                            <td>Bounded summarizer concurrency.</td>
-                            <td>Improves latency after budgets and provider rate controls exist.</td>
-                            <td>Configurable per-process concurrency with provider 429 backoff and fairness.</td>
-                            <td><strong>Completed.</strong> <code>SUMMARIZATION_CONCURRENCY</code> (default 2); worker-pool helper.</td>
+                            <td>Bounded story-summary concurrency.</td>
+                            <td>Improves latency after global relevance selection without unbounded provider load.</td>
+                            <td>Per-digest worker pool with provider retry/backoff and summary snapshot reuse.</td>
+                            <td><strong>Completed.</strong> <code>story-digest-service.ts</code> defaults to two selected-story workers.</td>
                           </tr>
                           <tr>
                             <td>Media lifecycle.</td>
                             <td>Needed for disk-bound deployments.</td>
                             <td>Media has TTL/quota cleanup and deterministic paths.</td>
-                            <td><strong>Completed.</strong> Feed-isolated paths, per-connector quota, best-effort per-period cleanup, weekly TTL sweep. Object storage deferred.</td>
+                            <td><strong>Completed.</strong> Feed-isolated paths, per-connector quota, and weekly recursive TTL sweep in <code>media-cleanup-service.ts</code>. Object storage deferred.</td>
                           </tr>
                           <tr>
                             <td>Paginated digest history.</td>
@@ -1394,7 +1468,7 @@
                       <h2>Review claims are tied to observed files.</h2>
                       <dl class="decision-list">
                         <dt>Route and middleware shape</dt>
-                        <dd><span class="path">src/server/app.ts</span>, <span class="path">src/server/routes/auth.ts</span>, <span class="path">src/server/routes/digests.ts</span>, <span class="path">src/server/middleware/require-auth.ts</span>, <span class="path">src/server/middleware/rate-limit.ts</span>, <span class="path">src/server/middleware/origin-guard.ts</span>.</dd>
+                        <dd><span class="path">src/server/app.ts</span>, <span class="path">src/server/routes/auth.ts</span>, <span class="path">src/server/routes/digests.ts</span>, <span class="path">src/server/routes/interests.ts</span>, <span class="path">src/server/routes/story-feedback.ts</span>, <span class="path">src/server/middleware/require-auth.ts</span>, <span class="path">src/server/middleware/rate-limit.ts</span>, <span class="path">src/server/middleware/origin-guard.ts</span>.</dd>
 
                         <dt>Authentication and session storage</dt>
                         <dd><span class="path">src/auth/password.ts</span>, <span class="path">src/auth/session-service.ts</span>, <span class="path">src/repositories/session-repository.ts</span>.</dd>
@@ -1403,16 +1477,19 @@
                         <dd><span class="path">src/crypto/credential-cipher.ts</span>, <span class="path">src/crypto/key-provider.ts</span>, <span class="path">src/db/schema/source.ts</span>, <span class="path">src/repositories/source-repository.ts</span>.</dd>
 
                         <dt>Digest generation and scheduler behavior</dt>
-                        <dd><span class="path">src/services/orchestrator.ts</span>, <span class="path">src/services/ingestion-service.ts</span>, <span class="path">src/services/digest-service.ts</span>, <span class="path">src/scheduler/digest-job.ts</span>, <span class="path">src/scheduler/scheduler.ts</span>, <span class="path">src/server/main.ts</span>.</dd>
+                        <dd><span class="path">src/services/orchestrator.ts</span>, <span class="path">src/services/ingestion-service.ts</span>, <span class="path">src/services/story-digest-service.ts</span>, <span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/services/digest-service.ts</span>, <span class="path">src/scheduler/digest-job.ts</span>, and <span class="path">src/server/main.ts</span>.</dd>
 
-                        <dt>Summarizer boundary</dt>
-                        <dd><span class="path">src/summarizers/openai-compatible-summarizer.ts</span>, <span class="path">src/summarizers/prompts.ts</span>, <span class="path">src/services/summarization-service.ts</span>.</dd>
+                        <dt>Story analysis and summarizer boundary</dt>
+                        <dd><span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/summarizers/openai-compatible-summarizer.ts</span>, and <span class="path">src/summarizers/prompts.ts</span>.</dd>
 
                         <dt>Database model</dt>
-                        <dd><span class="path">src/db/schema/user.ts</span>, <span class="path">src/db/schema/source.ts</span>, <span class="path">src/db/schema/feed.ts</span>, <span class="path">src/db/schema/item.ts</span>, <span class="path">src/db/schema/digest.ts</span>, <span class="path">src/db/schema/digest-run.ts</span>, <span class="path">src/db/schema/rate-limit-bucket.ts</span>, <span class="path">src/db/schema/scheduler-lease.ts</span>, <span class="path">src/repositories/digest-repository.ts</span>, <span class="path">src/repositories/summary-repository.ts</span>, <span class="path">src/repositories/digest-run-repository.ts</span>, <span class="path">src/repositories/rate-limit-repository.ts</span>.</dd>
+                        <dd><span class="path">src/db/schema/user.ts</span>, <span class="path">src/db/schema/source.ts</span>, <span class="path">src/db/schema/feed.ts</span>, <span class="path">src/db/schema/item.ts</span>, <span class="path">src/db/schema/interest-rule.ts</span>, <span class="path">src/db/schema/story.ts</span>, <span class="path">src/db/schema/story-feedback.ts</span>, <span class="path">src/db/schema/digest.ts</span>, <span class="path">src/repositories/story-repository.ts</span>, <span class="path">src/repositories/story-feedback-repository.ts</span>, <span class="path">src/repositories/interest-rule-repository.ts</span>, and <span class="path">src/repositories/summary-repository.ts</span> for historical reads.</dd>
 
-                        <dt>Substack connector and frontend API assumptions</dt>
-                        <dd><span class="path">src/connectors/substack/session-client.ts</span>, <span class="path">src/services/substack-publication-discovery-service.ts</span>, <span class="path">src/server/routes/connectors.ts</span>, <span class="path">apps/web/src/api/client.ts</span>, <span class="path">apps/web/src/app/Dashboard.tsx</span>, <span class="path">apps/web/src/app/SubstackConnectPanel.tsx</span>.</dd>
+                        <dt>Personalization, feedback, and story-card UI</dt>
+                        <dd><span class="path">src/services/interest-service.ts</span>, <span class="path">src/services/story-feedback-service.ts</span>, <span class="path">apps/web/src/app/ProfilePanel.tsx</span>, <span class="path">apps/web/src/app/DigestsPanel.tsx</span>, <span class="path">apps/web/src/api/client.ts</span>, and <span class="path">apps/web/app.config.ts</span>.</dd>
+
+                        <dt>Substack connector and frontend onboarding</dt>
+                        <dd><span class="path">src/connectors/substack/session-client.ts</span>, <span class="path">src/services/substack-publication-discovery-service.ts</span>, <span class="path">src/server/routes/connectors.ts</span>, and <span class="path">apps/web/src/app/SubstackConnectPanel.tsx</span>.</dd>
 
                         <dt>Error handling and redaction</dt>
                         <dd><span class="path">src/server/errors.ts</span>, <span class="path">src/server/error-sanitizer.ts</span>.</dd>
@@ -1421,16 +1498,16 @@
                         <dd><span class="path">src/db/client.ts</span>, <span class="path">src/db/testing.ts</span>.</dd>
 
                         <dt>Media lifecycle</dt>
-                        <dd><span class="path">src/connectors/telegram/telegram-connector.ts</span>, <span class="path">src/services/summarization-service.ts</span>.</dd>
+                        <dd><span class="path">src/connectors/telegram/telegram-connector.ts</span>, <span class="path">src/services/media-cleanup-service.ts</span>, and <span class="path">src/scheduler/digest-job.ts</span>.</dd>
 
                         <dt>Runtime, workspaces, and commands</dt>
                         <dd><span class="path">package.json</span>, <span class="path">bun.lock</span>, and <span class="path">README.md</span>.</dd>
                       </dl>
                       <div class="callout ok">
-        <strong>Documentation status:</strong> This HTML document reflects the current implemented persistence, digest-run, API, web architecture, and production-hardening state observed in the repository. See <span class="path">ARCHITECTURE.md</span> for new sections on session lifecycle, database connectivity, rate limiting, scheduling, connector batching, summarizer budgets, media lifecycle, and cursor pagination.
+        <strong>Documentation status:</strong> This HTML document reflects the connector-neutral story pipeline, relevance policies, durable story feedback, story-card web UI, historical legacy projection, scheduler/media lifecycle, and current production-hardening state implemented on 2026-07-23.
       </div>
                       <div class="callout">
-        <strong>Explicit deferrals:</strong> KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for media, and automatic feed theme classification are not implemented. Deployment-wide text/vision provider configuration and the local media lifecycle are implemented; see <span class="path">ARCHITECTURE.md</span> → Deferred items.
+        <strong>Explicit deferrals:</strong> KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for multi-host media, and automatic feed theme classification are not implemented. Deployment-wide text/vision provider configuration, global story resolution, personalization, and the single-host media lifecycle are implemented.
       </div>
                     </section>
                     </main>

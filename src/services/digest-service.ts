@@ -19,7 +19,6 @@ import {
   listItemsForFeedsInWindow,
   type StoredItem,
 } from "../repositories/item-repository.ts";
-import type { SummarizeFeedPeriodDependencies } from "./summarization-service.ts";
 import type { Database } from "../db/client.ts";
 import { listSourcesForUser } from "../repositories/source-repository.ts";
 import { NotFoundError } from "../server/errors.ts";
@@ -58,8 +57,7 @@ export interface DigestView {
   paidPosts: PaidPost[];
 }
 
-export interface AssembleDigestDependencies
-  extends SummarizeFeedPeriodDependencies, StoryDigestDependencies {
+export interface AssembleDigestDependencies extends StoryDigestDependencies {
   feedIds?: string[];
   runId?: string;
   sourceConnectorIdsBySourceId?: Map<string, string>;

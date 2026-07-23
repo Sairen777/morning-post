@@ -1,6 +1,5 @@
 import { test } from "bun:test";
 import { assertEquals } from "../assertions.ts";
-import { discardOperationalEvent } from "../operational-log-recorder.ts";
 import { sql } from "drizzle-orm";
 import type { Hono } from "hono";
 import { ConnectorId } from "../../src/constants.ts";
@@ -197,7 +196,7 @@ test("digest routes list and read user digests with grouped sections", async () 
       normalizedItem(telegramFeed.externalId, "1", "telegram"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer([
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer([
       [{ text: "rss bullet", sourceUrl: null }],
       [{ text: "telegram bullet", sourceUrl: null }],
     ]), intelligence: fixtureStoryIntelligence, now: () => 100, });
@@ -250,7 +249,7 @@ test("DELETE /digests/:id deletes an owned digest", async () => {
       normalizedItem(feed.externalId, "1", "delete me"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer([[{
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer([[{
       text: "delete bullet",
       sourceUrl: null,
     }]]), intelligence: fixtureStoryIntelligence, now: () => 105, });
@@ -320,7 +319,7 @@ test("DELETE /digests/:id hides another user's digest", async () => {
       normalizedItem(feed.externalId, "1", "keep me"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer([[{
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer([[{
       text: "kept bullet",
       sourceUrl: null,
     }]]), intelligence: fixtureStoryIntelligence, now: () => 106, });
@@ -362,7 +361,7 @@ test("GET /digests/:id.md renders story Markdown after a source feed is deleted"
       normalizedItem(feed.externalId, "1", "markdown"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer([[{
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer([[{
       text: "markdown bullet",
       sourceUrl: null,
     }]]), intelligence: fixtureStoryIntelligence, now: () => 110, });

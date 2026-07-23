@@ -14,7 +14,6 @@ import { assembleDigestForPeriod, buildDigestViewById, renderDigestMarkdown } fr
 import { fingerprintStoryItem } from "../../src/services/story-intelligence-service.ts";
 import type { AnalyzedStoryItem, PersistedStoryCandidate, StoryIntelligenceService, StoryItemInput, StoryPreferenceRule } from "../../src/personalization/story.types.ts";
 import type { SummarizerService } from "../../src/summarizers/summarizer.types.ts";
-import { discardOperationalEvent } from "../operational-log-recorder.ts";
 
 const start = 1_700_000_000_000;
 const end = start + 86_400_000;
@@ -58,7 +57,7 @@ test("assembleDigestForPeriod creates a story digest with multi-source provenanc
     await upsertItems(database, first.id, [{ connectorId: ConnectorId.Telegram, feedExternalId: first.externalId, externalId: "one", date: start + 1, title: "Report one", text: "First report", author: null, url: "https://one.example/report" }], start + 2);
     await upsertItems(database, second.id, [{ connectorId: ConnectorId.RSS, feedExternalId: second.externalId, externalId: "two", date: start + 1, title: "Report two", text: "Second report", author: null, url: "https://two.example/report" }], start + 2);
 
-    const view = await assembleDigestForPeriod(database, user.id, start, end, { intelligence: new FixtureIntelligence(), summarizer, recordOperationalEvent: discardOperationalEvent, now: () => end });
+    const view = await assembleDigestForPeriod(database, user.id, start, end, { intelligence: new FixtureIntelligence(), summarizer, now: () => end });
 
     assertEquals(view.digest.contentMode, "stories");
     assertEquals(view.digest.status, "complete");
