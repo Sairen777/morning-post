@@ -93,6 +93,80 @@ export function buildVisionAnalysisPrompt(): SummaryRuleset {
   };
 }
 
+export function buildStoryAnalysisPrompt(): SummaryRuleset {
+  return {
+    systemPrompt: [
+      "Analyze every indexed source record for story and development identity.",
+      'Return a JSON array only. Every entry must have exactly these fields: "i" (integer input index), "language" (string or null), "canonicalUrls" (string array), "topics" (string array), "entities" (string array), "storyKey" (stable concise string), "storyTitle" (string), "developmentKey" (stable concise string), "developmentType" (string), "developmentTitle" (string), and "mediaDescription" (string or null).',
+      "Include exactly one entry for every submitted index, with no duplicates, omissions, extra indexes, or extra fields.",
+      "Use the same storyKey for sources about the same underlying story, but a distinct developmentKey for each stable event or release within it (for example teaser, poster, and trailer are separate developments).",
+      "Prefer canonical source URLs supplied in the record. Do not invent URLs or facts. Keep topics and entities short and deduplicated.",
+    ].join(" "),
+    includeMedia: false,
+  };
+}
+
+export function buildStoryClassificationPrompt(
+  preferencePrompt?: string,
+): SummaryRuleset {
+  return {
+    systemPrompt: [
+      "Score every indexed story against the supplied active preference rules.",
+      'Return a JSON array only. Every entry must have exactly these fields: "i" (integer story index), "score" (integer from 0 through 100), "matchedRuleIds" (string array containing only supplied rule IDs), and "reason" (nonempty plain string).',
+      "Include exactly one entry for every submitted story index, with no duplicates, omissions, extra indexes, or extra fields.",
+      "Scores are absolute relevance scores, not ranks. Do not select a top-K: zero, some, or all stories may qualify independently.",
+      "Prioritize rules raise relevance and show_less rules lower it. Mute rules are enforced separately and are not supplied.",
+      preferencePrompt?.trim()
+        ? `Apply this free-text reader preference as scoring context, not as a rule and never emit it as a matchedRuleId: ${JSON.stringify(preferencePrompt.trim())}.`
+        : "No free-text reader preference context was supplied.",
+    ].join(" "),
+    includeMedia: false,
+  };
+}
+export function buildStoryResolutionPrompt(): SummaryRuleset {
+  return {
+    systemPrompt: [
+      "Adjudicate whether each indexed pair of compact story groups describes the same underlying continuing story.",
+      'Return a JSON array only. Every entry must have exactly two fields: "i" (integer pair index) and "sameStory" (boolean).',
+      "Include exactly one entry for every submitted pair index, with no duplicates, omissions, extra indexes, or extra fields.",
+      "Treat separate developments such as a teaser, poster, trailer, announcement, or follow-up as the same story when they concern the same underlying subject or event.",
+      "Do not merge merely because broad topics overlap. Named subjects, specific titles, entities, and event context must support continuity.",
+    ].join(" "),
+    includeMedia: false,
+  };
+}
+
+export function buildStoryMediaAnalysisPrompt(): SummaryRuleset {
+  return {
+    systemPrompt: [
+      "Describe the attached media for later story identification.",
+      "Report visible facts, readable text, named entities, and the concrete event or release shown.",
+      "State uncertainty rather than inventing details.",
+      INDEX_INSTRUCTION,
+    ].join(" "),
+    includeMedia: true,
+    showTitle: true,
+  };
+}
+
+export function buildStorySummaryPrompt(
+  options: PromptOptions = {},
+): SummaryRuleset {
+  return {
+    systemPrompt: withTrailingRules([
+      "Summarize the supplied source items as one already-selected story.",
+      "Do not omit the story or re-evaluate whether the reader wants it.",
+      "Consolidate repeated coverage while preserving distinct developments such as a teaser, poster, and trailer.",
+      "Lead with what changed and avoid repeating source titles.",
+      INDEX_INSTRUCTION,
+    ], options),
+    showAuthors: false,
+    includeMedia: true,
+    showTitle: true,
+  };
+}
+
+
 // Routes items to the appropriate ruleset. When `kind` is provided, it is used
 // directly. When omitted, falls back to `meta.isGroup` inference — the legacy
 // path for the CLI until feeds are DB-backed.

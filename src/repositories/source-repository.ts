@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { ConnectorId } from "../constants.ts";
 import {
@@ -12,6 +12,7 @@ import {
 import type { Database } from "../db/client.ts";
 import { feeds } from "../db/schema/feed.ts";
 import { sources } from "../db/schema/source.ts";
+import { users } from "../db/schema/user.ts";
 import {
   ConflictError,
   NotFoundError,
@@ -214,7 +215,7 @@ export async function upsertSourceCredentials(
   return parsePublicSource(rows[0]);
 }
 
-export async function updateSource(
+async function updateSourceRow(
   database: Database,
   id: string,
   userId: string,
@@ -287,6 +288,31 @@ export async function updateSource(
     }
     throw error;
   }
+}
+
+export async function updateSource(
+  database: Database,
+  id: string,
+  userId: string,
+  partial: UpdateSourceInput,
+): Promise<PublicSource> {
+  if (partial.relevanceFilterMode === undefined) {
+    return await updateSourceRow(database, id, userId, partial);
+  }
+  return await database.transaction(async (transaction) => {
+    const transactionalDatabase = transaction as Database;
+    const before = await findOwnedSourceWithCredentials(transactionalDatabase, id, userId);
+    if (!before) {
+      throw new NotFoundError("source not found");
+    }
+    const updated = await updateSourceRow(transactionalDatabase, id, userId, partial);
+    if (before.relevanceFilterMode !== updated.relevanceFilterMode) {
+      await transactionalDatabase.update(users).set({
+        interestProfileVersion: sql`${users.interestProfileVersion} + 1`,
+      }).where(eq(users.id, userId));
+    }
+    return updated;
+  });
 }
 
 export async function deleteSourceCredentials(

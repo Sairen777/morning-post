@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { feeds } from "../db/schema/feed.ts";
 import { sources } from "../db/schema/source.ts";
+import { users } from "../db/schema/user.ts";
 import { ConflictError, NotFoundError } from "../server/errors.ts";
 import type { FeedKind } from "../connectors/connector.types.ts";
 import { isUniqueViolation } from "../db/errors.ts";
@@ -294,7 +295,7 @@ export async function findFeedById(
   return rows[0] ? parsePublicFeed(rows[0]) : null;
 }
 
-export async function updateFeed(
+async function updateFeedRow(
   database: Database,
   id: string,
   userId: string,
@@ -315,6 +316,31 @@ export async function updateFeed(
     throw new NotFoundError("feed not found");
   }
   return parsePublicFeed(rows[0]);
+}
+
+export async function updateFeed(
+  database: Database,
+  id: string,
+  userId: string,
+  partial: UpdateFeedInput,
+): Promise<PublicFeed> {
+  if (partial.relevanceFilterMode === undefined) {
+    return await updateFeedRow(database, id, userId, partial);
+  }
+  return await database.transaction(async (transaction) => {
+    const transactionalDatabase = transaction as Database;
+    const before = await findFeedById(transactionalDatabase, id, userId);
+    if (!before) {
+      throw new NotFoundError("feed not found");
+    }
+    const updated = await updateFeedRow(transactionalDatabase, id, userId, partial);
+    if (before.relevanceFilterMode !== updated.relevanceFilterMode) {
+      await transactionalDatabase.update(users).set({
+        interestProfileVersion: sql`${users.interestProfileVersion} + 1`,
+      }).where(eq(users.id, userId));
+    }
+    return updated;
+  });
 }
 
 export async function softDeleteFeed(

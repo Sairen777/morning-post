@@ -38,6 +38,7 @@ test("createUser then findUserById round-trips all fields", async () => {
     assertEquals(found.email, "ada@example.com");
     assertEquals(found.passwordHash, "$argon2id$fakehash");
     assertEquals(found.systemPrompt, "Summarize tersely.");
+    assertEquals(found.summaryPrompt, "");
     assertEquals(found.defaultLanguage, "en");
 
     assertEquals(typeof found.createdAt, "number");

@@ -17,6 +17,7 @@ import type { ServerEnvironment } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
 import { getOrSummarizeFeedPeriod } from "../../src/services/summarization-service.ts";
 import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
+import { fixtureStoryIntelligence } from "../services/fixture-story-intelligence.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const MASTER_KEY_BYTES = new Uint8Array(32).fill(67);
@@ -121,11 +122,7 @@ test("security audit enforces authz and does not leak secrets in GET responses o
       kind: "news",
     });
     await upsertItems(database, feed.id, [normalizedItem(feed.externalId, "1", "secure")], 1);
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, {
-      recordOperationalEvent: discardOperationalEvent,
-      summarizer: new FakeSummarizer(),
-      now: () => 300,
-    });
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer(), intelligence: fixtureStoryIntelligence, now: () => 300, });
 
     const originalConsoleError = console.error;
     const capturedLogs: string[] = [];

@@ -35,6 +35,7 @@ import {
   startDigestRunFeed,
 } from "../../src/repositories/digest-run-repository.ts";
 import type { runForUser as runForUserType } from "../../src/services/orchestrator.ts";
+import { fixtureStoryIntelligence } from "../services/fixture-story-intelligence.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const periodStartMs = 1_700_000_000_000;
@@ -196,20 +197,10 @@ test("digest routes list and read user digests with grouped sections", async () 
       normalizedItem(telegramFeed.externalId, "1", "telegram"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(
-      database,
-      ownerId,
-      periodStartMs,
-      periodEndMs,
-      {
-        recordOperationalEvent: discardOperationalEvent,
-        summarizer: new FakeSummarizer([
-          [{ text: "rss bullet", sourceUrl: null }],
-          [{ text: "telegram bullet", sourceUrl: null }],
-        ]),
-        now: () => 100,
-      },
-    );
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer([
+      [{ text: "rss bullet", sourceUrl: null }],
+      [{ text: "telegram bullet", sourceUrl: null }],
+    ]), intelligence: fixtureStoryIntelligence, now: () => 100, });
 
     const listResponse = await app.request("/digests", {
       headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
@@ -225,27 +216,13 @@ test("digest routes list and read user digests with grouped sections", async () 
     });
     assertEquals(getResponse.status, 200);
     const getJson = await getResponse.json();
+    assertEquals(getJson.digest.contentMode, "stories");
+    assertEquals(getJson.sections, []);
+    assertEquals(getJson.groups, []);
+    assertEquals(getJson.stories.length, 1);
     assertEquals(
-      getJson.sections.map((section: { feedName: string }) => section.feedName),
+      getJson.stories[0].sources.map((source: { feedName: string }) => source.feedName),
       ["RSS Feed", "Telegram Feed"],
-    );
-    assertEquals(
-      getJson.sections.map((section: { content: unknown }) => section.content),
-      [
-        {
-          kind: "aggregate",
-          points: [{ text: "rss bullet", sourceUrl: null }],
-        },
-        {
-          kind: "aggregate",
-          points: [{ text: "telegram bullet", sourceUrl: null }],
-        },
-      ],
-    );
-    assertEquals("points" in getJson.sections[0], false);
-    assertEquals(
-      getJson.groups.map((group: { connectorId: string }) => group.connectorId),
-      [ConnectorId.RSS, ConnectorId.Telegram],
     );
 
     const otherResponse = await app.request(`/digests/${digest.digest.id}`, {
@@ -273,20 +250,10 @@ test("DELETE /digests/:id deletes an owned digest", async () => {
       normalizedItem(feed.externalId, "1", "delete me"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(
-      database,
-      ownerId,
-      periodStartMs,
-      periodEndMs,
-      {
-        recordOperationalEvent: discardOperationalEvent,
-        summarizer: new FakeSummarizer([[{
-          text: "delete bullet",
-          sourceUrl: null,
-        }]]),
-        now: () => 105,
-      },
-    );
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer([[{
+      text: "delete bullet",
+      sourceUrl: null,
+    }]]), intelligence: fixtureStoryIntelligence, now: () => 105, });
 
     const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
       method: "DELETE",
@@ -353,20 +320,10 @@ test("DELETE /digests/:id hides another user's digest", async () => {
       normalizedItem(feed.externalId, "1", "keep me"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(
-      database,
-      ownerId,
-      periodStartMs,
-      periodEndMs,
-      {
-        recordOperationalEvent: discardOperationalEvent,
-        summarizer: new FakeSummarizer([[{
-          text: "kept bullet",
-          sourceUrl: null,
-        }]]),
-        now: () => 106,
-      },
-    );
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer([[{
+      text: "kept bullet",
+      sourceUrl: null,
+    }]]), intelligence: fixtureStoryIntelligence, now: () => 106, });
 
     const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
       method: "DELETE",
@@ -387,7 +344,7 @@ test("DELETE /digests/:id hides another user's digest", async () => {
   });
 });
 
-test("GET /digests/:id.md renders markdown for deleted historical feeds", async () => {
+test("GET /digests/:id.md renders story Markdown after a source feed is deleted", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const ownerId = await register(app, "digests-markdown@example.com");
@@ -405,20 +362,10 @@ test("GET /digests/:id.md renders markdown for deleted historical feeds", async 
       normalizedItem(feed.externalId, "1", "markdown"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(
-      database,
-      ownerId,
-      periodStartMs,
-      periodEndMs,
-      {
-        recordOperationalEvent: discardOperationalEvent,
-        summarizer: new FakeSummarizer([[{
-          text: "markdown bullet",
-          sourceUrl: null,
-        }]]),
-        now: () => 110,
-      },
-    );
+    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { recordOperationalEvent: discardOperationalEvent, summarizer: new FakeSummarizer([[{
+      text: "markdown bullet",
+      sourceUrl: null,
+    }]]), intelligence: fixtureStoryIntelligence, now: () => 110, });
     await softDeleteFeed(database, feed.id, ownerId);
 
     const markdownResponse = await app.request(
@@ -427,9 +374,9 @@ test("GET /digests/:id.md renders markdown for deleted historical feeds", async 
     );
     assertEquals(markdownResponse.status, 200);
     const markdown = await markdownResponse.text();
-    assertEquals(markdown.includes("## Telegram"), true);
-    assertEquals(markdown.includes("### Markdown Feed (removed)"), true);
+    assertEquals(markdown.includes("## Fixture Story"), true);
     assertEquals(markdown.includes("- markdown bullet"), true);
+    assertEquals(markdown.includes("### Markdown Feed (removed)"), false);
   });
 });
 
@@ -449,6 +396,8 @@ test("POST /digests/run creates an empty digest for an authenticated user with n
     assertEquals(response.status, 200);
     const json = await response.json();
     assertEquals(json.digest.status, "complete");
+    assertEquals(json.digest.contentMode, "stories");
+    assertEquals(json.stories, []);
     assertEquals(json.sections, []);
     assertEquals(json.groups, []);
 
@@ -813,9 +762,11 @@ test("POST /digests/run forwards the entrypoint summarizer instance", async () =
           periodStartMs: period.startMs,
           periodEndMs: period.endMs,
           status: "complete" as const,
+          contentMode: "stories" as const,
           createdAt: 1,
           updatedAt: 1,
         },
+        stories: [],
         sections: [],
         groups: [],
         paidPosts: [],

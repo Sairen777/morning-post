@@ -58,6 +58,7 @@ import {
 import { sql } from "drizzle-orm";
 import { listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
 import { discardOperationalEvent } from "../operational-log-recorder.ts";
+import { fixtureStoryIntelligence } from "./fixture-story-intelligence.ts";
 
 class FakeConnector implements Connector<unknown> {
   readonly calls: Array<
@@ -271,15 +272,14 @@ test("runForUser ingests feeds, summarizes them, and returns a complete digest",
       [{ text: "second summary", sourceUrl: null }],
     ]);
 
-    const view = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => 200,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const view = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => 200,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(view.digest.status, "complete");
-    assertEquals(view.sections.map((section) => section.feedName), [
+    assertEquals(view.digest.contentMode, "stories");
+    assertEquals(view.sections, []);
+    assertEquals(view.stories.length, 1);
+    assertEquals(view.stories[0].sources.map((source) => source.feedName), [
       "First Feed",
       "Second Feed",
     ]);
@@ -336,15 +336,11 @@ test("runForUser fails its run when connector disposal throws unexpectedly", asy
     };
 
     const rejected = await assertRejects(() =>
-      runForUser(database, user.id, period, {
-        connectorFactory,
-        summarizer: new FakeSummarizer([[{
-          text: "summary",
-          sourceUrl: null,
-        }]]),
-        now: () => 206,
-        recordOperationalEvent: discardOperationalEvent,
-      })
+      runForUser(database, user.id, period, { connectorFactory, summarizer: new FakeSummarizer([[{
+        text: "summary",
+        sourceUrl: null,
+      }]]), intelligence: fixtureStoryIntelligence, now: () => 206,
+      recordOperationalEvent: discardOperationalEvent, })
     );
 
     assert(rejected === disposeError);
@@ -388,18 +384,10 @@ test("runForUser is idempotent for the same period", async () => {
       sourceUrl: null,
     }]]);
 
-    const first = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => 201,
-      recordOperationalEvent: discardOperationalEvent,
-    });
-    const second = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => 202,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const first = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => 201,
+    recordOperationalEvent: discardOperationalEvent, });
+    const second = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => 202,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(first.digest.id, second.digest.id);
     assertEquals(connector.calls.length, 1);
@@ -418,6 +406,8 @@ test("runForUser creates an empty digest for a user with no sources", async () =
       recordOperationalEvent: discardOperationalEvent,
     });
     assertEquals(view.digest.status, "complete");
+    assertEquals(view.digest.contentMode, "stories");
+    assertEquals(view.stories, []);
     assertEquals(view.sections, []);
   });
 });
@@ -459,15 +449,13 @@ test("runForUser isolates source failures and marks the digest failed", async ()
       sourceUrl: null,
     }]]);
 
-    const view = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => 204,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const view = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => 204,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(view.digest.status, "failed");
-    assertEquals(view.sections.map((section) => section.feedName), [
+    assertEquals(view.digest.contentMode, "stories");
+    assertEquals(view.sections, []);
+    assertEquals(view.stories[0].sources.map((source) => source.feedName), [
       "Second Feed",
     ]);
     assertEquals(
@@ -525,12 +513,8 @@ test("runForUser marks run partial when summarization fails but ingestion succee
     });
     const summarizer = new FakeSummarizer([new Error("summarizer crash")]);
 
-    const view = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => 205,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const view = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => 205,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(view.digest.status, "failed");
 
@@ -541,12 +525,10 @@ test("runForUser marks run partial when summarization fails but ingestion succee
     const feedRows: Array<Record<string, unknown>> = await database.execute(
       sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,
     );
-    const failedRows = feedRows.filter(
-      (r) =>
-        r.stage === "summarization" && r.status === "failed" &&
-        r.error_message !== null,
+    assertEquals(
+      feedRows.filter((row) => row.stage === "summarization").length,
+      0,
     );
-    assertEquals(failedRows.length >= 1, true);
   });
 });
 
@@ -581,12 +563,8 @@ test("runForUser batches multiple feeds from the same source", async () => {
     });
     const summarizer = new FakeSummarizer([[{ text: "sum", sourceUrl: null }]]);
 
-    const view = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => 205,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const view = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => 205,
+    recordOperationalEvent: discardOperationalEvent, });
 
     // Exactly one connector call for both feeds
     assertEquals(connector.calls.length, 1);
@@ -682,12 +660,8 @@ test("runForUser uses one individual handle and requests each feed separately", 
     );
     const summarizer = new FakeSummarizer([[{ text: "sum", sourceUrl: null }]]);
 
-    const view = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => 205,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const view = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => 205,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(view.digest.status, "complete");
     assertEquals(connectorFactory.forSourceCalls, [setup1.source.id]);
@@ -752,12 +726,8 @@ test("runForUser refreshes covered Substack feeds with paid items for the full p
       { text: "refreshed summary", sourceUrl: null },
     ]]);
 
-    await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => period.endMs + 1,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => period.endMs + 1,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(connector.calls, [{
       from: period.startMs,
@@ -775,12 +745,8 @@ test("runForUser refreshes covered Substack feeds with paid items for the full p
     assertEquals(stored[0].payload.meta?.hasPaidSubscription, true);
     assertEquals(summarizer.calls.length, 1);
 
-    await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => period.endMs + 2,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => period.endMs + 2,
+    recordOperationalEvent: discardOperationalEvent, });
     assertEquals(connector.calls.length, 2);
     assertEquals(summarizer.calls.length, 1);
   });
@@ -865,12 +831,8 @@ test("runForUser resummarizes a paid post after a free subscriber upgrades", asy
       [{ text: "new full-body summary", sourceUrl: accessibleItem.url }],
     ]);
 
-    const failedView = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => period.endMs + 1,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const failedView = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => period.endMs + 1,
+    recordOperationalEvent: discardOperationalEvent, });
     assertEquals(failedView.digest.status, "failed");
     assertEquals(summarizer.calls.length, 1);
     assertEquals(
@@ -880,12 +842,8 @@ test("runForUser resummarizes a paid post after a free subscriber upgrades", asy
       false,
     );
 
-    const view = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => period.endMs + 2,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const view = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => period.endMs + 2,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(connector.calls, [{
       from: period.startMs,
@@ -899,23 +857,14 @@ test("runForUser resummarizes a paid post after a free subscriber upgrades", asy
     assertEquals(summarizer.calls.length, 2);
     assertEquals(summarizer.calls[0].items[0].text, accessibleItem.text);
     assertEquals(view.paidPosts, []);
+    assertEquals(view.digest.contentMode, "stories");
     assertEquals(
-      view.sections.flatMap((section) =>
-        section.content.kind === "articles"
-          ? section.content.articles.flatMap((article) =>
-            article.points.map((point) => point.text)
-          )
-          : []
-      ),
+      view.stories.flatMap((story) => story.points.map((point) => point.text)),
       ["new full-body summary"],
     );
 
-    await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => period.endMs + 3,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => period.endMs + 3,
+    recordOperationalEvent: discardOperationalEvent, });
     assertEquals(connector.calls.length, 3);
     assertEquals(summarizer.calls.length, 2);
 
@@ -928,12 +877,8 @@ test("runForUser resummarizes a paid post after a free subscriber upgrades", asy
         hasPaidSubscription: false,
       },
     }];
-    const downgradedView = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => period.endMs + 4,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const downgradedView = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => period.endMs + 4,
+    recordOperationalEvent: discardOperationalEvent, });
     assertEquals(connector.calls.length, 4);
     assertEquals(summarizer.calls.length, 2);
     assertEquals(downgradedView.paidPosts.map((post) => post.title), [title]);
@@ -1022,12 +967,8 @@ test("runForUser repairs a cached free-subscriber paid teaser without another mo
     );
     const summarizer = new FakeSummarizer([]);
 
-    const view = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => period.endMs + 1,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const view = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => period.endMs + 1,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(connector.calls, [{
       from: period.startMs,
@@ -1035,14 +976,8 @@ test("runForUser repairs a cached free-subscriber paid teaser without another mo
       feedExternalIds: [feed.externalId],
     }]);
     assertEquals(summarizer.calls.length, 0);
-    assertEquals(
-      view.sections.flatMap((section) =>
-        section.content.kind === "articles"
-          ? section.content.articles.map((article) => article.title)
-          : []
-      ).includes(title),
-      false,
-    );
+    assertEquals(view.digest.contentMode, "stories");
+    assertEquals(view.stories, []);
     assertEquals(view.paidPosts.map((post) => post.title), [title]);
     const markdown = renderDigestMarkdown(view);
     assertEquals(markdown.includes("stale teaser point"), false);
@@ -1204,12 +1139,8 @@ test("runForUser summarizes a public Substack podcast beside an inaccessible pai
       { text: podcastSummary, sourceUrl: podcastUrl },
     ]]);
 
-    const view = await runForUser(database, user.id, period, {
-      connectorFactory,
-      summarizer,
-      now: () => period.endMs + 1,
-      recordOperationalEvent: discardOperationalEvent,
-    });
+    const view = await runForUser(database, user.id, period, { connectorFactory, summarizer, intelligence: fixtureStoryIntelligence, now: () => period.endMs + 1,
+    recordOperationalEvent: discardOperationalEvent, });
 
     assertEquals(connectorCalls, [{
       from: period.startMs,
@@ -1224,16 +1155,13 @@ test("runForUser summarizes a public Substack podcast beside an inaccessible pai
       })),
       [{ title: podcastTitle, text: podcastBody }],
     );
+    assertEquals(view.digest.contentMode, "stories");
     assertEquals(
-      view.sections.flatMap((section) =>
-        section.content.kind === "articles"
-          ? section.content.articles.map((article) => ({
-            title: article.title,
-            points: article.points.map((point) => point.text),
-          }))
-          : []
-      ),
-      [{ title: podcastTitle, points: [podcastSummary] }],
+      view.stories.map((story) => ({
+        title: story.title,
+        points: story.points.map((point) => point.text),
+      })),
+      [{ title: "Fixture Story", points: [podcastSummary] }],
     );
     assertEquals(view.paidPosts.map((post) => post.title), [paidTitle]);
 

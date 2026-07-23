@@ -26,6 +26,7 @@ import {
 } from "../../src/repositories/source-repository.ts";
 import {
   createUser,
+  findUserById,
   type CreateUserInput,
 } from "../../src/repositories/user-repository.ts";
 import { ConflictError, NotFoundError } from "../../src/server/errors.ts";
@@ -441,5 +442,19 @@ test("feed check constraint rejects invalid feed kind at database level", async 
           eq(feeds.id, feed.id),
         ),
     );
+  });
+});
+
+test("feed relevance changes increment the owning profile version only when changed", async () => {
+  await withTestDb(async (database) => {
+    const { user, source } = await createOwnedSource(database, "feed-relevance@example.com");
+    const feed = await createOrReviveFeed(database, feedInput(user.id, source.id));
+
+    await updateFeed(database, feed.id, user.id, { enabled: false });
+    assertEquals((await findUserById(database, user.id))?.interestProfileVersion, 1);
+    await updateFeed(database, feed.id, user.id, { relevanceFilterMode: "include_all" });
+    assertEquals((await findUserById(database, user.id))?.interestProfileVersion, 2);
+    await updateFeed(database, feed.id, user.id, { relevanceFilterMode: "include_all" });
+    assertEquals((await findUserById(database, user.id))?.interestProfileVersion, 2);
   });
 });

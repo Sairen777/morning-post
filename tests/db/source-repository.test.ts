@@ -12,6 +12,7 @@ import { sources } from "../../src/db/schema/source.ts";
 import { credentialSchemaFor } from "../../src/connectors/credential-schemas.ts";
 import {
   createUser,
+  findUserById,
   type CreateUserInput,
 } from "../../src/repositories/user-repository.ts";
 import {
@@ -493,5 +494,24 @@ test("source repository decrypts Substack credentials only in the owner context"
       await getDecryptedCredentials(database, source.id, user.id, cipher),
       credentials,
     );
+  });
+});
+
+test("source relevance changes increment the profile version only when changed", async () => {
+  await withTestDb(async (database) => {
+    const cipher = generateCipher();
+    const user = await createUser(database, userInput("source-relevance@example.com"));
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedTelegramCredentials(cipher, user.id),
+    });
+
+    await updateSource(database, source.id, user.id, { position: 3 });
+    assertEquals((await findUserById(database, user.id))?.interestProfileVersion, 1);
+    await updateSource(database, source.id, user.id, { relevanceFilterMode: "include_all" });
+    assertEquals((await findUserById(database, user.id))?.interestProfileVersion, 2);
+    await updateSource(database, source.id, user.id, { relevanceFilterMode: "include_all" });
+    assertEquals((await findUserById(database, user.id))?.interestProfileVersion, 2);
   });
 });

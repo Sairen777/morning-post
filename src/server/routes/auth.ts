@@ -28,6 +28,7 @@ export interface PublicUser {
   name: string;
   email: string;
   systemPrompt: string;
+  summaryPrompt: string;
   defaultLanguage: string | null;
   defaultRelevanceFilterMode: "personalized" | "include_all";
   relevanceThreshold: number;
@@ -46,6 +47,7 @@ export function toPublicUser(user: User): PublicUser {
     name: user.name,
     email: user.email,
     systemPrompt: user.systemPrompt,
+    summaryPrompt: user.summaryPrompt,
     defaultLanguage: user.defaultLanguage,
     defaultRelevanceFilterMode: user.defaultRelevanceFilterMode,
     relevanceThreshold: user.relevanceThreshold,

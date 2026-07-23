@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { assertEquals, assertRejects } from "../assertions.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { users } from "../../src/db/schema/user.ts";
+import { interestRules } from "../../src/db/schema/interest-rule.ts";
 import { createUser } from "../../src/repositories/user-repository.ts";
 import {
   dismissOwnedInterestRule,
@@ -10,7 +11,7 @@ import {
   saveExplicitInterestRule,
   updateOwnedInterestRule,
 } from "../../src/repositories/interest-rule-repository.ts";
-import { NotFoundError } from "../../src/server/errors.ts";
+import { ConflictError, NotFoundError } from "../../src/server/errors.ts";
 
 async function user(database: Parameters<typeof createUser>[0], email: string) {
   return await createUser(database, {
@@ -43,6 +44,63 @@ test("interest repository upserts, filters expiry, dismisses, and increments pro
     const rows = await database.select({ version: users.interestProfileVersion }).from(users)
       .where(eq(users.id, owner.id));
     assertEquals(rows[0]?.version, initialVersion + 4);
+  });
+});
+
+test("user edits convert inferred rules to explicit provenance before muting", async () => {
+  await withTestDb(async (database) => {
+    const owner = await user(database, "interest-inferred-edit@example.com");
+    const now = Date.now();
+    const rows = await database.insert(interestRules).values({
+      userId: owner.id,
+      label: "Celebrity news",
+      normalizedLabel: "celebrity news",
+      kind: "topic",
+      disposition: "show_less",
+      origin: "inferred",
+      state: "active",
+      strength: 40,
+      createdAt: now,
+      updatedAt: now,
+    }).returning({ id: interestRules.id });
+
+    const updated = await updateOwnedInterestRule(
+      database,
+      rows[0].id,
+      owner.id,
+      { disposition: "mute" },
+    );
+    assertEquals(updated.disposition, "mute");
+    assertEquals(updated.origin, "explicit");
+  });
+});
+
+test("renaming an interest rule to an existing normalized key returns conflict", async () => {
+  await withTestDb(async (database) => {
+    const owner = await user(database, "interest-rename-conflict@example.com");
+    await saveExplicitInterestRule(database, {
+      userId: owner.id,
+      label: "Databases",
+      normalizedLabel: "databases",
+      kind: "topic",
+      disposition: "prioritize",
+      strength: 100,
+    });
+    const second = await saveExplicitInterestRule(database, {
+      userId: owner.id,
+      label: "Compilers",
+      normalizedLabel: "compilers",
+      kind: "topic",
+      disposition: "show_less",
+      strength: 50,
+    });
+    await assertRejects(
+      () => updateOwnedInterestRule(database, second.id, owner.id, {
+        label: " databases ",
+        normalizedLabel: "databases",
+      }),
+      ConflictError,
+    );
   });
 });
 

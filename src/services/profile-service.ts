@@ -20,6 +20,10 @@ const updateProfileSchema = z.object({
     SYSTEM_PROMPT_MAX_LENGTH,
     `systemPrompt must be at most ${SYSTEM_PROMPT_MAX_LENGTH} characters`,
   ).optional(),
+  summaryPrompt: z.string().max(
+    SYSTEM_PROMPT_MAX_LENGTH,
+    `summaryPrompt must be at most ${SYSTEM_PROMPT_MAX_LENGTH} characters`,
+  ).optional(),
   defaultLanguage: nullableTrimmedString.optional(),
   defaultRelevanceFilterMode: z.enum(["personalized", "include_all"]).optional(),
   relevanceThreshold: z.number().int().min(0).max(100).optional(),
@@ -58,7 +62,10 @@ export async function updateProfile(
 ): Promise<User> {
   rejectSensitiveProfileFields(input);
   const updates = validate(updateProfileSchema, input);
-  const affectsFiltering = updates.defaultRelevanceFilterMode !== undefined ||
+  const affectsFiltering = updates.systemPrompt !== undefined ||
+    updates.summaryPrompt !== undefined ||
+    updates.defaultLanguage !== undefined ||
+    updates.defaultRelevanceFilterMode !== undefined ||
     updates.relevanceThreshold !== undefined ||
     updates.maximumStoriesPerDigest !== undefined;
   return await updateUser(database, userId, updates, {

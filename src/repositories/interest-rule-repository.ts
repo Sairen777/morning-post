@@ -1,13 +1,14 @@
 import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
+import { isUniqueViolation } from "../db/errors.ts";
 import { interestRules } from "../db/schema/interest-rule.ts";
 import { users } from "../db/schema/user.ts";
 import type {
   InterestRuleDisposition,
   InterestRuleKind,
 } from "../personalization/personalization.types.ts";
-import { NotFoundError } from "../server/errors.ts";
+import { ConflictError, NotFoundError } from "../server/errors.ts";
 
 const publicInterestRuleSchema = z.object({
   id: z.string().uuid(),
@@ -113,15 +114,26 @@ export async function updateOwnedInterestRule(
   userId: string,
   input: UpdateInterestRuleInput,
 ): Promise<PublicInterestRule> {
-  return await database.transaction(async (transaction) => {
-    const tx = transaction as Database;
-    const rows = await tx.update(interestRules).set({ ...input, updatedAt: Date.now() }).where(and(
-      eq(interestRules.id, id), eq(interestRules.userId, userId),
-    )).returning(publicColumns());
-    if (!rows[0]) throw new NotFoundError("interest rule not found");
-    await incrementProfileVersion(tx, userId);
-    return parsePublicRule(rows[0]);
-  });
+  try {
+    return await database.transaction(async (transaction) => {
+      const tx = transaction as Database;
+      const rows = await tx.update(interestRules).set({
+        ...input,
+        origin: "explicit",
+        updatedAt: Date.now(),
+      }).where(and(
+        eq(interestRules.id, id), eq(interestRules.userId, userId),
+      )).returning(publicColumns());
+      if (!rows[0]) throw new NotFoundError("interest rule not found");
+      await incrementProfileVersion(tx, userId);
+      return parsePublicRule(rows[0]);
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new ConflictError("an interest rule with this kind and label already exists");
+    }
+    throw error;
+  }
 }
 
 export async function dismissOwnedInterestRule(

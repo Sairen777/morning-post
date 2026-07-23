@@ -37,6 +37,7 @@ import type {
 } from "../summarizers/summarizer.types.ts";
 import { getConfig } from "../config.ts";
 import { ConnectorId, CONNECTORS_MEDIA_DIR } from "../constants.ts";
+import { isInaccessiblePaidItem } from "./content-access.ts";
 
 export interface SummarizeFeedPeriodDependencies {
   summarizer?: SummarizerService;
@@ -143,12 +144,6 @@ export async function cleanupExpiredMedia(
   }
 }
 
-function isInaccessiblePaidPost(
-  payload: Parameters<SummarizerService["summarize"]>[0][number],
-): boolean {
-  return payload.meta?.audience === "only_paid" &&
-    payload.meta?.contentAccess === "preview";
-}
 
 const MAXIMUM_UTF8_BYTES_PER_UTF16_CODE_UNIT = 3;
 const MAXIMUM_LOGICAL_SOURCE_CALLS_PER_CHUNK = 2;
@@ -313,7 +308,7 @@ export async function summarizeOwnedFeedPeriod(
       for (const item of items) {
         controller.signal.throwIfAborted();
         const payload = item.payload;
-        const inaccessiblePaidPost = isInaccessiblePaidPost(payload);
+        const inaccessiblePaidPost = isInaccessiblePaidItem(payload);
         const hasText = payload.text.trim().length > 0;
         const points = inaccessiblePaidPost
           ? []

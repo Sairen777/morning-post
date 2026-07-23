@@ -70,3 +70,27 @@ test("interest routes upsert normalized labels, omit expired rules, and dismiss"
     assertEquals((await (await app.request("/interests", { headers: { cookie } })).json()).length, 0);
   });
 });
+
+test("PATCH /interests/:id reports normalized label collisions as conflict", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const cookie = await session(app, "interest-route-conflict@example.com");
+    await app.request("/interests", request("POST", {
+      label: "Databases",
+      kind: "topic",
+      disposition: "prioritize",
+    }, cookie));
+    const secondResponse = await app.request("/interests", request("POST", {
+      label: "Compilers",
+      kind: "topic",
+      disposition: "show_less",
+    }, cookie));
+    const second = await secondResponse.json();
+    const collision = await app.request(
+      `/interests/${second.id}`,
+      request("PATCH", { label: " databases " }, cookie),
+    );
+    assertEquals(collision.status, 409);
+    assertEquals((await collision.json()).error.code, "CONFLICT");
+  });
+});

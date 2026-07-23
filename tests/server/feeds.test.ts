@@ -188,7 +188,7 @@ test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
     assertEquals((await sourceFeedsResponse.json()).map((feed: { id: string }) => feed.id), [telegramFeed.id]);
 
     const patchResponse = await app.request(`/feeds/${telegramFeed.id}`, {
-      ...jsonRequest("PATCH", { customPrompt: "   ", enabled: false, kind: "news", position: 4 }),
+      ...jsonRequest("PATCH", { customPrompt: "   ", enabled: false, kind: "news", position: 4, relevanceFilterMode: "include_all" }),
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(patchResponse.status, 200);
@@ -197,6 +197,14 @@ test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
     assertEquals(patched.enabled, false);
     assertEquals(patched.kind, "news");
     assertEquals(patched.position, 4);
+    assertEquals(patched.relevanceFilterMode, "include_all");
+
+    const invalidModeResponse = await app.request(`/feeds/${telegramFeed.id}`, {
+      ...jsonRequest("PATCH", { relevanceFilterMode: "invalid" }),
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(invalidModeResponse.status, 422);
+    await invalidModeResponse.body?.cancel();
 
     const deleteResponse = await app.request(`/feeds/${telegramFeed.id}`, {
       method: "DELETE",

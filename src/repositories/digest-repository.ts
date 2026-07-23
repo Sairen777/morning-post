@@ -1,7 +1,13 @@
 import { and, asc, desc, eq, gt, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
-import { digests, digestStatuses, type DigestStatus } from "../db/schema/digest.ts";
+import {
+  digests,
+  type DigestContentMode,
+  digestContentModes,
+  digestStatuses,
+  type DigestStatus,
+} from "../db/schema/digest.ts";
 import { NotFoundError } from "../server/errors.ts";
 import { type PageResult, encodeDigestCursor, decodeDigestCursor } from "../server/cursor.ts";
 
@@ -11,6 +17,7 @@ const publicDigestSchema = z.object({
   periodStartMs: z.number(),
   periodEndMs: z.number(),
   status: z.enum(digestStatuses),
+  contentMode: z.enum(digestContentModes),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -71,6 +78,40 @@ export async function setDigestStatus(
   }
   return parsePublicDigest(rows[0]);
 }
+export async function setDigestContentMode(
+  database: Database,
+  id: string,
+  userId: string,
+  contentMode: DigestContentMode,
+  now = Date.now(),
+): Promise<void> {
+  const parsedMode = z.enum(digestContentModes).parse(contentMode);
+  const rows = await database
+    .update(digests)
+    .set({ contentMode: parsedMode, updatedAt: now })
+    .where(and(eq(digests.id, id), eq(digests.userId, userId)))
+    .returning({ id: digests.id });
+  if (!rows[0]) {
+    throw new NotFoundError("digest not found");
+  }
+}
+
+export async function getDigestContentMode(
+  database: Database,
+  id: string,
+  userId: string,
+): Promise<DigestContentMode> {
+  const rows = await database
+    .select({ contentMode: digests.contentMode })
+    .from(digests)
+    .where(and(eq(digests.id, id), eq(digests.userId, userId)))
+    .limit(1);
+  if (!rows[0]) {
+    throw new NotFoundError("digest not found");
+  }
+  return z.enum(digestContentModes).parse(rows[0].contentMode);
+}
+
 
 export async function findDigestForUserPeriod(
   database: Database,

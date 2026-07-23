@@ -16,6 +16,7 @@ const userRowSchema = z.object({
   email: z.string(),
   passwordHash: z.string(),
   systemPrompt: z.string(),
+  summaryPrompt: z.string(),
   defaultLanguage: z.string().nullable(),
   defaultRelevanceFilterMode: z.enum(["personalized", "include_all"]),
   relevanceThreshold: z.number().int().min(0).max(100),
@@ -32,6 +33,7 @@ export interface CreateUserInput {
   email: string;
   passwordHash: string;
   systemPrompt: string;
+  summaryPrompt?: string;
   defaultLanguage?: string | null;
   defaultRelevanceFilterMode?: "personalized" | "include_all";
   relevanceThreshold?: number;
@@ -43,6 +45,7 @@ export type UpdateUserInput = Partial<{
   email: string;
   passwordHash: string;
   systemPrompt: string;
+  summaryPrompt: string;
   defaultLanguage: string | null;
   defaultRelevanceFilterMode: "personalized" | "include_all";
   relevanceThreshold: number;
@@ -67,6 +70,7 @@ export async function createUser(
         email: input.email.toLowerCase(),
         passwordHash: input.passwordHash,
         systemPrompt: input.systemPrompt,
+        summaryPrompt: input.summaryPrompt ?? "",
         defaultLanguage: input.defaultLanguage ?? null,
         defaultRelevanceFilterMode: input.defaultRelevanceFilterMode ?? "personalized",
         relevanceThreshold: input.relevanceThreshold ?? 60,

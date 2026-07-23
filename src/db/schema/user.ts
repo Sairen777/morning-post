@@ -22,6 +22,7 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   systemPrompt: text("system_prompt").notNull(),
+  summaryPrompt: text("summary_prompt").notNull().default(""),
   defaultLanguage: text("default_language"),
   defaultRelevanceFilterMode: text("default_relevance_filter_mode")
     .$type<RelevanceFilterMode>()

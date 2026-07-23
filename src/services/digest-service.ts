@@ -11,7 +11,6 @@ import {
   upsertDigestForPeriod,
 } from "../repositories/digest-repository.ts";
 import {
-  listSummariesForFeedPeriods,
   listSummariesForUserPeriod,
   type UserPeriodSummary,
 } from "../repositories/summary-repository.ts";
@@ -20,20 +19,14 @@ import {
   listItemsForFeedsInWindow,
   type StoredItem,
 } from "../repositories/item-repository.ts";
-import {
-  type SummarizeFeedPeriodDependencies,
-  summarizeOwnedFeedPeriod,
-} from "./summarization-service.ts";
+import type { SummarizeFeedPeriodDependencies } from "./summarization-service.ts";
 import type { Database } from "../db/client.ts";
-import {
-  type CreateDigestRunFeedInput,
-  finishDigestRunFeed,
-  startDigestRunFeed,
-} from "../repositories/digest-run-repository.ts";
 import { listSourcesForUser } from "../repositories/source-repository.ts";
-import { summarizeErrorForOps } from "../server/error-sanitizer.ts";
 import { NotFoundError } from "../server/errors.ts";
 import type { SummaryContent } from "../summarizers/summarizer.types.ts";
+import { listDigestStories, type StoredDigestStory } from "../repositories/story-repository.ts";
+import { assembleStoryDigest, type StoryDigestDependencies } from "./story-digest-service.ts";
+import { isInaccessiblePaidItem } from "./content-access.ts";
 
 export interface DigestSection {
   sourceId: string;
@@ -59,13 +52,14 @@ export interface PaidPost {
 
 export interface DigestView {
   digest: PublicDigest;
+  stories: StoredDigestStory[];
   sections: DigestSection[];
   groups: DigestSourceGroup[];
   paidPosts: PaidPost[];
 }
 
 export interface AssembleDigestDependencies
-  extends SummarizeFeedPeriodDependencies {
+  extends SummarizeFeedPeriodDependencies, StoryDigestDependencies {
   feedIds?: string[];
   runId?: string;
   sourceConnectorIdsBySourceId?: Map<string, string>;
@@ -187,6 +181,29 @@ export async function buildDigestViewForPeriod(
   database: Database,
   digest: PublicDigest,
 ): Promise<DigestView> {
+  if (digest.contentMode === "stories") {
+    const feeds = await listFeedsForUser(database, digest.userId, { includeDeleted: true });
+    const sources = await listSourcesForUser(database, digest.userId);
+    const sourceById = new Map(sources.map((source) => [source.id, source]));
+    const feedById = new Map(feeds.map((feed) => [feed.id, feed]));
+    const items = await listItemsForFeedsInWindow(database, feeds.map((feed) => feed.id), digest.periodStartMs, digest.periodEndMs);
+    const inaccessibleItemIds = new Set(items.filter((item) => isInaccessiblePaidItem(item.payload)).map((item) => item.id));
+    const paidPosts = items.flatMap((item): PaidPost[] => {
+      const feed = feedById.get(item.feedId);
+      const source = feed && sourceById.get(feed.sourceId);
+      if (!feed || !source?.showPaidPostTitles || !isInaccessiblePaidItem(item.payload)) return [];
+      return [{ newsletterName: feed.name, title: item.payload.title ?? "Paid post", sourceUrl: item.payload.url, publishedAt: item.payload.date }];
+    });
+    const visibleStories = (await listDigestStories(database, digest.userId, digest.id))
+      .filter((story) => story.sources.every((source) => !inaccessibleItemIds.has(source.itemId)));
+    return {
+      digest,
+      stories: visibleStories,
+      sections: [],
+      groups: [],
+      paidPosts,
+    };
+  }
   const userPeriodSummaries = await listSummariesForUserPeriod(
     database,
     digest.userId,
@@ -199,16 +216,8 @@ export async function buildDigestViewForPeriod(
     digest.periodStartMs,
     digest.periodEndMs,
   );
-  const { sections, paidPosts } = toDigestContent(
-    userPeriodSummaries,
-    storedItems,
-  );
-  return {
-    digest,
-    sections,
-    groups: groupDigestSections(sections),
-    paidPosts,
-  };
+  const { sections, paidPosts } = toDigestContent(userPeriodSummaries, storedItems);
+  return { digest, stories: [], sections, groups: groupDigestSections(sections), paidPosts };
 }
 
 export async function buildDigestViewById(
@@ -223,32 +232,6 @@ export async function buildDigestViewById(
   return await buildDigestViewForPeriod(database, digest);
 }
 
-/**
- * Run async tasks with bounded concurrency, preserving input order.
- * Each task runs independently; task failures do not stop other tasks.
- */
-async function runBounded<T>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<void>,
-): Promise<void> {
-  let index = 0;
-  const running = new Set<Promise<void>>();
-
-  while (index < items.length) {
-    while (index < items.length && running.size < concurrency) {
-      const item = items[index++];
-      const promise = fn(item).finally(() => running.delete(promise));
-      running.add(promise);
-    }
-
-    if (running.size > 0) {
-      await Promise.race(running);
-    }
-  }
-
-  await Promise.all(running);
-}
 
 export async function assembleDigestForPeriod(
   database: Database,
@@ -273,24 +256,6 @@ export async function assembleDigestForPeriod(
     await listFeedsForUser(database, userId);
   const feeds = activeFeeds(rawFeeds, dependencies.feedIds);
 
-  const summariesByFeedId = new Map(
-    (await listSummariesForFeedPeriods(
-      database,
-      feeds.map((feed) => feed.id),
-      periodStartMs,
-      periodEndMs,
-    ))
-      .map((summary) => [summary.feedId, summary] as const),
-  );
-  const latestItemFetchByFeedId = latestItemFetches(
-    await listItemsForFeedsInWindow(
-      database,
-      feeds.map((feed) => feed.id),
-      periodStartMs,
-      periodEndMs,
-    ),
-  );
-
   let sourceConnectorIdsBySourceId = dependencies.sourceConnectorIdsBySourceId;
   if (!sourceConnectorIdsBySourceId) {
     const sources = await listSourcesForUser(database, userId);
@@ -299,54 +264,20 @@ export async function assembleDigestForPeriod(
     );
   }
 
-  let hadFailure = false;
-  const feedsToSummarize = feeds.filter((feed) => {
-    const summary = summariesByFeedId.get(feed.id);
-    return summary === undefined ||
-      (latestItemFetchByFeedId.get(feed.id) ?? 0) >
-        summary.generatedAt;
-  });
-  const concurrency = dependencies.summarizationConcurrency ?? 2;
-
-  await runBounded(feedsToSummarize, concurrency, async (feed) => {
-    let feedRunId: string | undefined;
-    try {
-      const connectorId = requireConnectorId(
-        sourceConnectorIdsBySourceId.get(feed.sourceId),
-      );
-      if (dependencies.runId) {
-        const feedRunInput: CreateDigestRunFeedInput = {
-          runId: dependencies.runId,
-          sourceId: feed.sourceId,
-          connectorId,
-          feedId: feed.id,
-          feedExternalId: feed.externalId,
-          feedName: feed.name,
-          stage: "summarization",
-          status: "running",
-        };
-        const feedRun = await startDigestRunFeed(database, feedRunInput);
-        feedRunId = feedRun.id;
-      }
-
-      await summarizeOwnedFeedPeriod(
-        database,
-        { user, feed, connectorId, periodStartMs, periodEndMs },
-        dependencies,
-      );
-      if (feedRunId) {
-        await finishDigestRunFeed(database, feedRunId, { status: "complete" });
-      }
-    } catch (error) {
-      hadFailure = true;
-      if (feedRunId) {
-        await finishDigestRunFeed(database, feedRunId, {
-          status: "failed",
-          errorMessage: summarizeErrorForOps(error),
-        });
-      }
-    }
-  });
+  const result = await assembleStoryDigest(
+    database,
+    digest.id,
+    user,
+    feeds,
+    periodStartMs,
+    periodEndMs,
+    {
+      ...dependencies,
+      summaryConcurrency: dependencies.summaryConcurrency ??
+        dependencies.summarizationConcurrency,
+    },
+  );
+  const hadFailure = result.hadSummaryFailure;
 
   digest = await setDigestStatus(
     database,
@@ -401,6 +332,19 @@ export function renderDigestMarkdown(view: DigestView): string {
     `Status: ${view.digest.status}`,
     "",
   ];
+
+  for (const story of view.stories) {
+    lines.push(`## ${escapeMarkdownTitle(story.title)}`, "");
+    for (const point of story.points) lines.push(`- ${point.text}`);
+    if (story.points.length === 0) lines.push("- Nothing to report.");
+    lines.push("", "### Sources");
+    for (const source of story.sources) {
+      const label = escapeMarkdownTitle(source.title ?? source.feedName);
+      const url = safeMarkdownLinkDestination(source.url);
+      lines.push(url ? `- [${label}](<${url}>) — ${escapeMarkdownTitle(source.feedName)}` : `- ${label} — ${escapeMarkdownTitle(source.feedName)}`);
+    }
+    lines.push("");
+  }
 
   for (const group of view.groups) {
     lines.push(`## ${group.connectorId}`);

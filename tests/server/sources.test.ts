@@ -222,7 +222,7 @@ test("PATCH /sources/:id updates position and enabled", async () => {
     );
 
     const response = await app.request(`/sources/${source.id}`, {
-      ...jsonRequest("PATCH", { position: 1, enabled: false }),
+      ...jsonRequest("PATCH", { position: 1, enabled: false, relevanceFilterMode: "include_all" }),
       headers: {
         "content-type": "application/json",
         cookie,
@@ -234,6 +234,7 @@ test("PATCH /sources/:id updates position and enabled", async () => {
 
     assertEquals(json.position, 1);
     assertEquals(json.enabled, false);
+    assertEquals(json.relevanceFilterMode, "include_all");
     assertEquals("credentials" in json, false);
 
     const stored = await findSourceById(database, source.id, user.id);
@@ -241,6 +242,18 @@ test("PATCH /sources/:id updates position and enabled", async () => {
     assertEquals(stored.position, 1);
     assertEquals(stored.enabled, false);
     assertEquals(stored.showPaidPostTitles, false);
+    assertEquals(stored.relevanceFilterMode, "include_all");
+
+    const invalidModeResponse = await app.request(`/sources/${source.id}`, {
+      ...jsonRequest("PATCH", { relevanceFilterMode: "invalid" }),
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
+    });
+    assertEquals(invalidModeResponse.status, 422);
+    await invalidModeResponse.body?.cancel();
   });
 });
 

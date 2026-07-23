@@ -219,3 +219,26 @@ test("PATCH /auth/me updates filtering settings and increments only for filterin
     }
   });
 });
+
+test("PATCH /auth/me updates summaryPrompt and invalidates generated stories", async () => {
+  await withTestDb(async (database: Database) => {
+    const { app, cookie } = await authenticatedApp(database, "profile-summary@example.com");
+    const initialResponse = await app.request("/auth/me", { headers: { cookie } });
+    const initial = await initialResponse.json();
+    assertEquals(initial.summaryPrompt, "");
+
+    const response = await patchProfile(app, cookie, {
+      summaryPrompt: "Write concisely, with decisions before supporting detail.",
+    });
+    assertEquals(response.status, 200);
+    const updated = await response.json();
+    assertEquals(updated.summaryPrompt, "Write concisely, with decisions before supporting detail.");
+    assertEquals(updated.interestProfileVersion, initial.interestProfileVersion + 1);
+
+    const oversized = await patchProfile(app, cookie, {
+      summaryPrompt: "x".repeat(8 * 1024 + 1),
+    });
+    assertEquals(oversized.status, 422);
+    await oversized.body?.cancel();
+  });
+});
