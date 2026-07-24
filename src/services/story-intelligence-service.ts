@@ -216,47 +216,84 @@ export function partitionStoryAnalysisUnits(
     };
   });
 }
+type MemberResultDiagnostics = {
+  responseKind: "array" | "malformed-json" | "non-array";
+  unknown: string[];
+  malformed: string[];
+  duplicates: string[];
+  unassignable: number;
+};
 type ParsedMemberResults = {
   resolved: Array<z.infer<typeof analysisSchema>>;
   unresolved: Array<{ i: number; m: number }>;
   unexpected: boolean;
+  diagnostics: MemberResultDiagnostics;
 };
 function parseMemberResults(
   raw: string,
   expected: Array<{ i: number; m: number }>,
 ): ParsedMemberResults {
+  const diagnostics: MemberResultDiagnostics = {
+    responseKind: "array",
+    unknown: [],
+    malformed: [],
+    duplicates: [],
+    unassignable: 0,
+  };
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonrepair(raw));
   } catch {
-    return { resolved: [], unresolved: expected, unexpected: true };
+    diagnostics.responseKind = "malformed-json";
+    return {
+      resolved: [],
+      unresolved: expected,
+      unexpected: true,
+      diagnostics,
+    };
   }
   if (!Array.isArray(parsed)) {
-    return { resolved: [], unresolved: expected, unexpected: true };
+    diagnostics.responseKind = "non-array";
+    return {
+      resolved: [],
+      unresolved: expected,
+      unexpected: true,
+      diagnostics,
+    };
   }
   const expectedKeys = new Set(expected.map(({ i, m }) => `${i}:${m}`));
   const valuesByKey = new Map<
     string,
     Array<z.infer<typeof analysisSchema>>
   >();
-  let unexpected = false;
   for (const candidate of parsed) {
     const result = analysisSchema.safeParse(candidate);
     if (!result.success) {
       if (
-        candidate === null ||
-        typeof candidate !== "object" ||
-        !("i" in candidate) ||
-        !("m" in candidate) ||
-        typeof candidate.i !== "number" ||
-        typeof candidate.m !== "number" ||
-        !expectedKeys.has(`${candidate.i}:${candidate.m}`)
-      ) unexpected = true;
+        candidate !== null &&
+        typeof candidate === "object" &&
+        "i" in candidate &&
+        "m" in candidate &&
+        typeof candidate.i === "number" &&
+        typeof candidate.m === "number"
+      ) {
+        const key = `${candidate.i}:${candidate.m}`;
+        if (expectedKeys.has(key)) {
+          const fields = [...new Set(result.error.issues.map((issue) =>
+            String(issue.path[0] ?? "record")
+          ))].sort().join(",");
+          diagnostics.malformed.push(`${key}:${fields}`);
+        } else {
+          diagnostics.unknown.push(key);
+        }
+      } else {
+        diagnostics.unassignable++;
+      }
       continue;
     }
     const key = `${result.data.i}:${result.data.m}`;
     if (!expectedKeys.has(key)) {
-      unexpected = true;
+      diagnostics.unknown.push(key);
       continue;
     }
     const matches = valuesByKey.get(key);
@@ -266,11 +303,32 @@ function parseMemberResults(
   const resolved: Array<z.infer<typeof analysisSchema>> = [];
   const unresolved: Array<{ i: number; m: number }> = [];
   for (const member of expected) {
-    const matches = valuesByKey.get(`${member.i}:${member.m}`);
+    const key = `${member.i}:${member.m}`;
+    const matches = valuesByKey.get(key);
     if (matches?.length === 1) resolved.push(matches[0]!);
-    else unresolved.push(member);
+    else {
+      unresolved.push(member);
+      if (matches && matches.length > 1) diagnostics.duplicates.push(key);
+    }
   }
-  return { resolved, unresolved, unexpected };
+  const unexpected = diagnostics.responseKind !== "array" ||
+    diagnostics.unknown.length > 0 ||
+    diagnostics.unassignable > 0;
+  return { resolved, unresolved, unexpected, diagnostics };
+}
+
+function memberIntegrityFailure(parsed: ParsedMemberResults): Error {
+  const compact = (values: string[]): string =>
+    values.length === 0 ? "none" : values.slice(0, 5).join(",");
+  return new Error(
+    "Story analysis could not recover exact member coverage " +
+      `(unresolved=${parsed.unresolved.length}, ` +
+      `response=${parsed.diagnostics.responseKind}, ` +
+      `unknown=${compact(parsed.diagnostics.unknown)}, ` +
+      `malformed=${compact(parsed.diagnostics.malformed)}, ` +
+      `duplicates=${compact(parsed.diagnostics.duplicates)}, ` +
+      `unassignable=${parsed.diagnostics.unassignable})`,
+  );
 }
 
 
@@ -624,19 +682,19 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
     }
     if (batch.length) batches.push(batch);
 
+    const completionOptions = {
+      ...options,
+      maxOutputTokens: budget.analysisMaxOutputTokens,
+      maxAttempts: budget.analysisMaxAttempts,
+      jsonOutput: true,
+    } as StoryIntelligenceOptions;
     const completeAnalysisBatch = async (
       requestBatch: AnalysisRequestRecord[],
-      retryIntegrityFailure: boolean,
     ): Promise<Array<z.infer<typeof analysisSchema>>> => {
       const raw = await this.analysisClient.complete(
         buildStoryAnalysisPrompt().systemPrompt,
         requestBatch.map(({ encoded }) => encoded).join("\n"),
-        {
-          ...options,
-          maxOutputTokens: budget.analysisMaxOutputTokens,
-          maxAttempts: budget.analysisMaxAttempts,
-          jsonOutput: true,
-        } as StoryIntelligenceOptions,
+        completionOptions,
       );
       const expected = requestBatch.flatMap(({ memberIndexes, index }) =>
         memberIndexes.map((m) => ({ i: index, m }))
@@ -645,54 +703,55 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
       if (parsed.unresolved.length === 0 && !parsed.unexpected) {
         return parsed.resolved;
       }
-      if (!retryIntegrityFailure) {
-        throw new Error(
-          `Story analysis could not recover exact member coverage (unresolved=${parsed.unresolved.length}, unexpected=${parsed.unexpected})`,
-        );
-      }
 
       const retryMembers = parsed.unexpected ? expected : parsed.unresolved;
-      const retryRecords = retryMembers.map(({ i, m }) => {
-        const unit = units[i]!;
-        const encoded = encodeRecord(unit, i, [m]);
-        if (encoded === null) {
-          throw new RangeError(
-            "Story analysis retry member exceeds the request byte budget",
-          );
-        }
-        return { value: unit, index: i, memberIndexes: [m], encoded };
-      });
-      const retryBatches: AnalysisRequestRecord[][] = [];
-      let retryBatch: AnalysisRequestRecord[] = [];
-      let retryBytes = 0;
-      for (const record of retryRecords) {
-        const size = serializedBytes(record.encoded) +
-          (retryBatch.length ? 1 : 0);
-        if (
-          retryBatch.length &&
-          (retryBatch.length >= maximumRecords ||
-            retryBytes + size > this.maxBytes)
-        ) {
-          retryBatches.push(retryBatch);
-          retryBatch = [];
-          retryBytes = 0;
-        }
-        retryBytes += serializedBytes(record.encoded) +
-          (retryBatch.length ? 1 : 0);
-        retryBatch.push(record);
-      }
-      if (retryBatch.length) retryBatches.push(retryBatch);
-
       const recovered = parsed.unexpected ? [] : [...parsed.resolved];
-      for (const retry of retryBatches) {
-        recovered.push(...await completeAnalysisBatch(retry, false));
-      }
+      const retryResults: Array<z.infer<typeof analysisSchema> | undefined> =
+        new Array(retryMembers.length);
+      let nextRetry = 0;
+      const retryWorker = async (): Promise<void> => {
+        for (;;) {
+          const retryIndex = nextRetry++;
+          if (retryIndex >= retryMembers.length) return;
+          const { i, m } = retryMembers[retryIndex]!;
+          const unit = units[i]!;
+          const encoded = encodeRecord(unit, i, [m]);
+          if (encoded === null) {
+            throw new RangeError(
+              "Story analysis retry member exceeds the request byte budget",
+            );
+          }
+          const isolated = JSON.parse(encoded) as {
+            i: number;
+            members: Array<{ m: number }>;
+          };
+          isolated.i = 0;
+          isolated.members[0]!.m = 0;
+          const retryRaw = await this.analysisClient.complete(
+            buildStoryAnalysisPrompt().systemPrompt,
+            JSON.stringify(isolated),
+            completionOptions,
+          );
+          const retry = parseMemberResults(retryRaw, [{ i: 0, m: 0 }]);
+          if (retry.unresolved.length !== 0 || retry.unexpected) {
+            throw memberIntegrityFailure(retry);
+          }
+          retryResults[retryIndex] = { ...retry.resolved[0]!, i, m };
+        }
+      };
+      await Promise.all(
+        Array.from(
+          { length: Math.min(3, retryMembers.length) },
+          () => retryWorker(),
+        ),
+      );
+      recovered.push(...retryResults.map((result) => result!));
       return recovered;
     };
 
     const analyses = new Map<number, ItemAnalysisContent>();
     for (const requestBatch of batches) {
-      const local = await completeAnalysisBatch(requestBatch, true);
+      const local = await completeAnalysisBatch(requestBatch);
       local.forEach((result) => {
         const unit = units[result.i]!;
         const itemIndex = unit.memberIndexes[result.m]!;

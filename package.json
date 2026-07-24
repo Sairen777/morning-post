@@ -18,6 +18,7 @@
     "e2e:api": "bun --env-file=.env.production.local scripts/e2e-environment.ts start-api",
     "e2e:db:cleanup": "bun --env-file=.env.production.local scripts/e2e-environment.ts cleanup",
     "test": "bun --env-file=.env.production.local test tests",
+    "test:analysis:live": "LIVE_ANALYSIS_CONTRACT=1 bun --env-file=.env.production.local test tests/live-analysis-contract.test.ts",
     "capture-fixtures": "bun --env-file=.env.production.local scripts/capture-fixtures.ts",
     "typecheck:runtime": "tsc --project tsconfig.runtime.json",
     "typecheck": "tsc --project tsconfig.json && bun run web:typecheck",

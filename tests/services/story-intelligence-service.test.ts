@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assertEquals, assertRejects, assertThrows } from "../assertions.ts";
+import { assertEquals, assertRejects, assertStringIncludes, assertThrows } from "../assertions.ts";
 import { ConnectorId } from "../../src/constants.ts";
 import type {
   AnalyzedStoryItem,
@@ -655,11 +655,15 @@ test("analysis retries only missing and duplicate members without cross-member r
             { i: 0, m: 2, storyKey: "preserved-2", developmentKey: "preserved-2", evidence: [] },
           ]);
         }
-        assertEquals(records.map((record) => record.members[0].m), [0, 1]);
-        return JSON.stringify(records.map((record) => {
-          const m = record.members[0].m;
-          return { i: record.i, m, storyKey: `recovered-${m}`, developmentKey: `recovered-${m}`, evidence: [] };
-        }));
+        assertEquals(records.map((record) => [record.i, record.members[0].m]), [[0, 0]]);
+        const originalMember = calls - 2;
+        return JSON.stringify([{
+          i: 0,
+          m: 0,
+          storyKey: `recovered-${originalMember}`,
+          developmentKey: `recovered-${originalMember}`,
+          evidence: [],
+        }]);
       },
     },
   });
@@ -667,7 +671,7 @@ test("analysis retries only missing and duplicate members without cross-member r
     item(index, { meta: { threadRootId: "shared-thread" } })
   );
   const results = await service.analyze(inputs);
-  assertEquals(calls, 2);
+  assertEquals(calls, 3);
   assertEquals(results.map((result) => result.analysis.storyKey), [
     "recovered-0",
     "recovered-1",
@@ -677,6 +681,9 @@ test("analysis retries only missing and duplicate members without cross-member r
 
 test("analysis retries every member when provider output contains an unknown member", async () => {
   let calls = 0;
+  let activeRetries = 0;
+  let maximumActiveRetries = 0;
+  const retriesStarted = Promise.withResolvers<void>();
   const service = new OpenAICompatibleStoryIntelligenceService({
     client: {
       complete: async (_prompt, content) => {
@@ -688,43 +695,60 @@ test("analysis retries every member when provider output contains an unknown mem
             { i: 99, m: 0, storyKey: "unknown", developmentKey: "unknown", evidence: [] },
           ]);
         }
-        assertEquals(records.map((record) => [record.i, record.members[0].m]), [
-          [0, 0], [0, 1], [0, 2],
-        ]);
-        return JSON.stringify(records.map((record) => {
-          const m = record.members[0].m;
-          return { i: record.i, m, storyKey: `strict-${m}`, developmentKey: `strict-${m}`, evidence: [] };
-        }));
+        assertEquals(
+          records.map((record) => [record.i, record.members[0].m]),
+          [[0, 0]],
+        );
+        activeRetries++;
+        maximumActiveRetries = Math.max(maximumActiveRetries, activeRetries);
+        if (activeRetries === 3) retriesStarted.resolve();
+        await retriesStarted.promise;
+        activeRetries--;
+        const originalMember = Number(
+          String(records[0].members[0].title).replace("Title ", ""),
+        );
+        return JSON.stringify([{
+          i: 0,
+          m: 0,
+          storyKey: `strict-${originalMember}`,
+          developmentKey: `strict-${originalMember}`,
+          evidence: [],
+        }]);
       },
     },
   });
-  const inputs = [0, 1, 2].map((index) =>
+  const inputs = Array.from({ length: 7 }, (_, index) =>
     item(index, { meta: { threadRootId: "shared-thread" } })
   );
   const results = await service.analyze(inputs);
-  assertEquals(calls, 2);
-  assertEquals(results.map((result) => result.analysis.storyKey), [
-    "strict-0",
-    "strict-1",
-    "strict-2",
-  ]);
+  assertEquals(calls, 8);
+  assertEquals(maximumActiveRetries, 3);
+  assertEquals(
+    results.map((result) => result.analysis.storyKey),
+    Array.from({ length: 7 }, (_, index) => `strict-${index}`),
+  );
 });
 
 test("analysis explicitly rejects a second malformed or duplicate member response", async () => {
   const malformed = new OpenAICompatibleStoryIntelligenceService({
     client: { complete: async () => JSON.stringify([{ i: 0, extra: true }]) },
   });
-  await assertRejects(
+  const malformedError = await assertRejects(
     () => malformed.analyze([item(0)]),
     "could not recover exact member coverage",
   );
+  assertStringIncludes(malformedError.message, "response=array");
+  assertStringIncludes(malformedError.message, "unassignable=1");
+
   const duplicate = new OpenAICompatibleStoryIntelligenceService({
     client: { complete: async () => analysisResponse([0, 0]) },
   });
-  await assertRejects(
+  const duplicateError = await assertRejects(
     () => duplicate.analyze([item(0), item(1)]),
     "could not recover exact member coverage",
   );
+  assertStringIncludes(duplicateError.message, "response=array");
+  assertStringIncludes(duplicateError.message, "duplicates=0:0");
 });
 
 test("analysis conservatively isolates empty identity output without failing siblings", async () => {
