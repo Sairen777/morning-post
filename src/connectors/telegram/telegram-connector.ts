@@ -11,6 +11,7 @@ import type {
 import type {
   ChannelMessage,
   TelegramConnectorRawData,
+  TelegramForwardSource,
 } from "./telegram-connector.types.ts";
 import { ConnectorId, CONNECTORS_MEDIA_DIR } from "../../constants.ts";
 import { DEFAULT_EXCLUDED_CHANNELS } from "./constants.ts";
@@ -95,7 +96,24 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
         author: message.author ?? feedName,
         url: message.url ?? null,
         media: message.media,
-        meta: { isGroup },
+        meta: {
+          isGroup,
+          messageKind: message.messageKind,
+          ...(message.replyToMessageId === null ? {} : {
+            replyToMessageId: message.replyToMessageId,
+          }),
+          ...(message.threadRootId === null ? {} : {
+            threadRootId: message.threadRootId,
+          }),
+          ...(message.forwardedFrom === null ? {} : {
+            forwardedFrom: message.forwardedFrom,
+          }),
+          ...(message.editDate === null ? {} : {
+            editDate: message.editDate.getTime(),
+          }),
+          ...(message.isPinned ? { isPinned: true } : {}),
+          ...(message.groupedId === null ? {} : { groupedId: message.groupedId }),
+        },
       }));
     }
 
@@ -238,10 +256,11 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     const media = await this.processMedia(apiMessage, isGroup, feedKey);
     if (!apiMessage.message.trim() && !media) return null;
 
+    const replyHeader = apiMessage.replyTo as Api.MessageReplyHeader | undefined;
     return {
       id: apiMessage.id,
       date: new Date(apiMessage.date * 1000),
-      text: apiMessage.message,
+      text: cleanupTelegramBoilerplate(apiMessage.message),
       views: apiMessage.views ?? null,
       author: isGroup ? this.resolveAuthor(apiMessage.sender) : null,
       url: channelUsername
@@ -249,8 +268,14 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
         : undefined,
       media,
       groupedId: apiMessage.groupedId?.toString() ?? null,
-      replyToMessageId:
-        (apiMessage.replyTo as Api.MessageReplyHeader)?.replyToMsgId ?? null,
+      replyToMessageId: replyHeader?.replyToMsgId ?? null,
+      threadRootId: replyHeader?.replyToTopId ?? null,
+      forwardedFrom: resolveForwardSource(apiMessage.fwdFrom),
+      editDate: apiMessage.editDate == null
+        ? null
+        : new Date(apiMessage.editDate * 1000),
+      isPinned: apiMessage.pinned === true,
+      messageKind: resolveMessageKind(apiMessage),
     };
   }
 
@@ -354,6 +379,63 @@ export class TelegramConnector implements Connector<TelegramConnectorRawData> {
     return undefined;
   }
 }
+function resolveForwardSource(
+  header: Api.MessageFwdHeader | undefined,
+): TelegramForwardSource | null {
+  if (!header) return null;
+  const peer = header.fromId;
+  const identity: TelegramForwardSource = peer instanceof Api.PeerUser
+    ? { type: "user", id: peer.userId.toString() }
+    : peer instanceof Api.PeerChannel
+    ? { type: "channel", id: peer.channelId.toString() }
+    : peer instanceof Api.PeerChat
+    ? { type: "chat", id: peer.chatId.toString() }
+    : { type: "unknown" };
+  if (header.fromName) identity.name = header.fromName;
+  else if (header.postAuthor) identity.name = header.postAuthor;
+  if (header.channelPost != null) identity.messageId = header.channelPost;
+  return identity;
+}
+
+function resolveMessageKind(message: Api.Message): string {
+  const media = message.media;
+  if (!media) return "text";
+  if (media instanceof Api.MessageMediaPhoto) return "photo";
+  if (media instanceof Api.MessageMediaWebPage) return "webpage";
+  if (media instanceof Api.MessageMediaDocument) {
+    const document = media.document;
+    if (document instanceof Api.Document && document.mimeType.startsWith("video/")) {
+      return "video";
+    }
+    return "document";
+  }
+  return "other-media";
+}
+
+/**
+ * Telegram relays sometimes duplicate a wrapper or footer line verbatim.
+ * Collapse only adjacent, exact duplicates. URL lines and quote bodies are
+ * deliberately excluded because repetition there can carry provenance.
+ */
+export function cleanupTelegramBoilerplate(text: string): string {
+  const lines = text.replaceAll("\r\n", "\n").split("\n")
+    .map((line) => line.replace(/[ \t]+$/u, ""));
+  const cleaned: string[] = [];
+  let insideQuote = false;
+  for (const line of lines) {
+    const duplicate = cleaned.at(-1) === line;
+    const containsUrl = /(?:https?:\/\/|t\.me\/)/iu.test(line);
+    if (!(duplicate && line !== "" && !containsUrl && !insideQuote)) {
+      cleaned.push(line);
+    }
+    if (line.includes("[QUOTED_MESSAGE]")) insideQuote = true;
+    if (line.includes("[/QUOTED_MESSAGE]")) insideQuote = false;
+  }
+  while (cleaned[0] === "") cleaned.shift();
+  while (cleaned.at(-1) === "") cleaned.pop();
+  return cleaned.join("\n");
+}
+
 
 // ---------------------------------------------------------------------------
 // Media quota enforcement — module-level helper
@@ -481,8 +563,14 @@ function foldAlbumGroup(
     ),
     views: first.views,
     author: first.author,
-    groupedId: null,
-    replyToMessageId: null,
+    url: first.url,
+    groupedId: first.groupedId,
+    replyToMessageId: captionSource?.replyToMessageId ?? null,
+    threadRootId: captionSource?.threadRootId ?? null,
+    forwardedFrom: captionSource?.forwardedFrom ?? null,
+    editDate: captionSource?.editDate ?? first.editDate,
+    isPinned: group.some((message) => message.isPinned),
+    messageKind: "album",
     media: foldAlbumMedia(group),
   };
 }

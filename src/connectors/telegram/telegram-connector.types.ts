@@ -1,5 +1,13 @@
 import type { Media } from "../connector.types.ts";
 
+export interface TelegramForwardSource {
+  type: "user" | "channel" | "chat" | "unknown";
+  id?: string;
+  name?: string;
+  messageId?: number;
+}
+
+
 export interface ChannelMessage {
   id: number;
   date: Date;
@@ -10,6 +18,11 @@ export interface ChannelMessage {
   media?: Media;
   groupedId: string | null;
   replyToMessageId: number | null;
+  threadRootId: number | null;
+  forwardedFrom: TelegramForwardSource | null;
+  editDate: Date | null;
+  isPinned: boolean;
+  messageKind: string;
 }
 
 export type TelegramConnectorRawData = Record<

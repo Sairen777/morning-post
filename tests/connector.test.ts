@@ -2,7 +2,11 @@ import { test } from "bun:test";
 import { mkdir, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { assertEquals } from "./assertions.ts";
 import { Api, type TelegramClient } from "telegram";
-import { TelegramConnector, enforceMediaQuota } from "../src/connectors/telegram/telegram-connector.ts";
+import {
+  cleanupTelegramBoilerplate,
+  TelegramConnector,
+  enforceMediaQuota,
+} from "../src/connectors/telegram/telegram-connector.ts";
 import { logTelegramClientError } from "../src/connectors/telegram/telegram-client.ts";
 import { ConnectorId } from "../src/constants.ts";
 
@@ -215,7 +219,7 @@ test("getNormalizedData — channel message becomes a NormalizedItem", async () 
   assertEquals(item.feedExternalId, "channel:1");
   assertEquals(item.url, "https://t.me/test/1");
   assertEquals(item.date, IN_RANGE_S * 1000);
-  assertEquals(item.meta, { isGroup: false });
+  assertEquals(item.meta, { isGroup: false, messageKind: "text" });
 });
 
 test("getNormalizedData — excluded dialog titles are skipped", async () => {
@@ -284,7 +288,10 @@ test("getNormalizedData — megagroup channel marks items as isGroup", async () 
     TO_MS,
   );
 
-  assertEquals(result["channel:1"][0].meta, { isGroup: true });
+  assertEquals(result["channel:1"][0].meta, {
+    isGroup: true,
+    messageKind: "text",
+  });
 });
 
 test("getNormalizedData — message without replyTo leaves text unchanged", async () => {
@@ -352,6 +359,71 @@ test("getNormalizedData — matching quote is prepended to the message body", as
   );
 });
 
+test("getNormalizedData — captures discussion and source metadata without extra calls", async () => {
+  const group = fakeChannel({ title: "Discussion", megagroup: true });
+  const forwardedPeer = applyFields(Object.create(Api.PeerChannel.prototype), {
+    channelId: 77,
+  });
+  const message = fakeApiMessage({
+    id: 9,
+    date: IN_RANGE_S,
+    message: "forwarded reply",
+    replyTo: {
+      replyToMsgId: 8,
+      replyToTopId: 3,
+    } as unknown as Api.MessageReplyHeader,
+    fwdFrom: {
+      fromId: forwardedPeer,
+      postAuthor: "Original Author",
+      channelPost: 55,
+    } as unknown as Api.MessageFwdHeader,
+    editDate: IN_RANGE_S + 10,
+    pinned: true,
+  });
+  const result = await new TelegramConnector(fakeTelegramClient({
+    dialogs: [{ title: "Discussion", entity: group, messages: [message] }],
+  })).getNormalizedData(FROM_MS, TO_MS);
+
+  assertEquals(result["channel:1"][0].meta, {
+    isGroup: true,
+    messageKind: "text",
+    replyToMessageId: 8,
+    threadRootId: 3,
+    forwardedFrom: {
+      type: "channel",
+      id: "77",
+      name: "Original Author",
+      messageId: 55,
+    },
+    editDate: (IN_RANGE_S + 10) * 1000,
+    isPinned: true,
+  });
+});
+
+test("cleanupTelegramBoilerplate — collapses only exact repeated non-URL lines", () => {
+  assertEquals(
+    cleanupTelegramBoilerplate(
+      "\r\nStory body  \r\nFooter\r\nFooter\r\nhttps://example.com/x\r\nhttps://example.com/x\r\n",
+    ),
+    "Story body\nFooter\nhttps://example.com/x\nhttps://example.com/x",
+  );
+});
+
+test("cleanupTelegramBoilerplate — preserves ordinary prose, URLs, and quote provenance", () => {
+  const text = [
+    "This is ordinary prose.",
+    "A distinct substantive suffix.",
+    "https://example.com/story",
+    "https://example.com/story",
+    "[QUOTED_MESSAGE]",
+    "same quoted line",
+    "same quoted line",
+    "[/QUOTED_MESSAGE]",
+    "My response",
+  ].join("\n");
+  assertEquals(cleanupTelegramBoilerplate(text), text);
+});
+
 test("getNormalizedData — messages sharing a groupedId fold to one item", async () => {
   const channel = fakeChannel({ title: "TestChannel" });
   const groupedId = {
@@ -386,6 +458,11 @@ test("getNormalizedData — messages sharing a groupedId fold to one item", asyn
 
   assertEquals(result["channel:1"].length, 1);
   assertEquals(result["channel:1"][0].text, "caption");
+  assertEquals(result["channel:1"][0].meta, {
+    isGroup: false,
+    messageKind: "album",
+    groupedId: "g1",
+  });
 });
 
 test("Telegram client operational errors redact provider secrets before logging", () => {
