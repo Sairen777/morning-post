@@ -1,4 +1,10 @@
 import { expect, test } from "@playwright/test";
+import type {
+  AvailableFeed,
+  PublicFeed,
+  PublicSource,
+  PublicUser,
+} from "../src/api/types";
 
 test("connects Substack and adds a publication without exposing cookie values", async ({ page }) => {
   const secret = "session-secret-do-not-render";
@@ -6,26 +12,14 @@ test("connects Substack and adds a publication without exposing cookie values", 
   const compatibilitySecret = "compatibility-secret-do-not-render";
   const sessionRequests: unknown[] = [];
   let connected = false;
-  const publications: Array<{
-    id: string;
-    sourceId: string;
-    externalId: string;
-    name: string;
-    kind: "news";
-    customPrompt: null;
-    position: null;
-    enabled: true;
-    deletedAt: null;
-    lastFetchedPeriodEndMs: null;
-    createdAt: number;
-    updatedAt: number;
-  }> = [{
+  const publications: PublicFeed[] = [{
     id: "feed-existing",
     sourceId: "source-substack",
     externalId: "https://already-followed.substack.com",
     name: "Already followed",
     kind: "news",
     customPrompt: null,
+    relevanceFilterMode: "inherit",
     position: null,
     enabled: true,
     deletedAt: null,
@@ -39,24 +33,33 @@ test("connects Substack and adds a publication without exposing cookie values", 
     connectorId: "Substack",
     position: null,
     enabled: true,
+    showPaidPostTitles: false,
+    relevanceFilterMode: "inherit",
     connected: true,
     createdAt: 0,
     updatedAt: 0,
-  };
+  } satisfies PublicSource;
+
+  const user = {
+    id: "user-1",
+    name: "E2E User",
+    email: "e2e@example.com",
+    systemPrompt: "",
+    summaryPrompt: "",
+    defaultLanguage: null,
+    defaultRelevanceFilterMode: "personalized",
+    relevanceThreshold: 0.5,
+    maximumStoriesPerDigest: null,
+    interestProfileVersion: 0,
+    createdAt: 0,
+    updatedAt: 0,
+  } satisfies PublicUser;
 
   await page.route("**/auth/me", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        id: "user-1",
-        name: "E2E User",
-        email: "e2e@example.com",
-        systemPrompt: "",
-        defaultLanguage: null,
-        createdAt: 0,
-        updatedAt: 0,
-      }),
+      body: JSON.stringify(user),
     });
   });
   await page.route("**/sources", async (route) => {
@@ -73,11 +76,18 @@ test("connects Substack and adds a publication without exposing cookie values", 
       body: JSON.stringify(connected ? publications : []),
     });
   });
+  await page.route("**/interests", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([]),
+    });
+  });
   await page.route("**/digests**", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [] }),
+      body: JSON.stringify({ data: [], nextCursor: null }),
     });
   });
   await page.route("**/connectors/substack/session", async (route) => {
@@ -105,7 +115,7 @@ test("connects Substack and adds a publication without exposing cookie values", 
             name: "New publication",
             kind: "news",
           },
-        ]),
+        ] satisfies AvailableFeed[]),
       });
       return;
     }
@@ -121,12 +131,13 @@ test("connects Substack and adds a publication without exposing cookie values", 
       kind: "news" as const,
       customPrompt: null,
       position: null,
+      relevanceFilterMode: "inherit" as const,
       enabled: true as const,
       deletedAt: null,
       lastFetchedPeriodEndMs: null,
       createdAt: 0,
       updatedAt: 0,
-    };
+    } satisfies PublicFeed;
     publications.push(feed);
     await route.fulfill({
       status: 201,

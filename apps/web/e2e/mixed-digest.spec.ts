@@ -1,14 +1,24 @@
 import { expect, test } from "@playwright/test";
+import type {
+  PublicDigest,
+  PublicSource,
+  PublicUser,
+} from "../src/api/types";
 
 const user = {
   id: "user-mixed-digest",
   name: "Mixed digest reader",
   email: "mixed-digest@example.com",
   systemPrompt: "Summarize clearly",
+  summaryPrompt: "Summarize clearly",
   defaultLanguage: "en",
+  defaultRelevanceFilterMode: "personalized",
+  relevanceThreshold: 0.5,
+  maximumStoriesPerDigest: null,
+  interestProfileVersion: 0,
   createdAt: 1_704_067_200_000,
   updatedAt: 1_704_067_200_000,
-};
+} satisfies PublicUser;
 
 const digest = {
   id: "mixed-digest",
@@ -18,7 +28,7 @@ const digest = {
   status: "complete",
   createdAt: 1_704_153_600_000,
   updatedAt: 1_704_153_600_000,
-};
+} satisfies PublicDigest;
 
 const sources = [
   {
@@ -28,6 +38,7 @@ const sources = [
     position: 0,
     enabled: true,
     showPaidPostTitles: false,
+    relevanceFilterMode: "inherit",
     connected: true,
     createdAt: 1_704_067_200_000,
     updatedAt: 1_704_067_200_000,
@@ -39,11 +50,12 @@ const sources = [
     position: 1,
     enabled: true,
     showPaidPostTitles: true,
+    relevanceFilterMode: "inherit",
     connected: true,
     createdAt: 1_704_067_200_000,
     updatedAt: 1_704_067_200_000,
   },
-];
+] satisfies PublicSource[];
 
 const mixedDigestView = {
   digest,
@@ -156,6 +168,10 @@ test("renders mixed digest content without crossing article boundaries", async (
       return;
     }
     if (url.pathname === "/feeds") {
+      await route.fulfill({ json: [] });
+      return;
+    }
+    if (url.pathname === "/interests" && route.request().method() === "GET") {
       await route.fulfill({ json: [] });
       return;
     }

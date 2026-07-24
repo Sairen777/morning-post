@@ -1,3 +1,4 @@
+import type { PublicUser } from "../src/api/types";
 import { expect, test } from "@playwright/test";
 
 const user = {
@@ -5,10 +6,15 @@ const user = {
   name: "Digest recovery reader",
   email: "digest-recovery@example.com",
   systemPrompt: "Summarize clearly",
+  summaryPrompt: "Summarize clearly",
   defaultLanguage: "en",
+  defaultRelevanceFilterMode: "personalized",
+  relevanceThreshold: 0.5,
+  maximumStoriesPerDigest: null,
+  interestProfileVersion: 0,
   createdAt: 1_704_067_200_000,
   updatedAt: 1_704_067_200_000,
-};
+} satisfies PublicUser;
 
 const startedAt = Date.UTC(2026, 6, 21, 12, 0, 0);
 const activeRun = {
@@ -36,6 +42,10 @@ test("recovers an active digest after reload and releases the run action", async
 
     if (requestUrl.pathname === "/auth/me" && requestMethod === "GET") {
       await route.fulfill({ json: user });
+      return;
+    }
+    if (requestUrl.pathname === "/interests" && requestMethod === "GET") {
+      await route.fulfill({ json: [] });
       return;
     }
     if (requestUrl.pathname === "/sources" && requestMethod === "GET") {
