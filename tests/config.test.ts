@@ -365,12 +365,9 @@ test("invalid numeric and boolean values fail at startup", () => {
         key === "ALLOWED_ORIGINS" ||
         key === "DB_SSL_MODE" ||
         key === "ALLOW_REMOTE_SUMMARIZATION" ||
-        key === "SUMMARIZER_MODEL" ||
-        key === "SUMMARIZER_BASE_URL" ||
-        key === "SUMMARIZER_API_KEY" ||
-        key === "VISION_MODEL" ||
-        key === "VISION_BASE_URL" ||
-        key === "VISION_API_KEY" ||
+        key.endsWith("_MODEL") ||
+        key.endsWith("_BASE_URL") ||
+        key.endsWith("_API_KEY") ||
         key.includes("_USD_PER_MILLION_TOKENS")
       ) continue;
       process.env[key] = "not-a-number";
