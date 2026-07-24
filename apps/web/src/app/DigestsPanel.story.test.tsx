@@ -70,6 +70,7 @@ const storyView: DigestView = {
   sections: [],
   groups: [],
   paidPosts: [],
+  failureReason: null,
 };
 
 const legacyView: DigestView = {
@@ -109,6 +110,7 @@ const legacyView: DigestView = {
     }],
   }],
   paidPosts: [],
+  failureReason: null,
 };
 
 function renderDigest(

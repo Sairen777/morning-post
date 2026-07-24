@@ -7,12 +7,14 @@ import {
   type CreateDigestRunInput,
   DigestRunAlreadyRunningError,
   finishDigestRun,
+  findNewestDigestRunByDigestIdForUser,
   finishDigestRunFeed,
   listDigestRunFeedsForRun,
   listDigestRunsForUser,
   recoverStaleDigestRuns,
   startDigestRunFeed,
 } from "../../src/repositories/digest-run-repository.ts";
+import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
 import {
   createUser,
   type CreateUserInput,
@@ -115,6 +117,103 @@ test("finishDigestRun with partial status and errorMessage", async () => {
     assertEquals(finished.errorMessage, "ingestion timeout on feed X");
     assertEquals(typeof finished.finishedAt, "number");
     assertEquals(finished.digestId, null);
+  });
+});
+
+test("findNewestDigestRunByDigestIdForUser scopes exact links to the owner", async () => {
+  await withTestDb(async (database) => {
+    const owner = await createUser(database, userInput());
+    const other = await createUser(database, userInput({
+      email: "other@example.com",
+    }));
+    const digest = await upsertDigestForPeriod(database, {
+      userId: owner.id,
+      periodStartMs: 100,
+      periodEndMs: 200,
+      status: "failed",
+    }, 200);
+    const older = await createDigestRun(database, runInput(owner.id), 1_000);
+    await finishDigestRun(database, older.id, {
+      digestId: digest.id,
+      status: "failed",
+      errorMessage: "older",
+    }, 1_001);
+    const newest = await createDigestRun(database, runInput(owner.id), 2_000);
+    await finishDigestRun(database, newest.id, {
+      digestId: digest.id,
+      status: "failed",
+      errorMessage: "newest",
+    }, 2_001);
+    const otherRun = await createDigestRun(database, runInput(other.id), 3_000);
+    await finishDigestRun(database, otherRun.id, {
+      digestId: digest.id,
+      status: "failed",
+      errorMessage: "other owner",
+    }, 3_001);
+
+    assertEquals(
+      (await findNewestDigestRunByDigestIdForUser(
+        database,
+        owner.id,
+        digest.id,
+      ))?.id,
+      newest.id,
+    );
+    assertEquals(
+      await findNewestDigestRunByDigestIdForUser(
+        database,
+        owner.id,
+        "00000000-0000-0000-0000-000000000099",
+      ),
+      null,
+    );
+  });
+});
+
+test("findNewestDigestRunByDigestIdForUser deterministically breaks startedAt ties", async () => {
+  await withTestDb(async (database) => {
+    const owner = await createUser(database, userInput());
+    const digest = await upsertDigestForPeriod(database, {
+      userId: owner.id,
+      periodStartMs: 100,
+      periodEndMs: 200,
+      status: "failed",
+    }, 200);
+    const olderFinished = await createDigestRun(
+      database,
+      runInput(owner.id, { status: "failed" }),
+      1_000,
+    );
+    await finishDigestRun(database, olderFinished.id, {
+      digestId: digest.id,
+      status: "failed",
+      errorMessage: "older finish",
+    }, 1_001);
+    const newerFinished = await createDigestRun(
+      database,
+      runInput(owner.id, { status: "failed" }),
+      1_000,
+    );
+    await finishDigestRun(database, newerFinished.id, {
+      digestId: digest.id,
+      status: "failed",
+      errorMessage: "newer finish",
+    }, 1_002);
+    const unfinished = await createDigestRun(database, runInput(owner.id), 1_000);
+    await database.execute(sql`
+      update digest_runs
+      set digest_id = ${digest.id}
+      where id = ${unfinished.id}
+    `);
+
+    assertEquals(
+      (await findNewestDigestRunByDigestIdForUser(
+        database,
+        owner.id,
+        digest.id,
+      ))?.id,
+      newerFinished.id,
+    );
   });
 });
 

@@ -434,9 +434,10 @@ export default function Dashboard(props: DashboardProps) {
     periodStartMs?: number;
     periodEndMs?: number;
   }) => {
-    await runDigest(body);
+    const digest = await runDigest(body);
     await refreshDigests();
     await refreshDigestRuns();
+    return digest;
   };
 
   const handleSelectDigest = async (id: string): Promise<DigestView> => {

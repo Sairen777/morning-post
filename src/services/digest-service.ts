@@ -10,6 +10,7 @@ import {
   setDigestStatus,
   upsertDigestForPeriod,
 } from "../repositories/digest-repository.ts";
+import { findNewestDigestRunByDigestIdForUser } from "../repositories/digest-run-repository.ts";
 import {
   listSummariesForUserPeriod,
   type UserPeriodSummary,
@@ -22,6 +23,7 @@ import {
 import type { Database } from "../db/client.ts";
 import { listSourcesForUser } from "../repositories/source-repository.ts";
 import { NotFoundError } from "../server/errors.ts";
+import { sanitizeErrorForOps } from "../server/error-sanitizer.ts";
 import type { SummaryContent } from "../summarizers/summarizer.types.ts";
 import { listDigestStories, type StoredDigestStory } from "../repositories/story-repository.ts";
 import { assembleStoryDigest, type StoryDigestDependencies } from "./story-digest-service.ts";
@@ -55,6 +57,7 @@ export interface DigestView {
   sections: DigestSection[];
   groups: DigestSourceGroup[];
   paidPosts: PaidPost[];
+  failureReason: string | null;
 }
 
 export interface AssembleDigestDependencies extends StoryDigestDependencies {
@@ -199,6 +202,7 @@ export async function buildDigestViewForPeriod(
       stories: visibleStories,
       sections: [],
       groups: [],
+      failureReason: null,
       paidPosts,
     };
   }
@@ -215,7 +219,14 @@ export async function buildDigestViewForPeriod(
     digest.periodEndMs,
   );
   const { sections, paidPosts } = toDigestContent(userPeriodSummaries, storedItems);
-  return { digest, stories: [], sections, groups: groupDigestSections(sections), paidPosts };
+  return {
+    digest,
+    stories: [],
+    sections,
+    groups: groupDigestSections(sections),
+    paidPosts,
+    failureReason: null,
+  };
 }
 
 export async function buildDigestViewById(
@@ -227,7 +238,21 @@ export async function buildDigestViewById(
   if (!digest) {
     throw new NotFoundError("digest not found");
   }
-  return await buildDigestViewForPeriod(database, digest);
+  const view = await buildDigestViewForPeriod(database, digest);
+  if (digest.status !== "failed") {
+    return view;
+  }
+  const run = await findNewestDigestRunByDigestIdForUser(
+    database,
+    userId,
+    digestId,
+  );
+  return {
+    ...view,
+    failureReason: run?.status === "failed" && run.errorMessage !== null
+      ? sanitizeErrorForOps(run.errorMessage)
+      : null,
+  };
 }
 
 
@@ -322,12 +347,25 @@ function escapeMarkdownTitle(value: string): string {
   return value.replace(/\s+/g, " ").trim().replace(/[\\[\]]/g, "\\$&");
 }
 
+function escapeMarkdownPlainText(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replace(/[\\`*_[\]{}()#+\-.!|]/g, "\\$&");
+}
+
 export function renderDigestMarkdown(view: DigestView): string {
   const lines = [
     `# Digest ${formatDigestMoment(view.digest.periodStartMs)} \u2192 ${
       formatDigestMoment(view.digest.periodEndMs)
     }`,
     `Status: ${view.digest.status}`,
+    ...(view.failureReason === null
+      ? []
+      : [`Failure reason: ${escapeMarkdownPlainText(view.failureReason)}`]),
     "",
   ];
 

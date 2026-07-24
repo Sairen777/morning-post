@@ -497,6 +497,7 @@
               <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
               <li><strong>API → Substack:</strong> users explicitly import <code>substack.sid</code> and may also provide <code>connect.sid</code> when their browser has it; Morning Post never accepts a Substack password or raw cookie header. Account-subscription discovery and paid/full post retrieval send only the provided session cookies to the fixed <code>https://substack.com</code> origin. Manual publication validation fetches public archives without cookies through the IP-pinned HTTPS boundary. The integration replays an unsupported browser session and may conflict with Substack terms; the UI discloses that risk before connection.</li>
               <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), and a weekly TTL sweep (<code>MEDIA_TTL_MS</code>). Bun's Node-compatible filesystem APIs operate with the process account's privileges rather than runtime permission flags. Deployment ownership and filesystem ACLs should restrict the process to every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> (<code>telegram_media</code>, <code>substack_media</code>, <code>youtube_media</code>, <code>reddit_media</code>, <code>x_media</code>, <code>rss_media</code>) plus the shared/legacy <code>./media</code>; application path validation, feed isolation, quotas, eviction, and TTL traversal remain the in-process boundaries.</li>
+            </ul>
               </div>
               <div>
                 <h3>Runtime entry points</h3>
@@ -981,8 +982,11 @@
   O->>DB: upsert digest(status=pending, contentMode=stories)
   O->>DB: load accessible items across all successful feeds
   O->>DB: load analyses by item fingerprint + analyzer version
-  O->>I: analyze cache misses in bounded batches
-  O->>DB: persist item analyses
+  loop cache misses in checkpoints (default max 10 items)
+    O->>I: analyze one bounded checkpoint
+    O->>O: validate exact item IDs and current fingerprints
+    O->>DB: atomically persist the complete checkpoint
+  end
   O->>DB: load bounded recent story references
   O->>I: resolve stories globally across connectors, feeds, and prior runs
   O->>DB: batch upsert stories, developments, membership, and versions
@@ -1028,6 +1032,16 @@
                 <p>Substack archive ingestion accepts both <code>newsletter</code> articles and <code>podcast</code> episodes as story inputs; unrelated archive entry types remain excluded. Paid access is an explicit entitlement boundary, not a body-shape heuristic. Only exact <code>paid_subscriber</code> membership is affirmative. Missing or unknown evidence is normalized conservatively to <code>meta.hasPaidSubscription: false</code>. An inaccessible <code>only_paid</code> item emits <code>meta.contentAccess: "preview"</code>; it is excluded before story analysis and summarization, so preview/body text never reaches the model. Entitled paid responses must contain a nonempty normalized private body or ingestion fails.</p>
 
                 <p>Every digest rerun authoritatively re-ingests the full requested period for a feed containing an <code>only_paid</code> Substack item, even when its cursor already covers that period. This observes free-to-paid upgrades and paid-to-free downgrades without guessing. Story-analysis cache identity is the item payload fingerprint plus analyzer version; changed access/body content is reanalyzed, changes story membership/version when necessary, and retries summarization after a failed run. Unchanged story and profile versions reuse the current valid digest card without another summary call.</p>
+
+                <p>Story analysis is checkpointed independently of later resolution and summarization. Cache misses are partitioned into model batches of at most 10 items by default (and may be further constrained by the generic model budget). A checkpoint is accepted only when it contains exactly one result for every requested item ID, contains no duplicate or extra IDs, and carries each item's current payload fingerprint. The entire accepted checkpoint is then persisted with one atomic batch upsert before the next model call. If a later checkpoint or downstream stage fails, a rerun reloads the same analyzer-version/fingerprint cache, skips the current checkpoints, and resumes only the remaining misses; stale fingerprints are never treated as progress.</p>
+
+                <p>Model metadata is normalized at the provider boundary without weakening identity checks. If <code>storyTitle</code> is omitted, the deterministic fallback order is the trimmed normalized source title, then the normalized <code>storyKey</code>. Safe optional metadata omissions use conservative defaults: nullable language/media become <code>null</code>, topic/entity lists become empty, trusted canonical URLs come from the normalized input, and absent development metadata derives from the normalized development key or source title. This tolerance does not permit missing indexes, unknown indexes, duplicate outputs, or mismatched fingerprints.</p>
+
+                <p>A failed digest view obtains its reason only from the newest run linked to that exact digest and owned by the requesting user. Newest-run lookup is deterministic: <code>startedAt DESC</code>, then <code>finishedAt DESC NULLS LAST</code>, then run <code>id DESC</code>. Only a newest run whose status is <code>failed</code> and whose error text is non-null contributes <code>failureReason</code>; the text is sanitized again at projection time. The same owner-scoped value is returned in JSON, escaped in Markdown, shown as an alert in selected digest detail, and surfaced immediately by the runner when <code>POST /digests/run</code> returns a failed <code>DigestView</code>. Complete, partial, reason-less, foreign-user, and merely period-overlapping runs do not expose a reason.</p>
+
+                <div class="callout warning">
+                  <strong>Live diagnostic evidence, not completion:</strong> diagnostic reruns against real production data persisted 742 of 744 item analyses before interruption. This demonstrates durable checkpoint progress and resumability at that point; it does <em>not</em> establish an end-to-end successful live digest rerun or production-data completion.
+                </div>
 
                 <p>Every <code>DigestView</code> includes <code>paidPosts</code>. In story mode, projection suppresses a stored story if any source item has since become an inaccessible paid preview, preventing a stale full-body summary leak. When the owning Substack source enables <code>showPaidPostTitles</code>, safe HTTP(S) titles are projected separately and never include preview text. Historical <code>contentMode = legacy</code> digests retain their summary-backed read projection under the same current-access suppression. Story cards render every safe provenance link, connector/feed label, persisted topic/entity, and summary point.</p>
 
@@ -1232,6 +1246,11 @@
                             <td>Bounded global work</td>
                             <td>Analysis, relation adjudication, and classification partition by item/byte caps; selected story summaries use a bounded worker pool.</td>
                             <td>Cross-feed resolution remains global without an unbounded provider request or <code>Promise.all</code>.</td>
+                          </tr>
+                          <tr>
+                            <td>Checkpointed story analysis</td>
+                            <td>Default model batches contain at most 10 items; exact IDs and current fingerprints are validated before each checkpoint is atomically persisted.</td>
+                            <td>Reruns reuse current analyzer-version/fingerprint checkpoints and resume remaining misses without accepting partial or stale model output.</td>
                           </tr>
                           <tr>
                             <td>Historical digest resilience</td>
@@ -1483,6 +1502,11 @@
                         <dt>Story analysis and summarizer boundary</dt>
                         <dd><span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/summarizers/openai-compatible-summarizer.ts</span>, and <span class="path">src/summarizers/prompts.ts</span>.</dd>
 
+                        <dt>Checkpointed story analysis, deterministic metadata fallback, and recovery tests</dt>
+                        <dd><span class="path">src/services/story-digest-service.ts</span>, <span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/repositories/story-repository.ts</span>, <span class="path">tests/services/story-digest-service.test.ts</span>, <span class="path">tests/services/story-intelligence-service.test.ts</span>, and <span class="path">tests/db/story-repository.test.ts</span>. These cover the default 10-item cap, exact checkpoint output validation, atomic batch persistence, reuse of current fingerprint/analyzer-version checkpoints after a later failure, deterministic missing-title fallback, and safe optional metadata defaults.</dd>
+
+                        <dt>Failed-digest reason ownership, ordering, API, Markdown, and UI</dt>
+                        <dd><span class="path">src/repositories/digest-run-repository.ts</span>, <span class="path">src/services/digest-service.ts</span>, <span class="path">src/services/orchestrator.ts</span>, <span class="path">src/server/routes/digests.ts</span>, <span class="path">src/server/error-sanitizer.ts</span>, <span class="path">apps/web/src/api/types.ts</span>, <span class="path">apps/web/src/app/DigestsPanel.tsx</span>, <span class="path">apps/web/src/app/DigestRunnerCard.tsx</span>, <span class="path">tests/services/digest-service.test.ts</span>, <span class="path">tests/services/orchestrator.test.ts</span>, <span class="path">tests/server/digests.test.ts</span>, <span class="path">apps/web/src/app/DigestPanels.test.tsx</span>, and <span class="path">apps/web/src/app/DigestRunnerCard.test.tsx</span>. Evidence covers exact-digest and owner scoping, deterministic newest-run tie-breaking, sanitization, JSON and escaped Markdown delivery, selected-detail visibility, immediate runner alerts, and suppression for inapplicable states.</dd>
                         <dt>Database model</dt>
                         <dd><span class="path">src/db/schema/user.ts</span>, <span class="path">src/db/schema/source.ts</span>, <span class="path">src/db/schema/feed.ts</span>, <span class="path">src/db/schema/item.ts</span>, <span class="path">src/db/schema/interest-rule.ts</span>, <span class="path">src/db/schema/story.ts</span>, <span class="path">src/db/schema/story-feedback.ts</span>, <span class="path">src/db/schema/digest.ts</span>, <span class="path">src/repositories/story-repository.ts</span>, <span class="path">src/repositories/story-feedback-repository.ts</span>, <span class="path">src/repositories/interest-rule-repository.ts</span>, and <span class="path">src/repositories/summary-repository.ts</span> for historical reads.</dd>
 

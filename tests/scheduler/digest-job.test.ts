@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assertEquals } from "../assertions.ts"
+import { assertEquals } from "../assertions.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
 import {
@@ -115,6 +115,7 @@ test("runDigestTick triggers one run per user and isolates errors", async () => 
           sections: [],
           groups: [],
           paidPosts: [],
+          failureReason: null,
         });
       },
     });
@@ -160,6 +161,7 @@ test("runDigestTick skips users that are already running", async () => {
           sections: [],
           groups: [],
           paidPosts: [],
+          failureReason: null,
         };
       },
     });
@@ -182,6 +184,7 @@ test("runDigestTick skips users that are already running", async () => {
           sections: [],
           groups: [],
           paidPosts: [],
+          failureReason: null,
         });
       },
     });
@@ -218,6 +221,7 @@ test("scheduleDigestJob registers the default cron and handler", async () => {
           sections: [],
           groups: [],
           paidPosts: [],
+          failureReason: null,
         });
       },
     });
@@ -261,6 +265,7 @@ test("runDigestTick forwards the shared summarizer to scheduled execution", asyn
           sections: [],
           groups: [],
           paidPosts: [],
+          failureReason: null,
         });
       },
     });
@@ -384,6 +389,7 @@ test("leader tick recovers stale runs before processing users", async () => {
           sections: [],
           groups: [],
           paidPosts: [],
+          failureReason: null,
         });
       },
     });
@@ -428,6 +434,7 @@ test("scheduler skips an already-running user without logging a tick failure", a
           sections: [],
           groups: [],
           paidPosts: [],
+          failureReason: null,
         });
       },
     });
@@ -477,6 +484,7 @@ test("runDigestTick pages users and respects bounded concurrency", async () => {
         sections: [],
         groups: [],
         paidPosts: [],
+        failureReason: null,
       };
     };
 

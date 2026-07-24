@@ -7,6 +7,7 @@ import { withTestDb } from "../../src/db/testing.ts";
 import { createOrReviveFeed, softDeleteFeed } from "../../src/repositories/feed-repository.ts";
 import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { setDigestContentMode, upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
+import { createDigestRun, finishDigestRun } from "../../src/repositories/digest-run-repository.ts";
 import { upsertSummaryForPeriod } from "../../src/repositories/summary-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { createUser } from "../../src/repositories/user-repository.ts";
@@ -87,5 +88,115 @@ test("buildDigestViewById reads explicitly legacy summaries after their feed is 
     assertEquals(view.sections[0].feedRemoved, true);
     assertEquals(view.sections[0].content, { kind: "aggregate", points: [{ text: "Historical summary", sourceUrl: null }] });
     assertStringIncludes(renderDigestMarkdown(view), "### Legacy Feed (removed)");
+  });
+});
+
+test("buildDigestViewById exposes only the newest exactly linked owned failed run", async () => {
+  await withTestDb(async (database) => {
+    const owner = await fixtureUser(database, "failed-digest@example.com");
+    const other = await fixtureUser(database, "other-failed-digest@example.com");
+    const digest = await upsertDigestForPeriod(database, {
+      userId: owner.id,
+      periodStartMs: start,
+      periodEndMs: end,
+      status: "failed",
+    }, end);
+
+    const samePeriodUnlinked = await createDigestRun(database, {
+      userId: owner.id,
+      trigger: "manual",
+      periodStartMs: start,
+      periodEndMs: end,
+      status: "running",
+    }, end + 20);
+    await finishDigestRun(database, samePeriodUnlinked.id, {
+      status: "failed",
+      errorMessage: "must not use period fallback",
+    }, end + 21);
+    const otherOwnerRun = await createDigestRun(database, {
+      userId: other.id,
+      trigger: "manual",
+      periodStartMs: start,
+      periodEndMs: end,
+      status: "running",
+    }, end + 30);
+    await finishDigestRun(database, otherOwnerRun.id, {
+      digestId: digest.id,
+      status: "failed",
+      errorMessage: "must not cross owners",
+    }, end + 31);
+    const linked = await createDigestRun(database, {
+      userId: owner.id,
+      trigger: "manual",
+      periodStartMs: start - 1,
+      periodEndMs: end - 1,
+      status: "running",
+    }, end + 10);
+    await finishDigestRun(database, linked.id, {
+      digestId: digest.id,
+      status: "failed",
+      errorMessage: "Bearer secret-token\n **heading** <script>",
+    }, end + 11);
+
+    const view = await buildDigestViewById(database, owner.id, digest.id);
+    assertEquals(
+      view.failureReason,
+      "Bearer [REDACTED]\n **heading** <script>",
+    );
+    const markdown = renderDigestMarkdown(view);
+    assertStringIncludes(
+      markdown,
+      "Failure reason: Bearer \\[REDACTED\\] \\*\\*heading\\*\\* &lt;script&gt;",
+    );
+    assertEquals(markdown.includes("secret-token"), false);
+    assertEquals(markdown.includes("\n **heading**"), false);
+    assertEquals(markdown.includes("<script>"), false);
+    assertEquals(markdown.includes("period fallback"), false);
+    assertEquals(markdown.includes("cross owners"), false);
+
+    const newerComplete = await createDigestRun(database, {
+      userId: owner.id,
+      trigger: "manual",
+      periodStartMs: start,
+      periodEndMs: end,
+      status: "running",
+    }, end + 40);
+    await finishDigestRun(database, newerComplete.id, {
+      digestId: digest.id,
+      status: "complete",
+      errorMessage: "stale error",
+    }, end + 41);
+    assertEquals(
+      (await buildDigestViewById(database, owner.id, digest.id)).failureReason,
+      null,
+    );
+  });
+});
+
+test("buildDigestViewById hides linked run errors unless the digest is failed", async () => {
+  await withTestDb(async (database) => {
+    const user = await fixtureUser(database, "complete-digest-run-error@example.com");
+    const digest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: start,
+      periodEndMs: end,
+      status: "complete",
+    }, end);
+    const run = await createDigestRun(database, {
+      userId: user.id,
+      trigger: "manual",
+      periodStartMs: start,
+      periodEndMs: end,
+      status: "running",
+    }, end + 1);
+    await finishDigestRun(database, run.id, {
+      digestId: digest.id,
+      status: "failed",
+      errorMessage: "hidden failure",
+    }, end + 2);
+
+    const view = await buildDigestViewById(database, user.id, digest.id);
+    assertEquals(view.failureReason, null);
+    assertEquals(renderDigestMarkdown(view).includes("Failure reason:"), false);
   });
 });

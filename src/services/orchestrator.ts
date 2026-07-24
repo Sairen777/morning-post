@@ -26,6 +26,7 @@ import { summarizeErrorForOps } from "../server/error-sanitizer.ts";
 import {
   type AssembleDigestDependencies,
   assembleDigestForPeriod,
+  buildDigestViewById,
   buildDigestViewForPeriod,
   type DigestView,
 } from "./digest-service.ts";
@@ -497,6 +498,10 @@ async function executeDigestRun(
     status: runStatus,
     errorMessage: assemblyFailed ? summarizeErrorForOps(assemblyError) : null,
   }, now());
+
+  if (runStatus === "failed") {
+    return await buildDigestViewById(database, userId, digestView.digest.id);
+  }
 
   return await finalizeRunDigestStatus(
     database,

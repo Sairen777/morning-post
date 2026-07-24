@@ -82,7 +82,28 @@ const sampleView: DigestView = {
     },
   ],
   paidPosts: [],
+  failureReason: null,
 };
+
+const failedView: DigestView = {
+  ...sampleView,
+  digest: {
+    ...sampleView.digest,
+    status: "failed",
+  },
+  failureReason: "The digest run could not complete safely.",
+};
+
+const failedWithoutReasonView: DigestView = {
+  ...failedView,
+  failureReason: null,
+};
+
+const completeWithReasonView: DigestView = {
+  ...sampleView,
+  failureReason: "This reason must stay hidden for complete digests.",
+};
+
 
 describe("DigestDetail rendering", () => {
   it("renders connector group and feed names", async () => {
@@ -113,6 +134,58 @@ describe("DigestDetail rendering", () => {
     await waitFor(() => expect(container.textContent).toContain("(removed)"));
     expect(container.textContent).toContain("historical bullet");
   });
+  it("shows the exact failure reason for a selected failed digest", async () => {
+    const { getByRole } = render(() => (
+      <DigestsPanel
+        digests={[failedView.digest]}
+        onSelectDigest={() => Promise.resolve(failedView)}
+        onDeleteDigest={noopOnDeleteDigest}
+        onAuthError={noopOnAuthError}
+      />
+    ));
+
+    getByRole("button", { name: /#1/ }).click();
+    const alert = await waitFor(() => getByRole("alert"));
+    expect(alert.textContent).toBe(
+      `Failure reason: ${failedView.failureReason}`,
+    );
+  });
+
+  it("hides failure reasons for complete or reason-less selected digests", async () => {
+    const complete = render(() => (
+      <DigestsPanel
+        digests={[completeWithReasonView.digest]}
+        onSelectDigest={() => Promise.resolve(completeWithReasonView)}
+        onDeleteDigest={noopOnDeleteDigest}
+        onAuthError={noopOnAuthError}
+      />
+    ));
+
+    complete.getByRole("button", { name: /#1/ }).click();
+    await waitFor(() =>
+      expect(complete.getByRole("heading", { name: "Digest detail" })).toBeDefined()
+    );
+    expect(complete.queryByRole("alert")).toBeNull();
+    complete.unmount();
+
+    const failedWithoutReason = render(() => (
+      <DigestsPanel
+        digests={[failedWithoutReasonView.digest]}
+        onSelectDigest={() => Promise.resolve(failedWithoutReasonView)}
+        onDeleteDigest={noopOnDeleteDigest}
+        onAuthError={noopOnAuthError}
+      />
+    ));
+
+    failedWithoutReason.getByRole("button", { name: /#1/ }).click();
+    await waitFor(() =>
+      expect(
+        failedWithoutReason.getByRole("heading", { name: "Digest detail" }),
+      ).toBeDefined()
+    );
+    expect(failedWithoutReason.queryByRole("alert")).toBeNull();
+  });
+
 });
 
 const completedRun: PublicDigestRun = {
@@ -227,6 +300,7 @@ function makeDigestsPanelProps(
         sections: [],
         groups: [],
         paidPosts: [],
+        failureReason: null,
       }),
     onDeleteDigest: overrides.onDeleteDigest ?? noopOnDeleteDigest,
     onAuthError: noopOnAuthError,
@@ -244,6 +318,7 @@ describe("DigestsPanel ordinal numbering", () => {
             sections: [],
             groups: [],
             paidPosts: [],
+            failureReason: null,
           })}
         onDeleteDigest={noopOnDeleteDigest}
         onAuthError={noopOnAuthError}
@@ -313,6 +388,7 @@ describe("DigestsPanel Load more", () => {
       sections: [],
       groups: [],
       paidPosts: [],
+      failureReason: null,
     });
   const noopDelete = async (_id: string) => {};
   const noopAuth = () => {};
@@ -596,6 +672,7 @@ const mixedContentView = {
     },
   ],
   paidPosts: [],
+  failureReason: null,
 } as unknown as DigestView;
 
 describe("DigestsPanel tagged digest content", () => {

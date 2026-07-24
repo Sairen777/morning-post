@@ -219,6 +219,7 @@ export interface DigestView {
   sections: DigestSection[];
   groups: DigestSourceGroup[];
   paidPosts: PaidPost[];
+  failureReason: string | null;
 }
 
 export interface ApiErrorBody {

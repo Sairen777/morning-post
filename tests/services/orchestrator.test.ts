@@ -1,5 +1,10 @@
 import { test } from "bun:test";
-import { assert, assertEquals, assertRejects } from "../assertions.ts";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "../assertions.ts";
 import type {
   ConnectorFactoryLike,
   ConnectorHandle,
@@ -423,6 +428,59 @@ test("runForUser creates an empty digest for a user with no sources", async () =
     assertEquals(view.digest.contentMode, "stories");
     assertEquals(view.stories, []);
     assertEquals(view.sections, []);
+  });
+});
+
+test("runForUser immediately returns the sanitized assembly failure reason", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-assembly-failure@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Telegram,
+      1,
+      "channel:assembly-failure",
+      "Assembly Failure Feed",
+    );
+    const connectorFactory = new FakeConnectorFactory({
+      [setup.source.id]: new FakeConnector({
+        [setup.feed.externalId]: [
+          normalizedItem(setup.feed.externalId, "1", "assembly item"),
+        ],
+      }),
+    });
+    const assemblyError = "assembly exploded with Bearer secret-token";
+    const intelligence = {
+      analyze: () => Promise.reject(new Error(assemblyError)),
+      resolve: fixtureStoryIntelligence.resolve.bind(fixtureStoryIntelligence),
+      classify: fixtureStoryIntelligence.classify.bind(
+        fixtureStoryIntelligence,
+      ),
+    };
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer: new FakeSummarizer([]),
+      intelligence,
+      now: () => 204,
+    });
+
+    assertEquals(view.digest.status, "failed");
+    assert(view.failureReason !== null);
+    assertStringIncludes(
+      view.failureReason,
+      "assembly exploded with Bearer [REDACTED]",
+    );
+
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "failed");
+    assertEquals(
+      runs[0].errorMessage,
+      "assembly exploded with Bearer [REDACTED]",
+    );
   });
 });
 

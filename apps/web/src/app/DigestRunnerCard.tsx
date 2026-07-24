@@ -1,10 +1,10 @@
 import { createSignal, Show } from "solid-js";
-import type { PublicDigestRun } from "../api/types";
+import type { DigestView, PublicDigestRun } from "../api/types";
 import FormatTime from "./FormatTime";
 import { validateDigestPeriod } from "./period";
 
 interface DigestRunnerCardProps {
-  onRun: (body: { periodStartMs?: number; periodEndMs?: number }) => Promise<void>;
+  onRun: (body: { periodStartMs?: number; periodEndMs?: number }) => Promise<DigestView>;
   onAuthError: () => void;
   activeRun: PublicDigestRun | undefined;
   isCheckingRunStatus: boolean;
@@ -48,7 +48,13 @@ export default function DigestRunnerCard(props: DigestRunnerCardProps) {
 
     setIsSubmitting(true);
     try {
-      await props.onRun(result.body);
+      const digest = await props.onRun(result.body);
+      if (digest.digest.status === "failed") {
+        setError(
+          digest.failureReason ??
+            "The digest run failed. Please try again.",
+        );
+      }
     } catch (err: unknown) {
       const status = err instanceof Error && "status" in err &&
           typeof err.status === "number"

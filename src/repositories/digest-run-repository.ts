@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import {
@@ -247,6 +247,27 @@ export async function finishDigestRunFeed(
     throw new Error("digest run feed not found");
   }
   return parsePublicDigestRunFeed(row);
+}
+
+export async function findNewestDigestRunByDigestIdForUser(
+  database: Database,
+  userId: string,
+  digestId: string,
+): Promise<PublicDigestRun | null> {
+  const [row] = await database
+    .select()
+    .from(digestRuns)
+    .where(and(
+      eq(digestRuns.userId, userId),
+      eq(digestRuns.digestId, digestId),
+    ))
+    .orderBy(
+      desc(digestRuns.startedAt),
+      sql`${digestRuns.finishedAt} desc nulls last`,
+      desc(digestRuns.id),
+    )
+    .limit(1);
+  return row ? parsePublicDigestRun(row) : null;
 }
 
 export async function listDigestRunsForUser(

@@ -20,7 +20,10 @@ import { createSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
-import { findDigestForUserPeriod } from "../../src/repositories/digest-repository.ts";
+import {
+  findDigestForUserPeriod,
+  setDigestStatus,
+} from "../../src/repositories/digest-repository.ts";
 import type {
   SummarizeOptions,
   SummarizerService,
@@ -98,7 +101,10 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono<ServerEnvironment>, email: string): Promise<string> {
+async function register(
+  app: Hono<ServerEnvironment>,
+  email: string,
+): Promise<string> {
   const response = await app.request(
     "/auth/register",
     jsonRequest("POST", {
@@ -112,7 +118,10 @@ async function register(app: Hono<ServerEnvironment>, email: string): Promise<st
   return json.id;
 }
 
-async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
+async function login(
+  app: Hono<ServerEnvironment>,
+  email: string,
+): Promise<string> {
   const response = await app.request(
     "/auth/login",
     jsonRequest("POST", { email, password: PASSWORD }),
@@ -196,10 +205,20 @@ test("digest routes list and read user digests with grouped sections", async () 
       normalizedItem(telegramFeed.externalId, "1", "telegram"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer([
-      [{ text: "rss bullet", sourceUrl: null }],
-      [{ text: "telegram bullet", sourceUrl: null }],
-    ]), intelligence: fixtureStoryIntelligence, now: () => 100, });
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([
+          [{ text: "rss bullet", sourceUrl: null }],
+          [{ text: "telegram bullet", sourceUrl: null }],
+        ]),
+        intelligence: fixtureStoryIntelligence,
+        now: () => 100,
+      },
+    );
 
     const listResponse = await app.request("/digests", {
       headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
@@ -220,7 +239,9 @@ test("digest routes list and read user digests with grouped sections", async () 
     assertEquals(getJson.groups, []);
     assertEquals(getJson.stories.length, 1);
     assertEquals(
-      getJson.stories[0].sources.map((source: { feedName: string }) => source.feedName),
+      getJson.stories[0].sources.map((source: { feedName: string }) =>
+        source.feedName
+      ),
       ["RSS Feed", "Telegram Feed"],
     );
 
@@ -249,10 +270,20 @@ test("DELETE /digests/:id deletes an owned digest", async () => {
       normalizedItem(feed.externalId, "1", "delete me"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer([[{
-      text: "delete bullet",
-      sourceUrl: null,
-    }]]), intelligence: fixtureStoryIntelligence, now: () => 105, });
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([[{
+          text: "delete bullet",
+          sourceUrl: null,
+        }]]),
+        intelligence: fixtureStoryIntelligence,
+        now: () => 105,
+      },
+    );
 
     const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
       method: "DELETE",
@@ -319,10 +350,20 @@ test("DELETE /digests/:id hides another user's digest", async () => {
       normalizedItem(feed.externalId, "1", "keep me"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer([[{
-      text: "kept bullet",
-      sourceUrl: null,
-    }]]), intelligence: fixtureStoryIntelligence, now: () => 106, });
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([[{
+          text: "kept bullet",
+          sourceUrl: null,
+        }]]),
+        intelligence: fixtureStoryIntelligence,
+        now: () => 106,
+      },
+    );
 
     const deleteResponse = await app.request(`/digests/${digest.digest.id}`, {
       method: "DELETE",
@@ -361,10 +402,20 @@ test("GET /digests/:id.md renders story Markdown after a source feed is deleted"
       normalizedItem(feed.externalId, "1", "markdown"),
     ], 1);
 
-    const digest = await assembleDigestForPeriod(database, ownerId, periodStartMs, periodEndMs, { summarizer: new FakeSummarizer([[{
-      text: "markdown bullet",
-      sourceUrl: null,
-    }]]), intelligence: fixtureStoryIntelligence, now: () => 110, });
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([[{
+          text: "markdown bullet",
+          sourceUrl: null,
+        }]]),
+        intelligence: fixtureStoryIntelligence,
+        now: () => 110,
+      },
+    );
     await softDeleteFeed(database, feed.id, ownerId);
 
     const markdownResponse = await app.request(
@@ -376,6 +427,74 @@ test("GET /digests/:id.md renders story Markdown after a source feed is deleted"
     assertEquals(markdown.includes("## Fixture Story"), true);
     assertEquals(markdown.includes("- markdown bullet"), true);
     assertEquals(markdown.includes("### Markdown Feed (removed)"), false);
+  });
+});
+test("GET /digests/:id returns a redacted failure reason in JSON and escaped Markdown", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const ownerId = await register(app, "digest-failure-reason@example.com");
+    const ownerCookie = await login(app, "digest-failure-reason@example.com");
+    const digest = await assembleDigestForPeriod(
+      database,
+      ownerId,
+      periodStartMs,
+      periodEndMs,
+      {
+        summarizer: new FakeSummarizer([]),
+        intelligence: fixtureStoryIntelligence,
+        now: () => 110,
+      },
+    );
+    await setDigestStatus(
+      database,
+      digest.digest.id,
+      ownerId,
+      "failed",
+    );
+    const run = await createDigestRun(database, {
+      userId: ownerId,
+      trigger: "manual",
+      periodStartMs,
+      periodEndMs,
+      status: "running",
+    }, 120);
+    await finishDigestRun(database, run.id, {
+      digestId: digest.digest.id,
+      status: "failed",
+      errorMessage: "Bearer server-secret\n# injected <script>",
+    }, 121);
+
+    const jsonResponse = await app.request(`/digests/${digest.digest.id}`, {
+      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(jsonResponse.status, 200);
+    const json = await jsonResponse.json() as { failureReason: string | null };
+    assertEquals(
+      json.failureReason,
+      "Bearer [REDACTED]\n# injected <script>",
+    );
+    assertEquals(JSON.stringify(json).includes("server-secret"), false);
+
+    const markdownResponse = await app.request(
+      `/digests/${digest.digest.id}.md`,
+      {
+        headers: {
+          cookie: ownerCookie,
+          Origin: "http://127.0.0.1:5173",
+        },
+      },
+    );
+    assertEquals(markdownResponse.status, 200);
+    const markdown = await markdownResponse.text();
+    assertEquals(
+      markdown.includes(
+        "Failure reason: Bearer \\[REDACTED\\] \\# injected &lt;script&gt;",
+      ),
+      true,
+    );
+    assertEquals(markdown.includes("server-secret"), false);
+    assertEquals(markdown.includes("\n# injected"), false);
+    assertEquals(markdown.includes("<script>"), false);
   });
 });
 
@@ -515,7 +634,10 @@ test("POST /digests/run creates a manual digest run record", async () => {
 test("POST /digests/run conflict preserves the active run for recovery", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const userId = await register(app, "digests-run-active-conflict@example.com");
+    const userId = await register(
+      app,
+      "digests-run-active-conflict@example.com",
+    );
     const cookie = await login(app, "digests-run-active-conflict@example.com");
     const activeRun = await createDigestRun(database, {
       userId,
@@ -769,6 +891,7 @@ test("POST /digests/run forwards the entrypoint summarizer instance", async () =
         sections: [],
         groups: [],
         paidPosts: [],
+        failureReason: null,
       });
     };
     const app = buildApp(database, {

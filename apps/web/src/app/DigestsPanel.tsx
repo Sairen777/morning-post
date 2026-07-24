@@ -657,6 +657,15 @@ export default function DigestsPanel(props: DigestsPanelProps) {
               </a>
             </div>
             <Show
+              when={view().digest.status === "failed" &&
+                view().failureReason !== null}
+            >
+              <div class="error" role="alert">
+                <strong>Failure reason:</strong>{" "}
+                {view().failureReason}
+              </div>
+            </Show>
+            <Show
               when={view().digest.contentMode === "stories" ||
                 (view().stories?.length ?? 0) > 0}
               fallback={
