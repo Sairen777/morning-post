@@ -1,8 +1,10 @@
 import { test } from "bun:test";
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStrictEquals,
+  assertStringIncludes,
 } from "./assertions.ts";
 import {
   ModelApiError,
@@ -396,4 +398,252 @@ test("attempt callback exceptions and rejections are isolated", async () => {
       ),
     "ok",
   );
+});
+test("maxOutputTokens emits max_tokens in request body", async () => {
+  let capturedBody: string | undefined;
+  const mockFetch: FetchFunction = (_input, init) => {
+    capturedBody = init?.body as string;
+    return Promise.resolve(completionResponse("ok"));
+  };
+  await createClient(mockFetch).complete("system", "content", {
+    maxOutputTokens: 100,
+  });
+  assertStringIncludes(capturedBody ?? "", `"max_tokens":100`);
+});
+
+test("maxOutputTokens validation rejects invalid values", async () => {
+  for (const invalid of [0, -1, 1.5, NaN, Infinity]) {
+    await assertRejects(
+      () =>
+        createClient().complete("system", "content", {
+          maxOutputTokens: invalid,
+        }),
+      RangeError,
+      "Model output token limit must be a positive integer",
+    );
+  }
+});
+
+test("jsonOutput emits response_format json_object in request body", async () => {
+  let capturedBody: string | undefined;
+  const mockFetch: FetchFunction = (_input, init) => {
+    capturedBody = init?.body as string;
+    return Promise.resolve(completionResponse("ok"));
+  };
+  await createClient(mockFetch).complete("system", "content", {
+    jsonOutput: true,
+  });
+  assertStringIncludes(
+    capturedBody ?? "",
+    `"response_format":{"type":"json_object"}`,
+  );
+});
+
+test("jsonOutput defaults omit response_format from request body", async () => {
+  let capturedBody: string | undefined;
+  const mockFetch: FetchFunction = (_input, init) => {
+    capturedBody = init?.body as string;
+    return Promise.resolve(completionResponse("ok"));
+  };
+  await createClient(mockFetch).complete("system", "content");
+  assertEquals(capturedBody?.includes("response_format"), false);
+});
+
+test("maxAttempts bounds retries to the specified count", async () => {
+  let attemptCount = 0;
+  const mockFetch: FetchFunction = () => {
+    attemptCount++;
+    return Promise.reject(new TypeError("down"));
+  };
+  await assertRejects(() =>
+    createClient(mockFetch).complete("system", "content", { maxAttempts: 1 })
+  );
+  assertEquals(attemptCount, 1);
+});
+
+test("maxAttempts default allows three attempts", async () => {
+  let attemptCount = 0;
+  const mockFetch: FetchFunction = () => {
+    attemptCount++;
+    return Promise.reject(new TypeError("down"));
+  };
+  await assertRejects(() =>
+    createClient(mockFetch).complete("system", "content")
+  );
+  assertEquals(attemptCount, 3);
+});
+
+test("maxAttempts validation rejects invalid values", async () => {
+  for (const invalid of [0, -1, 1.5, NaN, Infinity]) {
+    await assertRejects(
+      () =>
+        createClient().complete("system", "content", {
+          maxAttempts: invalid,
+        }),
+      RangeError,
+      "Model maximum attempts must be a positive integer",
+    );
+  }
+});
+
+test("model appears on every attempt telemetry callback", async () => {
+  const telemetry: ModelAttemptTelemetry[] = [];
+  let calls = 0;
+  const mockFetch: FetchFunction = () => {
+    calls++;
+    if (calls < 3) {
+      return Promise.resolve(new Response("busy", { status: 503 }));
+    }
+    return Promise.resolve(completionResponse("done"));
+  };
+  await createClient(mockFetch).complete("system", "content", {
+    onAttempt: (attempt) => {
+      telemetry.push(attempt);
+    },
+  });
+  assertEquals(telemetry.length, 3);
+  assert(
+    telemetry.every((t) => t.model === "test-model"),
+    "every telemetry entry should include the model",
+  );
+});
+
+test("valid DeepSeek cache hit and miss usage retained", async () => {
+  const telemetry: ModelAttemptTelemetry[] = [];
+  await createClient(() =>
+    Promise.resolve(Response.json({
+      choices: [{ message: { content: "cached" } }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        total_tokens: 150,
+        prompt_cache_hit_tokens: 80,
+        prompt_cache_miss_tokens: 20,
+      },
+    }))
+  ).complete("system", "content", {
+    onAttempt: (attempt) => {
+      telemetry.push(attempt);
+    },
+  });
+  assertEquals(telemetry[0].usage, {
+    promptTokens: 100,
+    completionTokens: 50,
+    totalTokens: 150,
+    promptCacheHitTokens: 80,
+    promptCacheMissTokens: 20,
+  });
+});
+
+test("valid DeepSeek hit only (no miss) usage retained", async () => {
+  const telemetry: ModelAttemptTelemetry[] = [];
+  await createClient(() =>
+    Promise.resolve(Response.json({
+      choices: [{ message: { content: "partial" } }],
+      usage: {
+        prompt_tokens: 200,
+        completion_tokens: 30,
+        total_tokens: 230,
+        prompt_cache_hit_tokens: 150,
+      },
+    }))
+  ).complete("system", "content", {
+    onAttempt: (attempt) => {
+      telemetry.push(attempt);
+    },
+  });
+  assertEquals(telemetry[0].usage, {
+    promptTokens: 200,
+    completionTokens: 30,
+    totalTokens: 230,
+    promptCacheHitTokens: 150,
+  });
+  assertEquals(telemetry[0].usage?.promptCacheMissTokens, undefined);
+});
+
+test("malformed cache tokens cause safe omission of usage", async () => {
+  for (const testCase of [
+    {
+      desc: "negative hit tokens",
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_cache_hit_tokens: -1,
+      },
+    },
+    {
+      desc: "negative miss tokens",
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_cache_miss_tokens: -5,
+      },
+    },
+    {
+      desc: "string hit tokens",
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_cache_hit_tokens: "lots",
+      },
+    },
+    {
+      desc: "null miss tokens",
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_cache_miss_tokens: null,
+      },
+    },
+    {
+      desc: "float hit tokens",
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_cache_hit_tokens: 3.14,
+      },
+    },
+  ]) {
+    const telemetry: ModelAttemptTelemetry[] = [];
+    await createClient(() =>
+      Promise.resolve(Response.json({
+        choices: [{ message: { content: "ok" } }],
+        usage: testCase.usage,
+      }))
+    ).complete("system", "content", {
+      onAttempt: (attempt) => {
+        telemetry.push(attempt);
+      },
+    });
+    assertEquals(
+      telemetry[0].usage,
+      undefined,
+      `expected usage to be omitted for: ${testCase.desc}`,
+    );
+  }
+});
+
+test("callback telemetry never leaks prompt or response content", async () => {
+  let captured: ModelAttemptTelemetry | undefined;
+  await assertRejects(() =>
+    createClient(() => Promise.reject(new TypeError("🔑server_error"))).complete(
+      "secret prompt",
+      "secret content",
+      {
+        maxAttempts: 1,
+        onAttempt: (t) => {
+          captured = t;
+        },
+      },
+    )
+  );
+  const json = JSON.stringify(captured);
+  assertStringIncludes(json, `"attempt":1`);
+  assertEquals(json.includes("secret"), false);
+  assertEquals(json.includes("🔑server_error"), false);
 });

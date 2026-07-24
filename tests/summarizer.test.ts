@@ -42,12 +42,16 @@ const item = (overrides: Partial<NormalizedItem> = {}): NormalizedItem => ({
 
 const TEST_MODELS = {
   summarizer: { model: "test-model", baseUrl: "http://localhost" },
+  analysis: { model: "test-model", baseUrl: "http://localhost" },
+  classification: { model: "test-model", baseUrl: "http://localhost" },
   vision: { model: "test-model", baseUrl: "http://localhost" },
   sameModel: true,
 };
 
 const DISTINCT_TEST_MODELS = {
   summarizer: { model: "text-model", baseUrl: "http://localhost:8000/v1" },
+  analysis: { model: "text-model", baseUrl: "http://localhost:8000/v1" },
+  classification: { model: "text-model", baseUrl: "http://localhost:8000/v1" },
   vision: { model: "vision-model", baseUrl: "http://localhost:9000/v1" },
   sameModel: false,
 };
@@ -223,7 +227,7 @@ test("summarize — forwards retry attempt telemetry without request content", a
     assertEquals(
       attempts.every((attempt) =>
         Object.keys(attempt).every((key) =>
-          ["attempt", "durationMs", "status", "usage"].includes(key)
+          ["model", "attempt", "durationMs", "status", "usage"].includes(key)
         ) &&
         !JSON.stringify(attempt).includes("private")
       ),
@@ -1959,6 +1963,14 @@ test("summarize — allows remote base URL with opt-in", async () => {
           model: "test-model",
           baseUrl: "https://api.openai.com/v1",
         },
+        analysis: {
+          model: "test-model",
+          baseUrl: "https://api.openai.com/v1",
+        },
+        classification: {
+          model: "test-model",
+          baseUrl: "https://api.openai.com/v1",
+        },
         vision: { model: "test-model", baseUrl: "https://api.openai.com/v1" },
         sameModel: true,
       },
@@ -1980,6 +1992,14 @@ test("summarize — allows loopback URL without opt-in flag", async () => {
     const svc = createTestSummarizer({
       models: {
         summarizer: {
+          model: "test-model",
+          baseUrl: "http://127.0.0.1:1234/v1",
+        },
+        analysis: {
+          model: "test-model",
+          baseUrl: "http://127.0.0.1:1234/v1",
+        },
+        classification: {
           model: "test-model",
           baseUrl: "http://127.0.0.1:1234/v1",
         },

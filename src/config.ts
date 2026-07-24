@@ -8,8 +8,8 @@ export interface ModelEndpointConfig {
 
 export interface SummarizerRuntimeConfig {
   summarizer: ModelEndpointConfig;
-  analysis?: ModelEndpointConfig;
-  classification?: ModelEndpointConfig;
+  analysis: ModelEndpointConfig;
+  classification: ModelEndpointConfig;
   vision: ModelEndpointConfig;
   sameModel: boolean;
 }
@@ -25,18 +25,18 @@ export interface SummarizerBudgetConfig {
   summarizerTextBytesPerChunk: number;
   summarizerMaxItemsPerChunk: number;
   summarizerMaxImageBytes: number;
-  analysisMaxItemsPerRequest?: number;
-  classificationMaxItemsPerRequest?: number;
-  summaryBatchMaxStories?: number;
-  analysisMaxOutputTokens?: number;
-  classificationMaxOutputTokens?: number;
-  summaryMaxOutputTokens?: number;
-  summaryBatchMaxOutputTokens?: number;
-  mediaMaxOutputTokens?: number;
-  analysisMaxAttempts?: number;
-  classificationMaxAttempts?: number;
-  summaryMaxAttempts?: number;
-  mediaMaxAttempts?: number;
+  analysisMaxItemsPerRequest: number;
+  classificationMaxItemsPerRequest: number;
+  summaryBatchMaxStories: number;
+  analysisMaxOutputTokens: number;
+  classificationMaxOutputTokens: number;
+  summaryMaxOutputTokens: number;
+  summaryBatchMaxOutputTokens: number;
+  mediaMaxOutputTokens: number;
+  analysisMaxAttempts: number;
+  classificationMaxAttempts: number;
+  summaryMaxAttempts: number;
+  mediaMaxAttempts: number;
 }
 
 export interface Config {
@@ -54,18 +54,18 @@ export interface Config {
   summarizerTextBytesPerChunk: number;
   summarizerMaxItemsPerChunk: number;
   summarizerMaxImageBytes: number;
-  analysisMaxItemsPerRequest?: number;
-  classificationMaxItemsPerRequest?: number;
-  summaryBatchMaxStories?: number;
-  analysisMaxOutputTokens?: number;
-  classificationMaxOutputTokens?: number;
-  summaryMaxOutputTokens?: number;
-  summaryBatchMaxOutputTokens?: number;
-  mediaMaxOutputTokens?: number;
-  analysisMaxAttempts?: number;
-  classificationMaxAttempts?: number;
-  summaryMaxAttempts?: number;
-  mediaMaxAttempts?: number;
+  analysisMaxItemsPerRequest: number;
+  classificationMaxItemsPerRequest: number;
+  summaryBatchMaxStories: number;
+  analysisMaxOutputTokens: number;
+  classificationMaxOutputTokens: number;
+  summaryMaxOutputTokens: number;
+  summaryBatchMaxOutputTokens: number;
+  mediaMaxOutputTokens: number;
+  analysisMaxAttempts: number;
+  classificationMaxAttempts: number;
+  summaryMaxAttempts: number;
+  mediaMaxAttempts: number;
   summarizerTimeoutMs: number;
   digestProgressLogging: boolean;
   summarizationConcurrency: number;
