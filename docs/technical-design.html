@@ -534,6 +534,7 @@
                 <div class="section-kicker">Runtime and startup</div>
                 <h2>Local startup pins the Bun toolchain, listener addresses, scheduler semantics, and browser proxy path.</h2>
                 <p>The backend runtime and workspace package manager require Bun <code>1.3.14</code>; PostgreSQL and OpenSSL are service/cryptography prerequisites. Node.js <code>22.13+</code> remains a frontend and Playwright toolchain prerequisite because <code>apps/web</code> declares that engine; it is not the top-level package manager. <code>bun install</code> installs the root package and the <code>apps/web</code> workspace. Root backend scripts explicitly load <code>.env.production.local</code>, so startup does not depend on implicit environment-file discovery. Canonical operations are <code>bun run db:migrate</code>, <code>bun run dev:api</code>, <code>bun run start</code>, <code>bun run dev:cli</code>, <code>bun run test</code>, <code>bun run typecheck</code>, <code>bun run web:test</code>, and <code>bun run web:e2e</code>; generation, cleanup, fixture capture, web development, build, preview, and focused typecheck commands use the other exact scripts declared in <code>package.json</code>.</p>
+                <p>The database client dependency is pinned to postgres.js <code>3.4.9</code>. This release clamps reconnect delays before they reach the runtime timer boundary, preventing a stale idle connection from producing a negative timeout when the pool reconnects.</p>
 
                 <div class="callout ok">
                   <strong>Current runtime:</strong> Hono is served by <code>Bun.serve</code>. Croner <code>10.0.1</code> schedules retained jobs in UTC with five-part expressions, rejects duplicate job names, uses <code>protect: true</code> to skip overlapping callbacks within a process, sanitizes and logs callback errors through its <code>catch</code> handler, and stops and clears every retained job when <code>CronScheduler.stop()</code> is called. Digest ticks additionally acquire the existing PostgreSQL <code>scheduler_leases</code> lease so only one API instance performs the work.
@@ -1494,8 +1495,11 @@
                         <dt>Error handling and redaction</dt>
                         <dd><span class="path">src/server/errors.ts</span>, <span class="path">src/server/error-sanitizer.ts</span>.</dd>
 
-                        <dt>Database connectivity</dt>
-                        <dd><span class="path">src/db/client.ts</span>, <span class="path">src/db/testing.ts</span>.</dd>
+                        <dt>Database connectivity and idle reconnect regression</dt>
+                        <dd><span class="path">src/db/client.ts</span>, <span class="path">src/db/testing.ts</span>, <span class="path">package.json</span>, <span class="path">bun.lock</span>, and <span class="path">tests/db/client.test.ts</span>. postgres.js is pinned to <code>3.4.9</code>, which clamps reconnect delays. The live integration regression uses a real <code>TEST_DATABASE_URL</code> connection with <code>max=1</code>, forces the sole connection to close after becoming idle, then verifies that reconnect queries succeed and that no <code>TimeoutNegativeWarning</code> is emitted.</dd>
+
+                        <dt>Browser-to-API digest journey and test-layer boundary</dt>
+                        <dd>The Playwright <span class="path">auth-digest</span> journey verifies digest creation from the browser through the real API. It remains the full-stack UI check, while connection-pool idle close/reconnect behavior is deliberately guarded by <span class="path">tests/db/client.test.ts</span> at the live database integration layer rather than treating Playwright as the driver-lifecycle oracle.</dd>
 
                         <dt>Media lifecycle</dt>
                         <dd><span class="path">src/connectors/telegram/telegram-connector.ts</span>, <span class="path">src/services/media-cleanup-service.ts</span>, and <span class="path">src/scheduler/digest-job.ts</span>.</dd>

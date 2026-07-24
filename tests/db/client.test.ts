@@ -1,5 +1,6 @@
 import { test } from "bun:test";
-import { assertEquals, assertThrows } from "../assertions.ts"
+import postgres from "postgres";
+import { assertEquals, assertThrows } from "../assertions.ts";
 import { getDatabaseClientOptions } from "../../src/db/client.ts";
 
 const base = {
@@ -73,4 +74,38 @@ test("remote database rejects disabled TLS", () => {
     }).ssl,
     "verify-full",
   );
+});
+
+test("postgres client reconnects after an idle connection closes without a negative timeout warning", async () => {
+  const databaseUrl = process.env.TEST_DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("TEST_DATABASE_URL environment variable is not set");
+  }
+
+  const warnings: Error[] = [];
+  const captureWarning = (warning: Error) => warnings.push(warning);
+  const client = postgres(databaseUrl, {
+    max: 1,
+    idle_timeout: 1,
+  });
+
+  process.on("warning", captureWarning);
+  try {
+    const first = await client<{ value: number }[]>`select 1::int as value`;
+    assertEquals(first[0]?.value, 1);
+
+    // This live integration test must let postgres.js's real idle timer close the socket.
+    await Bun.sleep(1_250);
+
+    const second = await client<{ value: number }[]>`select 2::int as value`;
+    assertEquals(second[0]?.value, 2);
+    await Bun.sleep(0);
+    assertEquals(
+      warnings.filter((warning) => warning.name === "TimeoutNegativeWarning"),
+      [],
+    );
+  } finally {
+    process.removeListener("warning", captureWarning);
+    await client.end();
+  }
 });
