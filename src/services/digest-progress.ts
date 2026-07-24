@@ -6,14 +6,31 @@ export type DigestModelStage =
   | "summarization"
   | "media";
 
-export interface DigestModelUsageAggregate {
+export interface DigestModelUsageMetrics {
   attemptCount: number;
   durationMs: number;
   usageReportedAttemptCount: number;
   promptTokensLowerBound: number;
   completionTokensLowerBound: number;
   totalTokensLowerBound: number;
+  promptCacheHitTokensLowerBound: number;
+  promptCacheMissTokensLowerBound: number;
+  successCount: number;
+  retryCount: number;
+  failureCount: number;
   saturated: boolean;
+}
+
+export interface DigestModelUsageAggregate extends DigestModelUsageMetrics {}
+
+export interface DigestModelUsageSnapshot {
+  version: 1;
+  totals: DigestModelUsageMetrics;
+  stages: Array<{
+    stage: DigestModelStage;
+    models: Array<{ model: string; metrics: DigestModelUsageMetrics }>;
+  }>;
+  estimatedCostUsd: number | null;
 }
 
 export type DigestProgressEvent =
@@ -53,17 +70,86 @@ export function reportDigestProgress(
   }
 }
 
+const metricFields = [
+  "attemptCount",
+  "durationMs",
+  "usageReportedAttemptCount",
+  "promptTokensLowerBound",
+  "completionTokensLowerBound",
+  "totalTokensLowerBound",
+  "promptCacheHitTokensLowerBound",
+  "promptCacheMissTokensLowerBound",
+  "successCount",
+  "retryCount",
+  "failureCount",
+] as const;
+
+function emptyMetrics(): DigestModelUsageMetrics {
+  return Object.fromEntries(metricFields.map((field) => [field, 0])) as unknown as
+    DigestModelUsageMetrics & { saturated: boolean };
+}
+const aggregateBreakdowns = new WeakMap<
+  DigestModelUsageAggregate,
+  Partial<Record<DigestModelStage, Record<string, DigestModelUsageMetrics>>>
+>();
+
 function addToAggregate(
-  aggregate: DigestModelUsageAggregate,
-  field: Exclude<keyof DigestModelUsageAggregate, "saturated">,
+  aggregate: DigestModelUsageMetrics,
+  field: (typeof metricFields)[number],
   increment: number,
 ): void {
-  if (aggregate[field] > Number.MAX_SAFE_INTEGER - increment) {
+  const current = aggregate[field] ?? 0;
+  if (current > Number.MAX_SAFE_INTEGER - increment) {
     aggregate[field] = Number.MAX_SAFE_INTEGER;
     aggregate.saturated = true;
     return;
   }
-  aggregate[field] += increment;
+  aggregate[field] = current + increment;
+}
+
+function recordAttempt(
+  aggregate: DigestModelUsageMetrics,
+  attempt: ModelAttemptTelemetry,
+): void {
+  addToAggregate(aggregate, "attemptCount", 1);
+  addToAggregate(aggregate, "durationMs", attempt.durationMs);
+  addToAggregate(aggregate, `${attempt.status}Count`, 1);
+  if (!attempt.usage) return;
+  addToAggregate(aggregate, "usageReportedAttemptCount", 1);
+  addToAggregate(aggregate, "promptTokensLowerBound", attempt.usage.promptTokens);
+  addToAggregate(aggregate, "completionTokensLowerBound", attempt.usage.completionTokens);
+  addToAggregate(aggregate, "totalTokensLowerBound", attempt.usage.totalTokens);
+  addToAggregate(aggregate, "promptCacheHitTokensLowerBound", attempt.usage.promptCacheHitTokens ?? 0);
+  addToAggregate(aggregate, "promptCacheMissTokensLowerBound", attempt.usage.promptCacheMissTokens ?? 0);
+}
+
+export function createDigestModelUsageAggregate(): DigestModelUsageAggregate {
+  const aggregate = { ...emptyMetrics(), saturated: false };
+  aggregateBreakdowns.set(aggregate, {});
+  return aggregate;
+}
+
+export function snapshotDigestModelUsage(
+  aggregate: DigestModelUsageAggregate,
+): DigestModelUsageSnapshot {
+  const metricSnapshot = (metrics: DigestModelUsageMetrics): DigestModelUsageMetrics =>
+    Object.fromEntries([
+      ...metricFields.map((field) => [field, metrics[field] ?? 0]),
+      ["saturated", metrics.saturated],
+    ]) as unknown as DigestModelUsageMetrics;
+  return {
+    version: 1,
+    totals: metricSnapshot(aggregate),
+    stages: Object.entries(aggregateBreakdowns.get(aggregate) ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([stage, models]) => ({
+        stage: stage as DigestModelStage,
+        models: Object.entries(models ?? {})
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([model, metrics]) => ({ model, metrics: metricSnapshot(metrics) })),
+      })),
+    estimatedCostUsd: null,
+  };
 }
 
 export function reportDigestModelAttempt(
@@ -75,14 +161,24 @@ export function reportDigestModelAttempt(
   attempt: ModelAttemptTelemetry,
 ): void {
   if (aggregate) {
-    addToAggregate(aggregate, "attemptCount", 1);
-    addToAggregate(aggregate, "durationMs", attempt.durationMs);
-    if (attempt.usage) {
-      addToAggregate(aggregate, "usageReportedAttemptCount", 1);
-      addToAggregate(aggregate, "promptTokensLowerBound", attempt.usage.promptTokens);
-      addToAggregate(aggregate, "completionTokensLowerBound", attempt.usage.completionTokens);
-      addToAggregate(aggregate, "totalTokensLowerBound", attempt.usage.totalTokens);
+    const tracksExtendedMetrics = Object.hasOwn(aggregate, "successCount");
+    recordAttempt(aggregate, attempt);
+    if (!tracksExtendedMetrics) {
+      delete (aggregate as Partial<DigestModelUsageMetrics>).promptCacheHitTokensLowerBound;
+      delete (aggregate as Partial<DigestModelUsageMetrics>).promptCacheMissTokensLowerBound;
+      delete (aggregate as Partial<DigestModelUsageMetrics>).successCount;
+      delete (aggregate as Partial<DigestModelUsageMetrics>).retryCount;
+      delete (aggregate as Partial<DigestModelUsageMetrics>).failureCount;
     }
+    let breakdown = aggregateBreakdowns.get(aggregate);
+    if (!breakdown) {
+      breakdown = {};
+      aggregateBreakdowns.set(aggregate, breakdown);
+    }
+    const models = breakdown[stage] ??= {};
+    const model = attempt.model ?? "unknown";
+    const modelMetrics = models[model] ??= { ...emptyMetrics(), saturated: false };
+    recordAttempt(modelMetrics, attempt);
   }
   if (!runId) return;
   reportDigestProgress(reporter, {

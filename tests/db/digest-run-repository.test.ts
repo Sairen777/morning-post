@@ -63,6 +63,7 @@ test("createDigestRun round-trips all fields", async () => {
     const run = await createDigestRun(database, runInput(user.id));
 
     assertEquals(run.userId, user.id);
+    assertEquals(run.modelUsage, null);
     assertEquals(run.trigger, "manual");
     assertEquals(run.periodStartMs, 1_700_000_000_000);
     assertEquals(run.periodEndMs, 1_700_100_000_000);
@@ -89,12 +90,32 @@ test("finishDigestRun sets finishedAt, status", async () => {
     const finished = await finishDigestRun(database, run.id, {
       status: "complete",
       errorMessage: null,
+      modelUsage: {
+        version: 1,
+        totals: {
+          attemptCount: 1,
+          durationMs: 15,
+          usageReportedAttemptCount: 1,
+          promptTokensLowerBound: 10,
+          completionTokensLowerBound: 2,
+          totalTokensLowerBound: 12,
+          promptCacheHitTokensLowerBound: 8,
+          promptCacheMissTokensLowerBound: 2,
+          successCount: 1,
+          retryCount: 0,
+          failureCount: 0,
+          saturated: false,
+        },
+        stages: [],
+        estimatedCostUsd: null,
+      },
     });
 
     assertEquals(finished.id, run.id);
     assertEquals(finished.status, "complete");
     assertEquals(finished.digestId, null);
     assertEquals(typeof finished.finishedAt, "number");
+    assertEquals(finished.modelUsage?.totals.promptCacheHitTokensLowerBound, 8);
     assertEquals(
       finished.finishedAt! >= run.startedAt,
       true,

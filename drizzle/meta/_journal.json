@@ -127,6 +127,13 @@
       "when": 1784826755935,
       "tag": "0017_abandoned_kang",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784901379268,
+      "tag": "0018_pink_guardian",
+      "breakpoints": true
     }
   ]
 }

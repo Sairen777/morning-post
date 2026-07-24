@@ -18,6 +18,35 @@ import {
   type PageResult,
 } from "../server/cursor.ts";
 
+const usageCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const modelUsageMetricsSchema = z.object({
+  attemptCount: usageCountSchema,
+  durationMs: usageCountSchema,
+  usageReportedAttemptCount: usageCountSchema,
+  promptTokensLowerBound: usageCountSchema,
+  completionTokensLowerBound: usageCountSchema,
+  totalTokensLowerBound: usageCountSchema,
+  promptCacheHitTokensLowerBound: usageCountSchema,
+  promptCacheMissTokensLowerBound: usageCountSchema,
+  successCount: usageCountSchema,
+  retryCount: usageCountSchema,
+  failureCount: usageCountSchema,
+  saturated: z.boolean(),
+}).strict();
+
+export const digestModelUsageSnapshotSchema = z.object({
+  version: z.literal(1),
+  totals: modelUsageMetricsSchema,
+  stages: z.array(z.object({
+    stage: z.enum(["analysis", "classification", "summarization", "media"]),
+    models: z.array(z.object({
+      model: z.string().min(1).max(256),
+      metrics: modelUsageMetricsSchema,
+    }).strict()),
+  }).strict()),
+  estimatedCostUsd: z.number().nonnegative().nullable(),
+}).strict();
+
 const publicDigestRunSchema = z.object({
   id: z.string(),
   digestId: z.string().nullable(),
@@ -29,6 +58,7 @@ const publicDigestRunSchema = z.object({
   startedAt: z.number(),
   finishedAt: z.number().nullable(),
   errorMessage: z.string().nullable(),
+  modelUsage: digestModelUsageSnapshotSchema.nullable(),
 });
 
 export type PublicDigestRun = z.infer<typeof publicDigestRunSchema>;
@@ -168,6 +198,7 @@ export async function finishDigestRun(
     digestId?: string | null;
     status: DigestRunStatus;
     errorMessage?: string | null;
+    modelUsage?: z.infer<typeof digestModelUsageSnapshotSchema> | null;
   },
   now = Date.now(),
 ): Promise<PublicDigestRun> {
@@ -180,6 +211,9 @@ export async function finishDigestRun(
   }
   if ("errorMessage" in input) {
     setValues.errorMessage = input.errorMessage;
+  }
+  if ("modelUsage" in input) {
+    setValues.modelUsage = input.modelUsage;
   }
   const [row] = await database
     .update(digestRuns)

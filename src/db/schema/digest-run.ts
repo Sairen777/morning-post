@@ -1,9 +1,10 @@
 import { sql } from "drizzle-orm";
-import { bigint, check, index, integer, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, check, index, integer, jsonb, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { digests } from "./digest.ts";
 import { feeds } from "./feed.ts";
 import { sources } from "./source.ts";
 import { users } from "./user.ts";
+import type { DigestModelUsageSnapshot } from "../../services/digest-progress.ts";
 
 export const digestRunTriggers = ["manual", "scheduled"] as const;
 export type DigestRunTrigger = (typeof digestRunTriggers)[number];
@@ -26,6 +27,7 @@ export const digestRuns = pgTable(
     startedAt: bigint("started_at", { mode: "number" }).notNull(),
     finishedAt: bigint("finished_at", { mode: "number" }),
     errorMessage: text("error_message"),
+    modelUsage: jsonb("model_usage").$type<DigestModelUsageSnapshot>(),
   },
   (table) => [
     uniqueIndex("digest_runs_user_running_unique")

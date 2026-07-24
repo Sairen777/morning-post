@@ -2,8 +2,10 @@ import { test } from "bun:test";
 import { assertEquals } from "../assertions.ts";
 import {
   createConsoleDigestProgressReporter,
+  createDigestModelUsageAggregate,
   reportDigestModelAttempt,
   reportDigestProgress,
+  snapshotDigestModelUsage,
   type DigestModelUsageAggregate,
   type DigestProgressEvent,
 } from "../../src/services/digest-progress.ts";
@@ -57,6 +59,11 @@ test("model attempts emit stage-safe events and aggregate reported usage as lowe
     promptTokensLowerBound: 0,
     completionTokensLowerBound: 0,
     totalTokensLowerBound: 0,
+    promptCacheHitTokensLowerBound: 0,
+    promptCacheMissTokensLowerBound: 0,
+    successCount: 0,
+    retryCount: 0,
+    failureCount: 0,
     saturated: false,
   };
   const reporter = { report: (reported: DigestProgressEvent) => events.push(reported) };
@@ -78,6 +85,11 @@ test("model attempts emit stage-safe events and aggregate reported usage as lowe
     promptTokensLowerBound: 9,
     completionTokensLowerBound: 4,
     totalTokensLowerBound: 13,
+    promptCacheHitTokensLowerBound: 0,
+    promptCacheMissTokensLowerBound: 0,
+    successCount: 1,
+    retryCount: 1,
+    failureCount: 0,
     saturated: false,
   });
   assertEquals(events, [
@@ -124,6 +136,11 @@ test("model usage aggregates remain exact below the safe-integer limit and satur
     promptTokensLowerBound: maximum - 10,
     completionTokensLowerBound: maximum - 10,
     totalTokensLowerBound: maximum - 10,
+    promptCacheHitTokensLowerBound: 0,
+    promptCacheMissTokensLowerBound: 0,
+    successCount: maximum - 2,
+    retryCount: 0,
+    failureCount: 0,
     saturated: false,
   };
 
@@ -140,6 +157,11 @@ test("model usage aggregates remain exact below the safe-integer limit and satur
     promptTokensLowerBound: maximum - 1,
     completionTokensLowerBound: maximum,
     totalTokensLowerBound: maximum,
+    promptCacheHitTokensLowerBound: 0,
+    promptCacheMissTokensLowerBound: 0,
+    successCount: maximum - 1,
+    retryCount: 0,
+    failureCount: 0,
     saturated: true,
   });
 
@@ -160,6 +182,11 @@ test("model usage aggregates remain exact below the safe-integer limit and satur
     promptTokensLowerBound: maximum,
     completionTokensLowerBound: maximum,
     totalTokensLowerBound: maximum,
+    promptCacheHitTokensLowerBound: 0,
+    promptCacheMissTokensLowerBound: 0,
+    successCount: maximum - 1,
+    retryCount: 0,
+    failureCount: 1,
     saturated: true,
   });
 });
@@ -183,4 +210,45 @@ test("model attempt progress preserves every digest stage tag", () => {
     ),
     [...stages],
   );
+});
+
+test("model usage snapshot aggregates cache usage and outcomes by stage and model", () => {
+  const aggregate = createDigestModelUsageAggregate();
+  reportDigestModelAttempt(undefined, undefined, 0, "analysis", aggregate, {
+    model: "deepseek-v4-flash",
+    attempt: 1,
+    durationMs: 12,
+    status: "retry",
+  });
+  reportDigestModelAttempt(undefined, undefined, 0, "analysis", aggregate, {
+    model: "deepseek-v4-flash",
+    attempt: 2,
+    durationMs: 18,
+    status: "success",
+    usage: {
+      promptTokens: 100,
+      completionTokens: 20,
+      totalTokens: 120,
+      promptCacheHitTokens: 80,
+      promptCacheMissTokens: 20,
+    },
+  });
+
+  const snapshot = snapshotDigestModelUsage(aggregate);
+  assertEquals(snapshot.estimatedCostUsd, null);
+  assertEquals(snapshot.totals.attemptCount, 2);
+  assertEquals(snapshot.totals.successCount, 1);
+  assertEquals(snapshot.totals.retryCount, 1);
+  assertEquals(snapshot.totals.promptCacheHitTokensLowerBound, 80);
+  assertEquals(snapshot.stages, [{
+    stage: "analysis",
+    models: [{
+      model: "deepseek-v4-flash",
+      metrics: snapshot.totals,
+    }],
+  }]);
+  assertEquals(JSON.stringify(snapshot).includes("prompt"), true);
+  for (const forbidden of ["content", "url", "credentials", "endpoint", "error"]) {
+    assertEquals(JSON.stringify(snapshot).includes(forbidden), false);
+  }
 });

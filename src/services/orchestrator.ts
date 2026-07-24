@@ -38,6 +38,8 @@ import {
 } from "./ingestion-service.ts";
 import {
   type DigestModelUsageAggregate,
+  createDigestModelUsageAggregate,
+  snapshotDigestModelUsage,
   reportDigestProgress,
 } from "./digest-progress.ts";
 
@@ -651,6 +653,7 @@ async function executeDigestRun(
     digestId: digestView.digest.id || null,
     status: runStatus,
     errorMessage: assemblyFailed ? summarizeErrorForOps(assemblyError) : null,
+    modelUsage: snapshotDigestModelUsage(runContext.modelUsageAggregate),
   }, now());
 
   const finalView = runStatus === "failed"
@@ -698,15 +701,7 @@ export async function runForUser(
     status: "running",
   }, now());
   const progressStartedAtMs = now();
-  const modelUsageAggregate: DigestModelUsageAggregate = {
-    attemptCount: 0,
-    durationMs: 0,
-    usageReportedAttemptCount: 0,
-    promptTokensLowerBound: 0,
-    completionTokensLowerBound: 0,
-    totalTokensLowerBound: 0,
-    saturated: false,
-  };
+  const modelUsageAggregate = createDigestModelUsageAggregate();
   const progressDependencies = {
     ...dependencies,
     progressStartedAtMs,
@@ -733,6 +728,7 @@ export async function runForUser(
       await finishDigestRun(database, digestRun.id, {
         status: "failed",
         errorMessage: summarizeErrorForOps(error),
+        modelUsage: snapshotDigestModelUsage(modelUsageAggregate),
       }, now());
     } catch {
       // Preserve the operational failure when the best-effort run transition also fails.
