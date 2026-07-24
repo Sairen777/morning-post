@@ -7,7 +7,7 @@ export enum ConnectorId {
   RSS = "RSS",
 }
 
-export const DEFAULT_MAXIMUM_STORIES_PER_DIGEST = 20;
+export const DEFAULT_MAXIMUM_STORIES_PER_DIGEST = 12;
 
 export const CONNECTORS_MEDIA_DIR: Record<ConnectorId, string> = {
   [ConnectorId.Telegram]: "telegram_media",

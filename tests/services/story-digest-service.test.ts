@@ -690,9 +690,9 @@ test("default and explicit story caps preserve order under bounded analysis and 
       dependencies,
     );
     await releaseUntil(analysisGates, 25);
-    await releaseUntil(summaryGates, 20);
+    await releaseUntil(summaryGates, 12);
     const defaultResult = await defaultRun;
-    assertEquals(defaultResult.stories.length, 20);
+    assertEquals(defaultResult.stories.length, 12);
     assertEquals(maxActiveAnalysis, 3);
     assertEquals(maxActiveSummaries, 3);
     assertEquals(

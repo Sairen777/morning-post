@@ -5,6 +5,7 @@ import type {
   PublicInterestRule,
   PublicUser,
 } from "../api/types";
+import { DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../../../../src/constants";
 import { ApiClientError } from "../api/client";
 
 interface ProfilePanelProps {
@@ -49,6 +50,22 @@ type RuleDraft = {
   expiresAt: string;
 };
 
+type StoryCapPreset = "concise" | "standard" | "comprehensive" | "custom";
+
+function storyCapPresetFor(value: number | null): StoryCapPreset {
+  if (value === null) return "standard";
+  if (value === 8) return "concise";
+  if (value === 20) return "comprehensive";
+  return "custom";
+}
+
+function storyCapValueFor(preset: StoryCapPreset): string | null {
+  if (preset === "concise") return "8";
+  if (preset === "comprehensive") return "20";
+  if (preset === "standard") return null;
+  return null;
+}
+
 const kindLabel: Record<InterestRuleKind, string> = {
   topic: "Topic",
   entity: "Entity",
@@ -83,6 +100,9 @@ export default function ProfilePanel(props: ProfilePanelProps) {
       ? ""
       : String(props.user.maximumStoriesPerDigest),
   );
+  const [storyCapPreset, setStoryCapPreset] = createSignal<StoryCapPreset>(
+    storyCapPresetFor(props.user.maximumStoriesPerDigest),
+  );
   const [error, setError] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
@@ -101,6 +121,14 @@ export default function ProfilePanel(props: ProfilePanelProps) {
     if (threshold >= 75) return "Focused — only the strongest matches";
     if (threshold <= 44) return "Broad — include more possible matches";
     return "Balanced — a middle ground";
+  };
+
+  const handleStoryCapPresetChange = (preset: StoryCapPreset) => {
+    setStoryCapPreset(preset);
+    const value = storyCapValueFor(preset);
+    if (preset !== "custom") {
+      setMaximumStoriesPerDigest(value ?? "");
+    }
   };
 
   const handleSubmit = async (e: Event) => {
@@ -418,16 +446,43 @@ export default function ProfilePanel(props: ProfilePanelProps) {
             <div class="hint">{thresholdDescription()}</div>
           </div>
           <div class="form-group">
-            <label for="profile-max-stories">Maximum stories per digest (Default: 20)</label>
+            <label for="profile-story-cap-preset">Digest size preset</label>
+            <select
+              id="profile-story-cap-preset"
+              value={storyCapPreset()}
+              onChange={(e) =>
+                handleStoryCapPresetChange(e.currentTarget.value as StoryCapPreset)}
+            >
+              <option value="concise">Concise — 8 stories</option>
+              <option value="standard">
+                Standard — {DEFAULT_MAXIMUM_STORIES_PER_DIGEST} stories (default)
+              </option>
+              <option value="comprehensive">Comprehensive — 20 stories</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="profile-max-stories">
+              Maximum stories per digest (Default: {DEFAULT_MAXIMUM_STORIES_PER_DIGEST})
+            </label>
             <input
               id="profile-max-stories"
               type="number"
               min="1"
               step="1"
-              placeholder="Default (20)"
+              placeholder={`Default (${DEFAULT_MAXIMUM_STORIES_PER_DIGEST})`}
+              aria-describedby="profile-max-stories-hint"
               value={maximumStoriesPerDigest()}
-              onInput={(e) => setMaximumStoriesPerDigest(e.currentTarget.value)}
+              onInput={(e) => {
+                const value = e.currentTarget.value;
+                setMaximumStoriesPerDigest(value);
+                setStoryCapPreset(value.trim() === "" ? "standard" : "custom");
+              }}
             />
+            <div id="profile-max-stories-hint" class="hint">
+              Choose a preset or enter a positive whole number. Standard uses the default{" "}
+              {DEFAULT_MAXIMUM_STORIES_PER_DIGEST}-story cap.
+            </div>
           </div>
         </section>
         <Show when={error()}>

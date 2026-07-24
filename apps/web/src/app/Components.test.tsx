@@ -111,13 +111,76 @@ describe("ProfilePanel", () => {
     ));
 
     const maximum = screen.getByLabelText(
-      "Maximum stories per digest (Default: 20)",
+      "Maximum stories per digest (Default: 12)",
     );
     expect(maximum).toHaveValue(null);
-    expect(maximum).toHaveAttribute("placeholder", "Default (20)");
+    expect(maximum).toHaveAttribute("placeholder", "Default (12)");
 
     await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      maximumStoriesPerDigest: null,
+    }));
+  });
+
+  it("maps accessible story cap presets and custom values to the existing field", async () => {
+    const user = {
+      id: "user-1",
+      name: "Ada",
+      email: "ada@example.com",
+      systemPrompt: "Summarize plainly.",
+      summaryPrompt: "",
+      defaultLanguage: null,
+      defaultRelevanceFilterMode: "personalized" as const,
+      relevanceThreshold: 60,
+      maximumStoriesPerDigest: null,
+      interestProfileVersion: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const onSave = vi.fn(() => Promise.resolve(user));
+    render(() => (
+      <ProfilePanel
+        user={user}
+        interests={[]}
+        interestsLoading={false}
+        interestMutationId={null}
+        interestsError={null}
+        onCreateInterest={() => Promise.resolve()}
+        onUpdateInterest={() => Promise.resolve()}
+        onDeleteInterest={() => Promise.resolve()}
+        onSave={onSave}
+        onSaved={() => {}}
+        onAuthError={() => {}}
+      />
+    ));
+
+    const preset = screen.getByRole("combobox", { name: "Digest size preset" });
+    const maximum = screen.getByLabelText(
+      "Maximum stories per digest (Default: 12)",
+    );
+    expect(preset).toHaveValue("standard");
+
+    await fireEvent.change(preset, { target: { value: "concise" } });
+    expect(maximum).toHaveValue(8);
+    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
+      maximumStoriesPerDigest: 8,
+    }));
+
+    await fireEvent.change(preset, { target: { value: "comprehensive" } });
+    expect(maximum).toHaveValue(20);
+    await fireEvent.change(preset, { target: { value: "custom" } });
+    await fireEvent.input(maximum, { target: { value: "7" } });
+    expect(maximum).toHaveValue(7);
+    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
+      maximumStoriesPerDigest: 7,
+    }));
+
+    await fireEvent.change(preset, { target: { value: "standard" } });
+    expect(maximum).toHaveValue(null);
+    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       maximumStoriesPerDigest: null,
     }));
   });
