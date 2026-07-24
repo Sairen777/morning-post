@@ -418,13 +418,13 @@ export default function ProfilePanel(props: ProfilePanelProps) {
             <div class="hint">{thresholdDescription()}</div>
           </div>
           <div class="form-group">
-            <label for="profile-max-stories">Maximum stories per digest (optional)</label>
+            <label for="profile-max-stories">Maximum stories per digest (Default: 20)</label>
             <input
               id="profile-max-stories"
               type="number"
               min="1"
               step="1"
-              placeholder="No limit"
+              placeholder="Default (20)"
               value={maximumStoriesPerDigest()}
               onInput={(e) => setMaximumStoriesPerDigest(e.currentTarget.value)}
             />

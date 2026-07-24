@@ -244,6 +244,7 @@ test("runDigestTick forwards shared digest dependencies to scheduled execution",
     const progressReporter = { report: () => {} } satisfies DigestProgressReporter;
     let receivedSummarizer: SummarizerService | undefined;
     let receivedTimeoutMs: number | undefined;
+    let receivedSummarizationConcurrency: number | undefined;
     let receivedProgressReporter: DigestProgressReporter | undefined;
     const user = await createUser(
       database,
@@ -252,11 +253,13 @@ test("runDigestTick forwards shared digest dependencies to scheduled execution",
     await runDigestTick(database, {
       summarizer: sharedSummarizer,
       timeoutMs: 37_000,
+      summarizationConcurrency: 6,
       progressReporter,
       now: () => 1_500,
       runForUser: (_database, userId, period, dependencies = {}) => {
         receivedSummarizer = dependencies.summarizer;
         receivedTimeoutMs = dependencies.timeoutMs;
+        receivedSummarizationConcurrency = dependencies.summarizationConcurrency;
         receivedProgressReporter = dependencies.progressReporter;
         return Promise.resolve({
           digest: {
@@ -280,6 +283,7 @@ test("runDigestTick forwards shared digest dependencies to scheduled execution",
     assertEquals(user.id.length > 0, true);
     assertEquals(receivedSummarizer, sharedSummarizer);
     assertEquals(receivedTimeoutMs, 37_000);
+    assertEquals(receivedSummarizationConcurrency, 6);
     assertEquals(receivedProgressReporter, progressReporter);
   });
 });

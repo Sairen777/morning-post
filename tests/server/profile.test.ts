@@ -182,7 +182,7 @@ test("PATCH /auth/me rejects the removed defaultModel field", async () => {
   });
 });
 
-test("PATCH /auth/me updates filtering settings and increments only for filtering changes", async () => {
+test("PATCH /auth/me treats the story cap as cost-only while relevance changes invalidate stories", async () => {
   await withTestDb(async (database: Database) => {
     const { app, cookie } = await authenticatedApp(database, "profile-filtering@example.com");
 
@@ -192,14 +192,17 @@ test("PATCH /auth/me updates filtering settings and increments only for filterin
     assertEquals(initial.relevanceThreshold, 60);
     assertEquals(initial.maximumStoriesPerDigest, null);
 
-    const ordinaryResponse = await patchProfile(app, cookie, { name: "Ada Byron" });
-    const ordinary = await ordinaryResponse.json();
-    assertEquals(ordinary.interestProfileVersion, initial.interestProfileVersion);
+    const capResponse = await patchProfile(app, cookie, {
+      maximumStoriesPerDigest: 12,
+    });
+    assertEquals(capResponse.status, 200);
+    const capped = await capResponse.json();
+    assertEquals(capped.maximumStoriesPerDigest, 12);
+    assertEquals(capped.interestProfileVersion, initial.interestProfileVersion);
 
     const filteringResponse = await patchProfile(app, cookie, {
       defaultRelevanceFilterMode: "include_all",
       relevanceThreshold: 75,
-      maximumStoriesPerDigest: 12,
     });
     assertEquals(filteringResponse.status, 200);
     const filtering = await filteringResponse.json();

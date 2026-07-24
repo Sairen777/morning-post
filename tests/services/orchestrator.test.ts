@@ -345,6 +345,9 @@ test("runForUser emits source-local failed terminals for two connector construct
     assertEquals(serialized.includes("Secret Second"), false);
     assertEquals(serialized.includes("private:channel:first"), false);
     assertEquals(serialized.includes("private.example"), false);
+    const terminal = events.find((event) => event.event === "run_terminal");
+    assert(terminal?.event === "run_terminal");
+    assertEquals(terminal.modelMetricsSaturated, false);
   });
 });
 
@@ -396,6 +399,9 @@ test("runForUser emits a failed source terminal before run failure when connecto
         ["run_terminal", "failed"],
       ],
     );
+    const terminal = events.find((event) => event.event === "run_terminal");
+    assert(terminal?.event === "run_terminal");
+    assertEquals(terminal.modelMetricsSaturated, false);
   });
 });
 

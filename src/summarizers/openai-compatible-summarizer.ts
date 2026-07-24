@@ -62,6 +62,7 @@ interface MergeBatch {
 interface SummarizerRequestOptions {
   signal?: AbortSignal;
   requestTimeoutMs?: number;
+  onAttempt?: SummarizeOptions["onAttempt"];
   onDiagnostic?: SummarizeOptions["onDiagnostic"];
 }
 
@@ -223,6 +224,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       maxImageBytes: options.maxImageBytes ?? this.maxImageBytes,
       signal: options.signal,
       requestTimeoutMs: options.requestTimeoutMs,
+      onAttempt: options.onAttempt,
       onDiagnostic: options.onDiagnostic,
       summaryMode: options.summaryMode ?? "aggregate",
     }, state);
@@ -309,6 +311,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
           maxItemsPerChunk: options.maxItemsPerChunk,
           signal: options.signal,
           requestTimeoutMs: options.requestTimeoutMs,
+          onAttempt: options.onAttempt,
           onDiagnostic: options.onDiagnostic,
         },
       );

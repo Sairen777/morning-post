@@ -1,5 +1,5 @@
 import type { Database } from "../db/client.ts";
-import { ConnectorId } from "../constants.ts";
+import { ConnectorId, DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../constants.ts";
 import type { PublicFeed } from "../repositories/feed-repository.ts";
 import { listActiveInterestRules } from "../repositories/interest-rule-repository.ts";
 import { listItemsForFeedsInWindow } from "../repositories/item-repository.ts";
@@ -33,9 +33,13 @@ import {
 import type { StoryIntelligenceService } from "../personalization/story.types.ts";
 import { isInaccessiblePaidItem } from "./content-access.ts";
 import {
+  type DigestModelStage,
+  type DigestModelUsageAggregate,
   type DigestProgressReporter,
+  reportDigestModelAttempt,
   reportDigestProgress,
 } from "./digest-progress.ts";
+import type { ModelAttemptTelemetry } from "../summarizers/openai-compatible-client.ts";
 
 export interface StoryDigestDependencies {
   intelligence?: StoryIntelligenceService;
@@ -49,6 +53,7 @@ export interface StoryDigestDependencies {
   runId?: string;
   progressReporter?: DigestProgressReporter;
   progressStartedAtMs?: number;
+  modelUsageAggregate?: DigestModelUsageAggregate;
 }
 
 export interface StoryDigestResult {
@@ -62,15 +67,29 @@ function effectiveMode(feed: PublicFeed, source: PublicSource, user: User) {
   return user.defaultRelevanceFilterMode;
 }
 
-async function boundedMap<T, R>(values: T[], concurrency: number, fn: (value: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+async function boundedMap<T, R>(
+  values: T[],
+  concurrency: number,
+  fn: (value: T) => Promise<R>,
+  stopOnError = false,
+): Promise<PromiseSettledResult<R>[]> {
   const results: PromiseSettledResult<R>[] = new Array(values.length);
   let next = 0;
+  let stoppedReason: unknown;
   await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
     for (;;) {
       const index = next++;
       if (index >= values.length) return;
-      try { results[index] = { status: "fulfilled", value: await fn(values[index]) }; }
-      catch (reason) { results[index] = { status: "rejected", reason }; }
+      if (stopOnError && stoppedReason !== undefined) {
+        results[index] = { status: "rejected", reason: stoppedReason };
+        continue;
+      }
+      try {
+        results[index] = { status: "fulfilled", value: await fn(values[index]) };
+      } catch (reason) {
+        stoppedReason = reason;
+        results[index] = { status: "rejected", reason };
+      }
     }
   }));
   return results;
@@ -95,6 +114,16 @@ export async function assembleStoryDigest(
   const runId = dependencies.runId;
   const progressStartedAtMs = dependencies.progressStartedAtMs ?? now();
   const elapsedMs = () => Math.max(0, now() - progressStartedAtMs);
+  const onAttempt = (stage: DigestModelStage) =>
+    (attempt: ModelAttemptTelemetry): void =>
+      reportDigestModelAttempt(
+        progress,
+        runId,
+        elapsedMs(),
+        stage,
+        dependencies.modelUsageAggregate,
+        attempt,
+      );
   const sources = await listSourcesForUser(database, user.id);
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const feedById = new Map(feeds.map((feed) => [feed.id, feed]));
@@ -119,57 +148,75 @@ export async function assembleStoryDigest(
   const cachedById = new Map(cached.map((entry) => [entry.itemId, entry]));
   const misses = inputs.filter((item, i) => cachedById.get(item.itemId)?.fingerprint !== fingerprints[i]);
   const checkpointSize = resolveStoryAnalysisMaxItems(dependencies.analysisCheckpointSize);
-  const analyzedMisses: AnalyzedStoryItem[] = [];
-  for (let start = 0; start < misses.length; start += checkpointSize) {
-    const checkpointInputs = misses.slice(start, start + checkpointSize);
-    const expectedFingerprints = new Map(checkpointInputs.map((item) => [
-      item.itemId,
-      fingerprintByItemId.get(item.itemId)!,
-    ]));
-    const batchIndex = Math.floor(start / checkpointSize) + 1;
-    if (runId) reportDigestProgress(progress, {
-      event: "analysis_checkpoint",
-      runId,
-      elapsedMs: elapsedMs(),
-      batchIndex,
-      batchSize: checkpointInputs.length,
-      completedCount: start,
-      totalCount: misses.length,
-      status: "started",
-    });
-    const checkpoint = await intelligence.analyze(checkpointInputs, {
-      signal: dependencies.signal,
-      requestTimeoutMs: dependencies.timeoutMs,
-    });
-    const returnedIds = new Set(checkpoint.map((item) => item.itemId));
-    const validCheckpoint = checkpoint.length === checkpointInputs.length &&
-      returnedIds.size === checkpoint.length &&
-      checkpoint.every((item) =>
-        expectedFingerprints.has(item.itemId) &&
-        item.fingerprint === expectedFingerprints.get(item.itemId)
-      );
-    if (!validCheckpoint) {
-      throw new Error("Invalid analyzer checkpoint output: expected exactly one analysis per input with matching item IDs and fingerprints");
-    }
-    await upsertItemAnalyses(database, checkpoint.map((item) => ({
-      itemId: item.itemId,
-      fingerprint: item.fingerprint,
-      analyzerVersion,
-      analysis: item.analysis,
-      analyzedAt: now(),
-    })));
-    analyzedMisses.push(...checkpoint);
-    if (runId) reportDigestProgress(progress, {
-      event: "analysis_checkpoint",
-      runId,
-      elapsedMs: elapsedMs(),
-      batchIndex,
-      batchSize: checkpointInputs.length,
-      completedCount: analyzedMisses.length,
-      totalCount: misses.length,
-      status: "complete",
-    });
-  }
+  const checkpointInputs = Array.from(
+    { length: Math.ceil(misses.length / checkpointSize) },
+    (_, index) => ({
+      batchIndex: index + 1,
+      inputs: misses.slice(index * checkpointSize, (index + 1) * checkpointSize),
+    }),
+  );
+  let completedAnalysisCount = 0;
+  const checkpoints = await boundedMap(
+    checkpointInputs,
+    Math.max(1, dependencies.summaryConcurrency ?? 1),
+    async ({ batchIndex, inputs }) => {
+      const expectedFingerprints = new Map(inputs.map((item) => [
+        item.itemId,
+        fingerprintByItemId.get(item.itemId)!,
+      ]));
+      if (runId) reportDigestProgress(progress, {
+        event: "analysis_checkpoint",
+        runId,
+        elapsedMs: elapsedMs(),
+        batchIndex,
+        batchSize: inputs.length,
+        completedCount: completedAnalysisCount,
+        totalCount: misses.length,
+        status: "started",
+      });
+      const checkpoint = await intelligence.analyze(inputs, {
+        signal: dependencies.signal,
+        requestTimeoutMs: dependencies.timeoutMs,
+        onAttempt: onAttempt("analysis"),
+        onMediaAttempt: onAttempt("media"),
+      });
+      const returnedIds = new Set(checkpoint.map((item) => item.itemId));
+      const validCheckpoint = checkpoint.length === inputs.length &&
+        returnedIds.size === checkpoint.length &&
+        checkpoint.every((item) =>
+          expectedFingerprints.has(item.itemId) &&
+          item.fingerprint === expectedFingerprints.get(item.itemId)
+        );
+      if (!validCheckpoint) {
+        throw new Error("Invalid analyzer checkpoint output: expected exactly one analysis per input with matching item IDs and fingerprints");
+      }
+      await upsertItemAnalyses(database, checkpoint.map((item) => ({
+        itemId: item.itemId,
+        fingerprint: item.fingerprint,
+        analyzerVersion,
+        analysis: item.analysis,
+        analyzedAt: now(),
+      })));
+      completedAnalysisCount += checkpoint.length;
+      if (runId) reportDigestProgress(progress, {
+        event: "analysis_checkpoint",
+        runId,
+        elapsedMs: elapsedMs(),
+        batchIndex,
+        batchSize: inputs.length,
+        completedCount: completedAnalysisCount,
+        totalCount: misses.length,
+        status: "complete",
+      });
+      return checkpoint;
+    },
+    true,
+  );
+  const failedCheckpoint = checkpoints.find((result) => result.status === "rejected");
+  if (failedCheckpoint?.status === "rejected") throw failedCheckpoint.reason;
+  const analyzedMisses = checkpoints.flatMap((result) =>
+    result.status === "fulfilled" ? result.value : []
+  );
   const missesById = new Map(analyzedMisses.map((item) => [item.itemId, item]));
   const analyzed: AnalyzedStoryItem[] = inputs.map((item, i) => {
     const miss = missesById.get(item.itemId);
@@ -212,8 +259,8 @@ export async function assembleStoryDigest(
     status: "started",
   });
   const decisions: StoryRelevanceDecision[] = [
-    ...(personalized.length ? await intelligence.classify(personalized, rules, user.relevanceThreshold, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, preferencePrompt: user.systemPrompt }) : []),
-    ...(includeAll.length ? await intelligence.classify(includeAll, rules.filter((rule) => rule.disposition === "mute"), 0, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs }) : []),
+    ...(personalized.length ? await intelligence.classify(personalized, rules, user.relevanceThreshold, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, preferencePrompt: user.systemPrompt, onAttempt: onAttempt("classification") }) : []),
+    ...(includeAll.length ? await intelligence.classify(includeAll, rules.filter((rule) => rule.disposition === "mute"), 0, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, onAttempt: onAttempt("classification") }) : []),
   ];
   if (runId) reportDigestProgress(progress, {
     event: "classification",
@@ -234,7 +281,10 @@ export async function assembleStoryDigest(
     relevant.push(story);
   }
   relevant.sort((a, b) => (decisionById.get(b.id)!.score - decisionById.get(a.id)!.score));
-  const selected = user.maximumStoriesPerDigest === null ? relevant : relevant.slice(0, user.maximumStoriesPerDigest);
+  const selected = relevant.slice(
+    0,
+    user.maximumStoriesPerDigest ?? DEFAULT_MAXIMUM_STORIES_PER_DIGEST,
+  );
   const storyRules = buildStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
   storyRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), storyRules.systemPrompt].filter(Boolean).join("\n\n");
   if (runId) reportDigestProgress(progress, {
@@ -256,7 +306,7 @@ export async function assembleStoryDigest(
       return { content, profileVersion, generatedAt };
     }
     const items = story.candidate.developments.flatMap((development) => development.items);
-    const points = await summarizer.summarize(items.map((item) => item.payload), storyRules, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs });
+    const points = await summarizer.summarize(items.map((item) => item.payload), storyRules, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, onAttempt: onAttempt("summarization") });
     if (items.length > 0 && points.length === 0) throw new Error("Story summarization returned no points");
     const decision = decisionById.get(story.id)!;
     const sources: StorySource[] = items.map((item) => ({ itemId: item.itemId, connectorId: connectorBySource.get(item.sourceId)!, sourceId: item.sourceId, feedId: item.feedId, feedName: item.feedName, title: item.payload.title, url: item.payload.url, publishedAt: item.payload.date }));

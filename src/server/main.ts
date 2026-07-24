@@ -66,6 +66,7 @@ export async function bootServer(
     digests: {
       summarizer,
       timeoutMs: config.summarizerTimeoutMs,
+      summarizationConcurrency: config.summarizationConcurrency,
       progressReporter,
     },
   });
@@ -79,6 +80,7 @@ export async function bootServer(
   scheduleDigestJob(scheduler, database, {
     summarizer,
     timeoutMs: config.summarizerTimeoutMs,
+    summarizationConcurrency: config.summarizationConcurrency,
     progressReporter,
     schedulerLeaseMs: config.schedulerLeaseMs,
     digestRunStaleAfterMs: config.digestRunStaleAfterMs,

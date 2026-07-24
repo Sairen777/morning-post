@@ -558,3 +558,172 @@ test("analysis checkpoints persist before a later failure and reruns resume rema
     );
   });
 });
+
+test("default and explicit story caps preserve order under bounded analysis and summary concurrency", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, {
+      name: "Bounded Owner",
+      email: "story-bounds@example.com",
+      passwordHash: "$argon2id$fake",
+      defaultLanguage: "en",
+      systemPrompt: "",
+      relevanceThreshold: 0,
+      maximumStoriesPerDigest: null,
+    });
+    const cipher = new CredentialCipher(
+      new EnvMasterKeyProvider(new Uint8Array(32).fill(6)),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.RSS,
+      credentials: await cipher.encrypt("{}", {
+        userId: user.id,
+        connectorId: ConnectorId.RSS,
+      }),
+    });
+    const feed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: source.id,
+      externalId: "bounded-feed",
+      name: "Bounded Feed",
+      kind: "news",
+    });
+    const externalIds = Array.from(
+      { length: 25 },
+      (_, index) => `item-${String(index).padStart(2, "0")}`,
+    );
+    await upsertItems(database, feed.id, externalIds.map((externalId, index) => ({
+      connectorId: ConnectorId.RSS,
+      feedExternalId: feed.externalId,
+      externalId,
+      date: 100 + index,
+      title: externalId,
+      text: `Report ${externalId}`,
+      author: null,
+      url: `https://${externalId}.example/`,
+    })), 200);
+    const row = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 200,
+      status: "pending",
+    });
+
+    type Gate = { release: () => void; released: boolean };
+    const analysisGates: Gate[] = [];
+    const summaryGates: Gate[] = [];
+    let gateSignal = Promise.withResolvers<void>();
+    const notifyGate = () => {
+      gateSignal.resolve();
+      gateSignal = Promise.withResolvers<void>();
+    };
+    let activeAnalysis = 0;
+    let maxActiveAnalysis = 0;
+    let activeSummaries = 0;
+    let maxActiveSummaries = 0;
+    const intelligence = new FixtureIntelligence();
+    intelligence.splitStories = true;
+    const fixtureAnalyze = intelligence.analyze.bind(intelligence);
+    intelligence.analyze = async (items) => {
+      activeAnalysis++;
+      maxActiveAnalysis = Math.max(maxActiveAnalysis, activeAnalysis);
+      const deferred = Promise.withResolvers<void>();
+      const gate: Gate = {
+        released: false,
+        release: () => {
+          gate.released = true;
+          deferred.resolve();
+        },
+      };
+      analysisGates.push(gate);
+      notifyGate();
+      await deferred.promise;
+      activeAnalysis--;
+      return await fixtureAnalyze(items);
+    };
+    const summaryCalls: string[] = [];
+    const summarizer: SummarizerService = {
+      summarize: async (items) => {
+        summaryCalls.push(items[0].externalId);
+        activeSummaries++;
+        maxActiveSummaries = Math.max(maxActiveSummaries, activeSummaries);
+        const deferred = Promise.withResolvers<void>();
+        const gate: Gate = {
+          released: false,
+          release: () => {
+            gate.released = true;
+            deferred.resolve();
+          },
+        };
+        summaryGates.push(gate);
+        notifyGate();
+        await deferred.promise;
+        activeSummaries--;
+        return [{ text: `Summary ${items[0].externalId}`, sourceUrl: null }];
+      },
+    };
+    const releaseUntil = async (gates: Gate[], expected: number) => {
+      while (gates.length < expected || gates.some((gate) => !gate.released)) {
+        const pending = gates.filter((gate) => !gate.released);
+        if (pending.length > 0) {
+          pending[pending.length - 1].release();
+        } else {
+          await gateSignal.promise;
+        }
+      }
+    };
+    const dependencies = {
+      intelligence,
+      summarizer,
+      analyzerVersion: "bounded-v1",
+      analysisCheckpointSize: 1,
+      summaryConcurrency: 3,
+    };
+
+    const defaultRun = assembleStoryDigest(
+      database,
+      row.id,
+      user,
+      [feed],
+      0,
+      200,
+      dependencies,
+    );
+    await releaseUntil(analysisGates, 25);
+    await releaseUntil(summaryGates, 20);
+    const defaultResult = await defaultRun;
+    assertEquals(defaultResult.stories.length, 20);
+    assertEquals(maxActiveAnalysis, 3);
+    assertEquals(maxActiveSummaries, 3);
+    assertEquals(
+      defaultResult.stories.every((story) =>
+        story.points[0].text === `Summary ${story.title.replace("Story ", "")}`
+      ),
+      true,
+    );
+
+    user.maximumStoriesPerDigest = 7;
+    user.interestProfileVersion++;
+    const previousAnalysisCalls = analysisGates.length;
+    const previousSummaryCalls = summaryGates.length;
+    const explicitRun = assembleStoryDigest(
+      database,
+      row.id,
+      user,
+      [feed],
+      0,
+      200,
+      dependencies,
+    );
+    await releaseUntil(summaryGates, previousSummaryCalls + 7);
+    const explicitResult = await explicitRun;
+    assertEquals(analysisGates.length, previousAnalysisCalls);
+    assertEquals(explicitResult.stories.length, 7);
+    assertEquals(
+      explicitResult.stories.every((story) =>
+        story.points[0].text === `Summary ${story.title.replace("Story ", "")}`
+      ),
+      true,
+    );
+  });
+});

@@ -78,6 +78,50 @@ describe("ProfilePanel", () => {
     expect(container.querySelector("#profile-summary-prompt")).not.toBeNull();
   });
 
+  it("renders the default story cap and preserves null when saved blank", async () => {
+    const user = {
+      id: "user-1",
+      name: "Ada",
+      email: "ada@example.com",
+      systemPrompt: "Summarize plainly.",
+      summaryPrompt: "",
+      defaultLanguage: null,
+      defaultRelevanceFilterMode: "personalized" as const,
+      relevanceThreshold: 60,
+      maximumStoriesPerDigest: null,
+      interestProfileVersion: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const onSave = vi.fn(() => Promise.resolve(user));
+    render(() => (
+      <ProfilePanel
+        user={user}
+        interests={[]}
+        interestsLoading={false}
+        interestMutationId={null}
+        interestsError={null}
+        onCreateInterest={() => Promise.resolve()}
+        onUpdateInterest={() => Promise.resolve()}
+        onDeleteInterest={() => Promise.resolve()}
+        onSave={onSave}
+        onSaved={() => {}}
+        onAuthError={() => {}}
+      />
+    ));
+
+    const maximum = screen.getByLabelText(
+      "Maximum stories per digest (Default: 20)",
+    );
+    expect(maximum).toHaveValue(null);
+    expect(maximum).toHaveAttribute("placeholder", "Default (20)");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      maximumStoriesPerDigest: null,
+    }));
+  });
+
   it("labels inferred rules and supports adding and removing a mute", async () => {
     const user = {
       id: "user-1",

@@ -872,6 +872,7 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
     const progressReporter = { report: () => {} } satisfies DigestProgressReporter;
     let receivedSummarizer: SummarizerService | undefined;
     let receivedTimeoutMs: number | undefined;
+    let receivedSummarizationConcurrency: number | undefined;
     let receivedProgressReporter: DigestProgressReporter | undefined;
     const runForUser: typeof runForUserType = (
       _database,
@@ -881,6 +882,7 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
     ) => {
       receivedSummarizer = dependencies.summarizer;
       receivedTimeoutMs = dependencies.timeoutMs;
+      receivedSummarizationConcurrency = dependencies.summarizationConcurrency;
       receivedProgressReporter = dependencies.progressReporter;
       return Promise.resolve({
         digest: {
@@ -904,6 +906,7 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
       digests: {
         summarizer: sharedSummarizer,
         timeoutMs: 42_000,
+        summarizationConcurrency: 7,
         progressReporter,
         runForUser,
       },
@@ -922,6 +925,7 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
     assertEquals(response.status, 200);
     assertEquals(receivedSummarizer, sharedSummarizer);
     assertEquals(receivedTimeoutMs, 42_000);
+    assertEquals(receivedSummarizationConcurrency, 7);
     assertEquals(receivedProgressReporter, progressReporter);
   });
 });

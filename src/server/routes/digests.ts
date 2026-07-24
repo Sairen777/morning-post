@@ -58,6 +58,7 @@ export interface DigestRouteOptions {
   trustedProxyCount?: number;
   summarizer?: SummarizerService;
   timeoutMs?: number;
+  summarizationConcurrency?: number;
   progressReporter?: DigestProgressReporter;
   runForUser?: typeof runForUserType;
 }
@@ -113,6 +114,7 @@ export function buildDigestRoutes(
     const digest = await runForUser(database, context.var.userId, { startMs, endMs }, {
       summarizer: options.summarizer,
       timeoutMs: options.timeoutMs,
+      summarizationConcurrency: options.summarizationConcurrency,
       progressReporter: options.progressReporter,
     });
     return context.json(digest, 200);

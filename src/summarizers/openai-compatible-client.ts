@@ -50,9 +50,27 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-interface CompletionOptions {
+export interface ModelAttemptUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface ModelAttemptTelemetry {
+  attempt: number;
+  durationMs: number;
+  status: "success" | "retry" | "failure";
+  usage?: ModelAttemptUsage;
+}
+
+export type ModelAttemptTelemetryCallback = (
+  telemetry: ModelAttemptTelemetry,
+) => Promise<void> | void;
+
+export interface CompletionOptions {
   signal?: AbortSignal;
   requestTimeoutMs?: number;
+  onAttempt?: ModelAttemptTelemetryCallback;
 }
 
 interface RequestDeadline {
@@ -94,6 +112,41 @@ function createRequestDeadline(options: CompletionOptions): RequestDeadline {
   };
 }
 
+function parseUsage(data: unknown): ModelAttemptUsage | undefined {
+  if (data === null || typeof data !== "object") return undefined;
+  const usage = (data as Record<string, unknown>).usage;
+  if (usage === null || typeof usage !== "object") return undefined;
+  const record = usage as Record<string, unknown>;
+  const values = [
+    record.prompt_tokens,
+    record.completion_tokens,
+    record.total_tokens,
+  ];
+  if (
+    !values.every((value) =>
+      typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ) ||
+    values[2] !== (values[0] as number) + (values[1] as number)
+  ) return undefined;
+  return {
+    promptTokens: values[0] as number,
+    completionTokens: values[1] as number,
+    totalTokens: values[2] as number,
+  };
+}
+
+function reportAttempt(
+  callback: ModelAttemptTelemetryCallback | undefined,
+  telemetry: ModelAttemptTelemetry,
+): void {
+  if (!callback) return;
+  try {
+    Promise.resolve(callback(telemetry)).catch(() => {});
+  } catch {
+    // Attempt telemetry is observational and must not affect requests.
+  }
+}
+
 export class OpenAICompatibleChatClient {
   private readonly endpoint: ModelEndpointConfig;
   private readonly retryBaseDelayMs: number;
@@ -131,6 +184,7 @@ export class OpenAICompatibleChatClient {
     const maximumAttempts = 3;
     let lastError: unknown;
     for (let attempt = 0; attempt < maximumAttempts; attempt++) {
+      const attemptStartedAt = Date.now();
       options.signal?.throwIfAborted();
 
       const deadline = createRequestDeadline(options);
@@ -161,32 +215,74 @@ export class OpenAICompatibleChatClient {
         deadline.dispose();
       }
 
+      const durationMs = Math.max(0, Date.now() - attemptStartedAt);
       if (requestError !== undefined) {
         if (options.signal?.aborted) {
+          reportAttempt(options.onAttempt, {
+            attempt: attempt + 1,
+            durationMs,
+            status: "failure",
+          });
           throw abortReason(options.signal);
         }
         const internalTimeout = deadline.signal?.aborted &&
           deadline.signal.reason instanceof DOMException &&
           deadline.signal.reason.name === "TimeoutError";
-        if (!internalTimeout && !(requestError instanceof TypeError)) {
-          throw requestError;
-        }
+        const retryable = internalTimeout || requestError instanceof TypeError;
+        const willRetry = retryable && attempt < maximumAttempts - 1;
+        reportAttempt(options.onAttempt, {
+          attempt: attempt + 1,
+          durationMs,
+          status: willRetry ? "retry" : "failure",
+        });
+        if (!retryable) throw requestError;
         lastError = internalTimeout ? deadline.signal!.reason : requestError;
-        if (attempt === maximumAttempts - 1) {
-          throw lastError;
-        }
+        if (!willRetry) throw lastError;
         await delay(this.retryDelayMilliseconds(attempt), options.signal);
         continue;
       }
 
       if (response === undefined) {
+        reportAttempt(options.onAttempt, {
+          attempt: attempt + 1,
+          durationMs,
+          status: "failure",
+        });
         throw new ModelApiError(0, "Model API: missing response");
       }
       if (response.ok) {
-        const data = responseData as {
-          choices: Array<{ message: { content: string } }>;
-        };
-        return data.choices[0].message.content;
+        const data = responseData !== null &&
+            typeof responseData === "object" &&
+            !Array.isArray(responseData)
+          ? responseData as Record<string, unknown>
+          : undefined;
+        const choices = data?.choices;
+        const firstChoice = Array.isArray(choices) ? choices[0] : undefined;
+        const message = firstChoice !== null &&
+            typeof firstChoice === "object" &&
+            !Array.isArray(firstChoice)
+          ? (firstChoice as Record<string, unknown>).message
+          : undefined;
+        const result = message !== null && typeof message === "object" &&
+            !Array.isArray(message)
+          ? (message as Record<string, unknown>).content
+          : undefined;
+        if (typeof result !== "string") {
+          reportAttempt(options.onAttempt, {
+            attempt: attempt + 1,
+            durationMs,
+            status: "failure",
+            usage: parseUsage(responseData),
+          });
+          throw new ModelApiError(0, "Model API: malformed completion");
+        }
+        reportAttempt(options.onAttempt, {
+          attempt: attempt + 1,
+          durationMs,
+          status: "success",
+          usage: parseUsage(responseData),
+        });
+        return result;
       }
 
       await this.cancelResponseBody(response);
@@ -195,6 +291,13 @@ export class OpenAICompatibleChatClient {
         `Model API ${response.status}`,
       );
 
+      const willRetry = (response.status === 429 || response.status === 503) &&
+        attempt < maximumAttempts - 1;
+      reportAttempt(options.onAttempt, {
+        attempt: attempt + 1,
+        durationMs,
+        status: willRetry ? "retry" : "failure",
+      });
       if (
         (response.status === 429 || response.status === 503) &&
         attempt < maximumAttempts - 1

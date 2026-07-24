@@ -1,3 +1,5 @@
+import type { ModelAttemptTelemetryCallback } from "./openai-compatible-client.ts";
+
 import type { NormalizedItem } from "../connectors/connector.types.ts";
 
 export interface SummaryRuleset {
@@ -49,6 +51,8 @@ export interface SummarizeOptions {
   signal?: AbortSignal;
   /** Timeout for each model request; renewed for every chunk, fallback, and merge */
   requestTimeoutMs?: number;
+  /** Receives content-safe telemetry once for each model HTTP attempt */
+  onAttempt?: ModelAttemptTelemetryCallback;
   /** Receives redacted operational events without item or prompt content */
   onDiagnostic?: (
     diagnostic: SummarizationDiagnostic,

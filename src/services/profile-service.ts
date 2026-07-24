@@ -66,8 +66,7 @@ export async function updateProfile(
     updates.summaryPrompt !== undefined ||
     updates.defaultLanguage !== undefined ||
     updates.defaultRelevanceFilterMode !== undefined ||
-    updates.relevanceThreshold !== undefined ||
-    updates.maximumStoriesPerDigest !== undefined;
+    updates.relevanceThreshold !== undefined;
   return await updateUser(database, userId, updates, {
     incrementInterestProfileVersion: affectsFiltering,
   });

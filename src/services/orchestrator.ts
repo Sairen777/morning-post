@@ -36,7 +36,10 @@ import {
   ingestFeedsForSource,
   ingestFeedsIndividually,
 } from "./ingestion-service.ts";
-import { reportDigestProgress } from "./digest-progress.ts";
+import {
+  type DigestModelUsageAggregate,
+  reportDigestProgress,
+} from "./digest-progress.ts";
 
 export interface DigestPeriod {
   startMs: number;
@@ -103,6 +106,7 @@ interface RunContext {
   now: () => number;
   progressStartedAtMs: number;
   progressReporter: OrchestratorDependencies["progressReporter"];
+  modelUsageAggregate: DigestModelUsageAggregate;
 }
 
 async function loadEnabledUserFeedPlan(
@@ -585,6 +589,7 @@ async function executeDigestRun(
     now,
     progressStartedAtMs: dependencies.progressStartedAtMs ?? now(),
     progressReporter: dependencies.progressReporter,
+    modelUsageAggregate: dependencies.modelUsageAggregate!,
   };
 
   const ingestionResult = await ingestUserFeeds(
@@ -662,6 +667,16 @@ async function executeDigestRun(
     runId: digestRunId,
     elapsedMs: Math.max(0, now() - runContext.progressStartedAtMs),
     status: runStatus,
+    modelAttemptCount: runContext.modelUsageAggregate.attemptCount,
+    modelDurationMs: runContext.modelUsageAggregate.durationMs,
+    usageReportedAttemptCount:
+      runContext.modelUsageAggregate.usageReportedAttemptCount,
+    promptTokensLowerBound:
+      runContext.modelUsageAggregate.promptTokensLowerBound,
+    completionTokensLowerBound:
+      runContext.modelUsageAggregate.completionTokensLowerBound,
+    totalTokensLowerBound: runContext.modelUsageAggregate.totalTokensLowerBound,
+    modelMetricsSaturated: runContext.modelUsageAggregate.saturated,
   });
   return finalView;
 }
@@ -683,7 +698,20 @@ export async function runForUser(
     status: "running",
   }, now());
   const progressStartedAtMs = now();
-  const progressDependencies = { ...dependencies, progressStartedAtMs };
+  const modelUsageAggregate: DigestModelUsageAggregate = {
+    attemptCount: 0,
+    durationMs: 0,
+    usageReportedAttemptCount: 0,
+    promptTokensLowerBound: 0,
+    completionTokensLowerBound: 0,
+    totalTokensLowerBound: 0,
+    saturated: false,
+  };
+  const progressDependencies = {
+    ...dependencies,
+    progressStartedAtMs,
+    modelUsageAggregate,
+  };
   reportDigestProgress(dependencies.progressReporter, {
     event: "run_start",
     runId: digestRun.id,
@@ -714,6 +742,14 @@ export async function runForUser(
       runId: digestRun.id,
       elapsedMs: Math.max(0, now() - progressStartedAtMs),
       status: "failed",
+      modelAttemptCount: modelUsageAggregate.attemptCount,
+      modelDurationMs: modelUsageAggregate.durationMs,
+      usageReportedAttemptCount: modelUsageAggregate.usageReportedAttemptCount,
+      promptTokensLowerBound: modelUsageAggregate.promptTokensLowerBound,
+      completionTokensLowerBound:
+        modelUsageAggregate.completionTokensLowerBound,
+      totalTokensLowerBound: modelUsageAggregate.totalTokensLowerBound,
+      modelMetricsSaturated: modelUsageAggregate.saturated,
     });
     throw error;
   }

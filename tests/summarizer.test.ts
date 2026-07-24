@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -20,7 +20,10 @@ import {
 import type { OpenAICompatibleSummarizerOptions } from "../src/summarizers/openai-compatible-summarizer.ts";
 import type { NormalizedItem } from "../src/connectors/connector.types.ts";
 import type { SummarizationDiagnostic } from "../src/summarizers/summarizer.types.ts";
-import type { FetchFunction } from "../src/summarizers/openai-compatible-client.ts";
+import type {
+  FetchFunction,
+  ModelAttemptTelemetry,
+} from "../src/summarizers/openai-compatible-client.ts";
 import { ConnectorId } from "../src/constants.ts";
 
 const fetchEnvironment: { fetch: FetchFunction } = globalThis;
@@ -62,13 +65,13 @@ type FetchRequest = { messages: Array<{ role: string; content: unknown }> };
 
 function stubFetch(responseBody: unknown): () => void {
   const original = globalThis.fetch;
-  fetchEnvironment.fetch = (() =>
+  fetchEnvironment.fetch = () =>
     Promise.resolve(
       new Response(JSON.stringify(responseBody), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
-  ));
+    );
   return () => {
     globalThis.fetch = original;
   };
@@ -80,7 +83,7 @@ function captureFetch(responseBody: unknown): {
 } {
   const original = globalThis.fetch;
   const state = { body: null as FetchRequest | null };
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
     state.body = JSON.parse((init as RequestInit & { body: string }).body);
     return Promise.resolve(
       new Response(JSON.stringify(responseBody), {
@@ -88,7 +91,7 @@ function captureFetch(responseBody: unknown): {
         headers: { "Content-Type": "application/json" },
       }),
     );
-  });
+  };
   return {
     captured: state,
     restore: () => {
@@ -186,8 +189,7 @@ test("selectRuleset — explicit kind overrides meta.isGroup", () => {
 
 // --- summarizer wiring ---
 
-test("summarize — sends configured system prompt to model",
-async () => {
+test("summarize — sends configured system prompt to model", async () => {
   const { captured, restore } = captureFetch({
     choices: [{ message: { content: '[{"t":"x","i":0}]' } }],
   });
@@ -195,7 +197,119 @@ async () => {
   await svc.summarize([item()], buildNewsPrompt());
   assertStringIncludes(captured.body!.messages[0].content as string, '"t"');
   restore();
-},);
+});
+
+test("summarize — forwards retry attempt telemetry without request content", async () => {
+  const { restore } = stubFetchSequence([
+    { status: 429, body: '{"error":"rate limited"}' },
+    { status: 200, body: modelResponse('[{"t":"ok","i":0}]') },
+  ]);
+  const attempts: ModelAttemptTelemetry[] = [];
+  try {
+    const service = createTestSummarizer({ retryBaseDelayMs: 0 });
+    await service.summarize(
+      [item({ text: "private source content" })],
+      { ...buildNewsPrompt(), systemPrompt: "private system prompt" },
+      {
+        onAttempt: (attempt) => {
+          attempts.push(attempt);
+        },
+      },
+    );
+    assertEquals(attempts.map(({ attempt, status }) => ({ attempt, status })), [
+      { attempt: 1, status: "retry" },
+      { attempt: 2, status: "success" },
+    ]);
+    assertEquals(
+      attempts.every((attempt) =>
+        Object.keys(attempt).every((key) =>
+          ["attempt", "durationMs", "status", "usage"].includes(key)
+        ) &&
+        !JSON.stringify(attempt).includes("private")
+      ),
+      true,
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — forwards attempt telemetry for every chunk and merge", async () => {
+  const { restore } = stubFetchSequence([
+    { status: 200, body: modelResponse('[{"t":"first","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"second","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"merged","i":0}]') },
+  ]);
+  const attempts: ModelAttemptTelemetry[] = [];
+  try {
+    const service = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 1,
+    });
+    await service.summarize(
+      [
+        item({ externalId: "1", text: "private first chunk" }),
+        item({ externalId: "2", text: "private second chunk" }),
+      ],
+      buildNewsPrompt(),
+      {
+        onAttempt: (attempt) => {
+          attempts.push(attempt);
+        },
+      },
+    );
+    assertEquals(attempts.map(({ attempt, status }) => ({ attempt, status })), [
+      { attempt: 1, status: "success" },
+      { attempt: 1, status: "success" },
+      { attempt: 1, status: "success" },
+    ]);
+    assertEquals(JSON.stringify(attempts).includes("private"), false);
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — forwards vision and media-description attempt telemetry", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "attempt-vision-"));
+  const imagePath = join(temporaryDirectory, "private-photo.jpg");
+  await writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  const { restore } = stubFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(
+        '[{"i":0,"description":"private visual description"}]',
+      ),
+    },
+    { status: 200, body: modelResponse('[{"t":"summary","i":0}]') },
+  ]);
+  const attempts: ModelAttemptTelemetry[] = [];
+  try {
+    const service = createTestSummarizer({
+      models: DISTINCT_TEST_MODELS,
+      retryBaseDelayMs: 0,
+    });
+    await service.summarize(
+      [item({
+        text: "private media text",
+        media: { type: "photo", localPath: imagePath },
+      })],
+      buildNewsPrompt(),
+      {
+        onAttempt: (attempt) => {
+          attempts.push(attempt);
+        },
+      },
+    );
+    assertEquals(attempts.map(({ attempt, status }) => ({ attempt, status })), [
+      { attempt: 1, status: "success" },
+      { attempt: 1, status: "success" },
+    ]);
+    assertEquals(JSON.stringify(attempts).includes("private"), false);
+  } finally {
+    restore();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
 
 // --- emoji filter ---
 
@@ -215,23 +329,25 @@ test("buildContentParts — emoji-only item is filtered out", async () => {
   restore();
 });
 
-test("buildContentParts — discussion preset sends plain string and shows authors",
-async () => {
-  const { captured, restore } = captureFetch({
-    choices: [{ message: { content: "[]" } }],
-  });
-  const svc = createTestSummarizer();
-  await svc.summarize(
-    [item({ text: "hello", author: "@alice", meta: { isGroup: true } })],
-    buildDiscussionPrompt(),
-  );
-  assertEquals(typeof captured.body!.messages[1].content, "string");
-  assertStringIncludes(
-    captured.body!.messages[1].content as string,
-    "@alice",
-  );
-  restore();
-},);
+test(
+  "buildContentParts — discussion preset sends plain string and shows authors",
+  async () => {
+    const { captured, restore } = captureFetch({
+      choices: [{ message: { content: "[]" } }],
+    });
+    const svc = createTestSummarizer();
+    await svc.summarize(
+      [item({ text: "hello", author: "@alice", meta: { isGroup: true } })],
+      buildDiscussionPrompt(),
+    );
+    assertEquals(typeof captured.body!.messages[1].content, "string");
+    assertStringIncludes(
+      captured.body!.messages[1].content as string,
+      "@alice",
+    );
+    restore();
+  },
+);
 
 // --- parsePoints ---
 
@@ -247,8 +363,7 @@ test("parsePoints — attaches metadata from indexedItems", async () => {
   restore();
 });
 
-test("parsePoints — strips markdown code fences from response",
-async () => {
+test("parsePoints — strips markdown code fences from response", async () => {
   const restore = stubFetch({
     choices: [
       { message: { content: '```json\n[{"t":"fenced","i":0}]\n```' } },
@@ -258,22 +373,23 @@ async () => {
   const results = await svc.summarize([item()], buildNewsPrompt());
   assertEquals(results[0].text, "fenced");
   restore();
-},);
+});
 
-test("parsePoints — out-of-bounds sourceIndex yields null sourceUrl",
-async () => {
-  const restore = stubFetch({
-    choices: [{ message: { content: '[{"t":"orphan","i":99}]' } }],
-  });
-  const svc = createTestSummarizer();
-  const results = await svc.summarize([item()], buildNewsPrompt());
-  assertEquals(results[0].text, "orphan");
-  assertEquals(results[0].sourceUrl, null);
-  restore();
-},);
+test(
+  "parsePoints — out-of-bounds sourceIndex yields null sourceUrl",
+  async () => {
+    const restore = stubFetch({
+      choices: [{ message: { content: '[{"t":"orphan","i":99}]' } }],
+    });
+    const svc = createTestSummarizer();
+    const results = await svc.summarize([item()], buildNewsPrompt());
+    assertEquals(results[0].text, "orphan");
+    assertEquals(results[0].sourceUrl, null);
+    restore();
+  },
+);
 
-test("parsePoints — missing source index maps to null sourceUrl",
-async () => {
+test("parsePoints — missing source index maps to null sourceUrl", async () => {
   const restore = stubFetch({
     choices: [{
       message: { content: '[{"t":"discussion summary without index"}]' },
@@ -284,7 +400,7 @@ async () => {
   assertEquals(results[0].text, "discussion summary without index");
   assertEquals(results[0].sourceUrl, null);
   restore();
-},);
+});
 
 // --- retry / API error helpers ---
 
@@ -296,7 +412,7 @@ function stubFetchSequence(specs: ResponseSpec[]): {
 } {
   const original = globalThis.fetch;
   let callIndex = 0;
-  fetchEnvironment.fetch = (() => {
+  fetchEnvironment.fetch = () => {
     const spec = specs[callIndex] ?? specs[specs.length - 1];
     callIndex++;
     return Promise.resolve(
@@ -305,7 +421,7 @@ function stubFetchSequence(specs: ResponseSpec[]): {
         headers: { "Content-Type": "application/json" },
       }),
     );
-  });
+  };
   return {
     callCount: () => callIndex,
     restore: () => {
@@ -327,7 +443,7 @@ function captureFetchSequence(specs: ResponseSpec[]): {
   const original = globalThis.fetch;
   const captured: CapturedModelRequest[] = [];
   let callIndex = 0;
-  fetchEnvironment.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     captured.push({
       url: String(input),
       body: JSON.parse((init as RequestInit & { body: string }).body),
@@ -340,7 +456,7 @@ function captureFetchSequence(specs: ResponseSpec[]): {
         headers: { "Content-Type": "application/json" },
       }),
     );
-  });
+  };
   return {
     captured,
     callCount: () => callIndex,
@@ -365,28 +481,29 @@ async function createRoutingTestDirectory(name: string): Promise<string> {
 test("summarize — enforces the timeout at the model request boundary", async () => {
   const originalFetch = globalThis.fetch;
   let requestAborted = false;
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
-    const responseTimer = setTimeout(
-      () =>
-        resolve(
-          new Response(modelResponse('[{"t":"too late","i":0}]'), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-      50,
-    );
-    const signal = init?.signal;
-    signal?.addEventListener(
-      "abort",
-      () => {
-        requestAborted = true;
-        clearTimeout(responseTimer);
-        reject(signal.reason);
-      },
-      { once: true },
-    );
-    }));
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((resolve, reject) => {
+      const responseTimer = setTimeout(
+        () =>
+          resolve(
+            new Response(modelResponse('[{"t":"too late","i":0}]'), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          ),
+        50,
+      );
+      const signal = init?.signal;
+      signal?.addEventListener(
+        "abort",
+        () => {
+          requestAborted = true;
+          clearTimeout(responseTimer);
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
 
   try {
     const service = createTestSummarizer();
@@ -413,7 +530,7 @@ test("summarize — renews the timeout for every chunk and merge request", async
     modelResponse('[{"t":"merged","i":0}]'),
   ];
   let callIndex = 0;
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
     requestSignals.push(init?.signal);
     const responseBody = responses[callIndex] ?? responses.at(-1)!;
     callIndex++;
@@ -423,7 +540,7 @@ test("summarize — renews the timeout for every chunk and merge request", async
         headers: { "Content-Type": "application/json" },
       }),
     );
-  });
+  };
 
   try {
     const service = createTestSummarizer({ maxItemsPerChunk: 1 });
@@ -758,7 +875,7 @@ test("summarize — bounds a production-shaped hierarchical merge", async () => 
   const maxMergeBytes = 512;
   const mergePayloads: string[] = [];
   let requestCount = 0;
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -780,7 +897,7 @@ test("summarize — bounds a production-shaped hierarchical merge", async () => 
         headers: { "Content-Type": "application/json" },
       }),
     );
-  });
+  };
 
   try {
     const service = createTestSummarizer({
@@ -826,7 +943,7 @@ test("summarize — merge framing honors tiny UTF-8 budgets and maxItems one", a
   const originalFetch = globalThis.fetch;
   const mergeContents: string[] = [];
   let requestCount = 0;
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -843,7 +960,7 @@ test("summarize — merge framing honors tiny UTF-8 budgets and maxItems one", a
         headers: { "Content-Type": "application/json" },
       }),
     );
-  });
+  };
 
   try {
     const service = createTestSummarizer({
@@ -953,7 +1070,7 @@ test("summarize — single chunk skips merge", async () => {
 test("summarize — article mode splits UTF-8 safely, keeps title context, and never merges chunks", async () => {
   const original = globalThis.fetch;
   const requestContents: string[] = [];
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -969,7 +1086,7 @@ test("summarize — article mode splits UTF-8 safely, keeps title context, and n
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
-  });
+  };
   try {
     const service = createTestSummarizer({ maxTextBytesPerChunk: 5 });
     const points = await service.summarize(
@@ -1017,7 +1134,7 @@ test("summarize — article mode rejects multiple items", async () => {
 test("summarize — article mode does not apply aggregate noise filtering", async () => {
   const original = globalThis.fetch;
   const submitted: string[] = [];
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -1030,7 +1147,7 @@ test("summarize — article mode does not apply aggregate noise filtering", asyn
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
-  });
+  };
   try {
     const service = createTestSummarizer();
     for (const text of ["123456", "(){ =>; }", "👍🔥😂"]) {
@@ -1050,10 +1167,10 @@ test("summarize — article mode does not apply aggregate noise filtering", asyn
 test("summarize — article byte budget rejects invalid and undersized scalar budgets before requests", async () => {
   const original = globalThis.fetch;
   let requests = 0;
-  fetchEnvironment.fetch = (() => {
+  fetchEnvironment.fetch = () => {
     requests++;
     throw new Error("model must not be called");
-  });
+  };
   try {
     const service = createTestSummarizer();
     for (const budget of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN]) {
@@ -1094,7 +1211,7 @@ test("summarize — article byte budget rejects invalid and undersized scalar bu
 test("summarize — article splitter preserves long mixed UTF-8 text at byte boundaries", async () => {
   const original = globalThis.fetch;
   const chunks: string[] = [];
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
     ) as FetchRequest;
@@ -1108,7 +1225,7 @@ test("summarize — article splitter preserves long mixed UTF-8 text at byte bou
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
-  });
+  };
   try {
     const text = "aé😀".repeat(20);
     const service = createTestSummarizer();
@@ -1285,7 +1402,9 @@ test("Bun loads native sharp and resizes a PNG through temporary files", async (
         background: { r: 12, g: 34, b: 56, alpha: 1 },
       },
     }).png().toFile(sourcePath);
-    await sharp(sourcePath).resize(2, 2, { fit: "fill" }).png().toFile(resizedPath);
+    await sharp(sourcePath).resize(2, 2, { fit: "fill" }).png().toFile(
+      resizedPath,
+    );
 
     const resized = await readFile(resizedPath);
     assertEquals(resized.subarray(1, 4).toString("ascii"), "PNG");
@@ -1740,7 +1859,7 @@ test("summarize — text timeout after valid vision is not retried as vision fal
   const diagnostics: SummarizationDiagnostic[] = [];
   let callCount = 0;
   const textRequestContents: string[] = [];
-  fetchEnvironment.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  fetchEnvironment.fetch = (_input: RequestInfo | URL, init?: RequestInit) => {
     callCount++;
     const request = JSON.parse(
       (init as RequestInit & { body: string }).body,
@@ -1778,7 +1897,7 @@ test("summarize — text timeout after valid vision is not retried as vision fal
         { once: true },
       );
     });
-  });
+  };
 
   try {
     const service = createTestSummarizer({
@@ -1896,13 +2015,13 @@ test("summarize — retries on 429 with Retry-After header", async () => {
       headers: { "Content-Type": "application/json" },
     },
   ];
-  fetchEnvironment.fetch = (() => {
+  fetchEnvironment.fetch = () => {
     const spec = specs[callIndex] ?? specs[specs.length - 1];
     callIndex++;
     return Promise.resolve(
       new Response(spec.body, { status: spec.status, headers: spec.headers }),
     );
-  });
+  };
   try {
     const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
     const results = await svc.summarize([item()], buildNewsPrompt());

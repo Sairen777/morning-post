@@ -106,31 +106,14 @@ export function buildStoryAnalysisPrompt(): SummaryRuleset {
   };
 }
 
-export function buildStoryClassificationPrompt(
-  preferencePrompt?: string,
-): SummaryRuleset {
+export function buildStoryClassificationPrompt(): SummaryRuleset {
   return {
     systemPrompt: [
-      "Score every indexed story against the supplied active preference rules.",
+      "The first JSON line contains shared activeRules and preferencePrompt context. Every subsequent JSON line is an indexed story to score against that shared context.",
       'Return a JSON array only. Every entry must have exactly these fields: "i" (integer story index), "score" (integer from 0 through 100), "matchedRuleIds" (string array containing only supplied rule IDs), and "reason" (nonempty plain string).',
       "Include exactly one entry for every submitted story index, with no duplicates, omissions, extra indexes, or extra fields.",
       "Scores are absolute relevance scores, not ranks. Do not select a top-K: zero, some, or all stories may qualify independently.",
       "Prioritize rules raise relevance and show_less rules lower it. Mute rules are enforced separately and are not supplied.",
-      preferencePrompt?.trim()
-        ? `Apply this free-text reader preference as scoring context, not as a rule and never emit it as a matchedRuleId: ${JSON.stringify(preferencePrompt.trim())}.`
-        : "No free-text reader preference context was supplied.",
-    ].join(" "),
-    includeMedia: false,
-  };
-}
-export function buildStoryResolutionPrompt(): SummaryRuleset {
-  return {
-    systemPrompt: [
-      "Adjudicate whether each indexed pair of compact story groups describes the same underlying continuing story.",
-      'Return a JSON array only. Every entry must have exactly two fields: "i" (integer pair index) and "sameStory" (boolean).',
-      "Include exactly one entry for every submitted pair index, with no duplicates, omissions, extra indexes, or extra fields.",
-      "Treat separate developments such as a teaser, poster, trailer, announcement, or follow-up as the same story when they concern the same underlying subject or event.",
-      "Do not merge merely because broad topics overlap. Named subjects, specific titles, entities, and event context must support continuity.",
     ].join(" "),
     includeMedia: false,
   };

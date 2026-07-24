@@ -50,6 +50,32 @@ function analysisResponse(indexes: number[]): string {
   return JSON.stringify(indexes.map((i) => ({ i, language: "en", canonicalUrls: [`https://example.com/${i}`], topics: ["Film"], entities: ["Studio"], storyKey: `story-${i}`, storyTitle: `Story ${i}`, developmentKey: `development-${i}`, developmentType: "report", developmentTitle: `Development ${i}`, mediaDescription: null })));
 }
 
+function analysisLine(input: StoryItemInput, index: number): string {
+  return JSON.stringify({
+    i: index,
+    feed: input.feedName,
+    title: input.payload.title,
+    text: input.payload.text,
+    url: input.payload.url,
+    date: input.payload.date,
+    mediaDescription: null,
+  });
+}
+
+function classificationLine(story: PersistedStoryCandidate, index: number): string {
+  return JSON.stringify({
+    i: index,
+    id: story.id,
+    title: story.candidate.title,
+    topics: story.candidate.topics,
+    entities: story.candidate.entities,
+    developments: story.candidate.developments.map((development) => ({
+      type: development.type,
+      title: development.title,
+    })),
+  });
+}
+
 test("story analysis item cap defaults safely, honors a lower generic budget, and accepts explicit overrides", async () => {
   const original = process.env["SUMMARIZER_MAX_ITEMS_PER_CHUNK"];
   const makeService = (maxItemsPerChunk?: number) => {
@@ -101,6 +127,79 @@ test("analysis handles hundreds in bounded item batches and fingerprints determi
   assertEquals(results[0]!.fingerprint, await fingerprintStoryItem(inputs[0]!));
 });
 
+test("analysis content byte budget permits an exact framed fit and splits on one-byte overflow", async () => {
+  const inputs = [item(0), item(1)];
+  const encoder = new TextEncoder();
+  const framedBytes = inputs.reduce(
+    (total, input, index) => total + encoder.encode(analysisLine(input, index)).length + 1,
+    0,
+  );
+  const analyzeWithBudget = async (maxBytes: number) => {
+    const requestSizes: number[] = [];
+    const batchSizes: number[] = [];
+    const service = new OpenAICompatibleStoryIntelligenceService({
+      maxItemsPerChunk: 10,
+      maxTextBytesPerChunk: maxBytes,
+      client: {
+        complete: async (_prompt, content) => {
+          requestSizes.push(encoder.encode(content).length);
+          const indexes = content.split("\n").map((line) => JSON.parse(line).i as number);
+          batchSizes.push(indexes.length);
+          return analysisResponse(indexes);
+        },
+      },
+    });
+    await service.analyze(inputs);
+    return { requestSizes, batchSizes };
+  };
+
+  const exact = await analyzeWithBudget(framedBytes);
+  assertEquals(exact.requestSizes.every((size) => size <= framedBytes), true);
+  assertEquals(exact.batchSizes, [2]);
+  const overflow = await analyzeWithBudget(framedBytes - 1);
+  assertEquals(overflow.requestSizes.every((size) => size <= framedBytes - 1), true);
+  assertEquals(overflow.batchSizes, [1, 1]);
+});
+
+test("analysis content partitioning counts Unicode as UTF-8 bytes", async () => {
+  const inputs = [
+    item(0, { title: "😀 first" }),
+    item(1, { title: "😀 second" }),
+  ];
+  const encoded = inputs.map((input, index) => analysisLine(input, index));
+  const codeUnitBudget = encoded.reduce((total, line) => total + line.length + 1, 0);
+  const encoder = new TextEncoder();
+  assertEquals(encoded.reduce((total, line) => total + encoder.encode(line).length + 1, 0) > codeUnitBudget, true);
+  const requestSizes: number[] = [];
+  const batchSizes: number[] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 10,
+    maxTextBytesPerChunk: codeUnitBudget,
+    client: {
+      complete: async (_prompt, content) => {
+        requestSizes.push(encoder.encode(content).length);
+        const indexes = content.split("\n").map((line) => JSON.parse(line).i as number);
+        batchSizes.push(indexes.length);
+        return analysisResponse(indexes);
+      },
+    },
+  });
+  await service.analyze(inputs);
+  assertEquals(requestSizes.every((size) => size <= codeUnitBudget), true);
+  assertEquals(batchSizes, [1, 1]);
+});
+
+test("analysis describes low-text media serially by default", async () => {
+  let active = 0;
+  let maximum = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    mediaDescriber: { describe: async () => { active++; maximum = Math.max(maximum, active); await Promise.resolve(); active--; return "Visible poster"; } },
+    client: { complete: async (_prompt, content) => analysisResponse(content.split("\n").map((line) => JSON.parse(line).i as number)) },
+  });
+  await service.analyze(Array.from({ length: 3 }, (_, index) => item(index, { text: "", media: { type: "video" } })));
+  assertEquals(maximum, 1);
+});
+
 test("analysis bounds low-text media description concurrency and rejects partial output", async () => {
   let active = 0;
   let maximum = 0;
@@ -110,7 +209,7 @@ test("analysis bounds low-text media description concurrency and rejects partial
     client: { complete: async (_prompt, content) => analysisResponse(content.split("\n").map((line) => JSON.parse(line).i as number)) },
   });
   await service.analyze(Array.from({ length: 7 }, (_, index) => item(index, { text: "", media: { type: "video" } })));
-  assertEquals(maximum <= 2, true);
+  assertEquals(maximum, 2);
   const partial = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => "[]" } });
   await assertRejects(() => partial.analyze([item(1)]), "returned 0 results for 1 inputs");
 });
@@ -262,8 +361,8 @@ test("model-invented shared URLs are not trusted as resolution identity edges", 
   assertEquals((await service.resolve([left, right])).length, 2);
 });
 
-test("resolution clusters exact syndicated URLs while retaining stable developments", async () => {
-  const service = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async (_prompt, content) => JSON.stringify(content.split("\n").map((line) => ({ i: JSON.parse(line).i, sameStory: false }))) } });
+test("resolution clusters exact keys and syndicated URLs without model calls while retaining stable developments", async () => {
+  const service = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => { throw new Error("resolution must not call the model"); } } });
   const shared = "https://wire.example/story";
   const resolved = await service.resolve([
     analysis(item(0, { url: shared }), "Film Launch Teaser", "teaser", [shared]),
@@ -276,44 +375,22 @@ test("resolution clusters exact syndicated URLs while retaining stable developme
   assertEquals(resolved[1]!.canonicalKey, "different-story");
 });
 
-test("global resolution joins cross-batch developments and reuses a recent canonical key", async () => {
+test("resolution reuses an exact recent key but does not merge near-matching stories", async () => {
   const service = new OpenAICompatibleStoryIntelligenceService({
-    maxItemsPerChunk: 1,
-    maxTextBytesPerChunk: 100_000,
-    client: {
-      complete: async (prompt, content) => {
-        const records = content.split("\n").map((line) => JSON.parse(line));
-        if (prompt.includes("Adjudicate whether")) {
-          return JSON.stringify(records.map(({ i }) => ({ i, sameStory: true })));
-        }
-        return JSON.stringify(records.map(({ i }) => ({
-          i, language: "en", canonicalUrls: [], topics: ["Film"], entities: ["Aurora"],
-          storyKey: `changed-key-${i}`, storyTitle: `Aurora ${i === 0 ? "teaser" : i === 1 ? "poster" : "trailer"}`,
-          developmentKey: i === 0 ? "teaser" : i === 1 ? "poster" : "trailer",
-          developmentType: i === 0 ? "teaser" : i === 1 ? "poster" : "trailer",
-          developmentTitle: `Aurora development ${i}`, mediaDescription: null,
-        })));
-      },
-    },
+    client: { complete: async () => { throw new Error("resolution must not call the model"); } },
   });
-  const analyzed = await service.analyze([item(0), item(1), item(2)]);
-  const resolved = await service.resolve(analyzed, [{
-    id: "existing-story", canonicalKey: "stable-aurora", title: "Aurora announced",
+  const resolved = await service.resolve([
+    analysis(item(0), "Stable Aurora", "teaser"),
+    analysis(item(1), "stable-aurora", "poster"),
+    analysis(item(2), "Stable Aurora Sequel", "trailer"),
+  ], [{
+    id: "existing-story", canonicalKey: "STABLE AURORA", title: "Aurora announced",
     topics: ["Film"], entities: ["Aurora"], lastUpdatedAt: 100,
   }]);
-  assertEquals(resolved.length, 1);
-  assertEquals(resolved[0]!.canonicalKey, "stable-aurora");
-  assertEquals(resolved[0]!.developments.map((value) => value.type), ["poster", "teaser", "trailer"]);
-});
-
-test("global resolution rejects partial pair adjudication", async () => {
-  const service = new OpenAICompatibleStoryIntelligenceService({
-    client: { complete: async () => "[]" },
-  });
-  await assertRejects(() => service.resolve([
-    analysis(item(0), "changed-one", "teaser"),
-    analysis(item(1), "changed-two", "trailer"),
-  ]), "returned 0 results for 1 inputs");
+  assertEquals(resolved.length, 2);
+  assertEquals(resolved[0]!.canonicalKey, "STABLE AURORA");
+  assertEquals(resolved[0]!.developments.map((value) => value.type), ["poster", "teaser"]);
+  assertEquals(resolved[1]!.canonicalKey, "stable-aurora-sequel");
 });
 
 test("classification includes all without scoring rules and hard mutes override", async () => {
@@ -332,7 +409,7 @@ test("classification permits zero or all results and thresholds absolute scores 
   let score = 49;
   const service = new OpenAICompatibleStoryIntelligenceService({
     maxItemsPerChunk: 6, maxTextBytesPerChunk: 100_000,
-    client: { complete: async (_prompt, content) => JSON.stringify(content.split("\n").map((line) => ({ i: JSON.parse(line).i, score, matchedRuleIds: [prioritize.id], reason: "absolute score" }))) },
+    client: { complete: async (_prompt, content) => JSON.stringify(content.split("\n").slice(1).map((line) => ({ i: JSON.parse(line).i, score, matchedRuleIds: [prioritize.id], reason: "absolute score" }))) },
   });
   assertEquals((await service.classify(stories, [prioritize], 50)).filter((value) => value.relevant).length, 0);
   score = 50;
@@ -357,8 +434,124 @@ test("classification applies free-text preference context without inventing a ru
   });
   assertEquals(decision!.relevant, true);
   assertEquals(decision!.matchedInterestRuleIds, []);
-  assertEquals(observedPrompt.includes("Prefer practical engineering launches"), true);
-  assertEquals(observedInput.includes("Prefer practical engineering launches"), true);
+  assertEquals(observedPrompt.includes("Prefer practical engineering launches"), false);
+  assertEquals(observedInput.match(/Prefer practical engineering launches/g)?.length, 1);
+});
+
+test("classification partitions 120 candidates as 50, 50, and 20 with shared context once per request", async () => {
+  const stories = Array.from({ length: 120 }, (_, index) =>
+    persisted(`${index}`, analysis(item(index), `story-${index}`, "report"))
+  );
+  const batchSizes: number[] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 3,
+    maxTextBytesPerChunk: 1_000_000,
+    client: {
+      complete: async (_prompt, content) => {
+        const lines = content.split("\n");
+        const context = JSON.parse(lines[0]!);
+        assertEquals(context.activeRules, [prioritize]);
+        assertEquals(context.preferencePrompt, "reader profile");
+        const candidates = lines.slice(1).map((line) => JSON.parse(line));
+        batchSizes.push(candidates.length);
+        return JSON.stringify(candidates.reverse().map(({ i }) => ({
+          i, score: i % 101, matchedRuleIds: [prioritize.id], reason: `Story ${i}`,
+        })));
+      },
+    },
+  });
+  const decisions = await service.classify(stories, [prioritize], 50, {
+    preferencePrompt: "reader profile",
+  });
+  assertEquals(batchSizes, [50, 50, 20]);
+  assertEquals(decisions.map((decision) => decision.storyId), stories.map((story) => story.id));
+  assertEquals(decisions.map((decision) => decision.score), Array.from({ length: 120 }, (_, index) => index % 101));
+});
+
+test("classification request byte budget permits an exact fit and splits on one-byte overflow", async () => {
+  const stories = [
+    persisted("first", analysis(item(0), "first", "report")),
+    persisted("second", analysis(item(1), "second", "report")),
+  ];
+  const sharedContext = JSON.stringify({ activeRules: [prioritize], preferencePrompt: null });
+  const encoder = new TextEncoder();
+  const exactBytes = encoder.encode(
+    `${sharedContext}\n${classificationLine(stories[0]!, 0)}\n${classificationLine(stories[1]!, 1)}`,
+  ).length;
+  const classifyWithBudget = async (maxBytes: number) => {
+    const requestSizes: number[] = [];
+    const batchSizes: number[] = [];
+    const service = new OpenAICompatibleStoryIntelligenceService({
+      maxTextBytesPerChunk: maxBytes,
+      client: {
+        complete: async (_prompt, content) => {
+          requestSizes.push(encoder.encode(content).length);
+          const indexes = content.split("\n").slice(1).map((line) => JSON.parse(line).i as number);
+          batchSizes.push(indexes.length);
+          return JSON.stringify(indexes.map((i) => ({ i, score: 80, matchedRuleIds: [], reason: "fit" })));
+        },
+      },
+    });
+    await service.classify(stories, [prioritize], 50);
+    return { requestSizes, batchSizes };
+  };
+  const exact = await classifyWithBudget(exactBytes);
+  assertEquals(exact.requestSizes, [exactBytes]);
+  assertEquals(exact.batchSizes, [2]);
+  const overflow = await classifyWithBudget(exactBytes - 1);
+  assertEquals(overflow.requestSizes.every((size) => size <= exactBytes - 1), true);
+  assertEquals(overflow.batchSizes, [1, 1]);
+});
+
+test("classification rejects shared context that leaves no candidate bytes before calling the client", async () => {
+  const preferencePrompt = "reader context";
+  const sharedContext = JSON.stringify({ activeRules: [], preferencePrompt });
+  let calls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxTextBytesPerChunk: new TextEncoder().encode(sharedContext).length + 1,
+    client: {
+      complete: async () => {
+        calls++;
+        return "[]";
+      },
+    },
+  });
+  await assertRejects(
+    () => service.classify([persisted("one", analysis(item(0), "one", "report"))], [], 50, { preferencePrompt }),
+    RangeError,
+    "context exceeds the request byte budget",
+  );
+  assertEquals(calls, 0);
+});
+
+test("classification partitions by UTF-8 bytes rather than Unicode code units", async () => {
+  const stories = [
+    persisted("😀-one", analysis(item(0), "first", "report")),
+    persisted("😀-two", analysis(item(1), "second", "report")),
+  ];
+  stories[0]!.candidate.title = "Launch 😀";
+  stories[1]!.candidate.title = "Launch 😀";
+  const sharedContext = JSON.stringify({ activeRules: [prioritize], preferencePrompt: null });
+  const combined = `${sharedContext}\n${classificationLine(stories[0]!, 0)}\n${classificationLine(stories[1]!, 1)}`;
+  const maxBytes = combined.length;
+  const encoder = new TextEncoder();
+  assertEquals(encoder.encode(combined).length > maxBytes, true);
+  const requestSizes: number[] = [];
+  const batchSizes: number[] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxTextBytesPerChunk: maxBytes,
+    client: {
+      complete: async (_prompt, content) => {
+        requestSizes.push(encoder.encode(content).length);
+        const indexes = content.split("\n").slice(1).map((line) => JSON.parse(line).i as number);
+        batchSizes.push(indexes.length);
+        return JSON.stringify(indexes.map((i) => ({ i, score: 80, matchedRuleIds: [], reason: "unicode" })));
+      },
+    },
+  });
+  await service.classify(stories, [prioritize], 50);
+  assertEquals(batchSizes, [1, 1]);
+  assertEquals(requestSizes.every((size) => size <= maxBytes), true);
 });
 
 test("classification rejects partial indexes and unknown rule IDs", async () => {

@@ -1,6 +1,7 @@
 import type { ConnectorId } from "../constants.ts";
 import type { NormalizedItem } from "../connectors/connector.types.ts";
 import type { SummaryPoint } from "../summarizers/summarizer.types.ts";
+import type { ModelAttemptTelemetryCallback } from "../summarizers/openai-compatible-client.ts";
 
 export interface ItemAnalysisContent {
   language: string | null;
@@ -76,6 +77,8 @@ export interface StoryIntelligenceOptions {
   signal?: AbortSignal;
   requestTimeoutMs?: number;
   preferencePrompt?: string;
+  onAttempt?: ModelAttemptTelemetryCallback;
+  onMediaAttempt?: ModelAttemptTelemetryCallback;
 }
 
 export interface StoryIntelligenceService {
