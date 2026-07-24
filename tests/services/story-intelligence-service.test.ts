@@ -131,6 +131,65 @@ test("analysis handles hundreds in bounded item batches and fingerprints determi
   assertEquals(results[0]!.fingerprint, await fingerprintStoryItem(inputs[0]!));
 });
 
+test("representative cold workload uses 15 analysis and 3 classification calls", async () => {
+  const parseIndex = (line: string): number => {
+    const parsed: unknown = JSON.parse(line);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("i" in parsed) ||
+      typeof parsed.i !== "number"
+    ) {
+      throw new Error("expected an indexed model record");
+    }
+    return parsed.i;
+  };
+  const analysisBatchSizes: number[] = [];
+  const analysisService = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 50,
+    maxTextBytesPerChunk: 120_000,
+    client: {
+      complete: async (_prompt, content) => {
+        const indexes = content.split("\n").map(parseIndex);
+        analysisBatchSizes.push(indexes.length);
+        return analysisResponse(indexes);
+      },
+    },
+  });
+  await analysisService.analyze(
+    Array.from({ length: 737 }, (_, index) => item(index)),
+  );
+  assertEquals(analysisBatchSizes, [
+    ...Array.from({ length: 14 }, () => 50),
+    37,
+  ]);
+
+  const classificationBatchSizes: number[] = [];
+  const classificationService = new OpenAICompatibleStoryIntelligenceService({
+    maxTextBytesPerChunk: 120_000,
+    client: {
+      complete: async (_prompt, content) => {
+        const indexes = content.split("\n").slice(1).map(parseIndex);
+        classificationBatchSizes.push(indexes.length);
+        return JSON.stringify(indexes.map((i) => ({
+          i,
+          score: 80,
+          matchedRuleIds: [prioritize.id],
+          reason: "representative workload",
+        })));
+      },
+    },
+  });
+  await classificationService.classify(
+    Array.from({ length: 217 }, (_, index) =>
+      persisted(`story-${index}`, analysis(item(index), `story-${index}`, "report"))
+    ),
+    [prioritize],
+    50,
+  );
+  assertEquals(classificationBatchSizes, [100, 100, 17]);
+});
+
 test("analysis item cap applies to grouped discussion members", async () => {
   const batchMemberCounts: number[] = [];
   const service = new OpenAICompatibleStoryIntelligenceService({
