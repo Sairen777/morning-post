@@ -64,8 +64,12 @@ export interface OpenAICompatibleStoryIntelligenceOptions {
   maxConcurrentMediaDescriptions?: number;
 }
 
-const DEFAULT_STORY_ANALYSIS_MAX_ITEMS = 10;
-const DEFAULT_STORY_CLASSIFICATION_MAX_ITEMS = 50;
+const DEFAULT_STORY_ANALYSIS_MAX_ITEMS = 50;
+const DEFAULT_STORY_CLASSIFICATION_MAX_ITEMS = 100;
+const DEFAULT_STORY_TEXT_BYTES = 120_000;
+const MAX_LABELS = 5;
+const MAX_EVIDENCE_ITEMS = 3;
+const MAX_EVIDENCE_BYTES = 400;
 
 export function resolveStoryAnalysisMaxItems(override?: number): number {
   if (override !== undefined) {
@@ -74,17 +78,12 @@ export function resolveStoryAnalysisMaxItems(override?: number): number {
     }
     return override;
   }
-  return Math.min(
-    DEFAULT_STORY_ANALYSIS_MAX_ITEMS,
-    getSummarizerBudgetConfig().summarizerMaxItemsPerChunk,
-  );
+  return getSummarizerBudgetConfig().analysisMaxItemsPerRequest;
 }
 
 const analysisSchema = z.object({
   i: z.number().int().nonnegative(),
-  language: z.string().nullable().optional(),
-  canonicalUrls: z.array(z.string()).optional(),
-  canalUrls: z.array(z.string()).optional(),
+  m: z.number().int().nonnegative(),
   topics: personalizationLabelsSchema.optional(),
   entities: personalizationLabelsSchema.optional(),
   storyKey: z.string().min(1),
@@ -92,7 +91,10 @@ const analysisSchema = z.object({
   developmentKey: z.string().min(1),
   developmentType: z.string().min(1).optional(),
   developmentTitle: z.string().min(1).optional(),
-  mediaDescription: z.string().nullable().optional(),
+  evidence: z.array(z.string().refine(
+    (value) => new TextEncoder().encode(value).length <= MAX_EVIDENCE_BYTES,
+    `Evidence excerpts must be at most ${MAX_EVIDENCE_BYTES} UTF-8 bytes`,
+  )).max(MAX_EVIDENCE_ITEMS),
 }).strict();
 
 const classificationSchema = z.object({
@@ -110,8 +112,118 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+function semanticStoryItem(item: StoryItemInput): unknown {
+  const meta = item.payload.meta;
+  return {
+    feedId: item.feedId,
+    feedName: item.feedName,
+    sourceId: item.sourceId,
+    payload: {
+      connectorId: item.payload.connectorId,
+      title: item.payload.title,
+      text: item.payload.text,
+      url: item.payload.url,
+      date: item.payload.date,
+      author: item.payload.author,
+      media: item.payload.media,
+      meta: meta === undefined ? undefined : {
+        canonicalUrl: meta.canonicalUrl,
+        canonicalUrls: meta.canonicalUrls,
+        isGroup: meta.isGroup,
+        messageKind: meta.messageKind,
+        replyToMessageId: meta.replyToMessageId,
+        threadRootId: meta.threadRootId,
+        forwardedFrom: meta.forwardedFrom,
+        groupedId: meta.groupedId,
+      },
+    },
+  };
+}
+
 export async function fingerprintStoryItem(item: StoryItemInput): Promise<string> {
-  return createHash("sha256").update(stableJson(item)).digest("hex");
+  return createHash("sha256").update(stableJson(semanticStoryItem(item))).digest("hex");
+}
+
+export interface StoryAnalysisUnit {
+  items: StoryItemInput[];
+  memberIndexes: number[];
+}
+
+function definiteThreadRoot(item: StoryItemInput): string | null {
+  const value = item.payload.meta?.threadRootId;
+  return (typeof value === "string" || typeof value === "number") && String(value).trim()
+    ? String(value)
+    : null;
+}
+
+const THREAD_GAP_MS = 30 * 60 * 1_000;
+const ROOTLESS_GAP_MS = 2 * 60 * 1_000;
+
+export function groupStoryAnalysisUnits(items: StoryItemInput[]): StoryAnalysisUnit[] {
+  const units: StoryAnalysisUnit[] = [];
+  const latestThreadUnit = new Map<string, StoryAnalysisUnit>();
+  items.forEach((item, index) => {
+    const root = definiteThreadRoot(item);
+    const key = root === null ? null : `${item.feedId}\u0000${root}`;
+    let unit = key === null ? undefined : latestThreadUnit.get(key);
+    const previous = unit?.items.at(-1);
+    if (unit && (unit.items.length >= 8 || !previous || Math.abs(item.payload.date - previous.payload.date) > THREAD_GAP_MS)) {
+      unit = undefined;
+    }
+    if (root === null && item.payload.meta?.isGroup === true && item.payload.author) {
+      const adjacent = units.at(-1);
+      const prior = adjacent?.items.at(-1);
+      if (
+        adjacent && adjacent.items.length < 4 && prior &&
+        definiteThreadRoot(prior) === null &&
+        prior.feedId === item.feedId &&
+        prior.payload.author === item.payload.author &&
+        Math.abs(item.payload.date - prior.payload.date) <= ROOTLESS_GAP_MS
+      ) unit = adjacent;
+    }
+    if (!unit) {
+      unit = { items: [], memberIndexes: [] };
+      units.push(unit);
+      if (key !== null) latestThreadUnit.set(key, unit);
+    }
+    unit.items.push(item);
+    unit.memberIndexes.push(index);
+  });
+  return units;
+}
+function parseMemberComplete(
+  raw: string,
+  expected: Array<{ i: number; m: number }>,
+): Array<z.infer<typeof analysisSchema>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonrepair(raw));
+  } catch (error) {
+    throw new Error("Story analysis returned malformed JSON", { cause: error });
+  }
+  const values = z.array(analysisSchema).parse(parsed);
+  const expectedKeys = new Set(expected.map(({ i, m }) => `${i}:${m}`));
+  const actualKeys = values.map(({ i, m }) => `${i}:${m}`);
+  if (
+    values.length !== expected.length ||
+    new Set(actualKeys).size !== expectedKeys.size ||
+    actualKeys.some((key) => !expectedKeys.has(key))
+  ) throw new Error("Story analysis returned duplicate, missing, or unknown unit members");
+  return values.sort((left, right) => left.i - right.i || left.m - right.m);
+}
+
+
+export async function fingerprintStoryAnalysisUnit(unit: StoryAnalysisUnit | StoryItemInput[]): Promise<string> {
+  const items = Array.isArray(unit) ? unit : unit.items;
+  return createHash("sha256").update(stableJson(items.map(semanticStoryItem))).digest("hex");
+}
+
+export async function fingerprintStoryAnalysisMember(unit: StoryAnalysisUnit, memberIndex: number): Promise<string> {
+  if (unit.items.length === 1) return fingerprintStoryItem(unit.items[0]!);
+  return createHash("sha256").update(stableJson({
+    context: unit.items.map(semanticStoryItem),
+    member: memberIndex,
+  })).digest("hex");
 }
 
 function normalizeKey(value: string): string {
@@ -188,8 +300,11 @@ function partition<T>(
   let batch: Array<{ value: T; index: number; encoded: string }> = [];
   let bytes = 0;
   values.forEach((value, index) => {
-    const encoded = truncateUtf8(encode(value, index), maxBytes - bytesPerItem);
+    const encoded = encode(value, index);
     const size = new TextEncoder().encode(encoded).length + bytesPerItem;
+    if (size > maxBytes) {
+      throw new RangeError("A model input record exceeds the request byte budget");
+    }
     if (batch.length && (batch.length >= maxItems || bytes + size > maxBytes)) {
       batches.push(batch);
       batch = [];
@@ -235,21 +350,26 @@ class ModelBackedMediaDescriber implements StoryMediaDescriber {
 }
 
 export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligenceService {
-  private readonly client: ChatClient;
+  private readonly analysisClient: ChatClient;
+  private readonly classificationClient: ChatClient;
   private readonly mediaDescriber: StoryMediaDescriber;
   private readonly maxItems: number;
+  private readonly classificationMaxItems: number;
   private readonly maxBytes: number;
   private readonly minimumMediaText: number;
   private readonly mediaConcurrency: number;
+  private readonly mediaDescriptions = new Map<string, Promise<string | null>>();
 
   constructor(options: OpenAICompatibleStoryIntelligenceOptions = {}) {
     const budget = getSummarizerBudgetConfig();
     const models = options.models ?? getSummarizerRuntimeConfig();
-    this.client = options.client ?? new OpenAICompatibleChatClient(models.summarizer, {
+    const clientOptions = {
       retryBaseDelayMs: options.retryBaseDelayMs,
       allowRemote: resolveAllowRemoteSummarization(options.allowRemoteSummarization),
       fetch: options.fetch,
-    });
+    };
+    this.analysisClient = options.client ?? new OpenAICompatibleChatClient(models.analysis, clientOptions);
+    this.classificationClient = options.client ?? new OpenAICompatibleChatClient(models.classification, clientOptions);
     this.mediaDescriber = options.mediaDescriber ??
       new ModelBackedMediaDescriber(options.mediaSummarizer ??
         new OpenAICompatibleSummarizerService({
@@ -259,44 +379,231 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
           maxItemsPerChunk: 1,
         }));
     this.maxItems = resolveStoryAnalysisMaxItems(options.maxItemsPerChunk);
-    this.maxBytes = options.maxTextBytesPerChunk ?? budget.summarizerTextBytesPerChunk;
+    this.classificationMaxItems = budget.classificationMaxItemsPerRequest;
+    this.maxBytes = options.maxTextBytesPerChunk ?? DEFAULT_STORY_TEXT_BYTES;
     this.minimumMediaText = options.minimumTextLengthForMediaDescription ?? 80;
     this.mediaConcurrency = options.maxConcurrentMediaDescriptions ?? 1;
-    if (!Number.isInteger(this.maxItems) || this.maxItems <= 0 || !Number.isInteger(this.maxBytes) || this.maxBytes <= 0 || !Number.isInteger(this.mediaConcurrency) || this.mediaConcurrency <= 0) throw new RangeError("Story intelligence budgets must be positive integers");
+    if (!Number.isInteger(this.maxItems) || this.maxItems <= 0 || !Number.isInteger(this.classificationMaxItems) || this.classificationMaxItems <= 0 || !Number.isInteger(this.maxBytes) || this.maxBytes <= 0 || !Number.isInteger(this.mediaConcurrency) || this.mediaConcurrency <= 0) throw new RangeError("Story intelligence budgets must be positive integers");
   }
 
   async analyze(items: StoryItemInput[], options: StoryIntelligenceOptions = {}): Promise<AnalyzedStoryItem[]> {
+    const budget = getSummarizerBudgetConfig();
     const descriptions = new Map<number, string | null>();
     const candidates = items.map((item, index) => ({ item, index })).filter(({ item }) => item.payload.media && item.payload.text.trim().length < this.minimumMediaText);
     for (let offset = 0; offset < candidates.length; offset += this.mediaConcurrency) {
-      await Promise.all(candidates.slice(offset, offset + this.mediaConcurrency).map(async ({ item, index }) => descriptions.set(index, await this.mediaDescriber.describe(item, options))));
+      await Promise.all(candidates.slice(offset, offset + this.mediaConcurrency).map(async ({ item, index }) => {
+        const identity = createHash("sha256").update(stableJson(item.payload.media)).digest("hex");
+        let pending = this.mediaDescriptions.get(identity);
+        if (!pending) {
+          pending = this.mediaDescriber.describe(item, options);
+          this.mediaDescriptions.set(identity, pending);
+          void pending.catch(() => {
+            if (this.mediaDescriptions.get(identity) === pending) {
+              this.mediaDescriptions.delete(identity);
+            }
+          });
+        }
+        descriptions.set(index, await pending);
+      }));
     }
-    const encode = (item: StoryItemInput, index: number) => JSON.stringify({ i: index, feed: item.feedName, title: item.payload.title, text: item.payload.text, url: item.payload.url, date: item.payload.date, mediaDescription: descriptions.get(index) ?? null });
-    const batches = partition(items, this.maxItems, this.maxBytes, encode, 1);
+    const units = groupStoryAnalysisUnits(items);
+    const encoder = new TextEncoder();
+    const serializedBytes = (value: string): number =>
+      encoder.encode(value).length;
+    const minimumUsefulTextBytes = 2_000;
+    const maximumUsefulTextBytes = 16_000;
+    const maximumMembers = Math.max(1, Math.min(
+      this.maxItems,
+      100,
+      Math.floor(budget.analysisMaxOutputTokens / 300),
+    ));
+    type AnalysisRequestRecord = {
+      value: StoryAnalysisUnit;
+      index: number;
+      memberIndexes: number[];
+      encoded: string;
+    };
+    const serializeRecord = (
+      unit: StoryAnalysisUnit,
+      index: number,
+      memberIndexes: number[],
+      textByteLimit: number,
+    ): string =>
+      JSON.stringify({
+        i: index,
+        members: memberIndexes.map((memberIndex) => {
+          const item = unit.items[memberIndex]!;
+          return {
+            m: memberIndex,
+            feed: truncateUtf8(item.feedName, 200),
+            title: item.payload.title === null
+              ? null
+              : truncateUtf8(item.payload.title, 300),
+            text: truncateUtf8(item.payload.text, textByteLimit),
+            url: item.payload.url === null
+              ? null
+              : truncateUtf8(item.payload.url, 500),
+            date: item.payload.date,
+            author: item.payload.author === null
+              ? null
+              : truncateUtf8(item.payload.author, 300),
+            mediaDescription:
+              descriptions.get(unit.memberIndexes[memberIndex]!) == null
+                ? null
+                : truncateUtf8(
+                  descriptions.get(unit.memberIndexes[memberIndex]!)!,
+                  1_000,
+                ),
+          };
+        }),
+      });
+    const encodeRecord = (
+      unit: StoryAnalysisUnit,
+      index: number,
+      memberIndexes: number[],
+    ): string | null => {
+      const longestText = memberIndexes.reduce(
+        (maximum, memberIndex) =>
+          Math.max(
+            maximum,
+            serializedBytes(unit.items[memberIndex]!.payload.text),
+          ),
+        0,
+      );
+      const minimumLimit = Math.min(minimumUsefulTextBytes, longestText);
+      const minimum = serializeRecord(
+        unit,
+        index,
+        memberIndexes,
+        minimumLimit,
+      );
+      if (serializedBytes(minimum) + 1 > this.maxBytes) return null;
+      let low = minimumLimit;
+      let high = Math.min(longestText, maximumUsefulTextBytes);
+      let encoded = minimum;
+      while (low <= high) {
+        const candidateLimit = Math.floor((low + high) / 2);
+        const candidate = serializeRecord(
+          unit,
+          index,
+          memberIndexes,
+          candidateLimit,
+        );
+        if (serializedBytes(candidate) + 1 <= this.maxBytes) {
+          encoded = candidate;
+          low = candidateLimit + 1;
+        } else {
+          high = candidateLimit - 1;
+        }
+      }
+      return encoded;
+    };
+    const requestRecords: AnalysisRequestRecord[] = [];
+    const appendRecord = (
+      unit: StoryAnalysisUnit,
+      index: number,
+      memberIndexes: number[],
+    ): void => {
+      if (memberIndexes.length > maximumMembers) {
+        for (let offset = 0; offset < memberIndexes.length; offset += maximumMembers) {
+          appendRecord(unit, index, memberIndexes.slice(offset, offset + maximumMembers));
+        }
+        return;
+      }
+      const encoded = encodeRecord(unit, index, memberIndexes);
+      if (encoded !== null) {
+        requestRecords.push({ value: unit, index, memberIndexes, encoded });
+        return;
+      }
+      if (memberIndexes.length === 1) {
+        throw new RangeError(
+          `Story analysis maxTextBytesPerChunk (${this.maxBytes}) cannot fit member metadata and ${minimumUsefulTextBytes} bytes of useful text context`,
+        );
+      }
+      const middle = Math.ceil(memberIndexes.length / 2);
+      appendRecord(unit, index, memberIndexes.slice(0, middle));
+      appendRecord(unit, index, memberIndexes.slice(middle));
+    };
+    units.forEach((unit, index) =>
+      appendRecord(unit, index, unit.items.map((_, memberIndex) => memberIndex))
+    );
+    const maximumRecords = 50;
+    const batches: AnalysisRequestRecord[][] = [];
+    let batch: AnalysisRequestRecord[] = [];
+    let batchBytes = 0;
+    let batchMembers = 0;
+    for (const record of requestRecords) {
+      const size = serializedBytes(record.encoded) + (batch.length ? 1 : 0);
+      const members = record.memberIndexes.length;
+      if (batch.length && (
+        batch.length >= maximumRecords ||
+        batchMembers + members > maximumMembers ||
+        batchBytes + size > this.maxBytes
+      )) {
+        batches.push(batch);
+        batch = [];
+        batchBytes = 0;
+        batchMembers = 0;
+      }
+      batchBytes += serializedBytes(record.encoded) + (batch.length ? 1 : 0);
+      batch.push(record);
+      batchMembers += members;
+    }
+    if (batch.length) batches.push(batch);
+
     const analyses = new Map<number, ItemAnalysisContent>();
-    for (const batch of batches) {
-      const raw = await this.client.complete(buildStoryAnalysisPrompt().systemPrompt, batch.map(({ encoded }) => encoded).join("\n"), options);
-      const local = parseComplete(raw, analysisSchema, batch.map(({ index }) => index), "Story analysis");
+    for (const requestBatch of batches) {
+      const raw = await this.analysisClient.complete(
+        buildStoryAnalysisPrompt().systemPrompt,
+        requestBatch.map(({ encoded }) => encoded).join("\n"),
+        {
+          ...options,
+          maxOutputTokens: budget.analysisMaxOutputTokens,
+          maxAttempts: budget.analysisMaxAttempts,
+          jsonOutput: true,
+        } as StoryIntelligenceOptions,
+      );
+      const expected = requestBatch.flatMap(({ memberIndexes, index }) =>
+        memberIndexes.map((m) => ({ i: index, m }))
+      );
+      const local = parseMemberComplete(raw, expected);
       local.forEach((result) => {
-        const globalIndex = result.i;
-        const item = items[globalIndex]!;
+        const unit = units[result.i]!;
+        const itemIndex = unit.memberIndexes[result.m]!;
+        const item = unit.items[result.m]!;
         const storyKey = normalizeKey(result.storyKey);
         const developmentKey = normalizeKey(result.developmentKey);
-        const storyTitle = result.storyTitle?.trim() || item.payload.title?.trim() || storyKey;
-        analyses.set(globalIndex, {
-          language: result.language ?? null,
+        const evidenceSource = `${item.payload.title ?? ""}\n${item.payload.text}`;
+        analyses.set(itemIndex, {
+          language: null,
           canonicalUrls: trustedCanonicalUrls(item),
-          topics: [...new Set((result.topics ?? []).map((value) => value.trim()).filter(Boolean))],
-          entities: [...new Set((result.entities ?? []).map((value) => value.trim()).filter(Boolean))],
-          storyKey, storyTitle,
+          topics: [...new Set((result.topics ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, MAX_LABELS),
+          entities: [...new Set((result.entities ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, MAX_LABELS),
+          storyKey,
+          storyTitle: result.storyTitle?.trim() || item.payload.title?.trim() || storyKey,
           developmentKey,
           developmentType: result.developmentType === undefined ? developmentKey : normalizeKey(result.developmentType),
           developmentTitle: result.developmentTitle?.trim() || item.payload.title?.trim() || developmentKey,
-          mediaDescription: result.mediaDescription ?? descriptions.get(globalIndex) ?? null,
+          mediaDescription: descriptions.get(itemIndex) ?? null,
+          evidence: result.evidence
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0 && evidenceSource.includes(value)),
         });
       });
     }
-    return await Promise.all(items.map(async (item, index) => ({ ...item, fingerprint: await fingerprintStoryItem(item), analysis: analyses.get(index)! })));
+    const fingerprints = await Promise.all(units.flatMap((unit) =>
+      unit.items.map((_, memberIndex) => fingerprintStoryAnalysisMember(unit, memberIndex))
+    ));
+    let fingerprintIndex = 0;
+    const fingerprintByIndex = new Map<number, string>();
+    units.forEach((unit) => unit.memberIndexes.forEach((index) => {
+      fingerprintByIndex.set(index, fingerprints[fingerprintIndex++]!);
+    }));
+    return items.map((item, index) => ({
+      ...item,
+      fingerprint: fingerprintByIndex.get(index)!,
+      analysis: analyses.get(index)!,
+    }));
   }
 
   async resolve(
@@ -375,14 +682,17 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
     const blocked = stories.map((story) => muteRules.filter((rule) => this.matchesRule(story, rule)).map((rule) => rule.id));
     const preferencePrompt = options.preferencePrompt?.trim() || null;
     if (!active.length && preferencePrompt === null) return stories.map((story, index) => ({ storyId: story.id, relevant: blocked[index]!.length === 0, score: blocked[index]!.length ? 0 : 100, matchedInterestRuleIds: [], blockedByInterestRuleIds: blocked[index]!, reason: blocked[index]!.length ? "Blocked by a mute rule." : "No active preference rules; included by default." }));
-    const encode = (story: PersistedStoryCandidate, index: number) => JSON.stringify({ i: index, id: story.id, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, developments: story.candidate.developments.map((development) => ({ type: development.type, title: development.title })) });
+    const encode = (story: PersistedStoryCandidate, index: number) => JSON.stringify({ i: index, id: story.id, title: story.candidate.title, topics: story.candidate.topics.slice(0, MAX_LABELS), entities: story.candidate.entities.slice(0, MAX_LABELS), developments: story.candidate.developments.map((development) => ({ type: development.type, title: development.title, evidence: truncateUtf8(development.items.map((item) => item.payload.text.trim()).filter(Boolean).join("\n"), MAX_EVIDENCE_BYTES) })) });
     const sharedContext = JSON.stringify({ activeRules: active, preferencePrompt });
     const candidateBytes = this.maxBytes - new TextEncoder().encode(sharedContext).length;
     if (stories.length && candidateBytes <= 1) throw new RangeError("Story classification context exceeds the request byte budget");
-    const batches = partition(stories, DEFAULT_STORY_CLASSIFICATION_MAX_ITEMS, candidateBytes, encode, 1);
+    const batches = partition(stories, this.classificationMaxItems, candidateBytes, encode, 1);
     const scored = new Map<number, z.infer<typeof classificationSchema>>();
     for (const batch of batches) {
-      const raw = await this.client.complete(buildStoryClassificationPrompt().systemPrompt, [sharedContext, ...batch.map(({ encoded }) => encoded)].join("\n"), options);
+      const budget = getSummarizerBudgetConfig();
+      const raw = await this.classificationClient.complete(buildStoryClassificationPrompt().systemPrompt, [sharedContext, ...batch.map(({ encoded }) => encoded)].join("\n"), {
+        ...options, maxOutputTokens: budget.classificationMaxOutputTokens, maxAttempts: budget.classificationMaxAttempts, jsonOutput: true,
+      } as StoryIntelligenceOptions);
       parseComplete(raw, classificationSchema, batch.map(({ index }) => index), "Story classification").forEach((result) => {
         const allowed = new Set(active.map((rule) => rule.id));
         if (new Set(result.matchedRuleIds).size !== result.matchedRuleIds.length || result.matchedRuleIds.some((id) => !allowed.has(id))) throw new Error("Story classification returned duplicate or unknown rule IDs");

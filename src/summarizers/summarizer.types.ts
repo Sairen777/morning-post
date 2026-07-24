@@ -67,12 +67,42 @@ export interface SummarizeOptions {
   summaryMode?: "aggregate" | "article";
 }
 
+export interface BatchSummaryInput {
+  storyId: string;
+  items: NormalizedItem[];
+}
+
+export function serializeBatchSummaryInput(
+  stories: BatchSummaryInput[],
+  showTitle: boolean,
+): string {
+  return JSON.stringify(stories.map((story) => ({
+    story_id: story.storyId,
+    sources: story.items.map((item, index) => ({
+      i: index,
+      title: showTitle ? item.title : null,
+      text: item.text,
+    })),
+  })));
+}
+
+export interface BatchSummaryResult {
+  storyId: string;
+  points?: SummaryPoint[];
+  error?: Error;
+}
+
 export interface SummarizerService {
   summarize(
     items: NormalizedItem[],
     rules: SummaryRuleset,
     options?: SummarizeOptions,
   ): Promise<SummaryPoint[]>;
+  summarizeBatch?(
+    stories: BatchSummaryInput[],
+    rules: SummaryRuleset,
+    options?: SummarizeOptions,
+  ): Promise<BatchSummaryResult[]>;
 }
 
 export type TextPart = { type: "text"; text: string };

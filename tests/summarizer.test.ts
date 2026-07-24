@@ -19,7 +19,10 @@ import {
 } from "../src/summarizers/prompts.ts";
 import type { OpenAICompatibleSummarizerOptions } from "../src/summarizers/openai-compatible-summarizer.ts";
 import type { NormalizedItem } from "../src/connectors/connector.types.ts";
-import type { SummarizationDiagnostic } from "../src/summarizers/summarizer.types.ts";
+import type {
+  BatchSummaryInput,
+  SummarizationDiagnostic,
+} from "../src/summarizers/summarizer.types.ts";
 import type {
   FetchFunction,
   ModelAttemptTelemetry,
@@ -39,6 +42,30 @@ const item = (overrides: Partial<NormalizedItem> = {}): NormalizedItem => ({
   url: "https://t.me/test/1",
   ...overrides,
 });
+
+function batchStory(
+  storyId: string,
+  text: string,
+  overrides: Partial<NormalizedItem> = {},
+): BatchSummaryInput {
+  return {
+    storyId,
+    items: [item({ text, ...overrides })],
+  };
+}
+
+function batchStories(): BatchSummaryInput[] {
+  return [
+    batchStory("story-a", "Alpha raw", {
+      externalId: "alpha",
+      url: "https://t.me/test/alpha",
+    }),
+    batchStory("story-b", "Beta raw", {
+      externalId: "beta",
+      url: "https://t.me/test/beta",
+    }),
+  ];
+}
 
 const TEST_MODELS = {
   summarizer: { model: "test-model", baseUrl: "http://localhost" },
@@ -65,7 +92,11 @@ function createTestSummarizer(
   });
 }
 
-type FetchRequest = { messages: Array<{ role: string; content: unknown }> };
+type FetchRequest = {
+  messages: Array<{ role: string; content: unknown }>;
+  max_tokens?: number;
+  response_format?: { type: string };
+};
 
 function stubFetch(responseBody: unknown): () => void {
   const original = globalThis.fetch;
@@ -406,6 +437,212 @@ test("parsePoints — missing source index maps to null sourceUrl", async () => 
   restore();
 });
 
+// --- summarizeBatch ---
+
+test("summarizeBatch — keeps multiple story IDs aligned to their input stories", async () => {
+  const { captured, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(JSON.stringify([
+        {
+          story_id: "story-b",
+          points: [{ t: "beta summary", i: 0 }],
+        },
+        {
+          story_id: "story-a",
+          points: [{ t: "alpha summary", i: 0 }],
+        },
+      ])),
+    },
+  ]);
+  try {
+    const svc = createTestSummarizer();
+    const results = await svc.summarizeBatch(batchStories(), buildNewsPrompt());
+    assertEquals(captured.length, 1);
+    const content = captured[0].body.messages[1].content as string;
+    const inputRecords = JSON.parse(content) as Array<{
+      story_id: string;
+      sources: Array<{ i: number; title: string | null; text: string }>;
+    }>;
+    assertEquals(inputRecords.map((record) => record.story_id), [
+      "story-a",
+      "story-b",
+    ]);
+    assertEquals(inputRecords[0]!.sources[0]!.i, 0);
+    assertEquals(inputRecords[0]!.sources[0]!.text, "Alpha raw");
+    assertEquals(results.map((result) => result.storyId), [
+      "story-a",
+      "story-b",
+    ]);
+    assertEquals(results[0].points?.[0].text, "alpha summary");
+    assertEquals(results[0].points?.[0].sourceUrl, "https://t.me/test/alpha");
+    assertEquals(results[1].points?.[0].text, "beta summary");
+    assertEquals(results[1].points?.[0].sourceUrl, "https://t.me/test/beta");
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeBatch — rejects an oversized serialized batch before transport", async () => {
+  const { callCount, restore } = captureFetchSequence([{
+    status: 200,
+    body: modelResponse("[]"),
+  }]);
+  try {
+    const svc = createTestSummarizer();
+    await assertRejects(
+      () => svc.summarizeBatch(
+        batchStories(),
+        buildNewsPrompt(),
+        { maxTextBytesPerChunk: 1 },
+      ),
+      RangeError,
+      "Batch summary input exceeds maxTextBytesPerChunk",
+    );
+    assertEquals(callCount(), 0);
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeBatch — rejects duplicate story IDs while preserving other story results", async () => {
+  const { restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(JSON.stringify([
+        {
+          story_id: "story-a",
+          points: [{ t: "alpha first", i: 0 }],
+        },
+        {
+          story_id: "story-a",
+          points: [{ t: "alpha duplicate", i: 0 }],
+        },
+        {
+          story_id: "story-b",
+          points: [{ t: "beta summary", i: 0 }],
+        },
+      ])),
+    },
+  ]);
+  try {
+    const svc = createTestSummarizer();
+    const results = await svc.summarizeBatch(batchStories(), buildNewsPrompt());
+    assertEquals(results[0].error?.message, "Duplicate batch story ID");
+    assertEquals(results[1].points?.[0].text, "beta summary");
+    assertEquals(results[1].points?.[0].sourceUrl, "https://t.me/test/beta");
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeBatch — maps a missing story ID to a missing result", async () => {
+  const { restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(JSON.stringify([
+        {
+          story_id: "story-a",
+          points: [{ t: "alpha summary", i: 0 }],
+        },
+      ])),
+    },
+  ]);
+  try {
+    const svc = createTestSummarizer();
+    const results = await svc.summarizeBatch(batchStories(), buildNewsPrompt());
+    assertEquals(results[0].points?.[0].text, "alpha summary");
+    assertEquals(results[0].points?.[0].sourceUrl, "https://t.me/test/alpha");
+    assertEquals(results[1].error?.message, "Missing batch story ID");
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeBatch — rejects unknown story IDs for the whole batch", async () => {
+  const { restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(JSON.stringify([
+        {
+          story_id: "story-a",
+          points: [{ t: "alpha summary", i: 0 }],
+        },
+        {
+          story_id: "story-c",
+          points: [{ t: "unknown summary", i: 0 }],
+        },
+      ])),
+    },
+  ]);
+  try {
+    const svc = createTestSummarizer();
+    const results = await svc.summarizeBatch(batchStories(), buildNewsPrompt());
+    assertEquals(results[0].error?.message, "Batch summarizer returned unknown story ID");
+    assertEquals(results[1].error?.message, "Batch summarizer returned unknown story ID");
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeBatch — rejects invalid point provenance within a story", async () => {
+  const { restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(JSON.stringify([
+        {
+          story_id: "story-a",
+          points: [{ t: "alpha summary", i: 0 }],
+        },
+        {
+          story_id: "story-b",
+          points: [{ t: "bad provenance", i: 1 }],
+        },
+      ])),
+    },
+  ]);
+  try {
+    const svc = createTestSummarizer();
+    const results = await svc.summarizeBatch(batchStories(), buildNewsPrompt());
+    assertEquals(results[0].points?.[0].text, "alpha summary");
+    assertEquals(results[0].points?.[0].sourceUrl, "https://t.me/test/alpha");
+    assertEquals(results[1].error?.message, "Invalid story-local summary point");
+  } finally {
+    restore();
+  }
+});
+
+test("summarizeBatch — sends batch token and JSON options and stops after two attempts", async () => {
+  const { captured, callCount, restore } = captureFetchSequence([
+    { status: 503, body: '{"error":"service unavailable"}' },
+    { status: 503, body: '{"error":"service unavailable"}' },
+    {
+      status: 200,
+      body: modelResponse("[]"),
+    },
+  ]);
+  try {
+    const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
+    await assertRejects(
+      () => svc.summarizeBatch(batchStories(), buildNewsPrompt()),
+      "Model API 503",
+    );
+    assertEquals(callCount(), 2);
+    assertEquals(captured.length, 2);
+    const request = captured[0].body;
+    assertEquals(request.max_tokens, 6500);
+    assertEquals(request.response_format, { type: "json_object" });
+    const content = JSON.parse(request.messages[1].content as string) as Array<{
+      story_id: string;
+    }>;
+    assertEquals(content.map((record) => record.story_id), [
+      "story-a",
+      "story-b",
+    ]);
+  } finally {
+    restore();
+  }
+});
 // --- retry / API error helpers ---
 
 type ResponseSpec = { status: number; body: string };
@@ -590,21 +827,23 @@ test("summarize — retries on 429 and succeeds on second attempt", async () => 
   }
 });
 
-test("summarize — retries on 503 and succeeds on third attempt", async () => {
+test("summarize — stops after the configured two attempts on repeated 503s", async () => {
   const { callCount, restore } = stubFetchSequence([
     { status: 503, body: "Service Unavailable" },
     { status: 503, body: "Service Unavailable" },
     {
       status: 200,
       body:
-        '{"choices":[{"message":{"content":"[{\\"t\\":\\"ok\\",\\"i\\":0}]"}}]}',
+        '{"choices":[{"message":{"content":"[{\\"t\\":\\"too late\\",\\"i\\":0}]"}}]}',
     },
   ]);
   try {
     const svc = createTestSummarizer({ retryBaseDelayMs: 0 });
-    const results = await svc.summarize([item()], buildNewsPrompt());
-    assertEquals(results[0].text, "ok");
-    assertEquals(callCount(), 3);
+    await assertRejects(
+      () => svc.summarize([item()], buildNewsPrompt()),
+      "Model API 503",
+    );
+    assertEquals(callCount(), 2);
   } finally {
     restore();
   }
@@ -1924,8 +2163,8 @@ test("summarize — text timeout after valid vision is not retried as vision fal
       "Summarizer timed out",
     );
 
-    assertEquals(callCount, 4);
-    assertEquals(textRequestContents.length, 3);
+    assertEquals(callCount, 3);
+    assertEquals(textRequestContents.length, 2);
     assert(
       textRequestContents.every((content) =>
         content.includes("[IMAGE_ANALYSIS]") &&

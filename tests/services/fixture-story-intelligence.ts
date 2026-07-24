@@ -1,12 +1,23 @@
 import type { AnalyzedStoryItem, PersistedStoryCandidate, StoryIntelligenceService, StoryItemInput, StoryPreferenceRule } from "../../src/personalization/story.types.ts";
-import { fingerprintStoryItem } from "../../src/services/story-intelligence-service.ts";
+import { fingerprintStoryAnalysisMember, groupStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
 
 export class FixtureStoryIntelligence implements StoryIntelligenceService {
   async analyze(items: StoryItemInput[]): Promise<AnalyzedStoryItem[]> {
-    return await Promise.all(items.map(async (item) => ({
+    const units = groupStoryAnalysisUnits(items);
+    const memberFingerprints = await Promise.all(units.flatMap((unit) =>
+      unit.items.map((_, memberIndex) =>
+        fingerprintStoryAnalysisMember(unit, memberIndex)
+      )
+    ));
+    let fingerprintIndex = 0;
+    const fingerprintByInputIndex = new Map<number, string>();
+    units.forEach((unit) => unit.memberIndexes.forEach((inputIndex) => {
+      fingerprintByInputIndex.set(inputIndex, memberFingerprints[fingerprintIndex++]!);
+    }));
+    return await Promise.all(items.map(async (item, index) => ({
       ...item,
-      fingerprint: await fingerprintStoryItem(item),
-      analysis: { language: "en", canonicalUrls: item.payload.url ? [item.payload.url] : [], topics: ["news"], entities: [], storyKey: "fixture-story", storyTitle: "Fixture Story", developmentKey: item.payload.externalId, developmentType: "report", developmentTitle: item.payload.title ?? "Report", mediaDescription: null },
+      fingerprint: fingerprintByInputIndex.get(index)!,
+      analysis: { language: "en", canonicalUrls: item.payload.url ? [item.payload.url] : [], topics: ["news"], entities: [], storyKey: "fixture-story", storyTitle: "Fixture Story", developmentKey: item.payload.externalId, developmentType: "report", developmentTitle: item.payload.title ?? "Report", mediaDescription: null, evidence: [] },
     })));
   }
   async resolve(items: AnalyzedStoryItem[]) {

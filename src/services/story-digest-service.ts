@@ -1,5 +1,6 @@
 import type { Database } from "../db/client.ts";
 import { ConnectorId, DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../constants.ts";
+import { getSummarizerBudgetConfig } from "../config.ts";
 import type { PublicFeed } from "../repositories/feed-repository.ts";
 import { listActiveInterestRules } from "../repositories/interest-rule-repository.ts";
 import { listItemsForFeedsInWindow } from "../repositories/item-repository.ts";
@@ -17,16 +18,18 @@ import {
 } from "../repositories/story-repository.ts";
 import type {
   AnalyzedStoryItem,
+  DigestStoryContent,
   PersistedStoryCandidate,
   StoryItemInput,
   StoryRelevanceDecision,
   StorySource,
 } from "../personalization/story.types.ts";
-import { DEFAULT_SYSTEM_PROMPT, buildStorySummaryPrompt } from "../summarizers/prompts.ts";
+import { DEFAULT_SYSTEM_PROMPT, buildBatchStorySummaryPrompt, buildStorySummaryPrompt } from "../summarizers/prompts.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
-import type { SummarizerService } from "../summarizers/summarizer.types.ts";
+import { serializeBatchSummaryInput, type BatchSummaryInput, type SummarizerService, type SummaryPoint } from "../summarizers/summarizer.types.ts";
 import {
-  fingerprintStoryItem,
+  fingerprintStoryAnalysisMember,
+  groupStoryAnalysisUnits,
   OpenAICompatibleStoryIntelligenceService,
   resolveStoryAnalysisMaxItems,
 } from "./story-intelligence-service.ts";
@@ -95,6 +98,58 @@ async function boundedMap<T, R>(
   return results;
 }
 
+const encoder = new TextEncoder();
+const COMPACT_ITEM_THRESHOLD_BYTES = 8_000;
+const COMPACT_CONTEXT_BYTES = 2_000;
+const EVIDENCE_MAX_COUNT = 3;
+const EVIDENCE_MAX_BYTES = 400;
+
+function truncateUtf8(text: string, maxBytes: number, fromEnd = false): string {
+  if (encoder.encode(text).byteLength <= maxBytes) return text;
+  const scalars = [...text];
+  let used = 0;
+  const kept: string[] = [];
+  const iterable = fromEnd ? scalars.reverse() : scalars;
+  for (const scalar of iterable) {
+    const bytes = encoder.encode(scalar).byteLength;
+    if (used + bytes > maxBytes) break;
+    kept.push(scalar);
+    used += bytes;
+  }
+  return (fromEnd ? kept.reverse() : kept).join("");
+}
+
+function buildBatchItems(story: PersistedStoryCandidate): StoryItemInput["payload"][] {
+  return story.candidate.developments.flatMap((development) =>
+    development.items.map((item) => {
+      const payload = item.payload;
+      if (encoder.encode(payload.text).byteLength <= COMPACT_ITEM_THRESHOLD_BYTES) {
+        return payload;
+      }
+      const evidence = item.analysis.evidence.slice(0, EVIDENCE_MAX_COUNT)
+        .map((value) => truncateUtf8(value, EVIDENCE_MAX_BYTES))
+        .filter(Boolean);
+      const leading = truncateUtf8(payload.text, COMPACT_CONTEXT_BYTES);
+      const trailing = truncateUtf8(payload.text, COMPACT_CONTEXT_BYTES, true);
+      const compactText = evidence.length
+        ? [
+          payload.title?.trim() ? `Title: ${payload.title.trim()}` : "",
+          `Analysis evidence:\n${evidence.map((value) => `- ${value}`).join("\n")}`,
+          `Leading context:\n${leading}`,
+          `Trailing context:\n${trailing}`,
+        ].filter(Boolean).join("\n\n")
+        : `${leading}\n\n[...]\n\n${trailing}`;
+      return { ...payload, text: compactText };
+    })
+  );
+}
+
+function storyHasMedia(story: PersistedStoryCandidate): boolean {
+  return story.candidate.developments.some((development) =>
+    development.items.some((item) => item.payload.media !== undefined)
+  );
+}
+
 export async function assembleStoryDigest(
   database: Database,
   digestId: string,
@@ -106,9 +161,9 @@ export async function assembleStoryDigest(
 ): Promise<StoryDigestResult> {
   const currentStories = await listDigestStories(database, user.id, digestId);
   const currentVersionByStoryId = new Map(currentStories.map((story) => [story.storyId, story.storyVersion]));
-  const intelligence = dependencies.intelligence ?? new OpenAICompatibleStoryIntelligenceService();
   const summarizer = dependencies.summarizer ?? new OpenAICompatibleSummarizerService();
-  const analyzerVersion = dependencies.analyzerVersion ?? "story-v1";
+  const intelligence = dependencies.intelligence ?? new OpenAICompatibleStoryIntelligenceService();
+  const analyzerVersion = dependencies.analyzerVersion ?? "story-v2";
   const now = dependencies.now ?? Date.now;
   const progress = dependencies.progressReporter;
   const runId = dependencies.runId;
@@ -142,19 +197,36 @@ export async function assembleStoryDigest(
     const feed = feedById.get(item.feedId)!;
     return { itemId: item.id, feedId: item.feedId, feedName: feed.name, sourceId: feed.sourceId, payload: item.payload };
   });
-  const fingerprints = await Promise.all(inputs.map(fingerprintStoryItem));
-  const fingerprintByItemId = new Map(inputs.map((item, i) => [item.itemId, fingerprints[i]]));
-  const cached = await listItemAnalyses(database, inputs.map((item, i) => ({ itemId: item.itemId, fingerprint: fingerprints[i] })), analyzerVersion);
+  const units = groupStoryAnalysisUnits(inputs);
+  const memberFingerprints = await Promise.all(units.flatMap((unit) =>
+    unit.items.map((_, memberIndex) =>
+      fingerprintStoryAnalysisMember(unit, memberIndex)
+    )
+  ));
+  let memberFingerprintIndex = 0;
+  const fingerprintByItemId = new Map<string, string>();
+  units.forEach((unit) => unit.items.forEach((item) =>
+    fingerprintByItemId.set(item.itemId, memberFingerprints[memberFingerprintIndex++]!)
+  ));
+  const cached = await listItemAnalyses(database, inputs.map((item) => ({
+    itemId: item.itemId,
+    fingerprint: fingerprintByItemId.get(item.itemId)!,
+  })), analyzerVersion);
   const cachedById = new Map(cached.map((entry) => [entry.itemId, entry]));
-  const misses = inputs.filter((item, i) => cachedById.get(item.itemId)?.fingerprint !== fingerprints[i]);
+  const missedUnits = units.filter((unit) => unit.items.some((item) =>
+    cachedById.get(item.itemId)?.fingerprint !== fingerprintByItemId.get(item.itemId)
+  ));
+  const misses = missedUnits.flatMap((unit) => unit.items);
   const checkpointSize = resolveStoryAnalysisMaxItems(dependencies.analysisCheckpointSize);
-  const checkpointInputs = Array.from(
-    { length: Math.ceil(misses.length / checkpointSize) },
-    (_, index) => ({
-      batchIndex: index + 1,
-      inputs: misses.slice(index * checkpointSize, (index + 1) * checkpointSize),
-    }),
-  );
+  const checkpointInputs: Array<{ batchIndex: number; inputs: StoryItemInput[] }> = [];
+  for (const unit of missedUnits) {
+    const current = checkpointInputs.at(-1);
+    if (!current || (current.inputs.length > 0 && current.inputs.length + unit.items.length > checkpointSize)) {
+      checkpointInputs.push({ batchIndex: checkpointInputs.length + 1, inputs: [...unit.items] });
+    } else {
+      current.inputs.push(...unit.items);
+    }
+  }
   let completedAnalysisCount = 0;
   const checkpoints = await boundedMap(
     checkpointInputs,
@@ -218,11 +290,11 @@ export async function assembleStoryDigest(
     result.status === "fulfilled" ? result.value : []
   );
   const missesById = new Map(analyzedMisses.map((item) => [item.itemId, item]));
-  const analyzed: AnalyzedStoryItem[] = inputs.map((item, i) => {
+  const analyzed: AnalyzedStoryItem[] = inputs.map((item) => {
     const miss = missesById.get(item.itemId);
     if (miss) return miss;
     const hit = cachedById.get(item.itemId)!;
-    return { ...item, fingerprint: fingerprints[i], analysis: hit.analysis };
+    return { ...item, fingerprint: fingerprintByItemId.get(item.itemId)!, analysis: hit.analysis };
   });
   const recentStories = await listRecentStoryReferences(database, user.id, { limit: 200 });
   if (runId) reportDigestProgress(progress, {
@@ -287,6 +359,8 @@ export async function assembleStoryDigest(
   );
   const storyRules = buildStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
   storyRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), storyRules.systemPrompt].filter(Boolean).join("\n\n");
+  const batchRules = buildBatchStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
+  batchRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), batchRules.systemPrompt].filter(Boolean).join("\n\n");
   if (runId) reportDigestProgress(progress, {
     event: "summarization",
     runId,
@@ -295,7 +369,23 @@ export async function assembleStoryDigest(
     completedCount: 0,
     status: "started",
   });
-  const summaries = await boundedMap(selected, Math.max(1, dependencies.summaryConcurrency ?? 2), async (story) => {
+  type SummaryValue = {
+    content: DigestStoryContent;
+    profileVersion: number;
+    generatedAt: number;
+  };
+  const summaries: PromiseSettledResult<SummaryValue>[] = new Array(selected.length);
+  const uncached: Array<{ index: number; story: PersistedStoryCandidate }> = [];
+  const makeSummary = (
+    story: PersistedStoryCandidate,
+    points: SummaryPoint[],
+  ): SummaryValue => {
+    const items = story.candidate.developments.flatMap((development) => development.items);
+    const decision = decisionById.get(story.id)!;
+    const sources: StorySource[] = items.map((item) => ({ itemId: item.itemId, connectorId: connectorBySource.get(item.sourceId)!, sourceId: item.sourceId, feedId: item.feedId, feedName: item.feedName, title: item.payload.title, url: item.payload.url, publishedAt: item.payload.date }));
+    return { content: { storyId: story.id, storyVersion: story.version, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, points, sources, relevanceScore: decision.score, matchedInterestRuleIds: decision.matchedInterestRuleIds }, profileVersion: user.interestProfileVersion, generatedAt: now() };
+  };
+  selected.forEach((story, index) => {
     const prior = currentStories.find((current) =>
       current.storyId === story.id &&
       current.storyVersion === story.version &&
@@ -303,15 +393,105 @@ export async function assembleStoryDigest(
     );
     if (prior) {
       const { id: _id, digestId: _digestId, profileVersion, generatedAt, ...content } = prior;
-      return { content, profileVersion, generatedAt };
+      summaries[index] = { status: "fulfilled", value: { content, profileVersion, generatedAt } };
+    } else {
+      uncached.push({ index, story });
     }
-    const items = story.candidate.developments.flatMap((development) => development.items);
-    const points = await summarizer.summarize(items.map((item) => item.payload), storyRules, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, onAttempt: onAttempt("summarization") });
-    if (items.length > 0 && points.length === 0) throw new Error("Story summarization returned no points");
-    const decision = decisionById.get(story.id)!;
-    const sources: StorySource[] = items.map((item) => ({ itemId: item.itemId, connectorId: connectorBySource.get(item.sourceId)!, sourceId: item.sourceId, feedId: item.feedId, feedName: item.feedName, title: item.payload.title, url: item.payload.url, publishedAt: item.payload.date }));
-    return { content: { storyId: story.id, storyVersion: story.version, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, points, sources, relevanceScore: decision.score, matchedInterestRuleIds: decision.matchedInterestRuleIds }, profileVersion: user.interestProfileVersion, generatedAt: now() };
   });
+  const budget = getSummarizerBudgetConfig();
+  const batchMax = Math.min(5, budget.summaryBatchMaxStories);
+  const batches: Array<Array<{ index: number; story: PersistedStoryCandidate; input: BatchSummaryInput }>> = [];
+  const singles: Array<{ index: number; story: PersistedStoryCandidate }> = [];
+  for (const candidate of uncached) {
+    const rawItems = candidate.story.candidate.developments.flatMap((development) => development.items.map((item) => item.payload));
+    const rawBytes = rawItems.reduce((total, item) => total + encoder.encode(item.text).byteLength, 0);
+    if (!summarizer.summarizeBatch || storyHasMedia(candidate.story) || rawBytes > budget.summarizerTextBytesPerChunk) {
+      singles.push(candidate);
+      continue;
+    }
+    const input = { storyId: candidate.story.id, items: buildBatchItems(candidate.story) };
+    const inputBytes = encoder.encode(
+      serializeBatchSummaryInput([input], batchRules.showTitle ?? false),
+    ).byteLength;
+    if (inputBytes > budget.summarizerTextBytesPerChunk) {
+      singles.push(candidate);
+      continue;
+    }
+    const batch = batches.at(-1);
+    const candidateEntries = batch
+      ? [...batch, { ...candidate, input }]
+      : [{ ...candidate, input }];
+    const candidateBytes = encoder.encode(serializeBatchSummaryInput(
+      candidateEntries.map((entry) => entry.input),
+      batchRules.showTitle ?? false,
+    )).byteLength;
+    if (
+      !batch ||
+      batch.length >= batchMax ||
+      candidateBytes > budget.summarizerTextBytesPerChunk
+    ) {
+      batches.push([{ ...candidate, input }]);
+    } else {
+      batch.push({ ...candidate, input });
+    }
+  }
+  const summaryJobs: Array<
+    | { kind: "batch"; entries: (typeof batches)[number] }
+    | { kind: "single"; entry: (typeof singles)[number] }
+  > = [
+    ...batches.map((entries) => ({ kind: "batch" as const, entries })),
+    ...singles.map((entry) => ({ kind: "single" as const, entry })),
+  ];
+  await boundedMap(
+    summaryJobs,
+    Math.max(1, dependencies.summaryConcurrency ?? 1),
+    async (job) => {
+      if (job.kind === "batch") {
+        try {
+          const results = await summarizer.summarizeBatch!(
+            job.entries.map((entry) => entry.input),
+            batchRules,
+            {
+              signal: dependencies.signal,
+              requestTimeoutMs: dependencies.timeoutMs,
+              onAttempt: onAttempt("summarization"),
+            },
+          );
+          const byId = new Map(results.map((result) => [result.storyId, result]));
+          for (const entry of job.entries) {
+            const result = byId.get(entry.story.id);
+            summaries[entry.index] = result?.points && !result.error
+              ? { status: "fulfilled", value: makeSummary(entry.story, result.points) }
+              : { status: "rejected", reason: result?.error ?? new Error("Missing batch summary result") };
+          }
+        } catch (reason) {
+          for (const entry of job.entries) {
+            summaries[entry.index] = { status: "rejected", reason };
+          }
+        }
+        return;
+      }
+      const { index, story } = job.entry;
+      try {
+        const items = story.candidate.developments.flatMap((development) => development.items);
+        const points = await summarizer.summarize(
+          items.map((item) => item.payload),
+          storyRules,
+          {
+            signal: dependencies.signal,
+            requestTimeoutMs: dependencies.timeoutMs,
+            onAttempt: onAttempt("summarization"),
+          },
+        );
+        if (items.length > 0 && points.length === 0) {
+          throw new Error("Story summarization returned no points");
+        }
+        summaries[index] = { status: "fulfilled", value: makeSummary(story, points) };
+      } catch (reason) {
+        summaries[index] = { status: "rejected", reason };
+      }
+    },
+  );
   if (runId) reportDigestProgress(progress, {
     event: "summarization",
     runId,

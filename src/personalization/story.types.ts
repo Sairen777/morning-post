@@ -14,6 +14,7 @@ export interface ItemAnalysisContent {
   developmentType: string;
   developmentTitle: string;
   mediaDescription: string | null;
+  evidence: string[];
 }
 
 export interface StoryItemInput {

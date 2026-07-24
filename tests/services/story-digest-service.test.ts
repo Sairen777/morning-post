@@ -26,7 +26,7 @@ import {
   listItemAnalyses,
 } from "../../src/repositories/story-repository.ts";
 import { assembleStoryDigest } from "../../src/services/story-digest-service.ts";
-import { fingerprintStoryItem } from "../../src/services/story-intelligence-service.ts";
+import { fingerprintStoryAnalysisMember, fingerprintStoryItem, groupStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
 import type {
   AnalyzedStoryItem,
   PersistedStoryCandidate,
@@ -130,9 +130,20 @@ class FixtureIntelligence implements StoryIntelligenceService {
   splitStories = false;
   async analyze(items: StoryItemInput[]): Promise<AnalyzedStoryItem[]> {
     this.analyzeCalls++;
-    return await Promise.all(items.map(async (item) => ({
+    const units = groupStoryAnalysisUnits(items);
+    const memberFingerprints = await Promise.all(units.flatMap((unit) =>
+      unit.items.map((_, memberIndex) =>
+        fingerprintStoryAnalysisMember(unit, memberIndex)
+      )
+    ));
+    let fingerprintIndex = 0;
+    const fingerprintByInputIndex = new Map<number, string>();
+    units.forEach((unit) => unit.memberIndexes.forEach((inputIndex) => {
+      fingerprintByInputIndex.set(inputIndex, memberFingerprints[fingerprintIndex++]!);
+    }));
+    return await Promise.all(items.map(async (item, index) => ({
       ...item,
-      fingerprint: await fingerprintStoryItem(item),
+      fingerprint: fingerprintByInputIndex.get(index)!,
       analysis: {
         language: "en",
         canonicalUrls: item.payload.url ? [item.payload.url] : [],
@@ -144,6 +155,7 @@ class FixtureIntelligence implements StoryIntelligenceService {
         developmentType: "report",
         developmentTitle: item.payload.title ?? "Report",
         mediaDescription: null,
+        evidence: [],
       },
     })));
   }
@@ -449,6 +461,7 @@ test("analysis checkpoints persist before a later failure and reruns resume rema
       intelligence,
       summarizer,
       analyzerVersion: "checkpoint-v1",
+      analysisCheckpointSize: 10,
     };
 
     await assertRejects(
@@ -465,16 +478,28 @@ test("analysis checkpoints persist before a later failure and reruns resume rema
       Error,
       "later checkpoint failed",
     );
-    const lookups = await Promise.all(stored.map(async (item) => ({
+    const storedInputs: StoryItemInput[] = stored.map((item) => ({
       itemId: item.id,
-      fingerprint: await fingerprintStoryItem({
-        itemId: item.id,
-        feedId: item.feedId,
-        feedName: feed.name,
-        sourceId: feed.sourceId,
-        payload: item.payload,
-      }),
-    })));
+      feedId: item.feedId,
+      feedName: feed.name,
+      sourceId: feed.sourceId,
+      payload: item.payload,
+    }));
+    const storedUnits = groupStoryAnalysisUnits(storedInputs);
+    const storedMemberFingerprints = await Promise.all(storedUnits.flatMap((unit) =>
+      unit.items.map((_, memberIndex) =>
+        fingerprintStoryAnalysisMember(unit, memberIndex)
+      )
+    ));
+    let storedFpIndex = 0;
+    const storedFingerprintByItemId = new Map<string, string>();
+    storedUnits.forEach((unit) => unit.items.forEach((item) =>
+      storedFingerprintByItemId.set(item.itemId, storedMemberFingerprints[storedFpIndex++]!)
+    ));
+    const lookups = stored.map((item) => ({
+      itemId: item.id,
+      fingerprint: storedFingerprintByItemId.get(item.id)!,
+    }));
     assertEquals(
       (await listItemAnalyses(database, lookups, "checkpoint-v1")).length,
       10,
@@ -725,5 +750,197 @@ test("default and explicit story caps preserve order under bounded analysis and 
       ),
       true,
     );
+  });
+});
+test("cached story cards are skipped before batch packing and batch concurrency stays bounded", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, {
+      name: "Cache-bounded Owner",
+      email: "story-cache-bounded@example.com",
+      passwordHash: "$argon2id$fake",
+      defaultLanguage: "en",
+      systemPrompt: "",
+      relevanceThreshold: 0,
+      maximumStoriesPerDigest: 15,
+    });
+    const cipher = new CredentialCipher(
+      new EnvMasterKeyProvider(new Uint8Array(32).fill(5)),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.RSS,
+      credentials: await cipher.encrypt("{}", {
+        userId: user.id,
+        connectorId: ConnectorId.RSS,
+      }),
+    });
+    const feed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: source.id,
+      externalId: "cache-bounded-feed",
+      name: "Cache Bounded Feed",
+      kind: "news",
+    });
+    const makeItem = (index: number) => {
+      const externalId = `item-${String(index).padStart(2, "0")}`;
+      return {
+        connectorId: ConnectorId.RSS,
+        feedExternalId: feed.externalId,
+        externalId,
+        date: 100 + index,
+        title: `Title ${externalId}`,
+        text: `Report ${externalId}`,
+        author: null,
+        url: `https://${externalId}.example/`,
+      };
+    };
+    const digest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 1_000,
+      status: "pending",
+    });
+    const intelligence = new FixtureIntelligence();
+    intelligence.splitStories = true;
+    const seedCalls: string[][] = [];
+    const seedSummarizer: SummarizerService = {
+      summarize: async () => {
+        throw new Error("unexpected single-story summarization");
+      },
+      summarizeBatch: async (stories) => {
+        seedCalls.push(stories.map((story) => story.storyId));
+        return stories.map(({ storyId, items }) => {
+          const externalId = items[0]!.externalId;
+          return {
+            storyId,
+            points: [{
+              text: `Seed summary ${externalId}`,
+              sourceUrl: `https://seed.example/${externalId}`,
+            }],
+          };
+        });
+      },
+    };
+    await upsertItems(database, feed.id, [0, 1, 2].map(makeItem), 200);
+    const seedResult = await assembleStoryDigest(
+      database,
+      digest.id,
+      user,
+      [feed],
+      0,
+      1_000,
+      {
+        intelligence,
+        summarizer: seedSummarizer,
+        analyzerVersion: "batch-cache-v1",
+        summaryConcurrency: 2,
+      },
+    );
+    assertEquals(seedCalls.length, 1);
+    assertEquals(seedCalls[0].length, 3);
+    const seededStories = new Map(seedResult.stories.map((story) => [story.storyId, story]));
+
+    await upsertItems(database, feed.id, Array.from({ length: 12 }, (_, index) => makeItem(index + 3)), 300);
+    type Gate = { release: () => void; released: boolean };
+    const rerunCalls: string[][] = [];
+    const rerunGates: Gate[] = [];
+    let activeBatchCalls = 0;
+    let maxActiveBatchCalls = 0;
+    let gateSignal = Promise.withResolvers<void>();
+    const notifyGate = () => {
+      gateSignal.resolve();
+      gateSignal = Promise.withResolvers<void>();
+    };
+    const rerunSummarizer: SummarizerService = {
+      summarize: async () => {
+        throw new Error("unexpected single-story summarization");
+      },
+      summarizeBatch: async (stories) => {
+        rerunCalls.push(stories.map((story) => story.storyId));
+        activeBatchCalls++;
+        maxActiveBatchCalls = Math.max(maxActiveBatchCalls, activeBatchCalls);
+        const deferred = Promise.withResolvers<void>();
+        const gate: Gate = {
+          released: false,
+          release: () => {
+            gate.released = true;
+            deferred.resolve();
+          },
+        };
+        rerunGates.push(gate);
+        notifyGate();
+        await deferred.promise;
+        activeBatchCalls--;
+        return stories.map(({ storyId, items }) => {
+          const externalId = items[0]!.externalId;
+          return {
+            storyId,
+            points: [{
+              text: `Batch summary ${externalId}`,
+              sourceUrl: `https://batch.example/${externalId}`,
+            }],
+          };
+        });
+      },
+    };
+    const waitForCalls = async (count: number) => {
+      while (rerunCalls.length < count) {
+        await gateSignal.promise;
+        if (rerunCalls.length < count) {
+          await Promise.resolve();
+          await Promise.resolve();
+          if (rerunCalls.length < count && rerunGates.some((gate) => !gate.released)) {
+            rerunGates.find((gate) => !gate.released)?.release();
+          }
+        }
+      }
+    };
+    const rerunPromise = assembleStoryDigest(
+      database,
+      digest.id,
+      user,
+      [feed],
+      0,
+      1_000,
+      {
+        intelligence,
+        summarizer: rerunSummarizer,
+        analyzerVersion: "batch-cache-v1",
+        summaryConcurrency: 2,
+      },
+    );
+    await waitForCalls(2);
+    assertEquals(maxActiveBatchCalls, 2);
+    rerunGates.find((gate) => !gate.released)?.release();
+    await waitForCalls(3);
+    while (rerunGates.some((gate) => !gate.released)) {
+      rerunGates.find((gate) => !gate.released)?.release();
+    }
+    const rerunResult = await rerunPromise;
+    assertEquals(rerunResult.stories.length, 15);
+    assertEquals(rerunCalls.length, 3);
+    assertEquals(rerunCalls.map((call) => call.length), [5, 5, 2]);
+    assertEquals(
+      rerunCalls.flat().some((storyId) => seededStories.has(storyId)),
+      false,
+    );
+    assertEquals(new Set(rerunCalls.flat()).size, 12);
+    for (const story of rerunResult.stories) {
+      const externalId = story.title.replace("Story ", "");
+      const expectedSourceUrl = `https://${externalId}.example/`;
+      const sourceUrl = story.sources[0]!.url;
+      assertEquals(sourceUrl, expectedSourceUrl);
+      if (seededStories.has(story.storyId)) {
+        const seededStory = seededStories.get(story.storyId)!;
+        assertEquals(story.points[0]!.text, seededStory.points[0]!.text);
+        assertEquals(story.points[0]!.sourceUrl, seededStory.points[0]!.sourceUrl);
+      } else {
+        assertEquals(story.points[0]!.text, `Batch summary ${externalId}`);
+        assertEquals(
+          story.points[0]!.sourceUrl,
+          `https://batch.example/${externalId}`,
+        );
+      }
+    }
   });
 });

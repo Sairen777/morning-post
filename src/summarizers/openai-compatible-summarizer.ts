@@ -14,7 +14,10 @@ import {
   OpenAICompatibleChatClient,
 } from "./openai-compatible-client.ts";
 import { buildVisionAnalysisPrompt } from "./prompts.ts";
+import { serializeBatchSummaryInput } from "./summarizer.types.ts";
 import type {
+  BatchSummaryInput,
+  BatchSummaryResult,
   ContentPart,
   ImagePart,
   SummarizationDiagnostic,
@@ -64,6 +67,9 @@ interface SummarizerRequestOptions {
   requestTimeoutMs?: number;
   onAttempt?: SummarizeOptions["onAttempt"];
   onDiagnostic?: SummarizeOptions["onDiagnostic"];
+  maxOutputTokens?: number;
+  maxAttempts?: number;
+  jsonOutput?: boolean;
 }
 
 interface ChunkExecutionContext {
@@ -184,6 +190,11 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
   private readonly maxTextBytesPerChunk: number;
   private readonly maxItemsPerChunk: number;
   private readonly maxImageBytes: number;
+  private readonly summaryMaxOutputTokens: number;
+  private readonly summaryBatchMaxOutputTokens: number;
+  private readonly summaryMaxAttempts: number;
+  private readonly mediaMaxOutputTokens: number;
+  private readonly mediaMaxAttempts: number;
 
   constructor(options: OpenAICompatibleSummarizerOptions = {}) {
     const config = getSummarizerBudgetConfig();
@@ -198,6 +209,11 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       config.summarizerMaxItemsPerChunk;
     this.maxImageBytes = options.maxImageBytes ??
       config.summarizerMaxImageBytes;
+    this.summaryMaxOutputTokens = config.summaryMaxOutputTokens;
+    this.summaryBatchMaxOutputTokens = config.summaryBatchMaxOutputTokens;
+    this.summaryMaxAttempts = config.summaryMaxAttempts;
+    this.mediaMaxOutputTokens = config.mediaMaxOutputTokens;
+    this.mediaMaxAttempts = config.mediaMaxAttempts;
     this.summarizerClient = new OpenAICompatibleChatClient(
       this.models.summarizer,
       {
@@ -226,8 +242,47 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       requestTimeoutMs: options.requestTimeoutMs,
       onAttempt: options.onAttempt,
       onDiagnostic: options.onDiagnostic,
+      maxOutputTokens: this.summaryMaxOutputTokens,
+      maxAttempts: this.summaryMaxAttempts,
+      jsonOutput: true,
       summaryMode: options.summaryMode ?? "aggregate",
     }, state);
+  }
+
+  public async summarizeBatch(
+    stories: BatchSummaryInput[],
+    rules: SummaryRuleset,
+    options: SummarizeOptions = {},
+  ): Promise<BatchSummaryResult[]> {
+    if (stories.length === 0) return [];
+    const expectedIds = new Set(stories.map((story) => story.storyId));
+    if (expectedIds.size !== stories.length) {
+      throw new Error("Batch summary input contains duplicate story IDs");
+    }
+    const content = serializeBatchSummaryInput(
+      stories,
+      rules.showTitle ?? false,
+    );
+    const maxTextBytes = options.maxTextBytesPerChunk ??
+      this.maxTextBytesPerChunk;
+    if (new TextEncoder().encode(content).byteLength > maxTextBytes) {
+      throw new RangeError(
+        `Batch summary input exceeds maxTextBytesPerChunk (${maxTextBytes})`,
+      );
+    }
+    const raw = await this.summarizerClient.complete(
+      rules.systemPrompt,
+      content,
+      {
+        signal: options.signal,
+        requestTimeoutMs: options.requestTimeoutMs,
+        onAttempt: options.onAttempt,
+        maxOutputTokens: this.summaryBatchMaxOutputTokens,
+        maxAttempts: this.summaryMaxAttempts,
+        jsonOutput: true,
+      },
+    );
+    return this.parseBatchPoints(raw, stories);
   }
 
   private async summarizeInternal(
@@ -412,7 +467,12 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       const visionRaw = await this.visionClient.complete(
         buildVisionAnalysisPrompt().systemPrompt,
         content.visionParts,
-        options,
+        {
+          ...options,
+          maxOutputTokens: this.mediaMaxOutputTokens,
+          maxAttempts: this.mediaMaxAttempts,
+          jsonOutput: true,
+        },
       );
       const descriptions = this.parseVisionDescriptions(
         visionRaw,
@@ -911,6 +971,84 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
           }),
         }),
       };
+    });
+  }
+
+  private parseBatchPoints(
+    raw: string,
+    stories: BatchSummaryInput[],
+  ): BatchSummaryResult[] {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(this.cleanJsonResponse(raw));
+    } catch {
+      return stories.map((story) => ({
+        storyId: story.storyId,
+        error: new Error("Batch summarizer returned invalid JSON"),
+      }));
+    }
+    if (!Array.isArray(parsed)) {
+      return stories.map((story) => ({
+        storyId: story.storyId,
+        error: new Error("Batch summarizer returned non-array JSON"),
+      }));
+    }
+    const entriesById = new Map<string, unknown[]>();
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const id = (entry as { story_id?: unknown }).story_id;
+      if (typeof id !== "string") continue;
+      const entries = entriesById.get(id);
+      if (entries) entries.push(entry);
+      else entriesById.set(id, [entry]);
+    }
+    const unknownId = [...entriesById.keys()].find((id) =>
+      !stories.some((story) => story.storyId === id)
+    );
+    if (unknownId !== undefined) {
+      return stories.map((story) => ({
+        storyId: story.storyId,
+        error: new Error("Batch summarizer returned unknown story ID"),
+      }));
+    }
+    return stories.map((story) => {
+      const entries = entriesById.get(story.storyId);
+      if (!entries || entries.length !== 1) {
+        return {
+          storyId: story.storyId,
+          error: new Error(entries ? "Duplicate batch story ID" : "Missing batch story ID"),
+        };
+      }
+      const entry = entries[0] as Record<string, unknown>;
+      if (
+        Object.keys(entry).length !== 2 ||
+        !Object.hasOwn(entry, "story_id") ||
+        !Object.hasOwn(entry, "points") ||
+        !Array.isArray(entry.points) ||
+        entry.points.length === 0
+      ) {
+        return { storyId: story.storyId, error: new Error("Invalid batch story output") };
+      }
+      const rawPoints = entry.points;
+      try {
+        const points = this.parsePoints(JSON.stringify(rawPoints), story.items);
+        if (points.some((_point, index) => {
+          const rawPoint = rawPoints[index];
+          return typeof rawPoint !== "object" || rawPoint === null ||
+            Object.keys(rawPoint).length !== 2 ||
+            !Object.hasOwn(rawPoint, "t") || !Object.hasOwn(rawPoint, "i") ||
+            typeof rawPoint.t !== "string" ||
+            typeof rawPoint.i !== "number" ||
+            !Number.isInteger(rawPoint.i) || rawPoint.i < 0 ||
+            rawPoint.i >= story.items.length;
+        })) throw new Error("Invalid story-local summary point");
+        return { storyId: story.storyId, points };
+      } catch (error) {
+        return {
+          storyId: story.storyId,
+          error: error instanceof Error ? error : new Error("Invalid batch story output"),
+        };
+      }
     });
   }
 

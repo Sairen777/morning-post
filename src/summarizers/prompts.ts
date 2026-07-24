@@ -96,11 +96,11 @@ export function buildVisionAnalysisPrompt(): SummaryRuleset {
 export function buildStoryAnalysisPrompt(): SummaryRuleset {
   return {
     systemPrompt: [
-      "Analyze every indexed source record for story and development identity.",
-      'Return a JSON array only. Every entry must have exactly these fields: "i" (integer input index), "language" (string or null), "canonicalUrls" (string array), "topics" (string array), "entities" (string array), "storyKey" (stable concise string), "storyTitle" (string), "developmentKey" (stable concise string), "developmentType" (string), "developmentTitle" (string), and "mediaDescription" (string or null).',
-      "Include exactly one entry for every submitted index, with no duplicates, omissions, extra indexes, or extra fields.",
-      "Use the same storyKey for sources about the same underlying story, but a distinct developmentKey for each stable event or release within it (for example teaser, poster, and trailer are separate developments).",
-      "Prefer canonical source URLs supplied in the record. Do not invent URLs or facts. Keep topics and entities short and deduplicated.",
+      "Analyze every member of every indexed discussion unit for story and development identity. Units provide bounded thread context only: members of one unit can describe different stories or developments.",
+      'Return a JSON array only. Every entry must have exactly these fields: "i" (integer unit index), "m" (integer member index), "topics" (string array), "entities" (string array), "storyKey" (stable concise string), "storyTitle" (string), "developmentKey" (stable concise string), "developmentType" (string), "developmentTitle" (string), and "evidence" (array of at most 3 short verbatim excerpts from that member, each at most 400 UTF-8 bytes).',
+      "Include exactly one entry for every submitted (i,m) member pair, with no duplicates, omissions, unknown pairs, or extra fields.",
+      "Use surrounding members as discussion context, not as proof that all members share an identity. Use the same storyKey only for members about the same underlying story, and a distinct developmentKey for each stable event or release within it (for example teaser, poster, and trailer are separate developments).",
+      "Do not invent URLs or facts. Evidence must be copied from the member's title or text. Keep topics and entities short, deduplicated, and limited to at most 5 each.",
     ].join(" "),
     includeMedia: false,
   };
@@ -145,6 +145,24 @@ export function buildStorySummaryPrompt(
     ], options),
     showAuthors: false,
     includeMedia: true,
+    showTitle: true,
+  };
+}
+
+export function buildBatchStorySummaryPrompt(
+  options: PromptOptions = {},
+): SummaryRuleset {
+  return {
+    systemPrompt: withTrailingRules([
+      "Summarize each supplied, already-selected story independently.",
+      'The user message is a JSON array of {"story_id":"opaque ID","sources":[{"i":0,"title":"optional source title","text":"source text"}]} records.',
+      'Return a JSON array only, with exactly one object per story: {"story_id":"the exact input ID","points":[{"t":"summary text","i":0}]}.',
+      "Return every input story ID exactly once and no unknown IDs. Each points value must be a nonempty array.",
+      "Every point index is local to its story. Never use facts or source indexes from another story.",
+      "Consolidate repeated coverage while preserving distinct developments. Lead with what changed and avoid repeating source titles.",
+    ], options),
+    showAuthors: false,
+    includeMedia: false,
     showTitle: true,
   };
 }

@@ -24,7 +24,7 @@ class FixtureIntelligence implements StoryIntelligenceService {
     return await Promise.all(items.map(async (item) => ({
       ...item,
       fingerprint: await fingerprintStoryItem(item),
-      analysis: { language: "en", canonicalUrls: item.payload.url ? [item.payload.url] : [], topics: ["news"], entities: [], storyKey: "shared-story", storyTitle: "Shared Story", developmentKey: item.payload.externalId, developmentType: "report", developmentTitle: item.payload.title ?? "Report", mediaDescription: null },
+      analysis: { language: "en", canonicalUrls: item.payload.url ? [item.payload.url] : [], topics: ["news"], entities: [], storyKey: "shared-story", storyTitle: "Shared Story", developmentKey: item.payload.externalId, developmentType: "report", developmentTitle: item.payload.title ?? "Report", mediaDescription: null, evidence: [] },
     })));
   }
   async resolve(items: AnalyzedStoryItem[]) {

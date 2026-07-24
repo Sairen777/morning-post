@@ -21,7 +21,7 @@ function item(index: number, overrides: Partial<StoryItemInput["payload"]> = {})
 }
 
 function analysis(input: StoryItemInput, storyKey: string, developmentKey: string, urls: string[] = []): AnalyzedStoryItem {
-  return { ...input, fingerprint: `fp-${input.itemId}`, analysis: { language: "en", canonicalUrls: urls, topics: ["Film"], entities: ["Studio"], storyKey, storyTitle: "A Film", developmentKey, developmentType: developmentKey, developmentTitle: developmentKey, mediaDescription: null } };
+  return { ...input, fingerprint: `fp-${input.itemId}`, analysis: { language: "en", canonicalUrls: urls, topics: ["Film"], entities: ["Studio"], storyKey, storyTitle: "A Film", developmentKey, developmentType: developmentKey, developmentTitle: developmentKey, mediaDescription: null, evidence: [] } };
 }
 
 function persisted(id: string, analyzed: AnalyzedStoryItem, type = "news"): PersistedStoryCandidate {
@@ -47,18 +47,22 @@ function persisted(id: string, analyzed: AnalyzedStoryItem, type = "news"): Pers
 const prioritize: StoryPreferenceRule = { id: "rule-priority", label: "Film", kind: "topic", disposition: "prioritize", strength: 1 };
 
 function analysisResponse(indexes: number[]): string {
-  return JSON.stringify(indexes.map((i) => ({ i, language: "en", canonicalUrls: [`https://example.com/${i}`], topics: ["Film"], entities: ["Studio"], storyKey: `story-${i}`, storyTitle: `Story ${i}`, developmentKey: `development-${i}`, developmentType: "report", developmentTitle: `Development ${i}`, mediaDescription: null })));
+  return JSON.stringify(indexes.map((i) => ({ i, m: 0, topics: ["Film"], entities: ["Studio"], storyKey: `story-${i}`, storyTitle: `Story ${i}`, developmentKey: `development-${i}`, developmentType: "report", developmentTitle: `Development ${i}`, evidence: [] })));
 }
 
 function analysisLine(input: StoryItemInput, index: number): string {
   return JSON.stringify({
     i: index,
-    feed: input.feedName,
-    title: input.payload.title,
-    text: input.payload.text,
-    url: input.payload.url,
-    date: input.payload.date,
-    mediaDescription: null,
+    members: [{
+      m: 0,
+      feed: input.feedName,
+      title: input.payload.title,
+      text: input.payload.text,
+      url: input.payload.url,
+      date: input.payload.date,
+      author: input.payload.author,
+      mediaDescription: null,
+    }],
   });
 }
 
@@ -102,8 +106,8 @@ test("story analysis item cap defaults safely, honors a lower generic budget, an
     await defaults.service.analyze(Array.from({ length: 23 }, (_, index) => item(index)));
     await lower.service.analyze(Array.from({ length: 15 }, (_, index) => item(index)));
     await explicit.service.analyze(Array.from({ length: 25 }, (_, index) => item(index)));
-    assertEquals(defaults.calls, [10, 10, 3]);
-    assertEquals(lower.calls, [7, 7, 1]);
+    assertEquals(defaults.calls, [23]);
+    assertEquals(lower.calls, [15]);
     assertEquals(explicit.calls, [12, 12, 1]);
     assertThrows(() => resolveStoryAnalysisMaxItems(0), RangeError, "positive integer");
     assertThrows(() => resolveStoryAnalysisMaxItems(1.5), RangeError, "positive integer");
@@ -125,6 +129,41 @@ test("analysis handles hundreds in bounded item batches and fingerprints determi
   assertEquals(calls.every((call) => call.length <= 17), true);
   assertEquals(calls.flat(), Array.from({ length: 203 }, (_, index) => index));
   assertEquals(results[0]!.fingerprint, await fingerprintStoryItem(inputs[0]!));
+});
+
+test("analysis item cap applies to grouped discussion members", async () => {
+  const batchMemberCounts: number[] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 2,
+    maxTextBytesPerChunk: 100_000,
+    client: {
+      complete: async (_prompt, content) => {
+        const records = content.split("\n").map((line) => JSON.parse(line) as {
+          i: number;
+          members: Array<{ m: number }>;
+        });
+        batchMemberCounts.push(records.reduce(
+          (count, record) => count + record.members.length,
+          0,
+        ));
+        return JSON.stringify(records.flatMap(({ i, members }) =>
+          members.map(({ m }) => ({
+            i,
+            m,
+            topics: [],
+            entities: [],
+            storyKey: `story-${m}`,
+            developmentKey: `development-${m}`,
+            evidence: [],
+          }))
+        ));
+      },
+    },
+  });
+  await service.analyze(Array.from({ length: 5 }, (_, index) =>
+    item(index, { meta: { threadRootId: "shared-thread" } })
+  ));
+  assertEquals(batchMemberCounts, [2, 2, 1]);
 });
 
 test("analysis content byte budget permits an exact framed fit and splits on one-byte overflow", async () => {
@@ -158,7 +197,96 @@ test("analysis content byte budget permits an exact framed fit and splits on one
   assertEquals(exact.batchSizes, [2]);
   const overflow = await analyzeWithBudget(framedBytes - 1);
   assertEquals(overflow.requestSizes.every((size) => size <= framedBytes - 1), true);
-  assertEquals(overflow.batchSizes, [1, 1]);
+  assertEquals(overflow.batchSizes, [2]);
+});
+
+test("analysis transport splits long threads contiguously with useful escaped Unicode context", async () => {
+  const maxBytes = 9_000;
+  const encoder = new TextEncoder();
+  const longText = `${"\\".repeat(1_500)}${"😀".repeat(1_000)}${"tail".repeat(1_000)}`;
+  const inputs = Array.from({ length: 8 }, (_, index) =>
+    item(index, {
+      text: `${index}:${longText}`,
+      meta: { threadRootId: "shared-thread" },
+    })
+  );
+  const requests: string[] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 50,
+    maxTextBytesPerChunk: maxBytes,
+    client: {
+      complete: async (_prompt, content) => {
+        requests.push(content);
+        const records = content.split("\n").map((line) => JSON.parse(line) as {
+          i: number;
+          members: Array<{ m: number; text: string }>;
+        });
+        return JSON.stringify(records.flatMap(({ i, members }) =>
+          members.map(({ m }) => ({
+            i,
+            m,
+            topics: [],
+            entities: [],
+            storyKey: `story-${m}`,
+            storyTitle: `Story ${m}`,
+            developmentKey: `development-${m}`,
+            developmentType: "report",
+            developmentTitle: `Development ${m}`,
+            evidence: [],
+          }))
+        ));
+      },
+    },
+  });
+  const results = await service.analyze(inputs);
+  const records = requests.flatMap((content) => {
+    assertEquals(encoder.encode(content).length <= maxBytes, true);
+    return content.split("\n").map((line) => JSON.parse(line) as {
+      i: number;
+      members: Array<{ m: number; text: string }>;
+    });
+  });
+  assertEquals(records.length > 1, true);
+  assertEquals(records.every(({ members }) =>
+    members.every(({ text }) => encoder.encode(text).length >= 2_000)
+  ), true);
+  assertEquals(
+    records.flatMap(({ members }) => members.map(({ m }) => m)),
+    [0, 1, 2, 3, 4, 5, 6, 7],
+  );
+  assertEquals(results.map(({ itemId }) => itemId), inputs.map(({ itemId }) => itemId));
+
+  const roomy = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 50,
+    maxTextBytesPerChunk: 120_000,
+    client: {
+      complete: async (_prompt, content) => {
+        const roomyRecords = content.split("\n").map((line) => JSON.parse(line) as {
+          i: number;
+          members: Array<{ m: number }>;
+        });
+        return JSON.stringify(roomyRecords.flatMap(({ i, members }) =>
+          members.map(({ m }) => ({
+            i,
+            m,
+            topics: [],
+            entities: [],
+            storyKey: `story-${m}`,
+            storyTitle: `Story ${m}`,
+            developmentKey: `development-${m}`,
+            developmentType: "report",
+            developmentTitle: `Development ${m}`,
+            evidence: [],
+          }))
+        ));
+      },
+    },
+  });
+  const roomyResults = await roomy.analyze(inputs);
+  assertEquals(
+    results.map(({ fingerprint }) => fingerprint),
+    roomyResults.map(({ fingerprint }) => fingerprint),
+  );
 });
 
 test("analysis content partitioning counts Unicode as UTF-8 bytes", async () => {
@@ -208,10 +336,38 @@ test("analysis bounds low-text media description concurrency and rejects partial
     mediaDescriber: { describe: async () => { active++; maximum = Math.max(maximum, active); await Promise.resolve(); active--; return "Visible poster"; } },
     client: { complete: async (_prompt, content) => analysisResponse(content.split("\n").map((line) => JSON.parse(line).i as number)) },
   });
-  await service.analyze(Array.from({ length: 7 }, (_, index) => item(index, { text: "", media: { type: "video" } })));
+  await service.analyze(Array.from({ length: 7 }, (_, index) => item(index, { text: "", media: { type: "photo", localPath: `/tmp/${index}.jpg` } })));
   assertEquals(maximum, 2);
   const partial = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => "[]" } });
-  await assertRejects(() => partial.analyze([item(1)]), "returned 0 results for 1 inputs");
+  await assertRejects(() => partial.analyze([item(1)]), "duplicate, missing, or unknown unit members");
+});
+
+test("analysis retries media description after a cached promise rejects", async () => {
+  let mediaCalls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    mediaDescriber: {
+      describe: async () => {
+        mediaCalls++;
+        if (mediaCalls === 1) throw new Error("temporary media failure");
+        return "Recovered description";
+      },
+    },
+    client: {
+      complete: async (_prompt, content) =>
+        analysisResponse(content.split("\n").map((line) => JSON.parse(line).i as number)),
+    },
+  });
+  const input = item(0, {
+    text: "",
+    media: { type: "photo", localPath: "/tmp/retry.jpg" },
+  });
+  await assertRejects(
+    () => service.analyze([input]),
+    "temporary media failure",
+  );
+  const [result] = await service.analyze([input]);
+  assertEquals(mediaCalls, 2);
+  assertEquals(result!.analysis.mediaDescription, "Recovered description");
 });
 
 test("default media path uses the model-backed summarizer and preserves its description", async () => {
@@ -241,9 +397,9 @@ test("analysis derives an omitted story title from the trimmed source title", as
   const service = new OpenAICompatibleStoryIntelligenceService({
     client: {
       complete: async () => JSON.stringify([{
-        i: 0, language: "en", canonicalUrls: [], topics: [], entities: [],
+        i: 0, m: 0, topics: [], entities: [],
         storyKey: "model-story", developmentKey: "development",
-        developmentType: "report", developmentTitle: "Development", mediaDescription: null,
+        developmentType: "report", developmentTitle: "Development", evidence: [],
       }]),
     },
   });
@@ -255,14 +411,42 @@ test("analysis derives an omitted story title from the normalized story key when
   const service = new OpenAICompatibleStoryIntelligenceService({
     client: {
       complete: async () => JSON.stringify([{
-        i: 0, language: "en", canonicalUrls: [], topics: [], entities: [],
+        i: 0, m: 0, topics: [], entities: [],
         storyKey: "  Model Story Key  ", developmentKey: "development",
-        developmentType: "report", developmentTitle: "Development", mediaDescription: null,
+        developmentType: "report", developmentTitle: "Development", evidence: [],
       }]),
     },
   });
   const [result] = await service.analyze([item(0, { title: "   " })]);
   assertEquals(result!.analysis.storyTitle, "model-story-key");
+});
+
+test("analysis retains only verbatim source evidence", async () => {
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => JSON.stringify([{
+        i: 0,
+        m: 0,
+        topics: [],
+        entities: [],
+        storyKey: "model-story",
+        developmentKey: "development",
+        evidence: [
+          "Source Story Title",
+          "confirmed detail",
+          "invented model claim",
+        ],
+      }]),
+    },
+  });
+  const [result] = await service.analyze([item(0, {
+    title: "Source Story Title",
+    text: "A confirmed detail appears in the source.",
+  })]);
+  assertEquals(result!.analysis.evidence, [
+    "Source Story Title",
+    "confirmed detail",
+  ]);
 });
 
 test("analysis accepts provider metadata omissions and canalUrls typo with deterministic trusted fallbacks", async () => {
@@ -272,10 +456,10 @@ test("analysis accepts provider metadata omissions and canalUrls typo with deter
     },
     client: {
       complete: async () => JSON.stringify([{
-        i: 0,
-        canalUrls: ["https://model.example/untrusted"],
+        i: 0, m: 0,
         storyKey: "  Model Story  ",
         developmentKey: "  First Report  ",
+        evidence: [],
       }]),
     },
   });
@@ -296,6 +480,7 @@ test("analysis accepts provider metadata omissions and canalUrls typo with deter
     developmentType: "first-report",
     developmentTitle: "Trusted Source Title",
     mediaDescription: "Trusted media description",
+    evidence: [],
   });
 });
 
@@ -306,25 +491,29 @@ test("analysis keeps optional metadata typed while rejecting unknown keys and in
     }).analyze([item(0)]);
 
   await assertRejects(() => analyzeRecord({
-    i: 0,
+    i: 0, m: 0,
     storyKey: "story",
     developmentKey: "development",
+    evidence: [],
     unrelated: true,
   }));
   await assertRejects(() => analyzeRecord({
-    i: 0,
+    i: 0, m: 0,
     storyKey: "story",
+    evidence: [],
   }));
   await assertRejects(() => analyzeRecord({
-    i: 0,
+    i: 0, m: 0,
     storyKey: "---",
     developmentKey: "development",
+    evidence: [],
   }), "must contain a letter or number");
   await assertRejects(() => analyzeRecord({
-    i: 0,
+    i: 0, m: 0,
     storyKey: "story",
     developmentKey: "development",
     topics: "Film",
+    evidence: [],
   }));
 });
 
@@ -332,16 +521,16 @@ test("analysis strictly rejects malformed fields and duplicate indexes", async (
   const malformed = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => JSON.stringify([{ i: 0, extra: true }]) } });
   await assertRejects(() => malformed.analyze([item(0)]));
   const duplicate = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => analysisResponse([0, 0]) } });
-  await assertRejects(() => duplicate.analyze([item(0), item(1)]), "duplicate, missing, or unknown indexes");
+  await assertRejects(() => duplicate.analyze([item(0), item(1)]), "duplicate, missing, or unknown unit members");
 });
 
 test("analysis rejects identity keys that normalize to empty", async () => {
   const service = new OpenAICompatibleStoryIntelligenceService({
     client: {
       complete: async () => JSON.stringify([{
-        i: 0, language: "en", canonicalUrls: [], topics: [], entities: [],
+        i: 0, m: 0, topics: [], entities: [],
         storyKey: "---", storyTitle: "Story", developmentKey: "...",
-        developmentType: "!!!", developmentTitle: "Development", mediaDescription: null,
+        developmentType: "!!!", developmentTitle: "Development", evidence: [],
       }]),
     },
   });
@@ -463,7 +652,7 @@ test("classification partitions 120 candidates as 50, 50, and 20 with shared con
   const decisions = await service.classify(stories, [prioritize], 50, {
     preferencePrompt: "reader profile",
   });
-  assertEquals(batchSizes, [50, 50, 20]);
+  assertEquals(batchSizes, [100, 20]);
   assertEquals(decisions.map((decision) => decision.storyId), stories.map((story) => story.id));
   assertEquals(decisions.map((decision) => decision.score), Array.from({ length: 120 }, (_, index) => index % 101));
 });
@@ -496,8 +685,8 @@ test("classification request byte budget permits an exact fit and splits on one-
     return { requestSizes, batchSizes };
   };
   const exact = await classifyWithBudget(exactBytes);
-  assertEquals(exact.requestSizes, [exactBytes]);
-  assertEquals(exact.batchSizes, [2]);
+  assertEquals(exact.requestSizes.every((size) => size <= exactBytes), true);
+  assertEquals(exact.batchSizes, [1, 1]);
   const overflow = await classifyWithBudget(exactBytes - 1);
   assertEquals(overflow.requestSizes.every((size) => size <= exactBytes - 1), true);
   assertEquals(overflow.batchSizes, [1, 1]);
@@ -520,6 +709,27 @@ test("classification rejects shared context that leaves no candidate bytes befor
     () => service.classify([persisted("one", analysis(item(0), "one", "report"))], [], 50, { preferencePrompt }),
     RangeError,
     "context exceeds the request byte budget",
+  );
+  assertEquals(calls, 0);
+});
+
+test("classification rejects an oversized record before calling the model", async () => {
+  let calls = 0;
+  const story = persisted("one", analysis(item(0), "one", "report"));
+  story.candidate.title = "x".repeat(10_000);
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxTextBytesPerChunk: 1_000,
+    client: {
+      complete: async () => {
+        calls++;
+        return "[]";
+      },
+    },
+  });
+  await assertRejects(
+    () => service.classify([story], [prioritize], 50),
+    RangeError,
+    "record exceeds the request byte budget",
   );
   assertEquals(calls, 0);
 });

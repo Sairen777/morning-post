@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { and, eq } from "drizzle-orm";
-import { assertEquals } from "../assertions.ts";
+import { assertEquals, assertRejects } from "../assertions.ts";
 import { ConnectorId } from "../../src/constants.ts";
 import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
@@ -62,7 +62,7 @@ function candidate(f: Awaited<ReturnType<typeof fixture>>, storyKey = "Election 
         sourceId: f.source.id,
         fingerprint,
         payload: f.stored[item].payload,
-        analysis: { language: "en", canonicalUrls: [], topics: ["politics"], entities: ["Example"], storyKey, storyTitle: storyKey, developmentKey: key, developmentType: "update", developmentTitle: key, mediaDescription: null },
+        analysis: { language: "en", canonicalUrls: [], topics: ["politics"], entities: ["Example"], storyKey, storyTitle: storyKey, developmentKey: key, developmentType: "update", developmentTitle: key, mediaDescription: null, evidence: [] },
       })),
     })),
   };
@@ -75,13 +75,23 @@ async function version(database: Database, userId: string, canonicalKey: string)
 test("item analysis batch writes once and returns only exact cache hits", async () => {
   await withTestDb(async (database) => {
     const f = await fixture(database, "story-analysis-batch@example.com");
-    const analysis = { language: "en", canonicalUrls: [], topics: ["politics"], entities: ["Example"], storyKey: "story", storyTitle: "Story", developmentKey: "update", developmentType: "update", developmentTitle: "Update", mediaDescription: null };
+    const analysis = { language: "en", canonicalUrls: [], topics: ["politics"], entities: ["Example"], storyKey: "story", storyTitle: "Story", developmentKey: "update", developmentType: "update", developmentTitle: "Update", mediaDescription: null, evidence: [] };
     assertEquals(await upsertItemAnalyses(database, []), []);
     const written = await upsertItemAnalyses(database, [
       { itemId: f.stored[0].id, fingerprint: "fp-0", analyzerVersion: "v1", analysis, analyzedAt: 100 },
       { itemId: f.stored[1].id, fingerprint: "fp-1", analyzerVersion: "v1", analysis, analyzedAt: 101 },
     ]);
     assertEquals(written.map((value) => value.itemId), [f.stored[0].id, f.stored[1].id]);
+    await assertRejects(
+      () => upsertItemAnalyses(database, [{
+        itemId: f.stored[0].id,
+        fingerprint: "oversized",
+        analyzerVersion: "v1",
+        analysis: { ...analysis, evidence: ["😀".repeat(101)] },
+        analyzedAt: 102,
+      }]),
+      "evidence excerpts must be at most 400 UTF-8 bytes",
+    );
     const hits = await listItemAnalyses(database, [
       { itemId: f.stored[0].id, fingerprint: "fp-0" },
       { itemId: f.stored[1].id, fingerprint: "stale" },

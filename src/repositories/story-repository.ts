@@ -12,6 +12,11 @@ import { personalizationLabelsSchema } from "../personalization/personalization-
 import { normalizedItemSchema, type StoredItem } from "./item-repository.ts";
 import { summaryPointSchema } from "./summary-repository.ts";
 
+const utf8Encoder = new TextEncoder();
+const evidenceExcerptSchema = z.string().refine(
+  (value) => utf8Encoder.encode(value).length <= 400,
+  "evidence excerpts must be at most 400 UTF-8 bytes",
+);
 const keySchema = z.string().trim().min(1).transform((value) =>
   value.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "")
 ).pipe(z.string().min(1));
@@ -19,6 +24,7 @@ const analysisSchema = z.object({
   language: z.string().nullable(), canonicalUrls: z.array(z.string()), topics: personalizationLabelsSchema, entities: personalizationLabelsSchema,
   storyKey: z.string().min(1), storyTitle: z.string().min(1), developmentKey: z.string().min(1), developmentType: z.string().min(1),
   developmentTitle: z.string().min(1), mediaDescription: z.string().nullable(),
+  evidence: z.array(evidenceExcerptSchema).max(3).default([]),
 }).strict();
 const analyzedItemSchema = z.object({
   itemId: z.string().uuid(), feedId: z.string().uuid(), feedName: z.string(), sourceId: z.string().uuid(), fingerprint: z.string().min(1),
