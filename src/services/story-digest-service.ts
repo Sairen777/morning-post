@@ -32,6 +32,10 @@ import {
 } from "./story-intelligence-service.ts";
 import type { StoryIntelligenceService } from "../personalization/story.types.ts";
 import { isInaccessiblePaidItem } from "./content-access.ts";
+import {
+  type DigestProgressReporter,
+  reportDigestProgress,
+} from "./digest-progress.ts";
 
 export interface StoryDigestDependencies {
   intelligence?: StoryIntelligenceService;
@@ -42,6 +46,9 @@ export interface StoryDigestDependencies {
   now?: () => number;
   signal?: AbortSignal;
   timeoutMs?: number;
+  runId?: string;
+  progressReporter?: DigestProgressReporter;
+  progressStartedAtMs?: number;
 }
 
 export interface StoryDigestResult {
@@ -84,6 +91,10 @@ export async function assembleStoryDigest(
   const summarizer = dependencies.summarizer ?? new OpenAICompatibleSummarizerService();
   const analyzerVersion = dependencies.analyzerVersion ?? "story-v1";
   const now = dependencies.now ?? Date.now;
+  const progress = dependencies.progressReporter;
+  const runId = dependencies.runId;
+  const progressStartedAtMs = dependencies.progressStartedAtMs ?? now();
+  const elapsedMs = () => Math.max(0, now() - progressStartedAtMs);
   const sources = await listSourcesForUser(database, user.id);
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const feedById = new Map(feeds.map((feed) => [feed.id, feed]));
@@ -115,6 +126,17 @@ export async function assembleStoryDigest(
       item.itemId,
       fingerprintByItemId.get(item.itemId)!,
     ]));
+    const batchIndex = Math.floor(start / checkpointSize) + 1;
+    if (runId) reportDigestProgress(progress, {
+      event: "analysis_checkpoint",
+      runId,
+      elapsedMs: elapsedMs(),
+      batchIndex,
+      batchSize: checkpointInputs.length,
+      completedCount: start,
+      totalCount: misses.length,
+      status: "started",
+    });
     const checkpoint = await intelligence.analyze(checkpointInputs, {
       signal: dependencies.signal,
       requestTimeoutMs: dependencies.timeoutMs,
@@ -137,6 +159,16 @@ export async function assembleStoryDigest(
       analyzedAt: now(),
     })));
     analyzedMisses.push(...checkpoint);
+    if (runId) reportDigestProgress(progress, {
+      event: "analysis_checkpoint",
+      runId,
+      elapsedMs: elapsedMs(),
+      batchIndex,
+      batchSize: checkpointInputs.length,
+      completedCount: analyzedMisses.length,
+      totalCount: misses.length,
+      status: "complete",
+    });
   }
   const missesById = new Map(analyzedMisses.map((item) => [item.itemId, item]));
   const analyzed: AnalyzedStoryItem[] = inputs.map((item, i) => {
@@ -146,8 +178,22 @@ export async function assembleStoryDigest(
     return { ...item, fingerprint: fingerprints[i], analysis: hit.analysis };
   });
   const recentStories = await listRecentStoryReferences(database, user.id, { limit: 200 });
+  if (runId) reportDigestProgress(progress, {
+    event: "resolution",
+    runId,
+    elapsedMs: elapsedMs(),
+    itemCount: analyzed.length,
+    status: "started",
+  });
   const resolved = await intelligence.resolve(analyzed, recentStories, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs });
   const persisted = await upsertResolvedStories(database, user.id, resolved, now());
+  if (runId) reportDigestProgress(progress, {
+    event: "resolution",
+    runId,
+    elapsedMs: elapsedMs(),
+    itemCount: persisted.length,
+    status: "complete",
+  });
   const rules = await listActiveInterestRules(database, user.id, now());
   const includeAll: PersistedStoryCandidate[] = [];
   const personalized: PersistedStoryCandidate[] = [];
@@ -158,10 +204,24 @@ export async function assembleStoryDigest(
     }));
     (hasIncludeAll ? includeAll : personalized).push(story);
   }
+  if (runId) reportDigestProgress(progress, {
+    event: "classification",
+    runId,
+    elapsedMs: elapsedMs(),
+    itemCount: persisted.length,
+    status: "started",
+  });
   const decisions: StoryRelevanceDecision[] = [
     ...(personalized.length ? await intelligence.classify(personalized, rules, user.relevanceThreshold, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, preferencePrompt: user.systemPrompt }) : []),
     ...(includeAll.length ? await intelligence.classify(includeAll, rules.filter((rule) => rule.disposition === "mute"), 0, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs }) : []),
   ];
+  if (runId) reportDigestProgress(progress, {
+    event: "classification",
+    runId,
+    elapsedMs: elapsedMs(),
+    itemCount: decisions.length,
+    status: "complete",
+  });
   const decisionById = new Map(decisions.map((decision) => [decision.storyId, decision]));
   const deliveredVersions = await findLatestDeliveredStoryVersions(database, user.id, persisted.map((story) => story.id), digestId);
   const relevant: PersistedStoryCandidate[] = [];
@@ -177,6 +237,14 @@ export async function assembleStoryDigest(
   const selected = user.maximumStoriesPerDigest === null ? relevant : relevant.slice(0, user.maximumStoriesPerDigest);
   const storyRules = buildStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
   storyRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), storyRules.systemPrompt].filter(Boolean).join("\n\n");
+  if (runId) reportDigestProgress(progress, {
+    event: "summarization",
+    runId,
+    elapsedMs: elapsedMs(),
+    itemCount: selected.length,
+    completedCount: 0,
+    status: "started",
+  });
   const summaries = await boundedMap(selected, Math.max(1, dependencies.summaryConcurrency ?? 2), async (story) => {
     const prior = currentStories.find((current) =>
       current.storyId === story.id &&
@@ -193,6 +261,14 @@ export async function assembleStoryDigest(
     const decision = decisionById.get(story.id)!;
     const sources: StorySource[] = items.map((item) => ({ itemId: item.itemId, connectorId: connectorBySource.get(item.sourceId)!, sourceId: item.sourceId, feedId: item.feedId, feedName: item.feedName, title: item.payload.title, url: item.payload.url, publishedAt: item.payload.date }));
     return { content: { storyId: story.id, storyVersion: story.version, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, points, sources, relevanceScore: decision.score, matchedInterestRuleIds: decision.matchedInterestRuleIds }, profileVersion: user.interestProfileVersion, generatedAt: now() };
+  });
+  if (runId) reportDigestProgress(progress, {
+    event: "summarization",
+    runId,
+    elapsedMs: elapsedMs(),
+    itemCount: selected.length,
+    completedCount: summaries.length,
+    status: "complete",
   });
   const replacement = summaries.flatMap((result, index) => {
     if (result.status === "fulfilled") return [result.value];

@@ -19,6 +19,7 @@ import {
 import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
 import type { runForUser as runForUserType } from "../../services/orchestrator.ts";
 import type { SummarizerService } from "../../summarizers/summarizer.types.ts";
+import type { DigestProgressReporter } from "../../services/digest-progress.ts";
 import { validate } from "../validate.ts";
 import { NotFoundError } from "../errors.ts";
 import { parseLimit } from "../cursor.ts";
@@ -56,6 +57,8 @@ function parseDigestId(rawId: string): { id: string; markdown: boolean } {
 export interface DigestRouteOptions {
   trustedProxyCount?: number;
   summarizer?: SummarizerService;
+  timeoutMs?: number;
+  progressReporter?: DigestProgressReporter;
   runForUser?: typeof runForUserType;
 }
 
@@ -109,6 +112,8 @@ export function buildDigestRoutes(
     }
     const digest = await runForUser(database, context.var.userId, { startMs, endMs }, {
       summarizer: options.summarizer,
+      timeoutMs: options.timeoutMs,
+      progressReporter: options.progressReporter,
     });
     return context.json(digest, 200);
   });

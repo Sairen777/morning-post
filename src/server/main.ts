@@ -10,6 +10,7 @@ import type { SummarizerService } from "../summarizers/summarizer.types.ts";
 import { database as defaultDatabase } from "../db/client.ts";
 import type { Database } from "../db/client.ts";
 import { recoverStaleDigestRuns } from "../repositories/digest-run-repository.ts";
+import { createConsoleDigestProgressReporter } from "../services/digest-progress.ts";
 import {
   scheduleDigestJob,
   scheduleMediaHousekeeping,
@@ -56,7 +57,18 @@ export async function bootServer(
       ),
     });
   const scheduler = dependencies.scheduler ?? new CronScheduler();
-  const app = buildApp(database, { digests: { summarizer } });
+  const log = dependencies.log ?? console.log;
+  const progressReporter = createConsoleDigestProgressReporter(
+    config.digestProgressLogging,
+    log,
+  );
+  const app = buildApp(database, {
+    digests: {
+      summarizer,
+      timeoutMs: config.summarizerTimeoutMs,
+      progressReporter,
+    },
+  });
   const recoverStaleRuns = dependencies.recoverStaleRuns ??
     recoverStaleDigestRuns;
   await recoverStaleRuns(
@@ -66,12 +78,13 @@ export async function bootServer(
   );
   scheduleDigestJob(scheduler, database, {
     summarizer,
+    timeoutMs: config.summarizerTimeoutMs,
+    progressReporter,
     schedulerLeaseMs: config.schedulerLeaseMs,
     digestRunStaleAfterMs: config.digestRunStaleAfterMs,
   });
   scheduleMediaHousekeeping(scheduler);
 
-  const log = dependencies.log ?? console.log;
   const formattedServerHostname = serverHostname.includes(":")
     ? `[${serverHostname}]`
     : serverHostname;

@@ -36,6 +36,7 @@ import {
   ingestFeedsForSource,
   ingestFeedsIndividually,
 } from "./ingestion-service.ts";
+import { reportDigestProgress } from "./digest-progress.ts";
 
 export interface DigestPeriod {
   startMs: number;
@@ -44,6 +45,10 @@ export interface DigestPeriod {
 
 export interface OrchestratorDependencies extends AssembleDigestDependencies {
   connectorFactory?: ConnectorFactoryLike;
+  digestRunFeedRepository?: {
+    start: typeof startDigestRunFeed;
+    finish: typeof finishDigestRunFeed;
+  };
   trigger?: DigestRunTrigger;
   now?: () => number;
 }
@@ -96,6 +101,8 @@ interface RunContext {
   digestRunId: string;
   period: DigestPeriod;
   now: () => number;
+  progressStartedAtMs: number;
+  progressReporter: OrchestratorDependencies["progressReporter"];
 }
 
 async function loadEnabledUserFeedPlan(
@@ -124,6 +131,9 @@ async function ingestUserFeeds(
     feedsBySourceId: Map<string, PublicFeed[]>;
   },
   connectorFactory: ConnectorFactoryLike | undefined,
+  digestRunFeedRepository: NonNullable<
+    OrchestratorDependencies["digestRunFeedRepository"]
+  >,
   now: () => number,
   runContext: RunContext,
 ): Promise<{ successfulFeedIds: string[]; hadFailure: boolean }> {
@@ -140,10 +150,32 @@ async function ingestUserFeeds(
     ),
   );
 
+  let sourceIndex = 0;
   for (const [sourceId, sourceFeeds] of plan.feedsBySourceId.entries()) {
+    sourceIndex++;
+    let sourceFailed = false;
+    reportDigestProgress(runContext.progressReporter, {
+      event: "ingestion_source",
+      runId: runContext.digestRunId,
+      elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+      sourceIndex,
+      sourceCount: plan.feedsBySourceId.size,
+      feedCount: sourceFeeds.length,
+      status: "started",
+    });
     const source = plan.sourcesById.get(sourceId);
     if (!source) {
       hadFailure = true;
+      sourceFailed = true;
+      reportDigestProgress(runContext.progressReporter, {
+        event: "ingestion_source",
+        runId: runContext.digestRunId,
+        elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+        sourceIndex,
+        sourceCount: plan.feedsBySourceId.size,
+        feedCount: sourceFeeds.length,
+        status: "failed",
+      });
       continue;
     }
 
@@ -154,40 +186,61 @@ async function ingestUserFeeds(
         !paidRefreshFeedIds.has(feed.id)
       ) {
         successfulFeedIds.push(feed.id);
+        reportDigestProgress(runContext.progressReporter, {
+          event: "ingestion_feed",
+          runId: runContext.digestRunId,
+          elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+          sourceIndex,
+          feedIndex: sourceFeeds.indexOf(feed) + 1,
+          feedCount: sourceFeeds.length,
+          itemCount: 0,
+          status: "skipped",
+        });
       } else {
         feedsNeedingIngestion.push(feed);
       }
     }
     if (feedsNeedingIngestion.length === 0) {
+      reportDigestProgress(runContext.progressReporter, {
+        event: "ingestion_source",
+        runId: runContext.digestRunId,
+        elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+        sourceIndex,
+        sourceCount: plan.feedsBySourceId.size,
+        feedCount: sourceFeeds.length,
+        status: "complete",
+      });
       continue;
     }
 
     let handle;
+    let sourceExecutionError: unknown;
     try {
-      connectorFactory ??= new ConnectorFactory(database);
-      handle = await connectorFactory.forSource(source, userId);
-    } catch (error) {
-      hadFailure = true;
-      const feedRunInput: CreateDigestRunFeedInput = {
-        runId: runContext.digestRunId,
-        sourceId: source.id,
-        connectorId: source.connectorId,
-        stage: "connector",
-        status: "failed",
-      };
-      const feedRun = await startDigestRunFeed(
-        database,
-        feedRunInput,
-        runContext.now(),
-      );
-      await finishDigestRunFeed(database, feedRun.id, {
-        status: "failed",
-        errorMessage: summarizeErrorForOps(error),
-      }, runContext.now());
-      continue;
-    }
+      try {
+        connectorFactory ??= new ConnectorFactory(database);
+        handle = await connectorFactory.forSource(source, userId);
+      } catch (error) {
+        hadFailure = true;
+        sourceFailed = true;
+        const feedRunInput: CreateDigestRunFeedInput = {
+          runId: runContext.digestRunId,
+          sourceId: source.id,
+          connectorId: source.connectorId,
+          stage: "connector",
+          status: "failed",
+        };
+        const feedRun = await digestRunFeedRepository.start(
+          database,
+          feedRunInput,
+          runContext.now(),
+        );
+        await digestRunFeedRepository.finish(database, feedRun.id, {
+          status: "failed",
+          errorMessage: summarizeErrorForOps(error),
+        }, runContext.now());
+        continue;
+      }
 
-    try {
       if (handle.ingestionMode === "individual") {
         const feedRunMap = new Map<string, { id: string }>();
         for (const feed of feedsNeedingIngestion) {
@@ -201,7 +254,7 @@ async function ingestUserFeeds(
             stage: "ingestion",
             status: "running",
           };
-          const feedRun = await startDigestRunFeed(
+          const feedRun = await digestRunFeedRepository.start(
             database,
             feedRunInput,
             runContext.now(),
@@ -232,28 +285,50 @@ async function ingestUserFeeds(
 
             if ("error" in result) {
               hadFailure = true;
-              await finishDigestRunFeed(database, feedRun.id, {
+              sourceFailed = true;
+              await digestRunFeedRepository.finish(database, feedRun.id, {
                 status: "failed",
                 errorMessage: result.error,
               }, runContext.now());
             } else {
-              await finishDigestRunFeed(database, feedRun.id, {
+              await digestRunFeedRepository.finish(database, feedRun.id, {
                 status: "complete",
                 itemCount: result.itemCount,
               }, runContext.now());
               successfulFeedIds.push(result.feedId);
             }
+            reportDigestProgress(runContext.progressReporter, {
+              event: "ingestion_feed",
+              runId: runContext.digestRunId,
+              elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+              sourceIndex,
+              feedIndex: sourceFeeds.findIndex((feed) => feed.id === result.feedId) + 1,
+              feedCount: sourceFeeds.length,
+              itemCount: "error" in result ? 0 : result.itemCount,
+              status: "error" in result ? "failed" : "complete",
+            });
           }
         } catch (error) {
           hadFailure = true;
+          sourceFailed = true;
           for (const feed of feedsNeedingIngestion) {
             const feedRun = feedRunMap.get(feed.id);
             if (feedRun) {
-              await finishDigestRunFeed(database, feedRun.id, {
+              await digestRunFeedRepository.finish(database, feedRun.id, {
                 status: "failed",
                 errorMessage: summarizeErrorForOps(error),
               }, runContext.now());
             }
+            reportDigestProgress(runContext.progressReporter, {
+              event: "ingestion_feed",
+              runId: runContext.digestRunId,
+              elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+              sourceIndex,
+              feedIndex: sourceFeeds.indexOf(feed) + 1,
+              feedCount: sourceFeeds.length,
+              itemCount: 0,
+              status: "failed",
+            });
           }
         }
       } else if (feedsNeedingIngestion.length === 1) {
@@ -268,7 +343,7 @@ async function ingestUserFeeds(
           stage: "ingestion",
           status: "running",
         };
-        const feedRun = await startDigestRunFeed(
+        const feedRun = await digestRunFeedRepository.start(
           database,
           feedRunInput,
           runContext.now(),
@@ -284,17 +359,38 @@ async function ingestUserFeeds(
               fetchedAt: now(),
             },
           );
-          await finishDigestRunFeed(database, feedRun.id, {
+          await digestRunFeedRepository.finish(database, feedRun.id, {
             status: "complete",
             itemCount: result.itemCount,
           }, runContext.now());
           successfulFeedIds.push(feed.id);
+          reportDigestProgress(runContext.progressReporter, {
+            event: "ingestion_feed",
+            runId: runContext.digestRunId,
+            elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+            sourceIndex,
+            feedIndex: sourceFeeds.indexOf(feed) + 1,
+            feedCount: sourceFeeds.length,
+            itemCount: result.itemCount,
+            status: "complete",
+          });
         } catch (error) {
           hadFailure = true;
-          await finishDigestRunFeed(database, feedRun.id, {
+          sourceFailed = true;
+          await digestRunFeedRepository.finish(database, feedRun.id, {
             status: "failed",
             errorMessage: summarizeErrorForOps(error),
           }, runContext.now());
+          reportDigestProgress(runContext.progressReporter, {
+            event: "ingestion_feed",
+            runId: runContext.digestRunId,
+            elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+            sourceIndex,
+            feedIndex: sourceFeeds.indexOf(feed) + 1,
+            feedCount: sourceFeeds.length,
+            itemCount: 0,
+            status: "failed",
+          });
         }
       } else {
         // Batch multiple feeds from the same source with one connector call
@@ -310,7 +406,7 @@ async function ingestUserFeeds(
             stage: "ingestion",
             status: "running",
           };
-          const feedRun = await startDigestRunFeed(
+          const feedRun = await digestRunFeedRepository.start(
             database,
             feedRunInput,
             runContext.now(),
@@ -341,34 +437,80 @@ async function ingestUserFeeds(
 
             if ("error" in result) {
               hadFailure = true;
-              await finishDigestRunFeed(database, feedRun.id, {
+              sourceFailed = true;
+              await digestRunFeedRepository.finish(database, feedRun.id, {
                 status: "failed",
                 errorMessage: (result as IngestFeedError).error,
               }, runContext.now());
             } else {
-              await finishDigestRunFeed(database, feedRun.id, {
+              await digestRunFeedRepository.finish(database, feedRun.id, {
                 status: "complete",
                 itemCount: result.itemCount,
               }, runContext.now());
               successfulFeedIds.push(result.feedId);
             }
+            reportDigestProgress(runContext.progressReporter, {
+              event: "ingestion_feed",
+              runId: runContext.digestRunId,
+              elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+              sourceIndex,
+              feedIndex: sourceFeeds.findIndex((feed) => feed.id === result.feedId) + 1,
+              feedCount: sourceFeeds.length,
+              itemCount: "error" in result ? 0 : result.itemCount,
+              status: "error" in result ? "failed" : "complete",
+            });
           }
         } catch (error) {
           // Connector-level exception: mark all pending feeds in this source failed
           hadFailure = true;
+          sourceFailed = true;
           for (const feed of feedsNeedingIngestion) {
             const feedRun = feedRunMap.get(feed.id);
             if (feedRun) {
-              await finishDigestRunFeed(database, feedRun.id, {
+              await digestRunFeedRepository.finish(database, feedRun.id, {
                 status: "failed",
                 errorMessage: summarizeErrorForOps(error),
               }, runContext.now());
             }
+            reportDigestProgress(runContext.progressReporter, {
+              event: "ingestion_feed",
+              runId: runContext.digestRunId,
+              elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+              sourceIndex,
+              feedIndex: sourceFeeds.indexOf(feed) + 1,
+              feedCount: sourceFeeds.length,
+              itemCount: 0,
+              status: "failed",
+            });
           }
         }
       }
+    } catch (error) {
+      hadFailure = true;
+      sourceFailed = true;
+      sourceExecutionError = error;
+      throw error;
     } finally {
-      await handle.dispose?.();
+      let disposalError: unknown;
+      try {
+        await handle?.dispose?.();
+      } catch (error) {
+        hadFailure = true;
+        sourceFailed = true;
+        disposalError = error;
+      }
+      reportDigestProgress(runContext.progressReporter, {
+        event: "ingestion_source",
+        runId: runContext.digestRunId,
+        elapsedMs: Math.max(0, runContext.now() - runContext.progressStartedAtMs),
+        sourceIndex,
+        sourceCount: plan.feedsBySourceId.size,
+        feedCount: sourceFeeds.length,
+        status: sourceFailed ? "failed" : "complete",
+      });
+      if (disposalError !== undefined && sourceExecutionError === undefined) {
+        throw disposalError;
+      }
     }
   }
 
@@ -401,6 +543,7 @@ async function assembleRunDigest(
       runId: runContext.digestRunId,
       sourceConnectorIdsBySourceId,
       feeds,
+      progressStartedAtMs: runContext.progressStartedAtMs,
     },
   );
 }
@@ -440,6 +583,8 @@ async function executeDigestRun(
     digestRunId,
     period,
     now,
+    progressStartedAtMs: dependencies.progressStartedAtMs ?? now(),
+    progressReporter: dependencies.progressReporter,
   };
 
   const ingestionResult = await ingestUserFeeds(
@@ -448,6 +593,10 @@ async function executeDigestRun(
     period,
     plan,
     dependencies.connectorFactory,
+    dependencies.digestRunFeedRepository ?? {
+      start: startDigestRunFeed,
+      finish: finishDigestRunFeed,
+    },
     now,
     runContext,
   );
@@ -499,17 +648,22 @@ async function executeDigestRun(
     errorMessage: assemblyFailed ? summarizeErrorForOps(assemblyError) : null,
   }, now());
 
-  if (runStatus === "failed") {
-    return await buildDigestViewById(database, userId, digestView.digest.id);
-  }
-
-  return await finalizeRunDigestStatus(
-    database,
-    digestView,
-    userId,
-    overallHadFailure,
-    now,
-  );
+  const finalView = runStatus === "failed"
+    ? await buildDigestViewById(database, userId, digestView.digest.id)
+    : await finalizeRunDigestStatus(
+      database,
+      digestView,
+      userId,
+      overallHadFailure,
+      now,
+    );
+  reportDigestProgress(dependencies.progressReporter, {
+    event: "run_terminal",
+    runId: digestRunId,
+    elapsedMs: Math.max(0, now() - runContext.progressStartedAtMs),
+    status: runStatus,
+  });
+  return finalView;
 }
 
 export async function runForUser(
@@ -528,6 +682,14 @@ export async function runForUser(
     periodEndMs: period.endMs,
     status: "running",
   }, now());
+  const progressStartedAtMs = now();
+  const progressDependencies = { ...dependencies, progressStartedAtMs };
+  reportDigestProgress(dependencies.progressReporter, {
+    event: "run_start",
+    runId: digestRun.id,
+    elapsedMs: 0,
+    status: "running",
+  });
 
   try {
     return await executeDigestRun(
@@ -535,7 +697,7 @@ export async function runForUser(
       digestRun.id,
       userId,
       period,
-      dependencies,
+      progressDependencies,
       now,
     );
   } catch (error) {
@@ -547,6 +709,12 @@ export async function runForUser(
     } catch {
       // Preserve the operational failure when the best-effort run transition also fails.
     }
+    reportDigestProgress(dependencies.progressReporter, {
+      event: "run_terminal",
+      runId: digestRun.id,
+      elapsedMs: Math.max(0, now() - progressStartedAtMs),
+      status: "failed",
+    });
     throw error;
   }
 }

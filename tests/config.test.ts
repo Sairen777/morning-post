@@ -30,6 +30,7 @@ const ENV_KEYS = [
   "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
   "SUMMARIZER_MAX_IMAGE_BYTES",
   "SUMMARIZER_TIMEOUT_MS",
+  "DIGEST_PROGRESS_LOGGING",
   "SUMMARIZATION_CONCURRENCY",
   "MEDIA_TTL_MS",
   "MEDIA_QUOTA_BYTES",
@@ -77,6 +78,7 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.summarizerMaxItemsPerChunk, 50);
   assertEquals(config.summarizerMaxImageBytes, 1_000_000);
   assertEquals(config.summarizerTimeoutMs, 120_000);
+  assertEquals(config.digestProgressLogging, false);
   assertEquals(config.summarizationConcurrency, 2);
   assertEquals(config.mediaTtlMs, 604_800_000);
   assertEquals(config.mediaQuotaBytes, 524_288_000);
@@ -161,6 +163,7 @@ test("environment values override defaults and parse strictly", () => {
       SUMMARIZER_MAX_ITEMS_PER_CHUNK: "7",
       SUMMARIZER_MAX_IMAGE_BYTES: "8000",
       SUMMARIZER_TIMEOUT_MS: "6000",
+      DIGEST_PROGRESS_LOGGING: "true",
       SUMMARIZATION_CONCURRENCY: "3",
       MEDIA_TTL_MS: "7000",
       MEDIA_QUOTA_BYTES: "9000",
@@ -186,6 +189,7 @@ test("environment values override defaults and parse strictly", () => {
     assertEquals(config.summarizerMaxItemsPerChunk, 7);
     assertEquals(config.summarizerMaxImageBytes, 8000);
     assertEquals(config.summarizerTimeoutMs, 6000);
+    assertEquals(config.digestProgressLogging, true);
     assertEquals(config.summarizationConcurrency, 3);
     assertEquals(config.mediaTtlMs, 7000);
     assertEquals(config.mediaQuotaBytes, 9000);
@@ -197,6 +201,13 @@ test("environment values override defaults and parse strictly", () => {
       else process.env[key] = value;
     }
   }
+});
+
+test("digest progress logging constructor override wins over environment", () => {
+  withClearedEnvironment(["DIGEST_PROGRESS_LOGGING"], () => {
+    process.env["DIGEST_PROGRESS_LOGGING"] = "true";
+    assertEquals(getConfig({ digestProgressLogging: false }).digestProgressLogging, false);
+  });
 });
 
 test("constructor values take precedence over environment", () => {

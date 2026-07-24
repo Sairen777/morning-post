@@ -61,8 +61,13 @@ import {
   upsertSummaryForPeriod,
 } from "../../src/repositories/summary-repository.ts";
 import { sql } from "drizzle-orm";
-import { listDigestRunsForUser } from "../../src/repositories/digest-run-repository.ts";
+import {
+  finishDigestRunFeed,
+  listDigestRunsForUser,
+  startDigestRunFeed,
+} from "../../src/repositories/digest-run-repository.ts";
 import { fixtureStoryIntelligence } from "./fixture-story-intelligence.ts";
+import type { DigestProgressEvent } from "../../src/services/digest-progress.ts";
 
 class FakeConnector implements Connector<unknown> {
   readonly calls: Array<
@@ -307,6 +312,185 @@ test("runForUser ingests feeds, summarizes them, and returns a complete digest",
     assertEquals(runs[0].trigger, "manual");
   });
 });
+test("runForUser emits source-local failed terminals for two connector construction failures", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("orchestrator-progress-construction@example.com"));
+    const first = await createSourceAndFeed(
+      database, user.id, ConnectorId.Telegram, 1, "private:channel:first", "Secret First",
+    );
+    const second = await createSourceAndFeed(
+      database, user.id, ConnectorId.RSS, 2, "https://private.example/rss", "Secret Second",
+    );
+    const factory = new FakeConnectorFactory(
+      {},
+      new Set([first.source.id, second.source.id]),
+    );
+    const events: DigestProgressEvent[] = [];
+
+    await runForUser(database, user.id, period, {
+      connectorFactory: factory,
+      summarizer: new FakeSummarizer([]),
+      intelligence: fixtureStoryIntelligence,
+      now: () => 205,
+      progressReporter: { report: (event) => events.push(event) },
+    });
+
+    const sources = events.filter((event) => event.event === "ingestion_source");
+    assertEquals(sources.map((event) => event.status), [
+      "started", "failed", "started", "failed",
+    ]);
+    assertEquals(sources.map((event) => event.sourceIndex), [1, 1, 2, 2]);
+    const serialized = JSON.stringify(events);
+    assertEquals(serialized.includes("Secret First"), false);
+    assertEquals(serialized.includes("Secret Second"), false);
+    assertEquals(serialized.includes("private:channel:first"), false);
+    assertEquals(serialized.includes("private.example"), false);
+  });
+});
+
+test("runForUser emits a failed source terminal before run failure when connector feed-run start persistence rejects", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-connector-feed-run-start-failure@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Telegram,
+      1,
+      "channel:start-persistence-failure",
+      "Start Persistence Failure",
+    );
+    const persistenceError = new Error("feed-run start persistence failed");
+    const events: DigestProgressEvent[] = [];
+
+    const rejected = await assertRejects(() =>
+      runForUser(database, user.id, period, {
+        connectorFactory: new FakeConnectorFactory(
+          {},
+          new Set([setup.source.id]),
+        ),
+        digestRunFeedRepository: {
+          start: () => Promise.reject(persistenceError),
+          finish: finishDigestRunFeed,
+        },
+        summarizer: new FakeSummarizer([]),
+        intelligence: fixtureStoryIntelligence,
+        now: () => 205,
+        progressReporter: { report: (event) => events.push(event) },
+      })
+    );
+
+    assert(rejected === persistenceError);
+    assertEquals(rejected.message, "feed-run start persistence failed");
+    assertEquals(
+      events
+        .filter((event) =>
+          event.event === "ingestion_source" || event.event === "run_terminal"
+        )
+        .map((event) => [event.event, event.status]),
+      [
+        ["ingestion_source", "started"],
+        ["ingestion_source", "failed"],
+        ["run_terminal", "failed"],
+      ],
+    );
+  });
+});
+
+test("runForUser emits a failed source terminal before run failure when connector feed-run finish persistence rejects", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-connector-feed-run-finish-failure@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Telegram,
+      1,
+      "channel:finish-persistence-failure",
+      "Finish Persistence Failure",
+    );
+    const persistenceError = new Error("feed-run finish persistence failed");
+    const events: DigestProgressEvent[] = [];
+
+    const rejected = await assertRejects(() =>
+      runForUser(database, user.id, period, {
+        connectorFactory: new FakeConnectorFactory(
+          {},
+          new Set([setup.source.id]),
+        ),
+        digestRunFeedRepository: {
+          start: startDigestRunFeed,
+          finish: () => Promise.reject(persistenceError),
+        },
+        summarizer: new FakeSummarizer([]),
+        intelligence: fixtureStoryIntelligence,
+        now: () => 205,
+        progressReporter: { report: (event) => events.push(event) },
+      })
+    );
+
+    assert(rejected === persistenceError);
+    assertEquals(rejected.message, "feed-run finish persistence failed");
+    assertEquals(
+      events
+        .filter((event) =>
+          event.event === "ingestion_source" || event.event === "run_terminal"
+        )
+        .map((event) => [event.event, event.status]),
+      [
+        ["ingestion_source", "started"],
+        ["ingestion_source", "failed"],
+        ["run_terminal", "failed"],
+      ],
+    );
+  });
+});
+
+test("runForUser emits failed feed terminals when a multi-feed batch is rejected wholesale", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput("orchestrator-progress-wholesale@example.com"));
+    const first = await createSourceAndFeed(
+      database, user.id, ConnectorId.Telegram, 1, "private:first", "Private First", 1,
+    );
+    const secondFeed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: first.source.id,
+      externalId: "private:second",
+      name: "Private Second",
+      kind: "news",
+      position: 2,
+    });
+    const connector: Connector<unknown> = {
+      getRawData: () => Promise.resolve({}),
+      getNormalizedData: () => Promise.reject(new Error("wholesale rejection")),
+    };
+    const events: DigestProgressEvent[] = [];
+
+    await runForUser(database, user.id, period, {
+      connectorFactory: new FakeConnectorFactory({ [first.source.id]: connector }),
+      summarizer: new FakeSummarizer([]),
+      intelligence: fixtureStoryIntelligence,
+      now: () => 205,
+      progressReporter: { report: (event) => events.push(event) },
+    });
+
+    const feeds = events.filter((event) => event.event === "ingestion_feed");
+    assertEquals(feeds.map((event) => [event.feedIndex, event.status]), [
+      [1, "failed"], [2, "failed"],
+    ]);
+    const sources = events.filter((event) => event.event === "ingestion_source");
+    assertEquals(sources.map((event) => event.status), ["started", "failed"]);
+    const serialized = JSON.stringify(events);
+    assertEquals(serialized.includes(first.feed.name), false);
+    assertEquals(serialized.includes(secondFeed.name), false);
+    assertEquals(serialized.includes(first.feed.externalId), false);
+    assertEquals(serialized.includes(secondFeed.externalId), false);
+  });
+});
 
 test("runForUser fails its run when connector disposal throws unexpectedly", async () => {
   await withTestDb(async (database) => {
@@ -342,6 +526,7 @@ test("runForUser fails its run when connector disposal throws unexpectedly", asy
           },
         }),
     };
+    const events: DigestProgressEvent[] = [];
 
     const rejected = await assertRejects(() =>
       runForUser(database, user.id, period, {
@@ -352,10 +537,17 @@ test("runForUser fails its run when connector disposal throws unexpectedly", asy
         }]]),
         intelligence: fixtureStoryIntelligence,
         now: () => 206,
+        progressReporter: { report: (event) => events.push(event) },
       })
     );
 
     assert(rejected === disposeError);
+    const sourceEvents = events.filter((event) => event.event === "ingestion_source");
+    assertEquals(sourceEvents.map((event) => event.status), ["started", "failed"]);
+    const serializedEvents = JSON.stringify(events);
+    assertEquals(serializedEvents.includes(setup.feed.name), false);
+    assertEquals(serializedEvents.includes(setup.feed.externalId), false);
+    assertEquals(serializedEvents.includes("successfully ingested item"), false);
     assertEquals(connector.calls.length, 1);
     const runs = await listDigestRunsForUser(database, user.id, { limit: 10 });
     assert(runs.length >= 1);

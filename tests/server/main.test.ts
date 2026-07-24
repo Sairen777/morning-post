@@ -86,6 +86,7 @@ test("bootServer waits for stale recovery before registering jobs and serving", 
         mediaQuotaBytes: 1,
         digestRunStaleAfterMs: 1,
         schedulerLeaseMs: 1,
+        digestProgressLogging: false,
       },
       serve: (options) => {
         servedOptions = { hostname: options.hostname, port: options.port };
@@ -182,6 +183,7 @@ test("bootServer recovers stale runs before serving registration", async () => {
           mediaQuotaBytes: 1,
           digestRunStaleAfterMs: 5_000,
           schedulerLeaseMs: 1,
+          digestProgressLogging: false,
         },
         serve: (options) => {
           requestHandler = options.fetch;

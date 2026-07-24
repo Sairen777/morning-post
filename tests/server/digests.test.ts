@@ -37,6 +37,7 @@ import {
   startDigestRunFeed,
 } from "../../src/repositories/digest-run-repository.ts";
 import type { runForUser as runForUserType } from "../../src/services/orchestrator.ts";
+import type { DigestProgressReporter } from "../../src/services/digest-progress.ts";
 import { fixtureStoryIntelligence } from "../services/fixture-story-intelligence.ts";
 
 const PASSWORD = "analytical-engine-1843";
@@ -865,10 +866,13 @@ test("GET /digests/runs/:id hides another user's run", async () => {
   });
 });
 
-test("POST /digests/run forwards the entrypoint summarizer instance", async () => {
+test("POST /digests/run forwards entrypoint digest dependencies", async () => {
   await withTestDb(async (database) => {
     const sharedSummarizer = new FakeSummarizer([]);
+    const progressReporter = { report: () => {} } satisfies DigestProgressReporter;
     let receivedSummarizer: SummarizerService | undefined;
+    let receivedTimeoutMs: number | undefined;
+    let receivedProgressReporter: DigestProgressReporter | undefined;
     const runForUser: typeof runForUserType = (
       _database,
       userId,
@@ -876,6 +880,8 @@ test("POST /digests/run forwards the entrypoint summarizer instance", async () =
       dependencies = {},
     ) => {
       receivedSummarizer = dependencies.summarizer;
+      receivedTimeoutMs = dependencies.timeoutMs;
+      receivedProgressReporter = dependencies.progressReporter;
       return Promise.resolve({
         digest: {
           id: crypto.randomUUID(),
@@ -895,7 +901,12 @@ test("POST /digests/run forwards the entrypoint summarizer instance", async () =
       });
     };
     const app = buildApp(database, {
-      digests: { summarizer: sharedSummarizer, runForUser },
+      digests: {
+        summarizer: sharedSummarizer,
+        timeoutMs: 42_000,
+        progressReporter,
+        runForUser,
+      },
     });
     const cookie = await login(app, "digests-run-injection@example.com").catch(
       async () => {
@@ -910,5 +921,7 @@ test("POST /digests/run forwards the entrypoint summarizer instance", async () =
     });
     assertEquals(response.status, 200);
     assertEquals(receivedSummarizer, sharedSummarizer);
+    assertEquals(receivedTimeoutMs, 42_000);
+    assertEquals(receivedProgressReporter, progressReporter);
   });
 });

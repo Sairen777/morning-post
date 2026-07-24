@@ -39,6 +39,7 @@ export interface Config {
   summarizerMaxItemsPerChunk: number;
   summarizerMaxImageBytes: number;
   summarizerTimeoutMs: number;
+  digestProgressLogging: boolean;
   summarizationConcurrency: number;
   mediaTtlMs: number;
   mediaQuotaBytes: number;
@@ -389,6 +390,12 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
       "SUMMARIZER_TIMEOUT_MS",
       overrides.summarizerTimeoutMs,
       DEFAULT_SUMMARIZER_TIMEOUT_MS,
+    ),
+    digestProgressLogging: booleanSetting(
+      "DIGEST_PROGRESS_LOGGING",
+      "DIGEST_PROGRESS_LOGGING",
+      overrides.digestProgressLogging,
+      false,
     ),
     summarizationConcurrency: numberSetting(
       "SUMMARIZATION_CONCURRENCY",

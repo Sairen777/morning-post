@@ -24,6 +24,7 @@ import {
 import { bootServer } from "../../src/server/main.ts";
 import type { Scheduler } from "../../src/scheduler/scheduler.ts";
 import type { SummarizerService } from "../../src/summarizers/summarizer.types.ts";
+import type { DigestProgressReporter } from "../../src/services/digest-progress.ts";
 
 class FakeScheduler implements Scheduler {
   jobs: Array<
@@ -236,20 +237,27 @@ test("scheduleDigestJob registers the default cron and handler", async () => {
   });
 });
 
-test("runDigestTick forwards the shared summarizer to scheduled execution", async () => {
+test("runDigestTick forwards shared digest dependencies to scheduled execution", async () => {
   clearDigestJobStateForTesting();
   await withTestDb(async (database) => {
     const sharedSummarizer = {} as SummarizerService;
+    const progressReporter = { report: () => {} } satisfies DigestProgressReporter;
     let receivedSummarizer: SummarizerService | undefined;
+    let receivedTimeoutMs: number | undefined;
+    let receivedProgressReporter: DigestProgressReporter | undefined;
     const user = await createUser(
       database,
       userInput("scheduler-shared-summarizer@example.com"),
     );
     await runDigestTick(database, {
       summarizer: sharedSummarizer,
+      timeoutMs: 37_000,
+      progressReporter,
       now: () => 1_500,
       runForUser: (_database, userId, period, dependencies = {}) => {
         receivedSummarizer = dependencies.summarizer;
+        receivedTimeoutMs = dependencies.timeoutMs;
+        receivedProgressReporter = dependencies.progressReporter;
         return Promise.resolve({
           digest: {
             id: "x",
@@ -271,6 +279,8 @@ test("runDigestTick forwards the shared summarizer to scheduled execution", asyn
     });
     assertEquals(user.id.length > 0, true);
     assertEquals(receivedSummarizer, sharedSummarizer);
+    assertEquals(receivedTimeoutMs, 37_000);
+    assertEquals(receivedProgressReporter, progressReporter);
   });
 });
 
@@ -343,6 +353,7 @@ test("bootServer injects scheduler and serve after stale recovery", async () => 
         mediaQuotaBytes: 1,
         digestRunStaleAfterMs: 1,
         schedulerLeaseMs: 1,
+        digestProgressLogging: false,
       },
       serve: (_options) => {
         served++;
