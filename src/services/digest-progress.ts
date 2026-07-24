@@ -1,3 +1,4 @@
+import type { ModelPricingSnapshot } from "../config.ts";
 import type { ModelAttemptTelemetry } from "../summarizers/openai-compatible-client.ts";
 
 export type DigestModelStage =
@@ -28,7 +29,12 @@ export interface DigestModelUsageSnapshot {
   totals: DigestModelUsageMetrics;
   stages: Array<{
     stage: DigestModelStage;
-    models: Array<{ model: string; metrics: DigestModelUsageMetrics }>;
+    models: Array<{
+      model: string;
+      metrics: DigestModelUsageMetrics;
+      pricing: ModelPricingSnapshot | null;
+      estimatedCostUsd: number | null;
+    }>;
   }>;
   estimatedCostUsd: number | null;
 }
@@ -92,6 +98,54 @@ const aggregateBreakdowns = new WeakMap<
   DigestModelUsageAggregate,
   Partial<Record<DigestModelStage, Record<string, DigestModelUsageMetrics>>>
 >();
+interface CostState {
+  complete: boolean;
+  costUsd: number;
+  pricing?: ModelPricingSnapshot;
+}
+const costStates = new WeakMap<DigestModelUsageMetrics, CostState>();
+
+function recordCost(
+  metrics: DigestModelUsageMetrics,
+  attempt: ModelAttemptTelemetry,
+): void {
+  const state = costStates.get(metrics) ?? { complete: true, costUsd: 0 };
+  if (!attempt.usage || !attempt.pricing) {
+    state.complete = false;
+    costStates.set(metrics, state);
+    return;
+  }
+  if (
+    state.pricing &&
+    (state.pricing.uncachedInputUsdPerMillionTokens !==
+        attempt.pricing.uncachedInputUsdPerMillionTokens ||
+      state.pricing.cachedInputUsdPerMillionTokens !==
+        attempt.pricing.cachedInputUsdPerMillionTokens ||
+      state.pricing.outputUsdPerMillionTokens !==
+        attempt.pricing.outputUsdPerMillionTokens)
+  ) {
+    state.complete = false;
+  } else {
+    state.pricing = { ...attempt.pricing };
+  }
+  const prompt = attempt.usage.promptTokens;
+  const cached = Math.min(
+    prompt,
+    attempt.usage.promptCacheHitTokens ??
+      Math.max(0, prompt - (attempt.usage.promptCacheMissTokens ?? prompt)),
+  );
+  const uncached = Math.min(
+    prompt,
+    attempt.usage.promptCacheMissTokens ?? Math.max(0, prompt - cached),
+  );
+  state.costUsd += (
+    uncached * attempt.pricing.uncachedInputUsdPerMillionTokens +
+    cached * attempt.pricing.cachedInputUsdPerMillionTokens +
+    attempt.usage.completionTokens * attempt.pricing.outputUsdPerMillionTokens
+  ) / 1_000_000;
+  if (!Number.isFinite(state.costUsd)) state.complete = false;
+  costStates.set(metrics, state);
+}
 
 function addToAggregate(
   aggregate: DigestModelUsageMetrics,
@@ -114,6 +168,7 @@ function recordAttempt(
   addToAggregate(aggregate, "attemptCount", 1);
   addToAggregate(aggregate, "durationMs", attempt.durationMs);
   addToAggregate(aggregate, `${attempt.status}Count`, 1);
+  recordCost(aggregate, attempt);
   if (!attempt.usage) return;
   addToAggregate(aggregate, "usageReportedAttemptCount", 1);
   addToAggregate(aggregate, "promptTokensLowerBound", attempt.usage.promptTokens);
@@ -126,6 +181,7 @@ function recordAttempt(
 export function createDigestModelUsageAggregate(): DigestModelUsageAggregate {
   const aggregate = { ...emptyMetrics(), saturated: false };
   aggregateBreakdowns.set(aggregate, {});
+  costStates.set(aggregate, { complete: true, costUsd: 0 });
   return aggregate;
 }
 
@@ -146,9 +202,22 @@ export function snapshotDigestModelUsage(
         stage: stage as DigestModelStage,
         models: Object.entries(models ?? {})
           .sort(([left], [right]) => left.localeCompare(right))
-          .map(([model, metrics]) => ({ model, metrics: metricSnapshot(metrics) })),
+          .map(([model, metrics]) => {
+            const cost = costStates.get(metrics);
+            return {
+              model,
+              metrics: metricSnapshot(metrics),
+              pricing: cost?.pricing ? { ...cost.pricing } : null,
+              estimatedCostUsd: cost?.complete && cost.pricing
+                ? cost.costUsd
+                : null,
+            };
+          }),
       })),
-    estimatedCostUsd: null,
+    estimatedCostUsd: (() => {
+      const cost = costStates.get(aggregate);
+      return cost?.complete && aggregate.attemptCount > 0 ? cost.costUsd : null;
+    })(),
   };
 }
 

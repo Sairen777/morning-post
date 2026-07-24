@@ -34,6 +34,12 @@ const modelUsageMetricsSchema = z.object({
   saturated: z.boolean(),
 }).strict();
 
+const modelPricingSchema = z.object({
+  uncachedInputUsdPerMillionTokens: z.number().finite().nonnegative(),
+  cachedInputUsdPerMillionTokens: z.number().finite().nonnegative(),
+  outputUsdPerMillionTokens: z.number().finite().nonnegative(),
+}).strict();
+
 export const digestModelUsageSnapshotSchema = z.object({
   version: z.literal(1),
   totals: modelUsageMetricsSchema,
@@ -42,6 +48,8 @@ export const digestModelUsageSnapshotSchema = z.object({
     models: z.array(z.object({
       model: z.string().min(1),
       metrics: modelUsageMetricsSchema,
+      pricing: modelPricingSchema.nullable().optional(),
+      estimatedCostUsd: z.number().finite().nonnegative().nullable().optional(),
     }).strict()),
   }).strict()),
   estimatedCostUsd: z.number().nonnegative().nullable(),

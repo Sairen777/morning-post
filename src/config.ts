@@ -1,9 +1,16 @@
 export type DatabaseSslMode = "disable" | "require" | "verify-full";
 
+export interface ModelPricingSnapshot {
+  uncachedInputUsdPerMillionTokens: number;
+  cachedInputUsdPerMillionTokens: number;
+  outputUsdPerMillionTokens: number;
+}
+
 export interface ModelEndpointConfig {
   model: string;
   baseUrl: string;
   apiKey?: string;
+  pricing?: ModelPricingSnapshot;
 }
 
 export interface SummarizerRuntimeConfig {
@@ -97,10 +104,10 @@ const DEFAULT_SUMMARIZER_MAX_IMAGE_BYTES = 1_000_000;
 const DEFAULT_ANALYSIS_MAX_ITEMS_PER_REQUEST = 50;
 const DEFAULT_CLASSIFICATION_MAX_ITEMS_PER_REQUEST = 100;
 const DEFAULT_SUMMARY_BATCH_MAX_STORIES = 5;
-const DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS = 12_000;
+const DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS = 30_000;
 const DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS = 6_000;
 const DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 1_200;
-const DEFAULT_SUMMARY_BATCH_MAX_OUTPUT_TOKENS = 5_000;
+const DEFAULT_SUMMARY_BATCH_MAX_OUTPUT_TOKENS = 6_500;
 const DEFAULT_MEDIA_MAX_OUTPUT_TOKENS = 300;
 const DEFAULT_ANALYSIS_MAX_ATTEMPTS = 3;
 const DEFAULT_CLASSIFICATION_MAX_ATTEMPTS = 3;
@@ -160,6 +167,55 @@ function numberSetting(
   return allowZero
     ? parseNonNegativeInteger(name, raw)
     : parsePositiveInteger(name, raw);
+}
+
+function optionalPriceSetting(
+  name: string,
+  override: number | undefined,
+): number | undefined {
+  const raw = override ?? process.env[name];
+  if (raw === undefined) return undefined;
+  const parsed = typeof raw === "number"
+    ? raw
+    : raw.trim() === ""
+    ? Number.NaN
+    : Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw invalidConfig(name, "expected a non-negative finite number");
+  }
+  return parsed;
+}
+
+function pricingSetting(
+  prefix: "SUMMARIZER" | "ANALYSIS" | "CLASSIFICATION" | "VISION",
+  override: Partial<ModelPricingSnapshot> | undefined,
+): ModelPricingSnapshot | undefined {
+  const uncachedInputUsdPerMillionTokens = optionalPriceSetting(
+    `${prefix}_UNCACHED_INPUT_USD_PER_MILLION_TOKENS`,
+    override?.uncachedInputUsdPerMillionTokens,
+  );
+  const cachedInputUsdPerMillionTokens = optionalPriceSetting(
+    `${prefix}_CACHED_INPUT_USD_PER_MILLION_TOKENS`,
+    override?.cachedInputUsdPerMillionTokens,
+  );
+  const outputUsdPerMillionTokens = optionalPriceSetting(
+    `${prefix}_OUTPUT_USD_PER_MILLION_TOKENS`,
+    override?.outputUsdPerMillionTokens,
+  );
+  const values = [
+    uncachedInputUsdPerMillionTokens,
+    cachedInputUsdPerMillionTokens,
+    outputUsdPerMillionTokens,
+  ];
+  if (values.every((value) => value === undefined)) return undefined;
+  if (values.some((value) => value === undefined)) {
+    throw invalidConfig(`${prefix}_PRICING`, "expected all three model prices");
+  }
+  return {
+    uncachedInputUsdPerMillionTokens: uncachedInputUsdPerMillionTokens!,
+    cachedInputUsdPerMillionTokens: cachedInputUsdPerMillionTokens!,
+    outputUsdPerMillionTokens: outputUsdPerMillionTokens!,
+  };
 }
 
 function booleanSetting(
@@ -232,10 +288,12 @@ function inheritedModelEndpoint(
     `${prefix}_API_KEY`,
     override?.apiKey,
   ).value ?? fallback.apiKey;
+  const pricing = pricingSetting(prefix, override?.pricing);
   return {
     model,
     baseUrl: normalizeEndpointRoot(baseUrl ?? fallback.baseUrl),
     ...(apiKey === undefined ? {} : { apiKey }),
+    ...(pricing === undefined ? {} : { pricing }),
   };
 }
 
@@ -258,6 +316,10 @@ export function getSummarizerRuntimeConfig(
     "SUMMARIZER_API_KEY",
     overrides.summarizer?.apiKey,
   ).value;
+  const summarizerPricing = pricingSetting(
+    "SUMMARIZER",
+    overrides.summarizer?.pricing,
+  );
   const visionModel = requiredStringSetting(
     "VISION_MODEL",
     overrides.vision?.model,
@@ -271,6 +333,7 @@ export function getSummarizerRuntimeConfig(
     "VISION_API_KEY",
     overrides.vision?.apiKey,
   );
+  const visionPricing = pricingSetting("VISION", overrides.vision?.pricing);
   const sameModel = summarizerModel === visionModel;
 
   if (sameModel) {
@@ -297,6 +360,7 @@ export function getSummarizerRuntimeConfig(
     model: summarizerModel,
     baseUrl: summarizerBaseUrl,
     ...(summarizerApiKey === undefined ? {} : { apiKey: summarizerApiKey }),
+    ...(summarizerPricing === undefined ? {} : { pricing: summarizerPricing }),
   };
 
   return {
@@ -317,6 +381,7 @@ export function getSummarizerRuntimeConfig(
         : visionApiKeySetting.value === undefined
         ? {}
         : { apiKey: visionApiKeySetting.value }),
+      ...(visionPricing === undefined ? {} : { pricing: visionPricing }),
     },
     sameModel,
   };

@@ -1,4 +1,4 @@
-import type { ModelEndpointConfig } from "../config.ts";
+import type { ModelEndpointConfig, ModelPricingSnapshot } from "../config.ts";
 import type { ContentPart } from "./summarizer.types.ts";
 
 /**
@@ -64,6 +64,7 @@ export interface ModelAttemptTelemetry {
   durationMs: number;
   status: "success" | "retry" | "failure";
   usage?: ModelAttemptUsage;
+  pricing?: ModelPricingSnapshot;
 }
 
 export type ModelAttemptTelemetryCallback = (
@@ -158,9 +159,9 @@ function parseUsage(data: unknown): ModelAttemptUsage | undefined {
 
 function reportAttempt(
   callback:
-    | ((telemetry: Omit<ModelAttemptTelemetry, "model">) => Promise<void> | void)
+    | ((telemetry: Omit<ModelAttemptTelemetry, "model" | "pricing">) => Promise<void> | void)
     | undefined,
-  telemetry: Omit<ModelAttemptTelemetry, "model">,
+  telemetry: Omit<ModelAttemptTelemetry, "model" | "pricing">,
 ): void {
   if (!callback) return;
   try {
@@ -225,8 +226,14 @@ export class OpenAICompatibleChatClient {
 
     const maximumAttempts = options.maxAttempts ?? 3;
     const attemptCallback = options.onAttempt
-      ? (telemetry: Omit<ModelAttemptTelemetry, "model">) =>
-        options.onAttempt!({ ...telemetry, model: this.endpoint.model })
+      ? (telemetry: Omit<ModelAttemptTelemetry, "model" | "pricing">) =>
+        options.onAttempt!({
+          ...telemetry,
+          model: this.endpoint.model,
+          ...(this.endpoint.pricing === undefined
+            ? {}
+            : { pricing: { ...this.endpoint.pricing } }),
+        })
       : undefined;
     let lastError: unknown;
     for (let attempt = 0; attempt < maximumAttempts; attempt++) {

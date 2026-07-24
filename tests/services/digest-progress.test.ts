@@ -245,10 +245,56 @@ test("model usage snapshot aggregates cache usage and outcomes by stage and mode
     models: [{
       model: "deepseek-v4-flash",
       metrics: snapshot.totals,
+      pricing: null,
+      estimatedCostUsd: null,
     }],
   }]);
   assertEquals(JSON.stringify(snapshot).includes("prompt"), true);
   for (const forbidden of ["content", "url", "credentials", "endpoint", "error"]) {
     assertEquals(JSON.stringify(snapshot).includes(forbidden), false);
   }
+});
+
+test("model usage snapshot prices cache hits, misses, output, and retries separately", () => {
+  const aggregate = createDigestModelUsageAggregate();
+  const pricing = {
+    uncachedInputUsdPerMillionTokens: 2,
+    cachedInputUsdPerMillionTokens: 0.5,
+    outputUsdPerMillionTokens: 4,
+  };
+  for (const [attempt, status] of [[1, "retry"], [2, "success"]] as const) {
+    reportDigestModelAttempt(undefined, undefined, 0, "summarization", aggregate, {
+      model: "priced-model",
+      attempt,
+      durationMs: 1,
+      status,
+      pricing,
+      usage: {
+        promptTokens: 1_000_000,
+        completionTokens: 250_000,
+        totalTokens: 1_250_000,
+        promptCacheHitTokens: 600_000,
+        promptCacheMissTokens: 400_000,
+      },
+    });
+  }
+  const snapshot = snapshotDigestModelUsage(aggregate);
+  assertEquals(snapshot.estimatedCostUsd, 4.2);
+  assertEquals(snapshot.stages[0].models[0].estimatedCostUsd, 4.2);
+  assertEquals(snapshot.stages[0].models[0].pricing, pricing);
+});
+
+test("model usage snapshot keeps exact usage but null cost when any attempt lacks usage or pricing", () => {
+  const aggregate = createDigestModelUsageAggregate();
+  reportDigestModelAttempt(undefined, undefined, 0, "analysis", aggregate, {
+    model: "unpriced-model",
+    attempt: 1,
+    durationMs: 1,
+    status: "success",
+    usage: { promptTokens: 2, completionTokens: 1, totalTokens: 3 },
+  });
+  const snapshot = snapshotDigestModelUsage(aggregate);
+  assertEquals(snapshot.totals.totalTokensLowerBound, 3);
+  assertEquals(snapshot.estimatedCostUsd, null);
+  assertEquals(snapshot.stages[0].models[0].estimatedCostUsd, null);
 });

@@ -23,7 +23,25 @@ const ENV_KEYS = [
   "SUMMARIZER_MODEL",
   "SUMMARIZER_BASE_URL",
   "SUMMARIZER_API_KEY",
+  "ANALYSIS_MODEL",
+  "ANALYSIS_BASE_URL",
+  "ANALYSIS_API_KEY",
+  "CLASSIFICATION_MODEL",
+  "CLASSIFICATION_BASE_URL",
+  "CLASSIFICATION_API_KEY",
   "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
+  "SUMMARIZER_UNCACHED_INPUT_USD_PER_MILLION_TOKENS",
+  "SUMMARIZER_CACHED_INPUT_USD_PER_MILLION_TOKENS",
+  "SUMMARIZER_OUTPUT_USD_PER_MILLION_TOKENS",
+  "ANALYSIS_UNCACHED_INPUT_USD_PER_MILLION_TOKENS",
+  "ANALYSIS_CACHED_INPUT_USD_PER_MILLION_TOKENS",
+  "ANALYSIS_OUTPUT_USD_PER_MILLION_TOKENS",
+  "CLASSIFICATION_UNCACHED_INPUT_USD_PER_MILLION_TOKENS",
+  "CLASSIFICATION_CACHED_INPUT_USD_PER_MILLION_TOKENS",
+  "CLASSIFICATION_OUTPUT_USD_PER_MILLION_TOKENS",
+  "VISION_UNCACHED_INPUT_USD_PER_MILLION_TOKENS",
+  "VISION_CACHED_INPUT_USD_PER_MILLION_TOKENS",
+  "VISION_OUTPUT_USD_PER_MILLION_TOKENS",
   "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
   "SUMMARIZER_MAX_IMAGE_BYTES",
   "SUMMARIZER_TIMEOUT_MS",
@@ -51,7 +69,6 @@ const ENV_KEYS = [
 ] as const;
 type EnvKey = (typeof ENV_KEYS)[number];
 
-console.log("3");
 
 function withClearedEnvironment<T>(
   keys: readonly string[],
@@ -99,10 +116,10 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.analysisMaxItemsPerRequest, 50);
   assertEquals(config.classificationMaxItemsPerRequest, 100);
   assertEquals(config.summaryBatchMaxStories, 5);
-  assertEquals(config.analysisMaxOutputTokens, 12_000);
+  assertEquals(config.analysisMaxOutputTokens, 30_000);
   assertEquals(config.classificationMaxOutputTokens, 6_000);
   assertEquals(config.summaryMaxOutputTokens, 1_200);
-  assertEquals(config.summaryBatchMaxOutputTokens, 5_000);
+  assertEquals(config.summaryBatchMaxOutputTokens, 6_500);
   assertEquals(config.mediaMaxOutputTokens, 300);
   assertEquals(config.analysisMaxAttempts, 3);
   assertEquals(config.classificationMaxAttempts, 3);
@@ -146,10 +163,10 @@ test("summarizer budget resolver reads only scoped limit settings", () => {
     analysisMaxItemsPerRequest: 50,
     classificationMaxItemsPerRequest: 100,
     summaryBatchMaxStories: 5,
-    analysisMaxOutputTokens: 12_000,
+    analysisMaxOutputTokens: 30_000,
     classificationMaxOutputTokens: 6_000,
     summaryMaxOutputTokens: 1_200,
-    summaryBatchMaxOutputTokens: 5_000,
+    summaryBatchMaxOutputTokens: 6_500,
     mediaMaxOutputTokens: 300,
     analysisMaxAttempts: 3,
     classificationMaxAttempts: 3,
@@ -203,6 +220,24 @@ test("environment values override defaults and parse strictly", () => {
       SUMMARIZER_MODEL: "model-a",
       SUMMARIZER_BASE_URL: "http://localhost:1234/v1",
       SUMMARIZER_API_KEY: "key-a",
+      ANALYSIS_MODEL: "analysis-model",
+      ANALYSIS_BASE_URL: "http://localhost:1234/v1",
+      ANALYSIS_API_KEY: "analysis-key",
+      CLASSIFICATION_MODEL: "classification-model",
+      CLASSIFICATION_BASE_URL: "http://localhost:1234/v1",
+      CLASSIFICATION_API_KEY: "classification-key",
+      SUMMARIZER_UNCACHED_INPUT_USD_PER_MILLION_TOKENS: "1",
+      SUMMARIZER_CACHED_INPUT_USD_PER_MILLION_TOKENS: "0.1",
+      SUMMARIZER_OUTPUT_USD_PER_MILLION_TOKENS: "2",
+      ANALYSIS_UNCACHED_INPUT_USD_PER_MILLION_TOKENS: "1",
+      ANALYSIS_CACHED_INPUT_USD_PER_MILLION_TOKENS: "0.1",
+      ANALYSIS_OUTPUT_USD_PER_MILLION_TOKENS: "2",
+      CLASSIFICATION_UNCACHED_INPUT_USD_PER_MILLION_TOKENS: "1",
+      CLASSIFICATION_CACHED_INPUT_USD_PER_MILLION_TOKENS: "0.1",
+      CLASSIFICATION_OUTPUT_USD_PER_MILLION_TOKENS: "2",
+      VISION_UNCACHED_INPUT_USD_PER_MILLION_TOKENS: "1",
+      VISION_CACHED_INPUT_USD_PER_MILLION_TOKENS: "0.1",
+      VISION_OUTPUT_USD_PER_MILLION_TOKENS: "2",
       VISION_MODEL: "model-b",
       VISION_BASE_URL: "http://localhost:4321/v1",
       VISION_API_KEY: "key-b",
@@ -335,7 +370,8 @@ test("invalid numeric and boolean values fail at startup", () => {
         key === "SUMMARIZER_API_KEY" ||
         key === "VISION_MODEL" ||
         key === "VISION_BASE_URL" ||
-        key === "VISION_API_KEY"
+        key === "VISION_API_KEY" ||
+        key.includes("_USD_PER_MILLION_TOKENS")
       ) continue;
       process.env[key] = "not-a-number";
       assertThrows(() => getConfig(), Error, `Invalid ${key}`);
@@ -559,5 +595,51 @@ test("remote summarization resolver honors override and strict environment value
   } finally {
     if (previous === undefined) delete process.env["ALLOW_REMOTE_SUMMARIZATION"];
     else process.env["ALLOW_REMOTE_SUMMARIZATION"] = previous;
+  }
+});
+
+test("model pricing uses constructor then explicit stage environment then no default", () => {
+  const keys = [
+    "ANALYSIS_UNCACHED_INPUT_USD_PER_MILLION_TOKENS",
+    "ANALYSIS_CACHED_INPUT_USD_PER_MILLION_TOKENS",
+    "ANALYSIS_OUTPUT_USD_PER_MILLION_TOKENS",
+  ] as const;
+  const previous = keys.map((key) => [key, process.env[key]] as const);
+  try {
+    process.env[keys[0]] = "1";
+    process.env[keys[1]] = "0.1";
+    process.env[keys[2]] = "2";
+    assertEquals(getSummarizerRuntimeConfig().analysis.pricing, {
+      uncachedInputUsdPerMillionTokens: 1,
+      cachedInputUsdPerMillionTokens: 0.1,
+      outputUsdPerMillionTokens: 2,
+    });
+    assertEquals(getSummarizerRuntimeConfig({
+      analysis: { pricing: {
+        uncachedInputUsdPerMillionTokens: 3,
+        cachedInputUsdPerMillionTokens: 0.3,
+        outputUsdPerMillionTokens: 4,
+      } },
+    }).analysis.pricing?.outputUsdPerMillionTokens, 4);
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  assertEquals(getSummarizerRuntimeConfig().analysis.pricing, undefined);
+});
+
+test("model pricing rejects partial, negative, and nonfinite values", () => {
+  for (const value of ["-1", "Infinity"]) {
+    const key = "SUMMARIZER_UNCACHED_INPUT_USD_PER_MILLION_TOKENS";
+    const previous = process.env[key];
+    try {
+      process.env[key] = value;
+      assertThrows(() => getSummarizerRuntimeConfig(), Error, `Invalid ${key}`);
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
   }
 });
