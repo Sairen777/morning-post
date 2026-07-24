@@ -400,12 +400,12 @@ test("getNormalizedData — captures discussion and source metadata without extr
   });
 });
 
-test("cleanupTelegramBoilerplate — collapses only exact repeated non-URL lines", () => {
+test("cleanupTelegramBoilerplate — preserves repeated legitimate prose", () => {
   assertEquals(
     cleanupTelegramBoilerplate(
       "\r\nStory body  \r\nFooter\r\nFooter\r\nhttps://example.com/x\r\nhttps://example.com/x\r\n",
     ),
-    "Story body\nFooter\nhttps://example.com/x\nhttps://example.com/x",
+    "Story body\nFooter\nFooter\nhttps://example.com/x\nhttps://example.com/x",
   );
 });
 
@@ -462,6 +462,67 @@ test("getNormalizedData — messages sharing a groupedId fold to one item", asyn
     isGroup: false,
     messageKind: "album",
     groupedId: "g1",
+  });
+});
+
+test("getNormalizedData — uncaptioned album retains forwarding and thread provenance", async () => {
+  const channel = fakeChannel({ title: "TestChannel" });
+  const groupedId = {
+    toString: () => "g2",
+  } as unknown as Api.Message["groupedId"];
+  const forwardedPeer = applyFields(Object.create(Api.PeerChannel.prototype), {
+    channelId: 77,
+  });
+  const document = applyFields(Object.create(Api.Document.prototype), {
+    mimeType: "application/octet-stream",
+  });
+  const media = applyFields(Object.create(Api.MessageMediaDocument.prototype), {
+    document,
+  });
+  const firstMessage = fakeApiMessage({
+    id: 1,
+    date: IN_RANGE_S + 1,
+    message: "",
+    groupedId,
+    media,
+  });
+  const provenanceMessage = fakeApiMessage({
+    id: 2,
+    date: IN_RANGE_S,
+    message: "",
+    groupedId,
+    media,
+    replyTo: {
+      replyToMsgId: 8,
+      replyToTopId: 3,
+    } as unknown as Api.MessageReplyHeader,
+    fwdFrom: {
+      fromId: forwardedPeer,
+      postAuthor: "Original Author",
+      channelPost: 55,
+    } as unknown as Api.MessageFwdHeader,
+  });
+  const result = await new TelegramConnector(fakeTelegramClient({
+    dialogs: [{
+      title: "TestChannel",
+      entity: channel,
+      messages: [firstMessage, provenanceMessage],
+    }],
+  })).getNormalizedData(FROM_MS, TO_MS);
+
+  assertEquals(result["channel:1"][0].text, "");
+  assertEquals(result["channel:1"][0].meta, {
+    isGroup: false,
+    messageKind: "album",
+    groupedId: "g2",
+    replyToMessageId: 8,
+    threadRootId: 3,
+    forwardedFrom: {
+      type: "channel",
+      id: "77",
+      name: "Original Author",
+      messageId: 55,
+    },
   });
 });
 

@@ -413,27 +413,17 @@ function resolveMessageKind(message: Api.Message): string {
 }
 
 /**
- * Telegram relays sometimes duplicate a wrapper or footer line verbatim.
- * Collapse only adjacent, exact duplicates. URL lines and quote bodies are
- * deliberately excluded because repetition there can carry provenance.
+ * Normalize Telegram message whitespace without altering substantive content.
+ *
+ * Telegram does not expose an exact, stable boilerplate contract, so repeated
+ * lines must be preserved: they may be intentional prose.
  */
 export function cleanupTelegramBoilerplate(text: string): string {
   const lines = text.replaceAll("\r\n", "\n").split("\n")
     .map((line) => line.replace(/[ \t]+$/u, ""));
-  const cleaned: string[] = [];
-  let insideQuote = false;
-  for (const line of lines) {
-    const duplicate = cleaned.at(-1) === line;
-    const containsUrl = /(?:https?:\/\/|t\.me\/)/iu.test(line);
-    if (!(duplicate && line !== "" && !containsUrl && !insideQuote)) {
-      cleaned.push(line);
-    }
-    if (line.includes("[QUOTED_MESSAGE]")) insideQuote = true;
-    if (line.includes("[/QUOTED_MESSAGE]")) insideQuote = false;
-  }
-  while (cleaned[0] === "") cleaned.shift();
-  while (cleaned.at(-1) === "") cleaned.pop();
-  return cleaned.join("\n");
+  while (lines[0] === "") lines.shift();
+  while (lines.at(-1) === "") lines.pop();
+  return lines.join("\n");
 }
 
 
@@ -553,21 +543,25 @@ function foldAlbumGroup(
 ): ChannelMessage {
   const first = group[0];
   const captionSource = group.find((m) => m.text.trim());
+  const threadSource = group.find((m) =>
+    m.replyToMessageId !== null || m.threadRootId !== null
+  );
+  const forwardSource = group.find((m) => m.forwardedFrom !== null);
   return {
     id: first.id,
     date: first.date,
     text: prependQuote(
       captionSource?.text ?? "",
-      captionSource?.replyToMessageId ?? null,
+      threadSource?.replyToMessageId ?? null,
       quotedTextMap,
     ),
     views: first.views,
     author: first.author,
     url: first.url,
     groupedId: first.groupedId,
-    replyToMessageId: captionSource?.replyToMessageId ?? null,
-    threadRootId: captionSource?.threadRootId ?? null,
-    forwardedFrom: captionSource?.forwardedFrom ?? null,
+    replyToMessageId: threadSource?.replyToMessageId ?? null,
+    threadRootId: threadSource?.threadRootId ?? null,
+    forwardedFrom: forwardSource?.forwardedFrom ?? null,
     editDate: captionSource?.editDate ?? first.editDate,
     isPinned: group.some((message) => message.isPinned),
     messageKind: "album",
