@@ -257,6 +257,7 @@ test("malformed completion retains valid provider usage on the failed attempt", 
     "Model API: malformed completion",
   );
   assertEquals(telemetry, [{
+    model: "test-model",
     attempt: 1,
     durationMs: telemetry[0].durationMs,
     status: "failure",
@@ -286,8 +287,14 @@ test("attempt telemetry covers retries, usage, and duration without content", as
     "secret output",
   );
   assertEquals(telemetry, [
-    { attempt: 1, durationMs: telemetry[0].durationMs, status: "retry" },
     {
+      model: "test-model",
+      attempt: 1,
+      durationMs: telemetry[0].durationMs,
+      status: "retry",
+    },
+    {
+      model: "test-model",
       attempt: 2,
       durationMs: telemetry[1].durationMs,
       status: "success",

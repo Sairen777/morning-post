@@ -19,19 +19,31 @@ const ENV_KEYS = [
   "DB_CONNECT_TIMEOUT_SECONDS",
   "DB_SSL_MODE",
   "ALLOW_REMOTE_SUMMARIZATION",
+  "CONNECTOR_TIMEOUT_MS",
   "SUMMARIZER_MODEL",
   "SUMMARIZER_BASE_URL",
   "SUMMARIZER_API_KEY",
-  "VISION_MODEL",
-  "VISION_BASE_URL",
-  "VISION_API_KEY",
-  "CONNECTOR_TIMEOUT_MS",
   "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
   "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
   "SUMMARIZER_MAX_IMAGE_BYTES",
   "SUMMARIZER_TIMEOUT_MS",
   "DIGEST_PROGRESS_LOGGING",
   "SUMMARIZATION_CONCURRENCY",
+  "ANALYSIS_MAX_ITEMS_PER_REQUEST",
+  "CLASSIFICATION_MAX_ITEMS_PER_REQUEST",
+  "SUMMARY_BATCH_MAX_STORIES",
+  "ANALYSIS_MAX_OUTPUT_TOKENS",
+  "CLASSIFICATION_MAX_OUTPUT_TOKENS",
+  "SUMMARY_MAX_OUTPUT_TOKENS",
+  "SUMMARY_BATCH_MAX_OUTPUT_TOKENS",
+  "MEDIA_MAX_OUTPUT_TOKENS",
+  "ANALYSIS_MAX_ATTEMPTS",
+  "CLASSIFICATION_MAX_ATTEMPTS",
+  "SUMMARY_MAX_ATTEMPTS",
+  "MEDIA_MAX_ATTEMPTS",
+  "VISION_MODEL",
+  "VISION_BASE_URL",
+  "VISION_API_KEY",
   "MEDIA_TTL_MS",
   "MEDIA_QUOTA_BYTES",
   "DIGEST_RUN_STALE_AFTER_MS",
@@ -84,12 +96,36 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.mediaQuotaBytes, 524_288_000);
   assertEquals(config.digestRunStaleAfterMs, 900_000);
   assertEquals(config.schedulerLeaseMs, 90_000);
+  assertEquals(config.analysisMaxItemsPerRequest, 50);
+  assertEquals(config.classificationMaxItemsPerRequest, 100);
+  assertEquals(config.summaryBatchMaxStories, 5);
+  assertEquals(config.analysisMaxOutputTokens, 12_000);
+  assertEquals(config.classificationMaxOutputTokens, 6_000);
+  assertEquals(config.summaryMaxOutputTokens, 1_200);
+  assertEquals(config.summaryBatchMaxOutputTokens, 5_000);
+  assertEquals(config.mediaMaxOutputTokens, 300);
+  assertEquals(config.analysisMaxAttempts, 3);
+  assertEquals(config.classificationMaxAttempts, 3);
+  assertEquals(config.summaryMaxAttempts, 2);
+  assertEquals(config.mediaMaxAttempts, 2);
 });
 
 test("summarizer budget resolver reads only scoped limit settings", () => {
   const budget = withClearedEnvironment(
     [
       "ALLOWED_ORIGINS",
+      "ANALYSIS_MAX_ITEMS_PER_REQUEST",
+      "CLASSIFICATION_MAX_ITEMS_PER_REQUEST",
+      "SUMMARY_BATCH_MAX_STORIES",
+      "ANALYSIS_MAX_OUTPUT_TOKENS",
+      "CLASSIFICATION_MAX_OUTPUT_TOKENS",
+      "SUMMARY_MAX_OUTPUT_TOKENS",
+      "SUMMARY_BATCH_MAX_OUTPUT_TOKENS",
+      "MEDIA_MAX_OUTPUT_TOKENS",
+      "ANALYSIS_MAX_ATTEMPTS",
+      "CLASSIFICATION_MAX_ATTEMPTS",
+      "SUMMARY_MAX_ATTEMPTS",
+      "MEDIA_MAX_ATTEMPTS",
       "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
       "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
       "SUMMARIZER_MAX_IMAGE_BYTES",
@@ -107,6 +143,18 @@ test("summarizer budget resolver reads only scoped limit settings", () => {
     summarizerTextBytesPerChunk: 9000,
     summarizerMaxItemsPerChunk: 7,
     summarizerMaxImageBytes: 8000,
+    analysisMaxItemsPerRequest: 50,
+    classificationMaxItemsPerRequest: 100,
+    summaryBatchMaxStories: 5,
+    analysisMaxOutputTokens: 12_000,
+    classificationMaxOutputTokens: 6_000,
+    summaryMaxOutputTokens: 1_200,
+    summaryBatchMaxOutputTokens: 5_000,
+    mediaMaxOutputTokens: 300,
+    analysisMaxAttempts: 3,
+    classificationMaxAttempts: 3,
+    summaryMaxAttempts: 2,
+    mediaMaxAttempts: 2,
   });
 });
 
@@ -169,6 +217,18 @@ test("environment values override defaults and parse strictly", () => {
       MEDIA_QUOTA_BYTES: "9000",
       DIGEST_RUN_STALE_AFTER_MS: "10000",
       SCHEDULER_LEASE_MS: "11000",
+      ANALYSIS_MAX_ITEMS_PER_REQUEST: "42",
+      CLASSIFICATION_MAX_ITEMS_PER_REQUEST: "84",
+      SUMMARY_BATCH_MAX_STORIES: "25",
+      ANALYSIS_MAX_OUTPUT_TOKENS: "8000",
+      CLASSIFICATION_MAX_OUTPUT_TOKENS: "4000",
+      SUMMARY_MAX_OUTPUT_TOKENS: "1000",
+      SUMMARY_BATCH_MAX_OUTPUT_TOKENS: "3000",
+      MEDIA_MAX_OUTPUT_TOKENS: "200",
+      ANALYSIS_MAX_ATTEMPTS: "6",
+      CLASSIFICATION_MAX_ATTEMPTS: "6",
+      SUMMARY_MAX_ATTEMPTS: "4",
+      MEDIA_MAX_ATTEMPTS: "4",
     };
     for (const [key, value] of Object.entries(values)) process.env[key] = value;
     const config = getConfig();
@@ -195,6 +255,18 @@ test("environment values override defaults and parse strictly", () => {
     assertEquals(config.mediaQuotaBytes, 9000);
     assertEquals(config.digestRunStaleAfterMs, 10000);
     assertEquals(config.schedulerLeaseMs, 11000);
+    assertEquals(config.analysisMaxItemsPerRequest, 42);
+    assertEquals(config.classificationMaxItemsPerRequest, 84);
+    assertEquals(config.summaryBatchMaxStories, 25);
+    assertEquals(config.analysisMaxOutputTokens, 8000);
+    assertEquals(config.classificationMaxOutputTokens, 4000);
+    assertEquals(config.summaryMaxOutputTokens, 1000);
+    assertEquals(config.summaryBatchMaxOutputTokens, 3000);
+    assertEquals(config.mediaMaxOutputTokens, 200);
+    assertEquals(config.analysisMaxAttempts, 6);
+    assertEquals(config.classificationMaxAttempts, 6);
+    assertEquals(config.summaryMaxAttempts, 4);
+    assertEquals(config.mediaMaxAttempts, 4);
   } finally {
     for (const [key, value] of previous) {
       if (value === undefined) delete process.env[key];
@@ -312,6 +384,12 @@ test("summarizer runtime resolver validates and normalizes provider settings", (
     "SUMMARIZER_MODEL",
     "SUMMARIZER_BASE_URL",
     "SUMMARIZER_API_KEY",
+    "ANALYSIS_MODEL",
+    "ANALYSIS_BASE_URL",
+    "ANALYSIS_API_KEY",
+    "CLASSIFICATION_MODEL",
+    "CLASSIFICATION_BASE_URL",
+    "CLASSIFICATION_API_KEY",
     "VISION_MODEL",
     "VISION_BASE_URL",
     "VISION_API_KEY",
@@ -321,6 +399,14 @@ test("summarizer runtime resolver validates and normalizes provider settings", (
     for (const key of keys) delete process.env[key];
     assertEquals(getSummarizerRuntimeConfig(), {
       summarizer: {
+        model: "local-model",
+        baseUrl: "http://127.0.0.1:1234/v1",
+      },
+      analysis: {
+        model: "local-model",
+        baseUrl: "http://127.0.0.1:1234/v1",
+      },
+      classification: {
         model: "local-model",
         baseUrl: "http://127.0.0.1:1234/v1",
       },
@@ -358,6 +444,16 @@ test("summarizer runtime resolver validates and normalizes provider settings", (
     process.env["VISION_API_KEY"] = " vision-key ";
     assertEquals(getSummarizerRuntimeConfig(), {
       summarizer: {
+        model: "summary-model",
+        baseUrl: "https://summary.example/v1",
+        apiKey: "summary-key",
+      },
+      analysis: {
+        model: "summary-model",
+        baseUrl: "https://summary.example/v1",
+        apiKey: "summary-key",
+      },
+      classification: {
         model: "summary-model",
         baseUrl: "https://summary.example/v1",
         apiKey: "summary-key",
@@ -400,6 +496,44 @@ test("summarizer runtime resolver validates and normalizes provider settings", (
       Error,
       "Invalid VISION_BASE_URL",
     );
+    process.env["VISION_BASE_URL"] = "https://vision.example/v1";
+
+    process.env["ANALYSIS_MODEL"] = "analysis-override";
+    process.env["ANALYSIS_BASE_URL"] = "https://analysis.example/v1";
+    process.env["ANALYSIS_API_KEY"] = "analysis-key";
+    assertEquals(getSummarizerRuntimeConfig().analysis, {
+      model: "analysis-override",
+      baseUrl: "https://analysis.example/v1",
+      apiKey: "analysis-key",
+    });
+
+    delete process.env["ANALYSIS_BASE_URL"];
+    assertEquals(getSummarizerRuntimeConfig().analysis, {
+      model: "analysis-override",
+      baseUrl: "https://summary.example/v1",
+      apiKey: "analysis-key",
+    });
+
+    delete process.env["ANALYSIS_API_KEY"];
+    assertEquals(getSummarizerRuntimeConfig().analysis, {
+      model: "analysis-override",
+      baseUrl: "https://summary.example/v1",
+      apiKey: "summary-key",
+    });
+
+    delete process.env["ANALYSIS_MODEL"];
+    assertEquals(getSummarizerRuntimeConfig().analysis, {
+      model: "summary-model",
+      baseUrl: "https://summary.example/v1",
+      apiKey: "summary-key",
+    });
+
+    process.env["CLASSIFICATION_MODEL"] = "clf-override";
+    assertEquals(getSummarizerRuntimeConfig().classification, {
+      model: "clf-override",
+      baseUrl: "https://summary.example/v1",
+      apiKey: "summary-key",
+    });
   } finally {
     for (const [key, value] of previous) {
       if (value === undefined) delete process.env[key];

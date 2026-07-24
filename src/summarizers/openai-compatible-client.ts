@@ -54,9 +54,12 @@ export interface ModelAttemptUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  promptCacheHitTokens?: number;
+  promptCacheMissTokens?: number;
 }
 
 export interface ModelAttemptTelemetry {
+  model?: string;
   attempt: number;
   durationMs: number;
   status: "success" | "retry" | "failure";
@@ -71,6 +74,9 @@ export interface CompletionOptions {
   signal?: AbortSignal;
   requestTimeoutMs?: number;
   onAttempt?: ModelAttemptTelemetryCallback;
+  maxOutputTokens?: number;
+  maxAttempts?: number;
+  jsonOutput?: boolean;
 }
 
 interface RequestDeadline {
@@ -128,16 +134,33 @@ function parseUsage(data: unknown): ModelAttemptUsage | undefined {
     ) ||
     values[2] !== (values[0] as number) + (values[1] as number)
   ) return undefined;
+  const promptCacheHitTokens = record.prompt_cache_hit_tokens;
+  const promptCacheMissTokens = record.prompt_cache_miss_tokens;
+  const validOptionalTokenCount = (value: unknown) =>
+    value === undefined ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+  if (
+    !validOptionalTokenCount(promptCacheHitTokens) ||
+    !validOptionalTokenCount(promptCacheMissTokens)
+  ) return undefined;
   return {
     promptTokens: values[0] as number,
     completionTokens: values[1] as number,
     totalTokens: values[2] as number,
+    ...(typeof promptCacheHitTokens === "number"
+      ? { promptCacheHitTokens }
+      : {}),
+    ...(typeof promptCacheMissTokens === "number"
+      ? { promptCacheMissTokens }
+      : {}),
   };
 }
 
 function reportAttempt(
-  callback: ModelAttemptTelemetryCallback | undefined,
-  telemetry: ModelAttemptTelemetry,
+  callback:
+    | ((telemetry: Omit<ModelAttemptTelemetry, "model">) => Promise<void> | void)
+    | undefined,
+  telemetry: Omit<ModelAttemptTelemetry, "model">,
 ): void {
   if (!callback) return;
   try {
@@ -172,6 +195,19 @@ export class OpenAICompatibleChatClient {
     content: ContentPart[] | string,
     options: CompletionOptions = {},
   ): Promise<string> {
+    if (
+      options.maxOutputTokens !== undefined &&
+      (!Number.isSafeInteger(options.maxOutputTokens) ||
+        options.maxOutputTokens <= 0)
+    ) {
+      throw new RangeError("Model output token limit must be a positive integer");
+    }
+    if (
+      options.maxAttempts !== undefined &&
+      (!Number.isSafeInteger(options.maxAttempts) || options.maxAttempts <= 0)
+    ) {
+      throw new RangeError("Model maximum attempts must be a positive integer");
+    }
     const body = JSON.stringify({
       model: this.endpoint.model,
       stream: false,
@@ -179,9 +215,19 @@ export class OpenAICompatibleChatClient {
         { role: "system", content: systemPrompt },
         { role: "user", content },
       ],
+      ...(options.maxOutputTokens === undefined
+        ? {}
+        : { max_tokens: options.maxOutputTokens }),
+      ...(options.jsonOutput
+        ? { response_format: { type: "json_object" } }
+        : {}),
     });
 
-    const maximumAttempts = 3;
+    const maximumAttempts = options.maxAttempts ?? 3;
+    const attemptCallback = options.onAttempt
+      ? (telemetry: Omit<ModelAttemptTelemetry, "model">) =>
+        options.onAttempt!({ ...telemetry, model: this.endpoint.model })
+      : undefined;
     let lastError: unknown;
     for (let attempt = 0; attempt < maximumAttempts; attempt++) {
       const attemptStartedAt = Date.now();
@@ -218,7 +264,7 @@ export class OpenAICompatibleChatClient {
       const durationMs = Math.max(0, Date.now() - attemptStartedAt);
       if (requestError !== undefined) {
         if (options.signal?.aborted) {
-          reportAttempt(options.onAttempt, {
+          reportAttempt(attemptCallback, {
             attempt: attempt + 1,
             durationMs,
             status: "failure",
@@ -230,7 +276,7 @@ export class OpenAICompatibleChatClient {
           deadline.signal.reason.name === "TimeoutError";
         const retryable = internalTimeout || requestError instanceof TypeError;
         const willRetry = retryable && attempt < maximumAttempts - 1;
-        reportAttempt(options.onAttempt, {
+        reportAttempt(attemptCallback, {
           attempt: attempt + 1,
           durationMs,
           status: willRetry ? "retry" : "failure",
@@ -243,7 +289,7 @@ export class OpenAICompatibleChatClient {
       }
 
       if (response === undefined) {
-        reportAttempt(options.onAttempt, {
+        reportAttempt(attemptCallback, {
           attempt: attempt + 1,
           durationMs,
           status: "failure",
@@ -268,7 +314,7 @@ export class OpenAICompatibleChatClient {
           ? (message as Record<string, unknown>).content
           : undefined;
         if (typeof result !== "string") {
-          reportAttempt(options.onAttempt, {
+          reportAttempt(attemptCallback, {
             attempt: attempt + 1,
             durationMs,
             status: "failure",
@@ -276,7 +322,7 @@ export class OpenAICompatibleChatClient {
           });
           throw new ModelApiError(0, "Model API: malformed completion");
         }
-        reportAttempt(options.onAttempt, {
+        reportAttempt(attemptCallback, {
           attempt: attempt + 1,
           durationMs,
           status: "success",
@@ -293,7 +339,7 @@ export class OpenAICompatibleChatClient {
 
       const willRetry = (response.status === 429 || response.status === 503) &&
         attempt < maximumAttempts - 1;
-      reportAttempt(options.onAttempt, {
+      reportAttempt(attemptCallback, {
         attempt: attempt + 1,
         durationMs,
         status: willRetry ? "retry" : "failure",

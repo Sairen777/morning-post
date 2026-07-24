@@ -8,12 +8,16 @@ export interface ModelEndpointConfig {
 
 export interface SummarizerRuntimeConfig {
   summarizer: ModelEndpointConfig;
+  analysis?: ModelEndpointConfig;
+  classification?: ModelEndpointConfig;
   vision: ModelEndpointConfig;
   sameModel: boolean;
 }
 
 export interface SummarizerRuntimeConfigOverrides {
   summarizer?: Partial<ModelEndpointConfig>;
+  analysis?: Partial<ModelEndpointConfig>;
+  classification?: Partial<ModelEndpointConfig>;
   vision?: Partial<ModelEndpointConfig>;
 }
 
@@ -21,6 +25,18 @@ export interface SummarizerBudgetConfig {
   summarizerTextBytesPerChunk: number;
   summarizerMaxItemsPerChunk: number;
   summarizerMaxImageBytes: number;
+  analysisMaxItemsPerRequest?: number;
+  classificationMaxItemsPerRequest?: number;
+  summaryBatchMaxStories?: number;
+  analysisMaxOutputTokens?: number;
+  classificationMaxOutputTokens?: number;
+  summaryMaxOutputTokens?: number;
+  summaryBatchMaxOutputTokens?: number;
+  mediaMaxOutputTokens?: number;
+  analysisMaxAttempts?: number;
+  classificationMaxAttempts?: number;
+  summaryMaxAttempts?: number;
+  mediaMaxAttempts?: number;
 }
 
 export interface Config {
@@ -38,6 +54,18 @@ export interface Config {
   summarizerTextBytesPerChunk: number;
   summarizerMaxItemsPerChunk: number;
   summarizerMaxImageBytes: number;
+  analysisMaxItemsPerRequest?: number;
+  classificationMaxItemsPerRequest?: number;
+  summaryBatchMaxStories?: number;
+  analysisMaxOutputTokens?: number;
+  classificationMaxOutputTokens?: number;
+  summaryMaxOutputTokens?: number;
+  summaryBatchMaxOutputTokens?: number;
+  mediaMaxOutputTokens?: number;
+  analysisMaxAttempts?: number;
+  classificationMaxAttempts?: number;
+  summaryMaxAttempts?: number;
+  mediaMaxAttempts?: number;
   summarizerTimeoutMs: number;
   digestProgressLogging: boolean;
   summarizationConcurrency: number;
@@ -66,6 +94,18 @@ const DEFAULT_CONNECTOR_TIMEOUT_MS = 120_000;
 const DEFAULT_SUMMARIZER_TEXT_BYTES_PER_CHUNK = 120_000;
 const DEFAULT_SUMMARIZER_MAX_ITEMS_PER_CHUNK = 50;
 const DEFAULT_SUMMARIZER_MAX_IMAGE_BYTES = 1_000_000;
+const DEFAULT_ANALYSIS_MAX_ITEMS_PER_REQUEST = 50;
+const DEFAULT_CLASSIFICATION_MAX_ITEMS_PER_REQUEST = 100;
+const DEFAULT_SUMMARY_BATCH_MAX_STORIES = 5;
+const DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS = 12_000;
+const DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS = 6_000;
+const DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 1_200;
+const DEFAULT_SUMMARY_BATCH_MAX_OUTPUT_TOKENS = 5_000;
+const DEFAULT_MEDIA_MAX_OUTPUT_TOKENS = 300;
+const DEFAULT_ANALYSIS_MAX_ATTEMPTS = 3;
+const DEFAULT_CLASSIFICATION_MAX_ATTEMPTS = 3;
+const DEFAULT_SUMMARY_MAX_ATTEMPTS = 2;
+const DEFAULT_MEDIA_MAX_ATTEMPTS = 2;
 const DEFAULT_SUMMARIZER_TIMEOUT_MS = 120_000;
 const DEFAULT_SUMMARIZATION_CONCURRENCY = 2;
 const DEFAULT_MEDIA_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -174,6 +214,31 @@ function optionalStringSetting(
   };
 }
 
+function inheritedModelEndpoint(
+  prefix: "ANALYSIS" | "CLASSIFICATION",
+  override: Partial<ModelEndpointConfig> | undefined,
+  fallback: ModelEndpointConfig,
+): ModelEndpointConfig {
+  const model = requiredStringSetting(
+    `${prefix}_MODEL`,
+    override?.model,
+    fallback.model,
+  );
+  const baseUrl = optionalStringSetting(
+    `${prefix}_BASE_URL`,
+    override?.baseUrl,
+  ).value;
+  const apiKey = optionalStringSetting(
+    `${prefix}_API_KEY`,
+    override?.apiKey,
+  ).value ?? fallback.apiKey;
+  return {
+    model,
+    baseUrl: normalizeEndpointRoot(baseUrl ?? fallback.baseUrl),
+    ...(apiKey === undefined ? {} : { apiKey }),
+  };
+}
+
 export function getSummarizerRuntimeConfig(
   overrides: SummarizerRuntimeConfigOverrides = {},
 ): SummarizerRuntimeConfig {
@@ -228,12 +293,20 @@ export function getSummarizerRuntimeConfig(
     throw invalidConfig("VISION_BASE_URL", "expected a non-empty value");
   }
 
+  const summarizer = {
+    model: summarizerModel,
+    baseUrl: summarizerBaseUrl,
+    ...(summarizerApiKey === undefined ? {} : { apiKey: summarizerApiKey }),
+  };
+
   return {
-    summarizer: {
-      model: summarizerModel,
-      baseUrl: summarizerBaseUrl,
-      ...(summarizerApiKey === undefined ? {} : { apiKey: summarizerApiKey }),
-    },
+    summarizer,
+    analysis: inheritedModelEndpoint("ANALYSIS", overrides.analysis, summarizer),
+    classification: inheritedModelEndpoint(
+      "CLASSIFICATION",
+      overrides.classification,
+      summarizer,
+    ),
     vision: {
       model: visionModel,
       baseUrl: normalizeEndpointRoot(
@@ -329,6 +402,78 @@ export function getSummarizerBudgetConfig(
       "SUMMARIZER_MAX_IMAGE_BYTES",
       overrides.summarizerMaxImageBytes,
       DEFAULT_SUMMARIZER_MAX_IMAGE_BYTES,
+    ),
+    analysisMaxItemsPerRequest: numberSetting(
+      "ANALYSIS_MAX_ITEMS_PER_REQUEST",
+      "ANALYSIS_MAX_ITEMS_PER_REQUEST",
+      overrides.analysisMaxItemsPerRequest,
+      DEFAULT_ANALYSIS_MAX_ITEMS_PER_REQUEST,
+    ),
+    classificationMaxItemsPerRequest: numberSetting(
+      "CLASSIFICATION_MAX_ITEMS_PER_REQUEST",
+      "CLASSIFICATION_MAX_ITEMS_PER_REQUEST",
+      overrides.classificationMaxItemsPerRequest,
+      DEFAULT_CLASSIFICATION_MAX_ITEMS_PER_REQUEST,
+    ),
+    summaryBatchMaxStories: numberSetting(
+      "SUMMARY_BATCH_MAX_STORIES",
+      "SUMMARY_BATCH_MAX_STORIES",
+      overrides.summaryBatchMaxStories,
+      DEFAULT_SUMMARY_BATCH_MAX_STORIES,
+    ),
+    analysisMaxOutputTokens: numberSetting(
+      "ANALYSIS_MAX_OUTPUT_TOKENS",
+      "ANALYSIS_MAX_OUTPUT_TOKENS",
+      overrides.analysisMaxOutputTokens,
+      DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
+    ),
+    classificationMaxOutputTokens: numberSetting(
+      "CLASSIFICATION_MAX_OUTPUT_TOKENS",
+      "CLASSIFICATION_MAX_OUTPUT_TOKENS",
+      overrides.classificationMaxOutputTokens,
+      DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS,
+    ),
+    summaryMaxOutputTokens: numberSetting(
+      "SUMMARY_MAX_OUTPUT_TOKENS",
+      "SUMMARY_MAX_OUTPUT_TOKENS",
+      overrides.summaryMaxOutputTokens,
+      DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS,
+    ),
+    summaryBatchMaxOutputTokens: numberSetting(
+      "SUMMARY_BATCH_MAX_OUTPUT_TOKENS",
+      "SUMMARY_BATCH_MAX_OUTPUT_TOKENS",
+      overrides.summaryBatchMaxOutputTokens,
+      DEFAULT_SUMMARY_BATCH_MAX_OUTPUT_TOKENS,
+    ),
+    mediaMaxOutputTokens: numberSetting(
+      "MEDIA_MAX_OUTPUT_TOKENS",
+      "MEDIA_MAX_OUTPUT_TOKENS",
+      overrides.mediaMaxOutputTokens,
+      DEFAULT_MEDIA_MAX_OUTPUT_TOKENS,
+    ),
+    analysisMaxAttempts: numberSetting(
+      "ANALYSIS_MAX_ATTEMPTS",
+      "ANALYSIS_MAX_ATTEMPTS",
+      overrides.analysisMaxAttempts,
+      DEFAULT_ANALYSIS_MAX_ATTEMPTS,
+    ),
+    classificationMaxAttempts: numberSetting(
+      "CLASSIFICATION_MAX_ATTEMPTS",
+      "CLASSIFICATION_MAX_ATTEMPTS",
+      overrides.classificationMaxAttempts,
+      DEFAULT_CLASSIFICATION_MAX_ATTEMPTS,
+    ),
+    summaryMaxAttempts: numberSetting(
+      "SUMMARY_MAX_ATTEMPTS",
+      "SUMMARY_MAX_ATTEMPTS",
+      overrides.summaryMaxAttempts,
+      DEFAULT_SUMMARY_MAX_ATTEMPTS,
+    ),
+    mediaMaxAttempts: numberSetting(
+      "MEDIA_MAX_ATTEMPTS",
+      "MEDIA_MAX_ATTEMPTS",
+      overrides.mediaMaxAttempts,
+      DEFAULT_MEDIA_MAX_ATTEMPTS,
     ),
   };
 }
