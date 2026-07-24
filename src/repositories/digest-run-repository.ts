@@ -40,7 +40,7 @@ export const digestModelUsageSnapshotSchema = z.object({
   stages: z.array(z.object({
     stage: z.enum(["analysis", "classification", "summarization", "media"]),
     models: z.array(z.object({
-      model: z.string().min(1).max(256),
+      model: z.string().min(1),
       metrics: modelUsageMetricsSchema,
     }).strict()),
   }).strict()),

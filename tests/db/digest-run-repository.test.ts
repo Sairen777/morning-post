@@ -1,4 +1,5 @@
 import { test } from "bun:test";
+import { z } from "zod";
 import { assertEquals, assertRejects } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
@@ -6,6 +7,7 @@ import {
   createDigestRun,
   type CreateDigestRunInput,
   DigestRunAlreadyRunningError,
+  digestModelUsageSnapshotSchema,
   finishDigestRun,
   findNewestDigestRunByDigestIdForUser,
   finishDigestRunFeed,
@@ -672,4 +674,141 @@ test("period order constraint rejects start > end", async () => {
       );
     }
   });
+});
+
+test("finishDigestRun accepts model names exceeding 256 characters", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, userInput());
+    const run = await createDigestRun(database, runInput(user.id));
+    const longModel = "provider-" + "a".repeat(280) + "/model-v42";
+
+    const finished = await finishDigestRun(database, run.id, {
+      status: "complete",
+      errorMessage: null,
+      modelUsage: {
+        version: 1,
+        totals: {
+          attemptCount: 1,
+          durationMs: 10,
+          usageReportedAttemptCount: 1,
+          promptTokensLowerBound: 5,
+          completionTokensLowerBound: 1,
+          totalTokensLowerBound: 6,
+          promptCacheHitTokensLowerBound: 4,
+          promptCacheMissTokensLowerBound: 1,
+          successCount: 1,
+          retryCount: 0,
+          failureCount: 0,
+          saturated: false,
+        },
+        stages: [
+          {
+            stage: "analysis",
+            models: [{ model: longModel, metrics: {
+              attemptCount: 1,
+              durationMs: 10,
+              usageReportedAttemptCount: 1,
+              promptTokensLowerBound: 5,
+              completionTokensLowerBound: 1,
+              totalTokensLowerBound: 6,
+              promptCacheHitTokensLowerBound: 4,
+              promptCacheMissTokensLowerBound: 1,
+              successCount: 1,
+              retryCount: 0,
+              failureCount: 0,
+              saturated: false,
+            } }],
+          },
+        ],
+        estimatedCostUsd: null,
+      },
+    });
+
+    assertEquals(finished.modelUsage?.stages[0].models[0].model, longModel);
+    assertEquals(finished.modelUsage?.stages[0].models[0].model.length, 299);
+  });
+});
+
+test("digestModelUsageSnapshotSchema accepts model names exceeding 256 characters", async () => {
+  const longModel = "provider-" + "a".repeat(280) + "/model-v42";
+
+  const snapshot = digestModelUsageSnapshotSchema.parse({
+    version: 1,
+    totals: {
+      attemptCount: 1,
+      durationMs: 10,
+      usageReportedAttemptCount: 1,
+      promptTokensLowerBound: 5,
+      completionTokensLowerBound: 1,
+      totalTokensLowerBound: 6,
+      promptCacheHitTokensLowerBound: 4,
+      promptCacheMissTokensLowerBound: 1,
+      successCount: 1,
+      retryCount: 0,
+      failureCount: 0,
+      saturated: false,
+    },
+    stages: [{
+      stage: "analysis",
+      models: [{ model: longModel, metrics: {
+        attemptCount: 1,
+        durationMs: 10,
+        usageReportedAttemptCount: 1,
+        promptTokensLowerBound: 5,
+        completionTokensLowerBound: 1,
+        totalTokensLowerBound: 6,
+        promptCacheHitTokensLowerBound: 4,
+        promptCacheMissTokensLowerBound: 1,
+        successCount: 1,
+        retryCount: 0,
+        failureCount: 0,
+        saturated: false,
+      } }],
+    }],
+    estimatedCostUsd: null,
+  });
+
+  assertEquals(snapshot.stages[0].models[0].model, longModel);
+  assertEquals(snapshot.stages[0].models[0].model.length, 299);
+
+  await assertRejects(
+    () => Promise.resolve().then(() =>
+      digestModelUsageSnapshotSchema.parse({
+        version: 1,
+        totals: {
+          attemptCount: 1,
+          durationMs: 10,
+          usageReportedAttemptCount: 1,
+          promptTokensLowerBound: 5,
+          completionTokensLowerBound: 1,
+          totalTokensLowerBound: 6,
+          promptCacheHitTokensLowerBound: 4,
+          promptCacheMissTokensLowerBound: 1,
+          successCount: 1,
+          retryCount: 0,
+          failureCount: 0,
+          saturated: false,
+        },
+        stages: [{
+          stage: "analysis",
+          models: [{ model: "", metrics: {
+            attemptCount: 1,
+            durationMs: 10,
+            usageReportedAttemptCount: 1,
+            promptTokensLowerBound: 5,
+            completionTokensLowerBound: 1,
+            totalTokensLowerBound: 6,
+            promptCacheHitTokensLowerBound: 4,
+            promptCacheMissTokensLowerBound: 1,
+            successCount: 1,
+            retryCount: 0,
+            failureCount: 0,
+            saturated: false,
+          } }],
+        }],
+        estimatedCostUsd: null,
+      }),
+    ),
+    z.ZodError,
+  );
 });
