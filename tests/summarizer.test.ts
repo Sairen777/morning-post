@@ -10,6 +10,7 @@ import {
   assertStringIncludes,
 } from "./assertions.ts";
 import { OpenAICompatibleSummarizerService } from "../src/summarizers/openai-compatible-summarizer.ts";
+import { ModelApiError } from "../src/summarizers/openai-compatible-client.ts";
 import {
   buildArticlePrompt,
   buildDiscussionPrompt,
@@ -904,21 +905,22 @@ test("summarize — provider response bodies stay out of diagnostics", async () 
 
 // --- parsePoints boundary cases ---
 
-test("parsePoints — throws on empty response", async () => {
+test("summarize — retries then rejects an empty provider completion", async () => {
   const restore = stubFetch({
-    choices: [{ message: { content: "" } }],
+    choices: [{
+      finish_reason: "stop",
+      message: { content: "" },
+    }],
   });
   try {
-    const svc = createTestSummarizer();
-    await svc.summarize([item()], buildNewsPrompt());
-    throw new Error("expected summarize to throw on empty response");
-  } catch (err: unknown) {
-    if (
-      err instanceof Error &&
-      err.message === "expected summarize to throw on empty response"
-    ) throw err;
-    assertEquals(err instanceof Error, true);
-    assertStringIncludes((err as Error).message, "empty response");
+    await assertRejects(
+      () => createTestSummarizer({ retryBaseDelayMs: 0 }).summarize(
+        [item()],
+        buildNewsPrompt(),
+      ),
+      ModelApiError,
+      "empty completion",
+    );
   } finally {
     restore();
   }

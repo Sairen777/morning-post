@@ -321,23 +321,51 @@ export class OpenAICompatibleChatClient {
           : undefined;
         const choices = data?.choices;
         const firstChoice = Array.isArray(choices) ? choices[0] : undefined;
-        const message = firstChoice !== null &&
+        const choice = firstChoice !== null &&
             typeof firstChoice === "object" &&
             !Array.isArray(firstChoice)
-          ? (firstChoice as Record<string, unknown>).message
+          ? firstChoice as Record<string, unknown>
           : undefined;
-        const result = message !== null && typeof message === "object" &&
-            !Array.isArray(message)
-          ? (message as Record<string, unknown>).content
+        const rawMessage = choice?.message;
+        const message = rawMessage !== null && typeof rawMessage === "object" &&
+            !Array.isArray(rawMessage)
+          ? rawMessage as Record<string, unknown>
           : undefined;
-        if (typeof result !== "string") {
+        const result = message?.content;
+        if (typeof result !== "string" || result.trim() === "") {
+          const rawFinishReason = choice?.finish_reason;
+          const finishReason = typeof rawFinishReason === "string"
+            ? rawFinishReason.replace(/[^\p{L}\p{N}_-]+/gu, "").slice(0, 32) ||
+              "unknown"
+            : "unknown";
+          const refusalPresent = typeof message?.refusal === "string" &&
+            message.refusal.trim().length > 0;
+          const toolCallCount = Array.isArray(message?.tool_calls)
+            ? message.tool_calls.length
+            : 0;
+          const malformed = typeof result !== "string";
+          const outputLimitExhausted = finishReason === "length";
+          const error = new ModelApiError(
+            0,
+            malformed
+              ? "Model API: malformed completion"
+              : outputLimitExhausted
+              ? `Model API exhausted output token limit (finish_reason=length, max_tokens=${options.maxOutputTokens ?? "provider-default"})`
+              : `Model API returned empty completion (finish_reason=${finishReason}, refusal=${refusalPresent}, tool_calls=${toolCallCount})`,
+          );
+          const willRetry = !malformed && !outputLimitExhausted &&
+            attempt < maximumAttempts - 1;
+          const usage = parseUsage(responseData);
           reportAttempt(attemptCallback, {
             attempt: attempt + 1,
             durationMs,
-            status: "failure",
-            usage: parseUsage(responseData),
+            status: willRetry ? "retry" : "failure",
+            usage,
           });
-          throw new ModelApiError(0, "Model API: malformed completion");
+          lastError = error;
+          if (!willRetry) throw error;
+          await delay(this.retryDelayMilliseconds(attempt), options.signal);
+          continue;
         }
         reportAttempt(attemptCallback, {
           attempt: attempt + 1,

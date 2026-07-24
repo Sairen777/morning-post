@@ -118,7 +118,7 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.summaryBatchMaxStories, 5);
   assertEquals(config.analysisMaxOutputTokens, 30_000);
   assertEquals(config.classificationMaxOutputTokens, 6_000);
-  assertEquals(config.summaryMaxOutputTokens, 1_200);
+  assertEquals(config.summaryMaxOutputTokens, 4_000);
   assertEquals(config.summaryBatchMaxOutputTokens, 6_500);
   assertEquals(config.mediaMaxOutputTokens, 300);
   assertEquals(config.analysisMaxAttempts, 3);
@@ -165,7 +165,7 @@ test("summarizer budget resolver reads only scoped limit settings", () => {
     summaryBatchMaxStories: 5,
     analysisMaxOutputTokens: 30_000,
     classificationMaxOutputTokens: 6_000,
-    summaryMaxOutputTokens: 1_200,
+    summaryMaxOutputTokens: 4_000,
     summaryBatchMaxOutputTokens: 6_500,
     mediaMaxOutputTokens: 300,
     analysisMaxAttempts: 3,

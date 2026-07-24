@@ -26,6 +26,36 @@ function completionResponse(content: string): Response {
   return Response.json({ choices: [{ message: { content } }] });
 }
 
+test("OpenAICompatibleChatClient completes a basic OpenAI-compatible request", async () => {
+  let capturedBody: string | undefined;
+  const client = createClient((_input, init) => {
+    capturedBody = typeof init?.body === "string" ? init.body : undefined;
+    return Promise.resolve(Response.json({
+      choices: [{
+        finish_reason: "stop",
+        message: { content: '[{"t":"basic summary","i":0}]' },
+      }],
+    }));
+  });
+  const result = await client.complete("system rules", "[0] source", {
+    maxOutputTokens: 4_000,
+    maxAttempts: 2,
+    jsonOutput: true,
+  });
+  assertEquals(result, '[{"t":"basic summary","i":0}]');
+  const request: unknown = JSON.parse(capturedBody ?? "");
+  assert(
+    request !== null &&
+      typeof request === "object" &&
+      "model" in request &&
+      request.model === "test-model" &&
+      "max_tokens" in request &&
+      request.max_tokens === 4_000 &&
+      "response_format" in request,
+    "basic completion request must retain model and structured-output limits",
+  );
+});
+
 test("OpenAICompatibleChatClient retries a fetch TypeError and succeeds", async () => {
   let attemptCount = 0;
   const mockFetch: FetchFunction = () => {
@@ -59,6 +89,77 @@ test("OpenAICompatibleChatClient retries a response body TypeError and succeeds"
     "recovered body",
   );
   assertEquals(attemptCount, 2);
+});
+
+test("OpenAICompatibleChatClient retries an empty stop completion and succeeds", async () => {
+  let attemptCount = 0;
+  const telemetry: ModelAttemptTelemetry[] = [];
+  const mockFetch: FetchFunction = () => {
+    attemptCount++;
+    return Promise.resolve(attemptCount === 1
+      ? Response.json({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: "", refusal: null },
+        }],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 1,
+          total_tokens: 11,
+        },
+      })
+      : completionResponse('[{"t":"recovered","i":0}]'));
+  };
+  const result = await createClient(mockFetch).complete("system", "content", {
+    maxAttempts: 2,
+    maxOutputTokens: 4_000,
+    jsonOutput: true,
+    onAttempt: (attempt) => {
+      telemetry.push(attempt);
+    },
+  });
+  assertEquals(result, '[{"t":"recovered","i":0}]');
+  assertEquals(attemptCount, 2);
+  assertEquals(telemetry.map(({ status }) => status), ["retry", "success"]);
+});
+
+test("OpenAICompatibleChatClient does not retry an exhausted output limit", async () => {
+  let attemptCount = 0;
+  const telemetry: ModelAttemptTelemetry[] = [];
+  const mockFetch: FetchFunction = () => {
+    attemptCount++;
+    return Promise.resolve(Response.json({
+      choices: [{
+        finish_reason: "length",
+        message: {
+          content: "",
+          refusal: "provider detail must not appear",
+          tool_calls: [{ id: "call-1" }],
+        },
+      }],
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 4_000,
+        total_tokens: 4_010,
+      },
+    }));
+  };
+  const error = await assertRejects(
+    () => createClient(mockFetch).complete("system", "content", {
+      maxAttempts: 3,
+      maxOutputTokens: 4_000,
+      onAttempt: (attempt) => {
+        telemetry.push(attempt);
+      },
+    }),
+    ModelApiError,
+    "exhausted output token limit",
+  );
+  assertEquals(attemptCount, 1);
+  assertEquals(telemetry.map(({ status }) => status), ["failure"]);
+  assertStringIncludes(error.message, "finish_reason=length");
+  assertStringIncludes(error.message, "max_tokens=4000");
+  assertEquals(error.message.includes("provider detail"), false);
 });
 
 test("OpenAICompatibleChatClient exhausts three transport attempts with the final error", async () => {
