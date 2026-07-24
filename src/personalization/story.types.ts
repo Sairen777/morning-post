@@ -80,6 +80,8 @@ export interface StoryIntelligenceOptions {
   preferencePrompt?: string;
   onAttempt?: ModelAttemptTelemetryCallback;
   onMediaAttempt?: ModelAttemptTelemetryCallback;
+  /** Preserves precomputed discussion-unit boundaries when checkpoints combine cache misses. */
+  analysisUnitSizes?: number[];
 }
 
 export interface StoryIntelligenceService {

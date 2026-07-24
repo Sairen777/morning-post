@@ -1,9 +1,11 @@
-import type { AnalyzedStoryItem, PersistedStoryCandidate, StoryIntelligenceService, StoryItemInput, StoryPreferenceRule } from "../../src/personalization/story.types.ts";
-import { fingerprintStoryAnalysisMember, groupStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
+import type { AnalyzedStoryItem, PersistedStoryCandidate, StoryIntelligenceOptions, StoryIntelligenceService, StoryItemInput, StoryPreferenceRule } from "../../src/personalization/story.types.ts";
+import { fingerprintStoryAnalysisMember, groupStoryAnalysisUnits, partitionStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
 
 export class FixtureStoryIntelligence implements StoryIntelligenceService {
-  async analyze(items: StoryItemInput[]): Promise<AnalyzedStoryItem[]> {
-    const units = groupStoryAnalysisUnits(items);
+  async analyze(items: StoryItemInput[], options: StoryIntelligenceOptions = {}): Promise<AnalyzedStoryItem[]> {
+    const units = options.analysisUnitSizes === undefined
+      ? groupStoryAnalysisUnits(items)
+      : partitionStoryAnalysisUnits(items, options.analysisUnitSizes);
     const memberFingerprints = await Promise.all(units.flatMap((unit) =>
       unit.items.map((_, memberIndex) =>
         fingerprintStoryAnalysisMember(unit, memberIndex)

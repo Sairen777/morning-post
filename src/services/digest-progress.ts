@@ -108,6 +108,7 @@ const costStates = new WeakMap<DigestModelUsageMetrics, CostState>();
 function recordCost(
   metrics: DigestModelUsageMetrics,
   attempt: ModelAttemptTelemetry,
+  requireConsistentPricing: boolean,
 ): void {
   const state = costStates.get(metrics) ?? { complete: true, costUsd: 0 };
   if (!attempt.usage || !attempt.pricing) {
@@ -116,6 +117,7 @@ function recordCost(
     return;
   }
   if (
+    requireConsistentPricing &&
     state.pricing &&
     (state.pricing.uncachedInputUsdPerMillionTokens !==
         attempt.pricing.uncachedInputUsdPerMillionTokens ||
@@ -125,9 +127,8 @@ function recordCost(
         attempt.pricing.outputUsdPerMillionTokens)
   ) {
     state.complete = false;
-  } else {
-    state.pricing = { ...attempt.pricing };
   }
+  state.pricing ??= { ...attempt.pricing };
   const prompt = attempt.usage.promptTokens;
   const cached = Math.min(
     prompt,
@@ -164,11 +165,12 @@ function addToAggregate(
 function recordAttempt(
   aggregate: DigestModelUsageMetrics,
   attempt: ModelAttemptTelemetry,
+  requireConsistentPricing: boolean,
 ): void {
   addToAggregate(aggregate, "attemptCount", 1);
   addToAggregate(aggregate, "durationMs", attempt.durationMs);
   addToAggregate(aggregate, `${attempt.status}Count`, 1);
-  recordCost(aggregate, attempt);
+  recordCost(aggregate, attempt, requireConsistentPricing);
   if (!attempt.usage) return;
   addToAggregate(aggregate, "usageReportedAttemptCount", 1);
   addToAggregate(aggregate, "promptTokensLowerBound", attempt.usage.promptTokens);
@@ -231,7 +233,7 @@ export function reportDigestModelAttempt(
 ): void {
   if (aggregate) {
     const tracksExtendedMetrics = Object.hasOwn(aggregate, "successCount");
-    recordAttempt(aggregate, attempt);
+    recordAttempt(aggregate, attempt, false);
     if (!tracksExtendedMetrics) {
       delete (aggregate as Partial<DigestModelUsageMetrics>).promptCacheHitTokensLowerBound;
       delete (aggregate as Partial<DigestModelUsageMetrics>).promptCacheMissTokensLowerBound;
@@ -247,7 +249,7 @@ export function reportDigestModelAttempt(
     const models = breakdown[stage] ??= {};
     const model = attempt.model ?? "unknown";
     const modelMetrics = models[model] ??= { ...emptyMetrics(), saturated: false };
-    recordAttempt(modelMetrics, attempt);
+    recordAttempt(modelMetrics, attempt, true);
   }
   if (!runId) return;
   reportDigestProgress(reporter, {

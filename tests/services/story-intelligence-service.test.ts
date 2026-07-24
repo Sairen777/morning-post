@@ -76,6 +76,9 @@ function classificationLine(story: PersistedStoryCandidate, index: number): stri
     developments: story.candidate.developments.map((development) => ({
       type: development.type,
       title: development.title,
+      evidence: development.items.map((item) => item.payload.text.trim())
+        .filter(Boolean)
+        .join("\n"),
     })),
   });
 }
@@ -429,6 +432,32 @@ test("analysis retries media description after a cached promise rejects", async 
   assertEquals(result!.analysis.mediaDescription, "Recovered description");
 });
 
+test("analysis does not share media descriptions across different item context", async () => {
+  let mediaCalls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    mediaDescriber: {
+      describe: async (input) => {
+        mediaCalls++;
+        return input.payload.title;
+      },
+    },
+    client: {
+      complete: async (_prompt, content) =>
+        analysisResponse(content.split("\n").map((line) => JSON.parse(line).i as number)),
+    },
+  });
+  const media = { type: "photo" as const, localPath: "/tmp/shared.jpg" };
+  const results = await service.analyze([
+    item(0, { title: "First context", text: "", media }),
+    item(1, { title: "Second context", text: "", media }),
+  ]);
+  assertEquals(mediaCalls, 2);
+  assertEquals(
+    results.map((result) => result.analysis.mediaDescription),
+    ["First context", "Second context"],
+  );
+});
+
 test("default media path uses the model-backed summarizer and preserves its description", async () => {
   let mediaCalls = 0;
   const service = new OpenAICompatibleStoryIntelligenceService({
@@ -745,7 +774,7 @@ test("classification request byte budget permits an exact fit and splits on one-
   };
   const exact = await classifyWithBudget(exactBytes);
   assertEquals(exact.requestSizes.every((size) => size <= exactBytes), true);
-  assertEquals(exact.batchSizes, [1, 1]);
+  assertEquals(exact.batchSizes, [2]);
   const overflow = await classifyWithBudget(exactBytes - 1);
   assertEquals(overflow.requestSizes.every((size) => size <= exactBytes - 1), true);
   assertEquals(overflow.batchSizes, [1, 1]);

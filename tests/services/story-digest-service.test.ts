@@ -26,12 +26,13 @@ import {
   listItemAnalyses,
 } from "../../src/repositories/story-repository.ts";
 import { assembleStoryDigest } from "../../src/services/story-digest-service.ts";
-import { fingerprintStoryAnalysisMember, fingerprintStoryItem, groupStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
+import { fingerprintStoryAnalysisMember, fingerprintStoryItem, groupStoryAnalysisUnits, partitionStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
 import type {
   AnalyzedStoryItem,
   PersistedStoryCandidate,
   StoryIntelligenceService,
   StoryItemInput,
+  StoryIntelligenceOptions,
   StoryPreferenceRule,
   StoryReference,
 } from "../../src/personalization/story.types.ts";
@@ -128,9 +129,11 @@ class FixtureIntelligence implements StoryIntelligenceService {
   analyzeCalls = 0;
   recentReferenceCounts: number[] = [];
   splitStories = false;
-  async analyze(items: StoryItemInput[]): Promise<AnalyzedStoryItem[]> {
+  async analyze(items: StoryItemInput[], options: StoryIntelligenceOptions = {}): Promise<AnalyzedStoryItem[]> {
     this.analyzeCalls++;
-    const units = groupStoryAnalysisUnits(items);
+    const units = options.analysisUnitSizes === undefined
+      ? groupStoryAnalysisUnits(items)
+      : partitionStoryAnalysisUnits(items, options.analysisUnitSizes);
     const memberFingerprints = await Promise.all(units.flatMap((unit) =>
       unit.items.map((_, memberIndex) =>
         fingerprintStoryAnalysisMember(unit, memberIndex)
@@ -942,5 +945,101 @@ test("cached story cards are skipped before batch packing and batch concurrency 
         );
       }
     }
+  });
+});
+
+test("cached separators preserve rootless discussion unit boundaries", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, {
+      name: "Rootless Boundary Owner",
+      email: "rootless-boundary@example.com",
+      passwordHash: "$argon2id$fake",
+      defaultLanguage: "en",
+      systemPrompt: "",
+      summaryPrompt: "",
+      relevanceThreshold: 0,
+    });
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await new CredentialCipher(
+        new EnvMasterKeyProvider(new Uint8Array(32).fill(6)),
+      ).encrypt("{}", {
+        userId: user.id,
+        connectorId: ConnectorId.Telegram,
+      }),
+    });
+    const feed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: source.id,
+      externalId: "rootless-boundary-feed",
+      name: "Rootless Boundary Feed",
+      kind: "discussion",
+    });
+    const makeItem = (
+      externalId: string,
+      date: number,
+      author: string,
+    ) => ({
+      connectorId: ConnectorId.Telegram,
+      feedExternalId: feed.externalId,
+      externalId,
+      date,
+      title: externalId,
+      text: `Message ${externalId}`,
+      author,
+      url: `https://t.me/rootless/${externalId}`,
+      meta: { isGroup: true },
+    });
+    await upsertItems(
+      database,
+      feed.id,
+      [makeItem("separator-b", 110, "author-y")],
+      200,
+    );
+    const digest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 1_000,
+      status: "pending",
+    });
+    const intelligence = new FixtureIntelligence();
+    const observedUnitSizes: number[][] = [];
+    const analyze = intelligence.analyze.bind(intelligence);
+    intelligence.analyze = async (items, options = {}) => {
+      observedUnitSizes.push([...(options.analysisUnitSizes ?? [])]);
+      return await analyze(items, options);
+    };
+    const summarizer: SummarizerService = {
+      summarize: async () => [{
+        text: "Discussion summary",
+        sourceUrl: null,
+      }],
+    };
+    await assembleStoryDigest(
+      database,
+      digest.id,
+      user,
+      [feed],
+      0,
+      1_000,
+      { intelligence, summarizer, analyzerVersion: "rootless-v1" },
+    );
+    await upsertItems(database, feed.id, [
+      makeItem("miss-a", 100, "author-x"),
+      makeItem("miss-c", 120, "author-x"),
+    ], 300);
+    const rerun = await assembleStoryDigest(
+      database,
+      digest.id,
+      user,
+      [feed],
+      0,
+      1_000,
+      { intelligence, summarizer, analyzerVersion: "rootless-v1" },
+    );
+    assertEquals(rerun.hadSummaryFailure, false);
+    assertEquals(observedUnitSizes, [[1], [1, 1]]);
+    assertEquals(intelligence.analyzeCalls, 2);
   });
 });

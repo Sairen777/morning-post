@@ -608,6 +608,34 @@ test("malformed cache tokens cause safe omission of usage", async () => {
         prompt_cache_hit_tokens: 3.14,
       },
     },
+    {
+      desc: "hit tokens exceed prompt tokens",
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_cache_hit_tokens: 11,
+      },
+    },
+    {
+      desc: "miss tokens exceed prompt tokens",
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_cache_miss_tokens: 11,
+      },
+    },
+    {
+      desc: "hit and miss tokens do not partition prompt tokens",
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        prompt_cache_hit_tokens: 7,
+        prompt_cache_miss_tokens: 7,
+      },
+    },
   ]) {
     const telemetry: ModelAttemptTelemetry[] = [];
     await createClient(() =>

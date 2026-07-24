@@ -144,8 +144,18 @@ function parseUsage(data: unknown): ModelAttemptUsage | undefined {
     !validOptionalTokenCount(promptCacheHitTokens) ||
     !validOptionalTokenCount(promptCacheMissTokens)
   ) return undefined;
+  const promptTokens = values[0] as number;
+  if (
+    (typeof promptCacheHitTokens === "number" &&
+      promptCacheHitTokens > promptTokens) ||
+    (typeof promptCacheMissTokens === "number" &&
+      promptCacheMissTokens > promptTokens) ||
+    (typeof promptCacheHitTokens === "number" &&
+      typeof promptCacheMissTokens === "number" &&
+      promptCacheHitTokens + promptCacheMissTokens !== promptTokens)
+  ) return undefined;
   return {
-    promptTokens: values[0] as number,
+    promptTokens,
     completionTokens: values[1] as number,
     totalTokens: values[2] as number,
     ...(typeof promptCacheHitTokens === "number"

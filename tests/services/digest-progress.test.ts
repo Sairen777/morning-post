@@ -284,6 +284,54 @@ test("model usage snapshot prices cache hits, misses, output, and retries separa
   assertEquals(snapshot.stages[0].models[0].pricing, pricing);
 });
 
+test("model usage snapshot sums complete costs across stage-specific prices", () => {
+  const aggregate = createDigestModelUsageAggregate();
+  const attempts = [
+    {
+      stage: "analysis" as const,
+      model: "deepseek-v4-flash",
+      pricing: {
+        uncachedInputUsdPerMillionTokens: 1,
+        cachedInputUsdPerMillionTokens: 0.5,
+        outputUsdPerMillionTokens: 2,
+      },
+    },
+    {
+      stage: "media" as const,
+      model: "vision-model",
+      pricing: {
+        uncachedInputUsdPerMillionTokens: 3,
+        cachedInputUsdPerMillionTokens: 1,
+        outputUsdPerMillionTokens: 4,
+      },
+    },
+  ];
+  for (const [index, attempt] of attempts.entries()) {
+    reportDigestModelAttempt(undefined, undefined, 0, attempt.stage, aggregate, {
+      model: attempt.model,
+      attempt: index + 1,
+      durationMs: 1,
+      status: "success",
+      pricing: attempt.pricing,
+      usage: {
+        promptTokens: 1_000_000,
+        completionTokens: 1_000_000,
+        totalTokens: 2_000_000,
+        promptCacheHitTokens: 0,
+        promptCacheMissTokens: 1_000_000,
+      },
+    });
+  }
+  const snapshot = snapshotDigestModelUsage(aggregate);
+  assertEquals(snapshot.estimatedCostUsd, 10);
+  assertEquals(
+    snapshot.stages.flatMap((stage) =>
+      stage.models.map((model) => model.estimatedCostUsd)
+    ),
+    [3, 7],
+  );
+});
+
 test("model usage snapshot keeps exact usage but null cost when any attempt lacks usage or pricing", () => {
   const aggregate = createDigestModelUsageAggregate();
   reportDigestModelAttempt(undefined, undefined, 0, "analysis", aggregate, {

@@ -191,6 +191,29 @@ export function groupStoryAnalysisUnits(items: StoryItemInput[]): StoryAnalysisU
   });
   return units;
 }
+
+export function partitionStoryAnalysisUnits(
+  items: StoryItemInput[],
+  unitSizes: number[],
+): StoryAnalysisUnit[] {
+  if (
+    unitSizes.some((size) => !Number.isInteger(size) || size <= 0) ||
+    unitSizes.reduce((total, size) => total + size, 0) !== items.length
+  ) {
+    throw new RangeError(
+      "Analysis unit sizes must be positive integers covering every input item",
+    );
+  }
+  let offset = 0;
+  return unitSizes.map((size) => {
+    const start = offset;
+    offset += size;
+    return {
+      items: items.slice(start, offset),
+      memberIndexes: Array.from({ length: size }, (_, index) => start + index),
+    };
+  });
+}
 function parseMemberComplete(
   raw: string,
   expected: Array<{ i: number; m: number }>,
@@ -392,7 +415,9 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
     const candidates = items.map((item, index) => ({ item, index })).filter(({ item }) => item.payload.media && item.payload.text.trim().length < this.minimumMediaText);
     for (let offset = 0; offset < candidates.length; offset += this.mediaConcurrency) {
       await Promise.all(candidates.slice(offset, offset + this.mediaConcurrency).map(async ({ item, index }) => {
-        const identity = createHash("sha256").update(stableJson(item.payload.media)).digest("hex");
+        const identity = createHash("sha256")
+          .update(stableJson(semanticStoryItem(item)))
+          .digest("hex");
         let pending = this.mediaDescriptions.get(identity);
         if (!pending) {
           pending = this.mediaDescriber.describe(item, options);
@@ -406,7 +431,9 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
         descriptions.set(index, await pending);
       }));
     }
-    const units = groupStoryAnalysisUnits(items);
+    const units = options.analysisUnitSizes === undefined
+      ? groupStoryAnalysisUnits(items)
+      : partitionStoryAnalysisUnits(items, options.analysisUnitSizes);
     const encoder = new TextEncoder();
     const serializedBytes = (value: string): number =>
       encoder.encode(value).length;

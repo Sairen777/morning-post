@@ -218,20 +218,29 @@ export async function assembleStoryDigest(
   ));
   const misses = missedUnits.flatMap((unit) => unit.items);
   const checkpointSize = resolveStoryAnalysisMaxItems(dependencies.analysisCheckpointSize);
-  const checkpointInputs: Array<{ batchIndex: number; inputs: StoryItemInput[] }> = [];
+  const checkpointInputs: Array<{
+    batchIndex: number;
+    inputs: StoryItemInput[];
+    analysisUnitSizes: number[];
+  }> = [];
   for (const unit of missedUnits) {
     const current = checkpointInputs.at(-1);
     if (!current || (current.inputs.length > 0 && current.inputs.length + unit.items.length > checkpointSize)) {
-      checkpointInputs.push({ batchIndex: checkpointInputs.length + 1, inputs: [...unit.items] });
+      checkpointInputs.push({
+        batchIndex: checkpointInputs.length + 1,
+        inputs: [...unit.items],
+        analysisUnitSizes: [unit.items.length],
+      });
     } else {
       current.inputs.push(...unit.items);
+      current.analysisUnitSizes.push(unit.items.length);
     }
   }
   let completedAnalysisCount = 0;
   const checkpoints = await boundedMap(
     checkpointInputs,
     Math.max(1, dependencies.summaryConcurrency ?? 1),
-    async ({ batchIndex, inputs }) => {
+    async ({ batchIndex, inputs, analysisUnitSizes }) => {
       const expectedFingerprints = new Map(inputs.map((item) => [
         item.itemId,
         fingerprintByItemId.get(item.itemId)!,
@@ -251,6 +260,7 @@ export async function assembleStoryDigest(
         requestTimeoutMs: dependencies.timeoutMs,
         onAttempt: onAttempt("analysis"),
         onMediaAttempt: onAttempt("media"),
+        analysisUnitSizes,
       });
       const returnedIds = new Set(checkpoint.map((item) => item.itemId));
       const validCheckpoint = checkpoint.length === inputs.length &&
