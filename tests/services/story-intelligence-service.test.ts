@@ -537,6 +537,41 @@ test("analysis retains only verbatim source evidence", async () => {
   ]);
 });
 
+test("analysis truncates member 43 excess evidence without rejecting the batch", async () => {
+  const oversized = "x".repeat(401);
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 50,
+    client: {
+      complete: async (_prompt, content) => {
+        const indexes = content.split("\n").map((line) => JSON.parse(line).i as number);
+        return JSON.stringify(indexes.map((i) => ({
+          i,
+          m: 0,
+          topics: [],
+          entities: [],
+          storyKey: `story-${i}`,
+          developmentKey: `development-${i}`,
+          evidence: i === 43
+            ? ["first fact", "second fact", "third fact", "fourth fact", null, oversized]
+            : [],
+        })));
+      },
+    },
+  });
+  const inputs = Array.from({ length: 44 }, (_, index) =>
+    item(index, index === 43
+      ? { text: `first fact; second fact; third fact; fourth fact; ${oversized}` }
+      : {})
+  );
+  const results = await service.analyze(inputs);
+  assertEquals(results.map((result) => result.itemId), inputs.map((input) => input.itemId));
+  assertEquals(results[43]!.analysis.evidence, [
+    "first fact",
+    "second fact",
+    "third fact",
+  ]);
+});
+
 test("analysis accepts provider metadata omissions and canalUrls typo with deterministic trusted fallbacks", async () => {
   const service = new OpenAICompatibleStoryIntelligenceService({
     mediaDescriber: {

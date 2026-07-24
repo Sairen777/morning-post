@@ -91,10 +91,12 @@ const analysisSchema = z.object({
   developmentKey: z.string().min(1),
   developmentType: z.string().min(1).optional(),
   developmentTitle: z.string().min(1).optional(),
-  evidence: z.array(z.string().refine(
-    (value) => new TextEncoder().encode(value).length <= MAX_EVIDENCE_BYTES,
-    `Evidence excerpts must be at most ${MAX_EVIDENCE_BYTES} UTF-8 bytes`,
-  )).max(MAX_EVIDENCE_ITEMS),
+  evidence: z.preprocess(
+    (value) => Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === "string")
+      : value,
+    z.array(z.string()),
+  ),
 }).strict();
 
 const classificationSchema = z.object({
@@ -612,9 +614,13 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
           developmentType: result.developmentType === undefined ? developmentKey : normalizeKey(result.developmentType),
           developmentTitle: result.developmentTitle?.trim() || item.payload.title?.trim() || developmentKey,
           mediaDescription: descriptions.get(itemIndex) ?? null,
-          evidence: result.evidence
+          evidence: [...new Set(result.evidence
             .map((value) => value.trim())
-            .filter((value) => value.length > 0 && evidenceSource.includes(value)),
+            .filter((value) =>
+              value.length > 0 &&
+              serializedBytes(value) <= MAX_EVIDENCE_BYTES &&
+              evidenceSource.includes(value)
+            ))].slice(0, MAX_EVIDENCE_ITEMS),
         });
       });
     }
