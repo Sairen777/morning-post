@@ -65,18 +65,34 @@ export interface OpenAICompatibleStoryIntelligenceOptions {
   maxConcurrentMediaDescriptions?: number;
 }
 
+const DEFAULT_STORY_ANALYSIS_MAX_ITEMS = 10;
+
+export function resolveStoryAnalysisMaxItems(override?: number): number {
+  if (override !== undefined) {
+    if (!Number.isInteger(override) || override <= 0) {
+      throw new RangeError("Story analysis max items must be a positive integer");
+    }
+    return override;
+  }
+  return Math.min(
+    DEFAULT_STORY_ANALYSIS_MAX_ITEMS,
+    getSummarizerBudgetConfig().summarizerMaxItemsPerChunk,
+  );
+}
+
 const analysisSchema = z.object({
   i: z.number().int().nonnegative(),
-  language: z.string().nullable(),
-  canonicalUrls: z.array(z.string()),
-  topics: personalizationLabelsSchema,
-  entities: personalizationLabelsSchema,
+  language: z.string().nullable().optional(),
+  canonicalUrls: z.array(z.string()).optional(),
+  canalUrls: z.array(z.string()).optional(),
+  topics: personalizationLabelsSchema.optional(),
+  entities: personalizationLabelsSchema.optional(),
   storyKey: z.string().min(1),
-  storyTitle: z.string().min(1),
+  storyTitle: z.string().min(1).optional(),
   developmentKey: z.string().min(1),
-  developmentType: z.string().min(1),
-  developmentTitle: z.string().min(1),
-  mediaDescription: z.string().nullable(),
+  developmentType: z.string().min(1).optional(),
+  developmentTitle: z.string().min(1).optional(),
+  mediaDescription: z.string().nullable().optional(),
 }).strict();
 
 const resolutionSchema = z.object({
@@ -244,7 +260,7 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
           allowRemoteSummarization: options.allowRemoteSummarization,
           maxItemsPerChunk: 1,
         }));
-    this.maxItems = options.maxItemsPerChunk ?? budget.summarizerMaxItemsPerChunk;
+    this.maxItems = resolveStoryAnalysisMaxItems(options.maxItemsPerChunk);
     this.maxBytes = options.maxTextBytesPerChunk ?? budget.summarizerTextBytesPerChunk;
     this.minimumMediaText = options.minimumTextLengthForMediaDescription ?? 80;
     this.mediaConcurrency = options.maxConcurrentMediaDescriptions ?? 4;
@@ -265,13 +281,19 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
       const local = parseComplete(raw, analysisSchema, batch.map(({ index }) => index), "Story analysis");
       local.forEach((result) => {
         const globalIndex = result.i;
+        const item = items[globalIndex]!;
+        const storyKey = normalizeKey(result.storyKey);
+        const developmentKey = normalizeKey(result.developmentKey);
+        const storyTitle = result.storyTitle?.trim() || item.payload.title?.trim() || storyKey;
         analyses.set(globalIndex, {
-          language: result.language,
-          canonicalUrls: trustedCanonicalUrls(items[globalIndex]!),
-          topics: [...new Set(result.topics.map((value) => value.trim()).filter(Boolean))],
-          entities: [...new Set(result.entities.map((value) => value.trim()).filter(Boolean))],
-          storyKey: normalizeKey(result.storyKey), storyTitle: result.storyTitle.trim(),
-          developmentKey: normalizeKey(result.developmentKey), developmentType: normalizeKey(result.developmentType), developmentTitle: result.developmentTitle.trim(),
+          language: result.language ?? null,
+          canonicalUrls: trustedCanonicalUrls(item),
+          topics: [...new Set((result.topics ?? []).map((value) => value.trim()).filter(Boolean))],
+          entities: [...new Set((result.entities ?? []).map((value) => value.trim()).filter(Boolean))],
+          storyKey, storyTitle,
+          developmentKey,
+          developmentType: result.developmentType === undefined ? developmentKey : normalizeKey(result.developmentType),
+          developmentTitle: result.developmentTitle?.trim() || item.payload.title?.trim() || developmentKey,
           mediaDescription: result.mediaDescription ?? descriptions.get(globalIndex) ?? null,
         });
       });

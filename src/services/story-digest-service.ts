@@ -28,6 +28,7 @@ import type { SummarizerService } from "../summarizers/summarizer.types.ts";
 import {
   fingerprintStoryItem,
   OpenAICompatibleStoryIntelligenceService,
+  resolveStoryAnalysisMaxItems,
 } from "./story-intelligence-service.ts";
 import type { StoryIntelligenceService } from "../personalization/story.types.ts";
 import { isInaccessiblePaidItem } from "./content-access.ts";
@@ -36,6 +37,7 @@ export interface StoryDigestDependencies {
   intelligence?: StoryIntelligenceService;
   summarizer?: SummarizerService;
   analyzerVersion?: string;
+  analysisCheckpointSize?: number;
   summaryConcurrency?: number;
   now?: () => number;
   signal?: AbortSignal;
@@ -101,11 +103,41 @@ export async function assembleStoryDigest(
     return { itemId: item.id, feedId: item.feedId, feedName: feed.name, sourceId: feed.sourceId, payload: item.payload };
   });
   const fingerprints = await Promise.all(inputs.map(fingerprintStoryItem));
+  const fingerprintByItemId = new Map(inputs.map((item, i) => [item.itemId, fingerprints[i]]));
   const cached = await listItemAnalyses(database, inputs.map((item, i) => ({ itemId: item.itemId, fingerprint: fingerprints[i] })), analyzerVersion);
   const cachedById = new Map(cached.map((entry) => [entry.itemId, entry]));
   const misses = inputs.filter((item, i) => cachedById.get(item.itemId)?.fingerprint !== fingerprints[i]);
-  const analyzedMisses = misses.length ? await intelligence.analyze(misses, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs }) : [];
-  if (analyzedMisses.length) await upsertItemAnalyses(database, analyzedMisses.map((item) => ({ itemId: item.itemId, fingerprint: item.fingerprint, analyzerVersion, analysis: item.analysis, analyzedAt: now() })));
+  const checkpointSize = resolveStoryAnalysisMaxItems(dependencies.analysisCheckpointSize);
+  const analyzedMisses: AnalyzedStoryItem[] = [];
+  for (let start = 0; start < misses.length; start += checkpointSize) {
+    const checkpointInputs = misses.slice(start, start + checkpointSize);
+    const expectedFingerprints = new Map(checkpointInputs.map((item) => [
+      item.itemId,
+      fingerprintByItemId.get(item.itemId)!,
+    ]));
+    const checkpoint = await intelligence.analyze(checkpointInputs, {
+      signal: dependencies.signal,
+      requestTimeoutMs: dependencies.timeoutMs,
+    });
+    const returnedIds = new Set(checkpoint.map((item) => item.itemId));
+    const validCheckpoint = checkpoint.length === checkpointInputs.length &&
+      returnedIds.size === checkpoint.length &&
+      checkpoint.every((item) =>
+        expectedFingerprints.has(item.itemId) &&
+        item.fingerprint === expectedFingerprints.get(item.itemId)
+      );
+    if (!validCheckpoint) {
+      throw new Error("Invalid analyzer checkpoint output: expected exactly one analysis per input with matching item IDs and fingerprints");
+    }
+    await upsertItemAnalyses(database, checkpoint.map((item) => ({
+      itemId: item.itemId,
+      fingerprint: item.fingerprint,
+      analyzerVersion,
+      analysis: item.analysis,
+      analyzedAt: now(),
+    })));
+    analyzedMisses.push(...checkpoint);
+  }
   const missesById = new Map(analyzedMisses.map((item) => [item.itemId, item]));
   const analyzed: AnalyzedStoryItem[] = inputs.map((item, i) => {
     const miss = missesById.get(item.itemId);

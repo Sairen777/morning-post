@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assertEquals, assertRejects } from "../assertions.ts";
+import { assertEquals, assertRejects, assertThrows } from "../assertions.ts";
 import { ConnectorId } from "../../src/constants.ts";
 import type {
   AnalyzedStoryItem,
@@ -10,6 +10,7 @@ import type {
 import {
   fingerprintStoryItem,
   OpenAICompatibleStoryIntelligenceService,
+  resolveStoryAnalysisMaxItems,
 } from "../../src/services/story-intelligence-service.ts";
 
 function item(index: number, overrides: Partial<StoryItemInput["payload"]> = {}): StoryItemInput {
@@ -48,6 +49,43 @@ const prioritize: StoryPreferenceRule = { id: "rule-priority", label: "Film", ki
 function analysisResponse(indexes: number[]): string {
   return JSON.stringify(indexes.map((i) => ({ i, language: "en", canonicalUrls: [`https://example.com/${i}`], topics: ["Film"], entities: ["Studio"], storyKey: `story-${i}`, storyTitle: `Story ${i}`, developmentKey: `development-${i}`, developmentType: "report", developmentTitle: `Development ${i}`, mediaDescription: null })));
 }
+
+test("story analysis item cap defaults safely, honors a lower generic budget, and accepts explicit overrides", async () => {
+  const original = process.env["SUMMARIZER_MAX_ITEMS_PER_CHUNK"];
+  const makeService = (maxItemsPerChunk?: number) => {
+    const calls: number[] = [];
+    const service = new OpenAICompatibleStoryIntelligenceService({
+      maxItemsPerChunk,
+      maxTextBytesPerChunk: 100_000,
+      client: {
+        complete: async (_prompt, content) => {
+          const indexes = content.split("\n").map((line) => JSON.parse(line).i as number);
+          calls.push(indexes.length);
+          return analysisResponse(indexes);
+        },
+      },
+    });
+    return { service, calls };
+  };
+  try {
+    delete process.env["SUMMARIZER_MAX_ITEMS_PER_CHUNK"];
+    const defaults = makeService();
+    process.env["SUMMARIZER_MAX_ITEMS_PER_CHUNK"] = "7";
+    const lower = makeService();
+    const explicit = makeService(12);
+    await defaults.service.analyze(Array.from({ length: 23 }, (_, index) => item(index)));
+    await lower.service.analyze(Array.from({ length: 15 }, (_, index) => item(index)));
+    await explicit.service.analyze(Array.from({ length: 25 }, (_, index) => item(index)));
+    assertEquals(defaults.calls, [10, 10, 3]);
+    assertEquals(lower.calls, [7, 7, 1]);
+    assertEquals(explicit.calls, [12, 12, 1]);
+    assertThrows(() => resolveStoryAnalysisMaxItems(0), RangeError, "positive integer");
+    assertThrows(() => resolveStoryAnalysisMaxItems(1.5), RangeError, "positive integer");
+  } finally {
+    if (original === undefined) delete process.env["SUMMARIZER_MAX_ITEMS_PER_CHUNK"];
+    else process.env["SUMMARIZER_MAX_ITEMS_PER_CHUNK"] = original;
+  }
+});
 
 test("analysis handles hundreds in bounded item batches and fingerprints deterministically", async () => {
   const calls: number[][] = [];
@@ -98,6 +136,97 @@ test("default media path uses the model-backed summarizer and preserves its desc
   ]);
   assertEquals(mediaCalls, 1);
   assertEquals(result!.analysis.mediaDescription, "Poster OCR reads: 4 October.");
+});
+
+test("analysis derives an omitted story title from the trimmed source title", async () => {
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => JSON.stringify([{
+        i: 0, language: "en", canonicalUrls: [], topics: [], entities: [],
+        storyKey: "model-story", developmentKey: "development",
+        developmentType: "report", developmentTitle: "Development", mediaDescription: null,
+      }]),
+    },
+  });
+  const [result] = await service.analyze([item(0, { title: "  Source Story Title  " })]);
+  assertEquals(result!.analysis.storyTitle, "Source Story Title");
+});
+
+test("analysis derives an omitted story title from the normalized story key when the source title is empty", async () => {
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => JSON.stringify([{
+        i: 0, language: "en", canonicalUrls: [], topics: [], entities: [],
+        storyKey: "  Model Story Key  ", developmentKey: "development",
+        developmentType: "report", developmentTitle: "Development", mediaDescription: null,
+      }]),
+    },
+  });
+  const [result] = await service.analyze([item(0, { title: "   " })]);
+  assertEquals(result!.analysis.storyTitle, "model-story-key");
+});
+
+test("analysis accepts provider metadata omissions and canalUrls typo with deterministic trusted fallbacks", async () => {
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    mediaDescriber: {
+      describe: async () => "Trusted media description",
+    },
+    client: {
+      complete: async () => JSON.stringify([{
+        i: 0,
+        canalUrls: ["https://model.example/untrusted"],
+        storyKey: "  Model Story  ",
+        developmentKey: "  First Report  ",
+      }]),
+    },
+  });
+  const [result] = await service.analyze([item(0, {
+    title: "  Trusted Source Title  ",
+    text: "",
+    media: { type: "photo", localPath: "/tmp/provider-shape.jpg" },
+  })]);
+
+  assertEquals(result!.analysis, {
+    language: null,
+    canonicalUrls: ["https://example.com/0"],
+    topics: [],
+    entities: [],
+    storyKey: "model-story",
+    storyTitle: "Trusted Source Title",
+    developmentKey: "first-report",
+    developmentType: "first-report",
+    developmentTitle: "Trusted Source Title",
+    mediaDescription: "Trusted media description",
+  });
+});
+
+test("analysis keeps optional metadata typed while rejecting unknown keys and invalid or missing identity", async () => {
+  const analyzeRecord = (record: Record<string, unknown>) =>
+    new OpenAICompatibleStoryIntelligenceService({
+      client: { complete: async () => JSON.stringify([record]) },
+    }).analyze([item(0)]);
+
+  await assertRejects(() => analyzeRecord({
+    i: 0,
+    storyKey: "story",
+    developmentKey: "development",
+    unrelated: true,
+  }));
+  await assertRejects(() => analyzeRecord({
+    i: 0,
+    storyKey: "story",
+  }));
+  await assertRejects(() => analyzeRecord({
+    i: 0,
+    storyKey: "---",
+    developmentKey: "development",
+  }), "must contain a letter or number");
+  await assertRejects(() => analyzeRecord({
+    i: 0,
+    storyKey: "story",
+    developmentKey: "development",
+    topics: "Film",
+  }));
 });
 
 test("analysis strictly rejects malformed fields and duplicate indexes", async () => {
