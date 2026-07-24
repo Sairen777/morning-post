@@ -225,25 +225,20 @@ function StoryCard(props: StoryCardProps) {
       const state = props.feedbackState(input);
       return state ? [state] : [];
     });
+  const compactSources = Array.from(
+    props.story.sources.reduce((sources, source) => {
+      const existing = sources.get(source.feedName);
+      if (!existing || (!safeHttpUrl(existing.url) && safeHttpUrl(source.url))) {
+        sources.set(source.feedName, source);
+      }
+      return sources;
+    }, new Map<string, DigestStory["sources"][number]>()),
+    ([, source]) => source,
+  );
 
   return (
     <article class="story-card" aria-labelledby={headingId}>
       <h4 class="story-heading" id={headingId}>{props.story.title}</h4>
-      <div class="story-meta" aria-label="Story relevance">
-        <span>{props.story.relevanceScore}% relevance</span>
-        <span aria-hidden="true">·</span>
-        <span>
-          {props.story.sources.length}{" "}
-          {props.story.sources.length === 1 ? "source" : "sources"}
-        </span>
-        <Show when={props.story.matchedInterestRuleIds.length > 0}>
-          <span aria-hidden="true">·</span>
-          <span>
-            {props.story.matchedInterestRuleIds.length} matched{" "}
-            {props.story.matchedInterestRuleIds.length === 1 ? "interest" : "interests"}
-          </span>
-        </Show>
-      </div>
 
       <Show
         when={props.story.points.length > 0}
@@ -274,44 +269,19 @@ function StoryCard(props: StoryCardProps) {
         </ul>
       </Show>
 
-      <Show when={props.story.topics.length > 0 || props.story.entities.length > 0}>
-        <dl class="story-labels">
-          <Show when={props.story.topics.length > 0}>
-            <div class="story-label-group">
-              <dt>Topics</dt>
-              <dd>
-                <For each={props.story.topics}>
-                  {(topic) => <span class="badge">{topic}</span>}
-                </For>
-              </dd>
-            </div>
-          </Show>
-          <Show when={props.story.entities.length > 0}>
-            <div class="story-label-group">
-              <dt>Entities</dt>
-              <dd>
-                <For each={props.story.entities}>
-                  {(entity) => <span class="badge">{entity}</span>}
-                </For>
-              </dd>
-            </div>
-          </Show>
-        </dl>
-      </Show>
-
       <section class="story-sources" aria-labelledby={`story-${props.story.id}-sources`}>
         <h5 id={`story-${props.story.id}-sources`}>Sources</h5>
         <Show
-          when={props.story.sources.length > 0}
-          fallback={<p class="hint digest-empty">No source details available.</p>}
+          when={compactSources.length > 0}
+          fallback={<p class="hint digest-empty">No sources available.</p>}
         >
           <ul class="story-source-list">
-            <For each={props.story.sources}>
+            <For each={compactSources}>
               {(source) => (
                 <li class="story-source">
                   <Show
                     when={safeHttpUrl(source.url)}
-                    fallback={<span>{source.title ?? "Untitled source"}</span>}
+                    fallback={<span>{source.feedName}</span>}
                   >
                     {(sourceUrl) => (
                       <a
@@ -319,15 +289,10 @@ function StoryCard(props: StoryCardProps) {
                         target="_blank"
                         rel="noopener noreferrer"
                       >
-                        {source.title ?? source.feedName}
+                        {source.feedName}
                       </a>
                     )}
                   </Show>
-                  <Show when={source.title !== null}>
-                    <span class="story-source-feed">{source.feedName}</span>
-                  </Show>
-                  <span class="badge">{source.connectorId}</span>
-                  <FormatTime ms={source.publishedAt} />
                 </li>
               )}
             </For>
@@ -335,88 +300,178 @@ function StoryCard(props: StoryCardProps) {
         </Show>
       </section>
 
-      <section
-        class="story-feedback"
-        aria-labelledby={`story-${props.story.id}-feedback`}
-      >
-        <h5 id={`story-${props.story.id}-feedback`}>Tune this story</h5>
-        <div class="story-feedback-actions" role="group" aria-label="Story feedback">
-          <For each={storyActions}>
-            {(action) => {
-              const input: StoryFeedbackInput = {
-                digestStoryId: props.story.id,
-                action: action.action,
-              };
-              const pending = () => props.isPending(input);
-              return (
-                <button
-                  type="button"
-                  aria-label={`${action.label}: ${props.story.title}`}
-                  aria-busy={pending()}
-                  disabled={!props.feedbackAvailable || pending()}
-                  onClick={() => props.onSubmit(input)}
-                >
-                  {pending() ? "Saving…" : action.label}
-                </button>
-              );
-            }}
-          </For>
-        </div>
+      <details class="story-details">
+        <summary>Story details and tuning</summary>
+        <div class="story-detail-content">
+          <section
+            class="story-detail-section"
+            aria-labelledby={`story-${props.story.id}-context`}
+          >
+            <h5 id={`story-${props.story.id}-context`}>Story context</h5>
+            <div class="story-meta" aria-label="Story relevance">
+              <span>{props.story.relevanceScore}% relevance</span>
+              <span aria-hidden="true">·</span>
+              <span>
+                {props.story.sources.length}{" "}
+                {props.story.sources.length === 1 ? "source" : "sources"}
+              </span>
+              <Show when={props.story.matchedInterestRuleIds.length > 0}>
+                <span aria-hidden="true">·</span>
+                <span>
+                  {props.story.matchedInterestRuleIds.length} matched{" "}
+                  {props.story.matchedInterestRuleIds.length === 1 ? "interest" : "interests"}
+                </span>
+              </Show>
+            </div>
 
-        <Show when={targets.length > 0}>
-          <ul class="story-target-list" aria-label="Topic and entity feedback">
-            <For each={targets}>
-              {(target) => (
-                <li class="story-target-row">
-                  <span class="story-target-label">
-                    <span class="badge">{target.kind}</span>{" "}
-                    {target.label}
-                  </span>
-                  <div
-                    class="story-target-actions"
-                    role="group"
-                    aria-label={`Feedback for ${target.kind} ${target.label}`}
-                  >
-                    <For each={targetActions}>
-                      {(action) => {
-                        const input: StoryFeedbackInput = {
-                          digestStoryId: props.story.id,
-                          action: action.action,
-                          target,
-                        };
-                        const pending = () => props.isPending(input);
-                        return (
-                          <button
-                            type="button"
-                            aria-label={`${action.label} ${target.kind} ${target.label}`}
-                            aria-busy={pending()}
-                            disabled={!props.feedbackAvailable || pending()}
-                            onClick={() => props.onSubmit(input)}
-                          >
-                            {pending() ? "Saving…" : action.label}
-                          </button>
-                        );
-                      }}
-                    </For>
+            <Show when={props.story.topics.length > 0 || props.story.entities.length > 0}>
+              <dl class="story-labels">
+                <Show when={props.story.topics.length > 0}>
+                  <div class="story-label-group">
+                    <dt>Topics</dt>
+                    <dd>
+                      <For each={props.story.topics}>
+                        {(topic) => <span class="badge">{topic}</span>}
+                      </For>
+                    </dd>
                   </div>
-                </li>
+                </Show>
+                <Show when={props.story.entities.length > 0}>
+                  <div class="story-label-group">
+                    <dt>Entities</dt>
+                    <dd>
+                      <For each={props.story.entities}>
+                        {(entity) => <span class="badge">{entity}</span>}
+                      </For>
+                    </dd>
+                  </div>
+                </Show>
+              </dl>
+            </Show>
+          </section>
+
+          <section
+            class="story-detail-section story-source-details"
+            aria-labelledby={`story-${props.story.id}-source-details`}
+          >
+            <h5 id={`story-${props.story.id}-source-details`}>Source details</h5>
+            <Show
+              when={props.story.sources.length > 0}
+              fallback={<p class="hint digest-empty">No source details available.</p>}
+            >
+              <ul class="story-source-detail-list">
+                <For each={props.story.sources}>
+                  {(source) => (
+                    <li class="story-source-detail">
+                      <dl>
+                        <div>
+                          <dt>Publication</dt>
+                          <dd>{source.title ?? "Untitled source"}</dd>
+                        </div>
+                        <div>
+                          <dt>Feed</dt>
+                          <dd>{source.feedName}</dd>
+                        </div>
+                        <div>
+                          <dt>Connector</dt>
+                          <dd>{source.connectorId}</dd>
+                        </div>
+                        <div>
+                          <dt>Published</dt>
+                          <dd><FormatTime ms={source.publishedAt} /></dd>
+                        </div>
+                      </dl>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </section>
+
+          <section
+            class="story-feedback"
+            aria-labelledby={`story-${props.story.id}-feedback`}
+          >
+            <h5 id={`story-${props.story.id}-feedback`}>Tune this story</h5>
+            <div class="story-feedback-actions" role="group" aria-label="Story feedback">
+              <For each={storyActions}>
+                {(action) => {
+                  const input: StoryFeedbackInput = {
+                    digestStoryId: props.story.id,
+                    action: action.action,
+                  };
+                  const pending = () => props.isPending(input);
+                  return (
+                    <button
+                      type="button"
+                      aria-label={`${action.label}: ${props.story.title}`}
+                      aria-busy={pending()}
+                      disabled={!props.feedbackAvailable || pending()}
+                      onClick={() => props.onSubmit(input)}
+                    >
+                      {pending() ? "Saving…" : action.label}
+                    </button>
+                  );
+                }}
+              </For>
+            </div>
+
+            <Show when={targets.length > 0}>
+              <ul class="story-target-list" aria-label="Topic and entity feedback">
+                <For each={targets}>
+                  {(target) => (
+                    <li class="story-target-row">
+                      <span class="story-target-label">
+                        <span class="badge">{target.kind}</span>{" "}
+                        {target.label}
+                      </span>
+                      <div
+                        class="story-target-actions"
+                        role="group"
+                        aria-label={`Feedback for ${target.kind} ${target.label}`}
+                      >
+                        <For each={targetActions}>
+                          {(action) => {
+                            const input: StoryFeedbackInput = {
+                              digestStoryId: props.story.id,
+                              action: action.action,
+                              target,
+                            };
+                            const pending = () => props.isPending(input);
+                            return (
+                              <button
+                                type="button"
+                                aria-label={`${action.label} ${target.kind} ${target.label}`}
+                                aria-busy={pending()}
+                                disabled={!props.feedbackAvailable || pending()}
+                                onClick={() => props.onSubmit(input)}
+                              >
+                                {pending() ? "Saving…" : action.label}
+                              </button>
+                            );
+                          }}
+                        </For>
+                      </div>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+
+            <For each={feedbackMessages()}>
+              {(state) => (
+                <p
+                  class={`story-feedback-state ${state.kind}`}
+                  role={state.kind === "error" ? "alert" : "status"}
+                  aria-live="polite"
+                >
+                  {state.message}
+                </p>
               )}
             </For>
-          </ul>
-        </Show>
-
-        <For each={feedbackMessages()}>
-          {(state) => (
-            <p
-              class={`story-feedback-state ${state.kind}`}
-              role={state.kind === "error" ? "alert" : "status"}
-              aria-live="polite"
-            >
-              {state.message}
-            </p>
-          )}
-        </For>
-      </section>
+          </section>
+        </div>
+      </details>
     </article>
   );
 }

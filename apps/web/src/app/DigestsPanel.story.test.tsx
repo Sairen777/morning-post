@@ -62,6 +62,16 @@ const storyView: DigestView = {
         url: null,
         publishedAt: 1_700_000_200_000,
       },
+      {
+        itemId: "item-4",
+        connectorId: "Substack",
+        sourceId: "source-1",
+        feedId: "feed-1",
+        feedName: "Policy Dispatch",
+        title: "A follow-up policy report",
+        url: "https://dispatch.example/follow-up",
+        publishedAt: 1_700_000_300_000,
+      },
     ],
     relevanceScore: 87,
     matchedInterestRuleIds: ["rule-1", "rule-2"],
@@ -144,8 +154,15 @@ async function openDigest() {
   );
 }
 
+async function openStoryDetails() {
+  const disclosure = screen.getByText("Story details and tuning");
+  expect(disclosure.closest("details")).not.toHaveAttribute("open");
+  await fireEvent.click(disclosure);
+  expect(disclosure.closest("details")).toHaveAttribute("open");
+}
+
 describe("DigestsPanel story rendering", () => {
-  it("renders story details, provenance feed labels, and every source link", async () => {
+  it("keeps summaries and source names visible while details are collapsed", async () => {
     renderDigest(storyView, { onSubmitFeedback: () => Promise.resolve() });
     await openDigest();
 
@@ -154,20 +171,28 @@ describe("DigestsPanel story rendering", () => {
     })).toBeVisible();
     expect(screen.getByText("The policy now applies across the industry."))
       .toBeVisible();
-    expect(screen.getByText("87% relevance")).toBeVisible();
-    expect(screen.getAllByText("Artificial intelligence")).toHaveLength(2);
-    expect(screen.getAllByText("Example Corp")).toHaveLength(2);
-    expect(screen.getByText("Policy Dispatch")).toBeVisible();
-    expect(screen.getByText("Industry Wire")).toBeVisible();
-    expect(screen.getByText("Analyst Channel")).toBeVisible();
-    expect(screen.getByText("Analyst context")).toBeVisible();
-
-    expect(screen.getByRole("link", { name: "The complete policy report" }))
+    expect(screen.getAllByRole("link", { name: "Policy Dispatch" }))
+      .toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Policy Dispatch" }))
       .toHaveAttribute("href", "https://dispatch.example/report");
     expect(screen.getByRole("link", { name: "Industry Wire" }))
       .toHaveAttribute("href", "https://wire.example/update");
+    expect(screen.getAllByText("Analyst Channel")[0]).toBeVisible();
     expect(screen.getByRole("link", { name: "source" }))
       .toHaveAttribute("href", "https://points.example/policy");
+
+    expect(screen.getByText("87% relevance")).not.toBeVisible();
+    expect(screen.getByRole("heading", { name: "Tune this story" }))
+      .not.toBeVisible();
+
+    await openStoryDetails();
+
+    expect(screen.getByText("87% relevance")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Tune this story" }))
+      .toBeVisible();
+    expect(screen.getAllByText("Artificial intelligence")).toHaveLength(2);
+    expect(screen.getAllByText("Example Corp")).toHaveLength(2);
+    expect(screen.getByText("Analyst context")).toBeVisible();
   });
 
   it("keeps historical group rendering when contentMode and stories are absent", async () => {
@@ -185,6 +210,7 @@ describe("DigestsPanel story feedback", () => {
     const onSubmitFeedback = vi.fn(() => Promise.resolve());
     renderDigest(storyView, { onSubmitFeedback });
     await openDigest();
+    await openStoryDetails();
 
     for (const label of ["Relevant", "Not for me", "Already knew", "Too repetitive"]) {
       await fireEvent.click(screen.getByRole("button", {
@@ -205,6 +231,7 @@ describe("DigestsPanel story feedback", () => {
     const onSubmitFeedback = vi.fn(() => Promise.resolve());
     renderDigest(storyView, { onSubmitFeedback });
     await openDigest();
+    await openStoryDetails();
 
     await fireEvent.click(screen.getByRole("button", {
       name: "Follow topic Artificial intelligence",
@@ -246,6 +273,7 @@ describe("DigestsPanel story feedback", () => {
     const onFeedbackSuccess = vi.fn(() => Promise.resolve());
     renderDigest(storyView, { onSubmitFeedback, onFeedbackSuccess });
     await openDigest();
+    await openStoryDetails();
 
     const relevant = screen.getByRole("button", {
       name: "Relevant: A consequential policy changed",
@@ -274,6 +302,7 @@ describe("DigestsPanel story feedback", () => {
     );
     renderDigest(storyView, { onSubmitFeedback });
     await openDigest();
+    await openStoryDetails();
 
     const notForMe = screen.getByRole("button", {
       name: "Not for me: A consequential policy changed",
@@ -303,6 +332,7 @@ describe("DigestsPanel story feedback", () => {
     );
     renderDigest(storyView, { onSubmitFeedback });
     await openDigest();
+    await openStoryDetails();
 
     await fireEvent.click(screen.getByRole("button", {
       name: "Relevant: A consequential policy changed",
