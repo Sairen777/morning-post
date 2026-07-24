@@ -400,8 +400,15 @@ test("analysis bounds low-text media description concurrency and rejects partial
   });
   await service.analyze(Array.from({ length: 7 }, (_, index) => item(index, { text: "", media: { type: "photo", localPath: `/tmp/${index}.jpg` } })));
   assertEquals(maximum, 2);
-  const partial = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => "[]" } });
-  await assertRejects(() => partial.analyze([item(1)]), "duplicate, missing, or unknown unit members");
+  let partialCalls = 0;
+  const partial = new OpenAICompatibleStoryIntelligenceService({
+    client: { complete: async () => { partialCalls++; return "[]"; } },
+  });
+  await assertRejects(
+    () => partial.analyze([item(1)]),
+    "could not recover exact member coverage",
+  );
+  assertEquals(partialCalls, 2);
 });
 
 test("analysis retries media description after a cached promise rejects", async () => {
@@ -631,11 +638,93 @@ test("analysis rejects unknown keys and malformed optional metadata", async () =
   }));
 });
 
-test("analysis strictly rejects malformed fields and duplicate indexes", async () => {
-  const malformed = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => JSON.stringify([{ i: 0, extra: true }]) } });
-  await assertRejects(() => malformed.analyze([item(0)]));
-  const duplicate = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => analysisResponse([0, 0]) } });
-  await assertRejects(() => duplicate.analyze([item(0), item(1)]), "duplicate, missing, or unknown unit members");
+test("analysis retries only missing and duplicate members without cross-member reassignment", async () => {
+  let calls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async (_prompt, content) => {
+        calls++;
+        const records = content.split("\n").map((line) => JSON.parse(line));
+        if (calls === 1) {
+          return JSON.stringify([
+            ...[0, 0].map((m) => ({
+              i: 0, m, storyKey: `first-${m}`, developmentKey: `first-${m}`,
+              evidence: [],
+            })),
+            { i: 0, m: 0, storyKey: "duplicate", developmentKey: "duplicate", evidence: [] },
+            { i: 0, m: 2, storyKey: "preserved-2", developmentKey: "preserved-2", evidence: [] },
+          ]);
+        }
+        assertEquals(records.map((record) => record.members[0].m), [0, 1]);
+        return JSON.stringify(records.map((record) => {
+          const m = record.members[0].m;
+          return { i: record.i, m, storyKey: `recovered-${m}`, developmentKey: `recovered-${m}`, evidence: [] };
+        }));
+      },
+    },
+  });
+  const inputs = [0, 1, 2].map((index) =>
+    item(index, { meta: { threadRootId: "shared-thread" } })
+  );
+  const results = await service.analyze(inputs);
+  assertEquals(calls, 2);
+  assertEquals(results.map((result) => result.analysis.storyKey), [
+    "recovered-0",
+    "recovered-1",
+    "preserved-2",
+  ]);
+});
+
+test("analysis retries every member when provider output contains an unknown member", async () => {
+  let calls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async (_prompt, content) => {
+        calls++;
+        const records = content.split("\n").map((line) => JSON.parse(line));
+        if (calls === 1) {
+          return JSON.stringify([
+            { i: 0, m: 0, storyKey: "discarded-0", developmentKey: "discarded-0", evidence: [] },
+            { i: 99, m: 0, storyKey: "unknown", developmentKey: "unknown", evidence: [] },
+          ]);
+        }
+        assertEquals(records.map((record) => [record.i, record.members[0].m]), [
+          [0, 0], [0, 1], [0, 2],
+        ]);
+        return JSON.stringify(records.map((record) => {
+          const m = record.members[0].m;
+          return { i: record.i, m, storyKey: `strict-${m}`, developmentKey: `strict-${m}`, evidence: [] };
+        }));
+      },
+    },
+  });
+  const inputs = [0, 1, 2].map((index) =>
+    item(index, { meta: { threadRootId: "shared-thread" } })
+  );
+  const results = await service.analyze(inputs);
+  assertEquals(calls, 2);
+  assertEquals(results.map((result) => result.analysis.storyKey), [
+    "strict-0",
+    "strict-1",
+    "strict-2",
+  ]);
+});
+
+test("analysis explicitly rejects a second malformed or duplicate member response", async () => {
+  const malformed = new OpenAICompatibleStoryIntelligenceService({
+    client: { complete: async () => JSON.stringify([{ i: 0, extra: true }]) },
+  });
+  await assertRejects(
+    () => malformed.analyze([item(0)]),
+    "could not recover exact member coverage",
+  );
+  const duplicate = new OpenAICompatibleStoryIntelligenceService({
+    client: { complete: async () => analysisResponse([0, 0]) },
+  });
+  await assertRejects(
+    () => duplicate.analyze([item(0), item(1)]),
+    "could not recover exact member coverage",
+  );
 });
 
 test("analysis conservatively isolates empty identity output without failing siblings", async () => {
