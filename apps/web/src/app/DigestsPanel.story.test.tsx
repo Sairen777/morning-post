@@ -1,5 +1,5 @@
 /** @jsxImportSource solid-js */
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { describe, expect, it, vi } from "vitest";
 import type {
   DigestView,
@@ -148,51 +148,67 @@ function renderDigest(
 async function openDigest() {
   await fireEvent.click(screen.getByRole("button", { name: /#1/ }));
   await waitFor(() =>
-    expect(screen.getByRole("heading", {
+    expect(screen.getAllByRole("heading", {
       name: /A consequential policy changed|Historical Feed/,
-    })).toBeVisible()
+    })[0]).toBeVisible()
   );
 }
 
 async function openStoryDetails() {
-  const disclosure = screen.getByText("Story details and tuning");
+  const disclosure = screen.getAllByText("Story details and tuning")[0];
   expect(disclosure.closest("details")).not.toHaveAttribute("open");
   await fireEvent.click(disclosure);
   expect(disclosure.closest("details")).toHaveAttribute("open");
 }
 
 describe("DigestsPanel story rendering", () => {
-  it("keeps summaries and source names visible while details are collapsed", async () => {
+  it("groups stories under connector and feed headings with details collapsed", async () => {
     renderDigest(storyView, { onSubmitFeedback: () => Promise.resolve() });
     await openDigest();
 
-    expect(screen.getByRole("heading", {
-      name: "A consequential policy changed",
-    })).toBeVisible();
-    expect(screen.getByText("The policy now applies across the industry."))
+    expect(screen.getByRole("heading", { level: 4, name: "Substack" }))
       .toBeVisible();
-    expect(screen.getAllByRole("link", { name: "Policy Dispatch" }))
+    expect(screen.getByRole("heading", { level: 4, name: "RSS" }))
+      .toBeVisible();
+    expect(screen.getByRole("heading", { level: 4, name: "Telegram" }))
+      .toBeVisible();
+    expect(screen.getAllByRole("heading", { level: 5, name: "Policy Dispatch" }))
       .toHaveLength(1);
-    expect(screen.getByRole("link", { name: "Policy Dispatch" }))
-      .toHaveAttribute("href", "https://dispatch.example/report");
-    expect(screen.getByRole("link", { name: "Industry Wire" }))
-      .toHaveAttribute("href", "https://wire.example/update");
-    expect(screen.getAllByText("Analyst Channel")[0]).toBeVisible();
-    expect(screen.getByRole("link", { name: "source" }))
-      .toHaveAttribute("href", "https://points.example/policy");
+    expect(screen.getByRole("heading", { level: 5, name: "Industry Wire" }))
+      .toBeVisible();
+    expect(screen.getByRole("heading", { level: 5, name: "Analyst Channel" }))
+      .toBeVisible();
 
-    expect(screen.getByText("87% relevance")).not.toBeVisible();
-    expect(screen.getByRole("heading", { name: "Tune this story" }))
-      .not.toBeVisible();
+    expect(screen.getAllByRole("heading", {
+      level: 6,
+      name: "A consequential policy changed",
+    })).toHaveLength(3);
+    expect(screen.getAllByText("The policy now applies across the industry."))
+      .toHaveLength(3);
+    const renderedIds = Array.from(document.querySelectorAll("[id]"), (node) =>
+      node.id
+    );
+    expect(new Set(renderedIds).size).toBe(renderedIds.length);
+    expect(screen.getAllByRole("link", { name: "source" })).toHaveLength(3);
+    expect(screen.getAllByText("Story details and tuning")).toHaveLength(3);
+    expect(screen.getAllByText("87% relevance").every((node) =>
+      !node.closest("details")?.hasAttribute("open")
+    )).toBe(true);
 
     await openStoryDetails();
 
-    expect(screen.getByText("87% relevance")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Tune this story" }))
+    const firstDetails = screen.getAllByText("Story details and tuning")[0]
+      .closest("details");
+    expect(firstDetails).not.toBeNull();
+    const scopedDetails = within(firstDetails!);
+    expect(scopedDetails.getByText("2 sources")).toBeVisible();
+    expect(scopedDetails.getByText("The complete policy report")).toBeVisible();
+    expect(scopedDetails.getByText("A follow-up policy report")).toBeVisible();
+    expect(scopedDetails.queryByText("Industry Wire")).toBeNull();
+    expect(scopedDetails.queryByText("Analyst Channel")).toBeNull();
+    expect(screen.getAllByText("87% relevance")[0]).toBeVisible();
+    expect(screen.getAllByRole("heading", { name: "Tune this story" })[0])
       .toBeVisible();
-    expect(screen.getAllByText("Artificial intelligence")).toHaveLength(2);
-    expect(screen.getAllByText("Example Corp")).toHaveLength(2);
-    expect(screen.getByText("Analyst context")).toBeVisible();
   });
 
   it("keeps historical group rendering when contentMode and stories are absent", async () => {
@@ -213,9 +229,9 @@ describe("DigestsPanel story feedback", () => {
     await openStoryDetails();
 
     for (const label of ["Relevant", "Not for me", "Already knew", "Too repetitive"]) {
-      await fireEvent.click(screen.getByRole("button", {
+      await fireEvent.click(screen.getAllByRole("button", {
         name: `${label}: A consequential policy changed`,
-      }));
+      })[0]);
     }
 
     await waitFor(() => expect(onSubmitFeedback).toHaveBeenCalledTimes(4));
@@ -233,15 +249,15 @@ describe("DigestsPanel story feedback", () => {
     await openDigest();
     await openStoryDetails();
 
-    await fireEvent.click(screen.getByRole("button", {
+    await fireEvent.click(screen.getAllByRole("button", {
       name: "Follow topic Artificial intelligence",
-    }));
-    await fireEvent.click(screen.getByRole("button", {
+    })[0]);
+    await fireEvent.click(screen.getAllByRole("button", {
       name: "Show less entity Example Corp",
-    }));
-    await fireEvent.click(screen.getByRole("button", {
+    })[0]);
+    await fireEvent.click(screen.getAllByRole("button", {
       name: "Mute topic Artificial intelligence",
-    }));
+    })[0]);
 
     await waitFor(() => expect(onSubmitFeedback).toHaveBeenCalledTimes(3));
     expect(onSubmitFeedback.mock.calls).toEqual([
@@ -275,12 +291,12 @@ describe("DigestsPanel story feedback", () => {
     await openDigest();
     await openStoryDetails();
 
-    const relevant = screen.getByRole("button", {
+    const relevant = screen.getAllByRole("button", {
       name: "Relevant: A consequential policy changed",
-    });
-    const notForMe = screen.getByRole("button", {
+    })[0];
+    const notForMe = screen.getAllByRole("button", {
       name: "Not for me: A consequential policy changed",
-    });
+    })[0];
     await fireEvent.click(relevant);
     await fireEvent.click(relevant);
 
@@ -288,10 +304,12 @@ describe("DigestsPanel story feedback", () => {
     expect(relevant).toHaveAttribute("aria-busy", "true");
     expect(notForMe).toBeEnabled();
     expect(onSubmitFeedback).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("Saving feedback…")).toHaveAttribute("role", "status");
+    expect(screen.getAllByText("Saving feedback…")[0]).toHaveAttribute("role", "status");
 
     resolveRequest();
-    await waitFor(() => expect(screen.getByText("Feedback saved.")).toBeVisible());
+    await waitFor(() =>
+      expect(screen.getAllByText("Feedback saved.")[0]).toBeVisible()
+    );
     expect(relevant).toBeEnabled();
     expect(onFeedbackSuccess).toHaveBeenCalledTimes(1);
   });
@@ -304,13 +322,13 @@ describe("DigestsPanel story feedback", () => {
     await openDigest();
     await openStoryDetails();
 
-    const notForMe = screen.getByRole("button", {
+    const notForMe = screen.getAllByRole("button", {
       name: "Not for me: A consequential policy changed",
-    });
+    })[0];
     await fireEvent.click(notForMe);
 
     await waitFor(() =>
-      expect(screen.getByRole("alert")).toHaveTextContent(
+      expect(screen.getAllByRole("alert")[0]).toHaveTextContent(
         "Feedback service unavailable",
       )
     );
@@ -334,19 +352,19 @@ describe("DigestsPanel story feedback", () => {
     await openDigest();
     await openStoryDetails();
 
-    await fireEvent.click(screen.getByRole("button", {
+    await fireEvent.click(screen.getAllByRole("button", {
       name: "Relevant: A consequential policy changed",
-    }));
-    await fireEvent.click(screen.getByRole("button", {
+    })[0]);
+    await fireEvent.click(screen.getAllByRole("button", {
       name: "Not for me: A consequential policy changed",
-    }));
+    })[0]);
     resolveRelevant();
     rejectNotRelevant(new Error("Not-for-me feedback failed"));
 
     await waitFor(() =>
-      expect(screen.getByText("Feedback saved.")).toBeVisible()
+      expect(screen.getAllByText("Feedback saved.")[0]).toBeVisible()
     );
-    expect(screen.getByRole("alert")).toHaveTextContent(
+    expect(screen.getAllByRole("alert")[0]).toHaveTextContent(
       "Not-for-me feedback failed",
     );
   });

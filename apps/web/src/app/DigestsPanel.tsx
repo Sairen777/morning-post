@@ -193,8 +193,80 @@ function storyFeedbackKey(
   ]);
 }
 
+type DigestStorySource = DigestStory["sources"][number];
+
+interface StoryFeedEntry {
+  story: DigestStory;
+  sources: DigestStorySource[];
+}
+
+interface StoryFeedGroup {
+  feedName: string;
+  stories: StoryFeedEntry[];
+}
+
+interface StoryConnectorGroup {
+  connectorId: string;
+  feeds: StoryFeedGroup[];
+}
+
+function groupStoriesBySource(stories: DigestStory[]): StoryConnectorGroup[] {
+  const connectors = new Map<string, {
+    group: StoryConnectorGroup;
+    feeds: Map<string, StoryFeedGroup>;
+  }>();
+
+  const getFeed = (
+    connectorId: string,
+    feedKey: string,
+    feedName: string,
+  ): StoryFeedGroup => {
+    let connector = connectors.get(connectorId);
+    if (!connector) {
+      connector = {
+        group: { connectorId, feeds: [] },
+        feeds: new Map(),
+      };
+      connectors.set(connectorId, connector);
+    }
+    let feed = connector.feeds.get(feedKey);
+    if (!feed) {
+      feed = { feedName, stories: [] };
+      connector.feeds.set(feedKey, feed);
+      connector.group.feeds.push(feed);
+    }
+    return feed;
+  };
+
+  for (const story of stories) {
+    if (story.sources.length === 0) {
+      getFeed("Other", "unassigned", "Unassigned stories").stories.push({
+        story,
+        sources: [],
+      });
+      continue;
+    }
+    const entries = new Map<string, StoryFeedEntry>();
+    for (const source of story.sources) {
+      const feedKey = source.feedId ?? `${source.connectorId}:${source.feedName}`;
+      const instanceKey = `${source.connectorId}:${feedKey}`;
+      let entry = entries.get(instanceKey);
+      if (!entry) {
+        entry = { story, sources: [] };
+        entries.set(instanceKey, entry);
+        getFeed(source.connectorId, feedKey, source.feedName).stories.push(entry);
+      }
+      entry.sources.push(source);
+    }
+  }
+
+  return Array.from(connectors.values(), ({ group }) => group);
+}
+
 interface StoryCardProps {
   story: DigestStory;
+  displayedSources: DigestStorySource[];
+  instanceKey: string;
   feedbackAvailable: boolean;
   feedbackState: (input: StoryFeedbackInput) => StoryFeedbackState | undefined;
   isPending: (input: StoryFeedbackInput) => boolean;
@@ -206,7 +278,8 @@ function StoryCard(props: StoryCardProps) {
     ...props.story.topics.map((label) => ({ kind: "topic" as const, label })),
     ...props.story.entities.map((label) => ({ kind: "entity" as const, label })),
   ];
-  const headingId = `story-${props.story.id}-title`;
+  const instanceId = `story-${props.story.id}-${props.instanceKey}`;
+  const headingId = `${instanceId}-title`;
   const feedbackInputs: StoryFeedbackInput[] = [
     ...storyActions.map(({ action }) => ({
       digestStoryId: props.story.id,
@@ -225,20 +298,10 @@ function StoryCard(props: StoryCardProps) {
       const state = props.feedbackState(input);
       return state ? [state] : [];
     });
-  const compactSources = Array.from(
-    props.story.sources.reduce((sources, source) => {
-      const existing = sources.get(source.feedName);
-      if (!existing || (!safeHttpUrl(existing.url) && safeHttpUrl(source.url))) {
-        sources.set(source.feedName, source);
-      }
-      return sources;
-    }, new Map<string, DigestStory["sources"][number]>()),
-    ([, source]) => source,
-  );
 
   return (
     <article class="story-card" aria-labelledby={headingId}>
-      <h4 class="story-heading" id={headingId}>{props.story.title}</h4>
+      <h6 class="story-heading" id={headingId}>{props.story.title}</h6>
 
       <Show
         when={props.story.points.length > 0}
@@ -269,51 +332,21 @@ function StoryCard(props: StoryCardProps) {
         </ul>
       </Show>
 
-      <section class="story-sources" aria-labelledby={`story-${props.story.id}-sources`}>
-        <h5 id={`story-${props.story.id}-sources`}>Sources</h5>
-        <Show
-          when={compactSources.length > 0}
-          fallback={<p class="hint digest-empty">No sources available.</p>}
-        >
-          <ul class="story-source-list">
-            <For each={compactSources}>
-              {(source) => (
-                <li class="story-source">
-                  <Show
-                    when={safeHttpUrl(source.url)}
-                    fallback={<span>{source.feedName}</span>}
-                  >
-                    {(sourceUrl) => (
-                      <a
-                        href={sourceUrl()}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {source.feedName}
-                      </a>
-                    )}
-                  </Show>
-                </li>
-              )}
-            </For>
-          </ul>
-        </Show>
-      </section>
 
       <details class="story-details">
         <summary>Story details and tuning</summary>
         <div class="story-detail-content">
           <section
             class="story-detail-section"
-            aria-labelledby={`story-${props.story.id}-context`}
+            aria-labelledby={`${instanceId}-context`}
           >
-            <h5 id={`story-${props.story.id}-context`}>Story context</h5>
+            <h5 id={`${instanceId}-context`}>Story context</h5>
             <div class="story-meta" aria-label="Story relevance">
               <span>{props.story.relevanceScore}% relevance</span>
               <span aria-hidden="true">·</span>
               <span>
-                {props.story.sources.length}{" "}
-                {props.story.sources.length === 1 ? "source" : "sources"}
+                {props.displayedSources.length}{" "}
+                {props.displayedSources.length === 1 ? "source" : "sources"}
               </span>
               <Show when={props.story.matchedInterestRuleIds.length > 0}>
                 <span aria-hidden="true">·</span>
@@ -352,15 +385,15 @@ function StoryCard(props: StoryCardProps) {
 
           <section
             class="story-detail-section story-source-details"
-            aria-labelledby={`story-${props.story.id}-source-details`}
+            aria-labelledby={`${instanceId}-source-details`}
           >
-            <h5 id={`story-${props.story.id}-source-details`}>Source details</h5>
+            <h5 id={`${instanceId}-source-details`}>Source details</h5>
             <Show
-              when={props.story.sources.length > 0}
+              when={props.displayedSources.length > 0}
               fallback={<p class="hint digest-empty">No source details available.</p>}
             >
               <ul class="story-source-detail-list">
-                <For each={props.story.sources}>
+                <For each={props.displayedSources}>
                   {(source) => (
                     <li class="story-source-detail">
                       <dl>
@@ -390,9 +423,9 @@ function StoryCard(props: StoryCardProps) {
 
           <section
             class="story-feedback"
-            aria-labelledby={`story-${props.story.id}-feedback`}
+            aria-labelledby={`${instanceId}-feedback`}
           >
-            <h5 id={`story-${props.story.id}-feedback`}>Tune this story</h5>
+            <h5 id={`${instanceId}-feedback`}>Tune this story</h5>
             <div class="story-feedback-actions" role="group" aria-label="Story feedback">
               <For each={storyActions}>
                 {(action) => {
@@ -755,18 +788,39 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                   </p>
                 }
               >
-                <div class="story-list">
-                  <For each={view().stories ?? []}>
-                    {(story) => (
-                      <StoryCard
-                        story={story}
-                        feedbackAvailable={props.onSubmitFeedback !== undefined}
-                        feedbackState={(input) =>
-                          feedbackStates()[storyFeedbackKey(story.id, input)]}
-                        isPending={(input) =>
-                          pendingFeedback()[storyFeedbackKey(story.id, input)] === true}
-                        onSubmit={(input) => void handleStoryFeedback(story, input)}
-                      />
+                <div class="story-source-groups">
+                  <For each={groupStoriesBySource(view().stories ?? [])}>
+                    {(connector, connectorIndex) => (
+                      <section class="story-connector-group">
+                        <h4 class="story-connector-heading">
+                          {connector.connectorId}
+                        </h4>
+                        <For each={connector.feeds}>
+                          {(feed, feedIndex) => (
+                            <section class="story-feed-group">
+                              <h5 class="story-feed-heading">{feed.feedName}</h5>
+                              <div class="story-list">
+                                <For each={feed.stories}>
+                                  {(entry, storyIndex) => (
+                                    <StoryCard
+                                      story={entry.story}
+                                      displayedSources={entry.sources}
+                                      instanceKey={`${connectorIndex()}-${feedIndex()}-${storyIndex()}`}
+                                      feedbackAvailable={props.onSubmitFeedback !== undefined}
+                                      feedbackState={(input) =>
+                                        feedbackStates()[storyFeedbackKey(entry.story.id, input)]}
+                                      isPending={(input) =>
+                                        pendingFeedback()[storyFeedbackKey(entry.story.id, input)] === true}
+                                      onSubmit={(input) =>
+                                        void handleStoryFeedback(entry.story, input)}
+                                    />
+                                  )}
+                                </For>
+                              </div>
+                            </section>
+                          )}
+                        </For>
+                      </section>
                     )}
                   </For>
                 </div>
