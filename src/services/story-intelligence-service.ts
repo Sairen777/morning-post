@@ -86,11 +86,11 @@ const analysisSchema = z.object({
   m: z.number().int().nonnegative(),
   topics: personalizationLabelsSchema.optional(),
   entities: personalizationLabelsSchema.optional(),
-  storyKey: z.string().min(1),
-  storyTitle: z.string().min(1).optional(),
-  developmentKey: z.string().min(1),
-  developmentType: z.string().min(1).optional(),
-  developmentTitle: z.string().min(1).optional(),
+  storyKey: z.string().optional(),
+  storyTitle: z.string().optional(),
+  developmentKey: z.string().optional(),
+  developmentType: z.string().optional(),
+  developmentTitle: z.string().optional(),
   evidence: z.preprocess(
     (value) => Array.isArray(value)
       ? value.filter((entry): entry is string => typeof entry === "string")
@@ -251,10 +251,18 @@ export async function fingerprintStoryAnalysisMember(unit: StoryAnalysisUnit, me
   })).digest("hex");
 }
 
-function normalizeKey(value: string): string {
+function normalizeKeyOrNull(value: string | undefined): string | null {
+  if (value === undefined) return null;
   const normalized = value.normalize("NFKC").trim().toLocaleLowerCase("en-US")
     .replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "");
-  if (!normalized) throw new Error("Story identity key must contain a letter or number");
+  return normalized || null;
+}
+
+function normalizeKey(value: string): string {
+  const normalized = normalizeKeyOrNull(value);
+  if (normalized === null) {
+    throw new Error("Story identity key must contain a letter or number");
+  }
   return normalized;
 }
 
@@ -600,8 +608,11 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
         const unit = units[result.i]!;
         const itemIndex = unit.memberIndexes[result.m]!;
         const item = unit.items[result.m]!;
-        const storyKey = normalizeKey(result.storyKey);
-        const developmentKey = normalizeKey(result.developmentKey);
+        const itemIdentity = normalizeKey(item.itemId);
+        const storyKey = normalizeKeyOrNull(result.storyKey) ??
+          `item-${itemIdentity}`;
+        const developmentKey = normalizeKeyOrNull(result.developmentKey) ??
+          `development-${itemIdentity}`;
         const evidenceSource = `${item.payload.title ?? ""}\n${item.payload.text}`;
         analyses.set(itemIndex, {
           language: null,
@@ -609,10 +620,13 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
           topics: [...new Set((result.topics ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, MAX_LABELS),
           entities: [...new Set((result.entities ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, MAX_LABELS),
           storyKey,
-          storyTitle: result.storyTitle?.trim() || item.payload.title?.trim() || storyKey,
+          storyTitle: result.storyTitle?.trim() ||
+            item.payload.title?.trim() || storyKey,
           developmentKey,
-          developmentType: result.developmentType === undefined ? developmentKey : normalizeKey(result.developmentType),
-          developmentTitle: result.developmentTitle?.trim() || item.payload.title?.trim() || developmentKey,
+          developmentType: normalizeKeyOrNull(result.developmentType) ??
+            developmentKey,
+          developmentTitle: result.developmentTitle?.trim() ||
+            item.payload.title?.trim() || developmentKey,
           mediaDescription: descriptions.get(itemIndex) ?? null,
           evidence: [...new Set(result.evidence
             .map((value) => value.trim())

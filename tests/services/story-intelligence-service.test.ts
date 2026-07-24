@@ -607,32 +607,23 @@ test("analysis accepts provider metadata omissions and canalUrls typo with deter
   });
 });
 
-test("analysis keeps optional metadata typed while rejecting unknown keys and invalid or missing identity", async () => {
+test("analysis rejects unknown keys and malformed optional metadata", async () => {
   const analyzeRecord = (record: Record<string, unknown>) =>
     new OpenAICompatibleStoryIntelligenceService({
       client: { complete: async () => JSON.stringify([record]) },
     }).analyze([item(0)]);
 
   await assertRejects(() => analyzeRecord({
-    i: 0, m: 0,
+    i: 0,
+    m: 0,
     storyKey: "story",
     developmentKey: "development",
     evidence: [],
     unrelated: true,
   }));
   await assertRejects(() => analyzeRecord({
-    i: 0, m: 0,
-    storyKey: "story",
-    evidence: [],
-  }));
-  await assertRejects(() => analyzeRecord({
-    i: 0, m: 0,
-    storyKey: "---",
-    developmentKey: "development",
-    evidence: [],
-  }), "must contain a letter or number");
-  await assertRejects(() => analyzeRecord({
-    i: 0, m: 0,
+    i: 0,
+    m: 0,
     storyKey: "story",
     developmentKey: "development",
     topics: "Film",
@@ -647,17 +638,44 @@ test("analysis strictly rejects malformed fields and duplicate indexes", async (
   await assertRejects(() => duplicate.analyze([item(0), item(1)]), "duplicate, missing, or unknown unit members");
 });
 
-test("analysis rejects identity keys that normalize to empty", async () => {
+test("analysis conservatively isolates empty identity output without failing siblings", async () => {
   const service = new OpenAICompatibleStoryIntelligenceService({
     client: {
-      complete: async () => JSON.stringify([{
-        i: 0, m: 0, topics: [], entities: [],
-        storyKey: "---", storyTitle: "Story", developmentKey: "...",
-        developmentType: "!!!", developmentTitle: "Development", evidence: [],
-      }]),
+      complete: async () => JSON.stringify([
+        {
+          i: 0,
+          m: 0,
+          topics: [],
+          entities: [],
+          storyKey: "",
+          storyTitle: "",
+          developmentKey: "",
+          developmentType: "",
+          developmentTitle: "",
+          evidence: [],
+        },
+        {
+          i: 1,
+          m: 0,
+          topics: [],
+          entities: [],
+          storyKey: "valid-story",
+          storyTitle: "Valid Story",
+          developmentKey: "valid-development",
+          developmentType: "report",
+          developmentTitle: "Valid Development",
+          evidence: [],
+        },
+      ]),
     },
   });
-  await assertRejects(() => service.analyze([item(0)]), "must contain a letter or number");
+  const results = await service.analyze([item(0), item(1)]);
+  assertEquals(results[0]!.analysis.storyKey, "item-item-0");
+  assertEquals(results[0]!.analysis.storyTitle, "Title 0");
+  assertEquals(results[0]!.analysis.developmentKey, "development-item-0");
+  assertEquals(results[0]!.analysis.developmentType, "development-item-0");
+  assertEquals(results[0]!.analysis.developmentTitle, "Title 0");
+  assertEquals(results[1]!.analysis.storyKey, "valid-story");
 });
 
 test("model-invented shared URLs are not trusted as resolution identity edges", async () => {
