@@ -154,6 +154,23 @@ test("buildDigestViewById exposes only the newest exactly linked owned failed ru
     assertEquals(markdown.includes("period fallback"), false);
     assertEquals(markdown.includes("cross owners"), false);
 
+    const newerPartial = await createDigestRun(database, {
+      userId: owner.id,
+      trigger: "manual",
+      periodStartMs: start,
+      periodEndMs: end,
+      status: "running",
+    }, end + 35);
+    await finishDigestRun(database, newerPartial.id, {
+      digestId: digest.id,
+      status: "partial",
+      errorMessage: "isolated summary retry failed",
+    }, end + 36);
+    assertEquals(
+      (await buildDigestViewById(database, owner.id, digest.id)).failureReason,
+      "isolated summary retry failed",
+    );
+
     const newerComplete = await createDigestRun(database, {
       userId: owner.id,
       trigger: "manual",

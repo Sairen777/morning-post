@@ -62,6 +62,7 @@ export interface StoryDigestDependencies {
 export interface StoryDigestResult {
   stories: StoredDigestStory[];
   hadSummaryFailure: boolean;
+  summaryFailureReason: unknown | null;
 }
 
 function effectiveMode(feed: PublicFeed, source: PublicSource, user: User) {
@@ -452,6 +453,34 @@ export async function assembleStoryDigest(
     ...batches.map((entries) => ({ kind: "batch" as const, entries })),
     ...singles.map((entry) => ({ kind: "single" as const, entry })),
   ];
+  const summarizeOne = async (
+    entry: { index: number; story: PersistedStoryCandidate },
+  ): Promise<void> => {
+    const { index, story } = entry;
+    try {
+      const items = story.candidate.developments.flatMap((development) =>
+        development.items
+      );
+      const points = await summarizer.summarize(
+        items.map((item) => item.payload),
+        storyRules,
+        {
+          signal: dependencies.signal,
+          requestTimeoutMs: dependencies.timeoutMs,
+          onAttempt: onAttempt("summarization"),
+        },
+      );
+      if (items.length > 0 && points.length === 0) {
+        throw new Error("Story summarization returned no points");
+      }
+      summaries[index] = {
+        status: "fulfilled",
+        value: makeSummary(story, points),
+      };
+    } catch (reason) {
+      summaries[index] = { status: "rejected", reason };
+    }
+  };
   await boundedMap(
     summaryJobs,
     Math.max(1, dependencies.summaryConcurrency ?? 1),
@@ -481,26 +510,16 @@ export async function assembleStoryDigest(
         }
         return;
       }
-      const { index, story } = job.entry;
-      try {
-        const items = story.candidate.developments.flatMap((development) => development.items);
-        const points = await summarizer.summarize(
-          items.map((item) => item.payload),
-          storyRules,
-          {
-            signal: dependencies.signal,
-            requestTimeoutMs: dependencies.timeoutMs,
-            onAttempt: onAttempt("summarization"),
-          },
-        );
-        if (items.length > 0 && points.length === 0) {
-          throw new Error("Story summarization returned no points");
-        }
-        summaries[index] = { status: "fulfilled", value: makeSummary(story, points) };
-      } catch (reason) {
-        summaries[index] = { status: "rejected", reason };
-      }
+      await summarizeOne(job.entry);
     },
+  );
+  const failedBatchEntries = batches.flatMap((entries) =>
+    entries.filter(({ index }) => summaries[index]?.status === "rejected")
+  );
+  await boundedMap(
+    failedBatchEntries,
+    Math.max(1, dependencies.summaryConcurrency ?? 1),
+    summarizeOne,
   );
   if (runId) reportDigestProgress(progress, {
     event: "summarization",
@@ -517,5 +536,19 @@ export async function assembleStoryDigest(
     const { id: _id, digestId: _digestId, profileVersion, generatedAt, ...content } = prior;
     return [{ content, profileVersion, generatedAt }];
   });
-  return { stories: await replaceDigestStories(database, user.id, digestId, replacement), hadSummaryFailure: summaries.some((result) => result.status === "rejected") };
+  const summaryFailure = summaries.find((result) =>
+    result.status === "rejected"
+  );
+  return {
+    stories: await replaceDigestStories(
+      database,
+      user.id,
+      digestId,
+      replacement,
+    ),
+    hadSummaryFailure: summaryFailure !== undefined,
+    summaryFailureReason: summaryFailure?.status === "rejected"
+      ? summaryFailure.reason
+      : null,
+  };
 }

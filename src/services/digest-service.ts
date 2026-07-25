@@ -249,7 +249,8 @@ export async function buildDigestViewById(
   );
   return {
     ...view,
-    failureReason: run?.status === "failed" && run.errorMessage !== null
+    failureReason: (run?.status === "failed" || run?.status === "partial") &&
+        run.errorMessage !== null
       ? sanitizeErrorForOps(run.errorMessage)
       : null,
   };
@@ -301,6 +302,11 @@ export async function assembleDigestForPeriod(
     },
   );
   const hadFailure = result.hadSummaryFailure;
+  if (hadFailure && result.stories.length === 0) {
+    throw result.summaryFailureReason instanceof Error
+      ? result.summaryFailureReason
+      : new Error("Every selected story summary failed");
+  }
 
   digest = await setDigestStatus(
     database,
@@ -308,7 +314,17 @@ export async function assembleDigestForPeriod(
     userId,
     hadFailure ? "failed" : "complete",
   );
-  return await buildDigestViewForPeriod(database, digest);
+  const view = await buildDigestViewForPeriod(database, digest);
+  return hadFailure
+    ? {
+      ...view,
+      failureReason: sanitizeErrorForOps(
+        result.summaryFailureReason instanceof Error
+          ? result.summaryFailureReason
+          : new Error("One or more selected story summaries failed"),
+      ),
+    }
+    : view;
 }
 
 export async function listDigestViewsForUser(

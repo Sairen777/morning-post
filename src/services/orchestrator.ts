@@ -652,7 +652,11 @@ async function executeDigestRun(
   await finishDigestRun(database, digestRunId, {
     digestId: digestView.digest.id || null,
     status: runStatus,
-    errorMessage: assemblyFailed ? summarizeErrorForOps(assemblyError) : null,
+    errorMessage: assemblyFailed
+      ? summarizeErrorForOps(assemblyError)
+      : summarizationHadFailure
+      ? digestView.failureReason
+      : null,
     modelUsage: snapshotDigestModelUsage(runContext.modelUsageAggregate),
   }, now());
 

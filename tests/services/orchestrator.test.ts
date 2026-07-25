@@ -764,7 +764,7 @@ test("runForUser isolates source failures and marks the digest failed", async ()
   });
 });
 
-test("runForUser marks run partial when summarization fails but ingestion succeeds", async () => {
+test("runForUser fails with the exact reason when every selected summary fails", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
       database,
@@ -795,10 +795,12 @@ test("runForUser marks run partial when summarization fails but ingestion succee
     });
 
     assertEquals(view.digest.status, "failed");
+    assertEquals(view.failureReason, "summarizer crash");
 
     const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
     assertEquals(runs.length >= 1, true);
-    assertEquals(runs[0].status, "partial");
+    assertEquals(runs[0].status, "failed");
+    assertEquals(runs[0].errorMessage, "summarizer crash");
 
     const feedRows: Array<Record<string, unknown>> = await database.execute(
       sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,

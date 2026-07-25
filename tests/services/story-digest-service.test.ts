@@ -945,6 +945,52 @@ test("cached story cards are skipped before batch packing and batch concurrency 
         );
       }
     }
+    await upsertItems(database, feed.id, [{
+      ...makeItem(3),
+      text: "Updated report item-03",
+    }], 400);
+    let failedBatchCalls = 0;
+    let isolatedFallbackCalls = 0;
+    const fallbackSummarizer: SummarizerService = {
+      summarizeBatch: async (stories) => {
+        failedBatchCalls++;
+        return stories.map(({ storyId }) => ({
+          storyId,
+          error: new Error("provider omitted the batch member"),
+        }));
+      },
+      summarize: async (items) => {
+        isolatedFallbackCalls++;
+        return [{
+          text: `Isolated recovery ${items[0]!.externalId}`,
+          sourceUrl: items[0]!.url,
+        }];
+      },
+    };
+    const recovered = await assembleStoryDigest(
+      database,
+      digest.id,
+      user,
+      [feed],
+      0,
+      1_000,
+      {
+        intelligence,
+        summarizer: fallbackSummarizer,
+        analyzerVersion: "batch-cache-v1",
+        summaryConcurrency: 2,
+      },
+    );
+    assertEquals(failedBatchCalls, 1);
+    assertEquals(isolatedFallbackCalls, 1);
+    assertEquals(recovered.hadSummaryFailure, false);
+    assertEquals(recovered.summaryFailureReason, null);
+    assertEquals(
+      recovered.stories.some((story) =>
+        story.points[0]?.text === "Isolated recovery item-03"
+      ),
+      true,
+    );
   });
 });
 
