@@ -1027,6 +1027,8 @@
 
                 <p>One running digest per user is intentional. After a Dashboard reload, the initial run-status check restores any persisted running state and duplicate submission remains blocked until that check settles. While a run is active, the Dashboard polls its status every five seconds without overlapping requests and refreshes the digest list when the run reaches a terminal state. If <code>POST /digests/run</code> loses a race and returns <code>409</code>, the Dashboard maps the conflict to the active-run UI instead of displaying raw error text.</p>
 
+                <p>Each digest-list row exposes when its latest linked run started and, when that run is terminal, its elapsed wall-clock time from <code>digest_runs.started_at</code> to <code>finished_at</code>. Digests without a linked run fall back to their own creation timestamp. The repository selects one run per listed digest with deterministic newest-first ordering, so pagination does not inflate the response with historical run rows.</p>
+
                 <p>API startup and every scheduler leader tick call <code>recoverStaleDigestRuns()</code>. The recovery transaction marks only runs older than <code>DIGEST_RUN_STALE_AFTER_MS</code> and their still-running feed stages as <code>failed</code>; terminal feed stages remain unchanged. Fresh running rows are preserved so a rolling multi-instance deployment cannot fail work owned by another live process.</p>
 
                 <h3>Digest model deadlines and content-safe progress telemetry</h3>
