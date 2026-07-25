@@ -85,6 +85,8 @@ export interface PublicDigest {
   contentMode?: "legacy" | "stories";
   createdAt: number;
   updatedAt: number;
+  latestRunStartedAt?: number | null;
+  latestRunFinishedAt?: number | null;
 }
 
 export interface SummaryPoint {

@@ -274,6 +274,8 @@ const sampleDigests: PublicDigest[] = [
     status: "complete",
     createdAt: 1_702_100_000_000,
     updatedAt: 1_702_100_000_000,
+    latestRunStartedAt: 1_702_100_000_000,
+    latestRunFinishedAt: 1_702_100_065_000,
   },
   {
     id: "d-2",
@@ -329,6 +331,28 @@ describe("DigestsPanel ordinal numbering", () => {
     expect(ordinals).toHaveLength(2);
     expect(ordinals[0].textContent).toBe("#1");
     expect(ordinals[1].textContent).toBe("#2");
+  });
+});
+
+describe("DigestsPanel generation metadata", () => {
+  it("shows the latest run start and duration with a created-at fallback", () => {
+    const { container, getByText } = render(() => (
+      <DigestsPanel {...makeDigestsPanelProps()} />
+    ));
+
+    expect(getByText("1m 5s")).toBeTruthy();
+    expect(getByText("Started")).toBeTruthy();
+    expect(getByText("Created")).toBeTruthy();
+    expect(
+      container.querySelector(
+        `time[datetime="${new Date(1_702_100_000_000).toISOString()}"]`,
+      ),
+    ).toBeTruthy();
+    expect(
+      container.querySelector(
+        `time[datetime="${new Date(1_701_100_000_000).toISOString()}"]`,
+      ),
+    ).toBeTruthy();
   });
 });
 

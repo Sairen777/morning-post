@@ -16,6 +16,10 @@ import {
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { digests } from "../../src/db/schema/digest.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
+import {
+  createDigestRun,
+  finishDigestRun,
+} from "../../src/repositories/digest-run-repository.ts";
 
 function userInput(email: string): CreateUserInput {
   return {
@@ -94,8 +98,33 @@ test("digest repository lists and finds digests only for the owner", async () =>
       status: "failed",
     }, 20);
 
+    const olderRun = await createDigestRun(database, {
+      userId: firstUser.id,
+      trigger: "manual",
+      periodStartMs,
+      periodEndMs,
+      status: "running",
+    }, 100);
+    await finishDigestRun(database, olderRun.id, {
+      digestId: firstDigest.id,
+      status: "complete",
+    }, 200);
+    const latestRun = await createDigestRun(database, {
+      userId: firstUser.id,
+      trigger: "manual",
+      periodStartMs,
+      periodEndMs,
+      status: "running",
+    }, 300);
+    await finishDigestRun(database, latestRun.id, {
+      digestId: firstDigest.id,
+      status: "complete",
+    }, 425);
+
     const listed = await listDigestsForUser(database, firstUser.id);
     assertEquals(listed.map((digest) => digest.id), [firstDigest.id]);
+    assertEquals(listed[0].latestRunStartedAt, 300);
+    assertEquals(listed[0].latestRunFinishedAt, 425);
 
     assertEquals(await findDigestById(database, firstDigest.id, secondUser.id), null);
     assertEquals((await findDigestForUserPeriod(database, secondUser.id, periodStartMs, periodEndMs))?.status, "failed");

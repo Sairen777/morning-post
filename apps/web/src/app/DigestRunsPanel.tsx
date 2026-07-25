@@ -3,6 +3,7 @@ import type { PublicDigestRun, DigestRunDetail } from "../api/types";
 import { ApiClientError, getDigestRunDetail } from "../api/client";
 import StatusBadge from "./StatusBadge";
 import FormatTime from "./FormatTime";
+import { formatDuration } from "./duration";
 
 interface DigestRunsPanelProps {
   runs: PublicDigestRun[];
@@ -110,19 +111,7 @@ export default function DigestRunsPanel(props: DigestRunsPanelProps) {
                 <div class="meta-row">
                   <dt>Duration</dt>
                   <dd>
-                    {(() => {
-                      const diffMs = run.finishedAt! - run.startedAt;
-                      const seconds = Math.floor(diffMs / 1000);
-                      const minutes = Math.floor(seconds / 60);
-                      const hours = Math.floor(minutes / 60);
-                      if (hours > 0) {
-                        return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-                      }
-                      if (minutes > 0) {
-                        return `${minutes}m ${seconds % 60}s`;
-                      }
-                      return `${seconds}s`;
-                    })()}
+                    {formatDuration(run.finishedAt! - run.startedAt)}
                   </dd>
                 </div>
               </Show>

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import {
@@ -8,6 +8,7 @@ import {
   digestStatuses,
   type DigestStatus,
 } from "../db/schema/digest.ts";
+import { digestRuns } from "../db/schema/digest-run.ts";
 import { NotFoundError } from "../server/errors.ts";
 import { type PageResult, encodeDigestCursor, decodeDigestCursor } from "../server/cursor.ts";
 
@@ -20,6 +21,8 @@ const publicDigestSchema = z.object({
   contentMode: z.enum(digestContentModes),
   createdAt: z.number(),
   updatedAt: z.number(),
+  latestRunStartedAt: z.number().nullable().optional(),
+  latestRunFinishedAt: z.number().nullable().optional(),
 });
 
 export type PublicDigest = z.infer<typeof publicDigestSchema>;
@@ -33,6 +36,40 @@ export interface UpsertDigestInput {
 
 function parsePublicDigest(row: unknown): PublicDigest {
   return publicDigestSchema.parse(row);
+}
+async function attachLatestRunTiming(
+  database: Database,
+  values: PublicDigest[],
+): Promise<PublicDigest[]> {
+  if (values.length === 0) return [];
+  const rows = await database
+    .selectDistinctOn([digestRuns.digestId], {
+      digestId: digestRuns.digestId,
+      startedAt: digestRuns.startedAt,
+      finishedAt: digestRuns.finishedAt,
+    })
+    .from(digestRuns)
+    .where(and(
+      eq(digestRuns.userId, values[0]!.userId),
+      inArray(digestRuns.digestId, values.map(({ id }) => id)),
+    ))
+    .orderBy(
+      digestRuns.digestId,
+      desc(digestRuns.startedAt),
+      sql`${digestRuns.finishedAt} desc nulls last`,
+      desc(digestRuns.id),
+    );
+  const latestByDigestId = new Map(
+    rows.flatMap((row) => row.digestId === null ? [] : [[row.digestId, row]]),
+  );
+  return values.map((digest) => {
+    const run = latestByDigestId.get(digest.id);
+    return {
+      ...digest,
+      latestRunStartedAt: run?.startedAt ?? null,
+      latestRunFinishedAt: run?.finishedAt ?? null,
+    };
+  });
 }
 
 export async function upsertDigestForPeriod(
@@ -163,7 +200,7 @@ export async function listDigestsForUser(database: Database, userId: string): Pr
     .from(digests)
     .where(eq(digests.userId, userId))
     .orderBy(desc(digests.periodEndMs), desc(digests.createdAt));
-  return rows.map(parsePublicDigest);
+  return await attachLatestRunTiming(database, rows.map(parsePublicDigest));
 }
 
 export async function listDigestPageForUser(
@@ -198,7 +235,10 @@ export async function listDigestPageForUser(
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit).map(parsePublicDigest);
+  const data = await attachLatestRunTiming(
+    database,
+    rows.slice(0, limit).map(parsePublicDigest),
+  );
   const nextCursor: string | null = hasMore
     ? encodeDigestCursor(data[data.length - 1].periodEndMs, data[data.length - 1].createdAt, data[data.length - 1].id)
     : null;

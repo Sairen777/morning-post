@@ -11,6 +11,7 @@ import type {
 } from "../api/types";
 import StatusBadge from "./StatusBadge";
 import FormatTime from "./FormatTime";
+import { formatDuration } from "./duration";
 function safeHttpUrl(value: string | null): string | undefined {
   if (!value) {
     return undefined;
@@ -695,6 +696,43 @@ export default function DigestsPanel(props: DigestsPanelProps) {
                       <span>–</span>
                       <FormatTime ms={digest.periodEndMs} />
                       <StatusBadge status={digest.status} />
+                    </span>
+                    <span
+                      style={{
+                        display: "flex",
+                        gap: "0.35rem",
+                        "align-items": "center",
+                        "flex-wrap": "wrap",
+                        color: "var(--muted)",
+                        "font-size": "0.82rem",
+                        "margin-top": "0.15rem",
+                      }}
+                    >
+                      <Show
+                        when={digest.latestRunStartedAt !== null &&
+                          digest.latestRunStartedAt !== undefined}
+                        fallback={
+                          <>
+                            <span>Created</span>
+                            <FormatTime ms={digest.createdAt} />
+                          </>
+                        }
+                      >
+                        <span>Started</span>
+                        <FormatTime ms={digest.latestRunStartedAt!} />
+                        <Show
+                          when={digest.latestRunFinishedAt !== null &&
+                            digest.latestRunFinishedAt !== undefined}
+                        >
+                          <span>· Run time</span>
+                          <span>
+                            {formatDuration(
+                              digest.latestRunFinishedAt! -
+                                digest.latestRunStartedAt!,
+                            )}
+                          </span>
+                        </Show>
+                      </Show>
                     </span>
                   </button>
                   <button
