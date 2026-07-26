@@ -7,7 +7,7 @@ import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credentia
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { digests } from "../../src/db/schema/digest.ts";
-import { stories, storyDevelopments } from "../../src/db/schema/story.ts";
+import { digestStories, stories, storyDevelopments } from "../../src/db/schema/story.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { ResolvedStoryCandidate } from "../../src/personalization/story.types.ts";
 import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
@@ -17,6 +17,7 @@ import { createSource } from "../../src/repositories/source-repository.ts";
 import {
   findLatestDeliveredStoryVersion,
   findLatestDeliveredStoryVersions,
+  listReusableDigestStoryPoints,
   listItemAnalyses,
   listRecentStoryReferences,
   listDigestStories,
@@ -27,6 +28,7 @@ import {
   upsertItemAnalyses,
 } from "../../src/repositories/story-repository.ts";
 import { createUser } from "../../src/repositories/user-repository.ts";
+import { CURRENT_STORY_SUMMARY_VERSION } from "../../src/services/story-digest-service.ts";
 
 function cipher(): CredentialCipher {
   return new CredentialCipher(new EnvMasterKeyProvider(new Uint8Array(32).fill(19)));
@@ -182,12 +184,12 @@ test("digest stories replace, parse content, and latest delivery is user scoped"
     const oldDigest = await upsertDigestForPeriod(database, { userId: f.user.id, periodStartMs: 1, periodEndMs: 2, status: "complete" }, 10);
     const currentDigest = await upsertDigestForPeriod(database, { userId: f.user.id, periodStartMs: 3, periodEndMs: 4, status: "complete" }, 20);
     const content = { storyId: persisted.id, storyVersion: persisted.version, title: "Election", topics: ["politics"], entities: ["Example"], points: [{ text: "Point", sourceUrl: "https://example.test/0" }], sources: [{ itemId: f.stored[0].id, connectorId: ConnectorId.Telegram, sourceId: f.source.id, feedId: f.feed.id, feedName: f.feed.name, title: "Item 0", url: "https://example.test/0", publishedAt: f.stored[0].date }], relevanceScore: 90, matchedInterestRuleIds: [] };
-    await replaceDigestStories(database, f.user.id, oldDigest.id, [{ content, profileVersion: 1, generatedAt: 100 }, { content: { ...content, storyId: secondary.id, title: "Secondary" }, profileVersion: 1, generatedAt: 101 }]);
-    await replaceDigestStories(database, f.user.id, currentDigest.id, [{ content: { ...content, storyVersion: 2, title: "Updated" }, profileVersion: 2, generatedAt: 200 }]);
-    await replaceDigestStories(database, f.user.id, currentDigest.id, [{ content: { ...content, storyVersion: 3, title: "Replacement" }, profileVersion: 2, generatedAt: 300 }]);
+    await replaceDigestStories(database, f.user.id, oldDigest.id, [{ content, profileVersion: 1, summaryVersion: CURRENT_STORY_SUMMARY_VERSION, generatedAt: 100 }, { content: { ...content, storyId: secondary.id, title: "Secondary" }, profileVersion: 1, summaryVersion: CURRENT_STORY_SUMMARY_VERSION, generatedAt: 101 }]);
+    await replaceDigestStories(database, f.user.id, currentDigest.id, [{ content: { ...content, storyVersion: 2, title: "Updated" }, profileVersion: 2, summaryVersion: CURRENT_STORY_SUMMARY_VERSION, generatedAt: 200 }]);
+    await replaceDigestStories(database, f.user.id, currentDigest.id, [{ content: { ...content, storyVersion: 3, title: "Replacement" }, profileVersion: 2, summaryVersion: CURRENT_STORY_SUMMARY_VERSION, generatedAt: 300 }]);
     const listed = await listDigestStories(database, f.user.id, currentDigest.id);
     assertEquals(listed.length, 1);
-    assertEquals([listed[0].title, listed[0].topics, listed[0].entities, listed[0].storyVersion, listed[0].points[0].text, listed[0].sources[0].connectorId], ["Replacement", ["politics"], ["Example"], 3, "Point", ConnectorId.Telegram]);
+    assertEquals([listed[0].title, listed[0].topics, listed[0].entities, listed[0].storyVersion, listed[0].summaryVersion, listed[0].points[0].text, listed[0].sources[0].connectorId], ["Replacement", ["politics"], ["Example"], 3, CURRENT_STORY_SUMMARY_VERSION, "Point", ConnectorId.Telegram]);
     assertEquals((await database.select({ contentMode: digests.contentMode }).from(digests).where(eq(digests.id, currentDigest.id)))[0].contentMode, "stories");
     assertEquals(await findLatestDeliveredStoryVersion(database, f.user.id, persisted.id), 3);
     assertEquals(await findLatestDeliveredStoryVersion(database, f.user.id, persisted.id, currentDigest.id), 1);
@@ -200,5 +202,230 @@ test("digest stories replace, parse content, and latest delivery is user scoped"
     const stranger = await fixture(database, "story-stranger@example.com", 0);
     assertEquals(await findLatestDeliveredStoryVersion(database, stranger.user.id, persisted.id), null);
     assertEquals(await listDigestStories(database, stranger.user.id, currentDigest.id), []);
+  });
+});
+
+test("reusable digest story points select the newest exact tuple deterministically without crossing users", async () => {
+  await withTestDb(async (database) => {
+    const owner = await fixture(database, "story-reuse-owner@example.com", 1);
+    const story = await upsertResolvedStory(database, owner.user.id, candidate(owner), 100);
+    const stranger = await fixture(database, "story-reuse-stranger@example.com", 0);
+    const foreignStory = await upsertResolvedStory(database, stranger.user.id, {
+      canonicalKey: "foreign-story",
+      title: "Foreign",
+      topics: [],
+      entities: [],
+      developments: [],
+    }, 100);
+    const save = async (
+      userId: string,
+      periodStartMs: number,
+      periodEndMs: number,
+      status: "pending" | "complete",
+      storyId: string,
+      storyVersion: number,
+      profileVersion: number,
+      text: string,
+      generatedAt: number,
+      summaryVersion = CURRENT_STORY_SUMMARY_VERSION,
+    ) => {
+      const digest = await upsertDigestForPeriod(database, {
+        userId,
+        periodStartMs,
+        periodEndMs,
+        status,
+      }, generatedAt);
+      await replaceDigestStories(database, userId, digest.id, [{
+        content: {
+          storyId,
+          storyVersion,
+          title: text,
+          topics: ["technology"],
+          entities: ["Example"],
+          points: [{ text, sourceUrl: null }],
+          sources: [],
+          relevanceScore: 90,
+          matchedInterestRuleIds: [],
+        },
+        profileVersion,
+        summaryVersion,
+        generatedAt,
+      }]);
+      return digest;
+    };
+
+    await save(
+      owner.user.id,
+      1,
+      2,
+      "complete",
+      story.id,
+      story.version,
+      owner.user.interestProfileVersion,
+      "Older exact points",
+      100,
+    );
+    const tieLoser = await save(
+      owner.user.id,
+      3,
+      4,
+      "complete",
+      story.id,
+      story.version,
+      owner.user.interestProfileVersion,
+      "Tie loser",
+      300,
+    );
+    const tieWinner = await save(
+      owner.user.id,
+      5,
+      6,
+      "complete",
+      story.id,
+      story.version,
+      owner.user.interestProfileVersion,
+      "Tie winner",
+      300,
+    );
+    await database.update(digestStories).set({
+      id: "00000000-0000-4000-8000-000000000001",
+    }).where(eq(digestStories.digestId, tieLoser.id));
+    await database.update(digestStories).set({
+      id: "00000000-0000-4000-8000-000000000002",
+    }).where(eq(digestStories.digestId, tieWinner.id));
+    await save(
+      owner.user.id,
+      7,
+      8,
+      "complete",
+      story.id,
+      story.version,
+      owner.user.interestProfileVersion + 1,
+      "Profile-specific points",
+      600,
+    );
+    await save(
+      owner.user.id,
+      9,
+      10,
+      "pending",
+      story.id,
+      story.version,
+      owner.user.interestProfileVersion,
+      "Incomplete points",
+      700,
+    );
+    const excluded = await save(
+      owner.user.id,
+      11,
+      12,
+      "complete",
+      story.id,
+      story.version,
+      owner.user.interestProfileVersion,
+      "Excluded current points",
+      800,
+    );
+    await save(
+      owner.user.id,
+      13,
+      14,
+      "complete",
+      story.id,
+      story.version,
+      owner.user.interestProfileVersion,
+      "Newest legacy points",
+      850,
+      "legacy",
+    );
+    await save(
+      stranger.user.id,
+      1,
+      2,
+      "complete",
+      foreignStory.id,
+      foreignStory.version,
+      stranger.user.interestProfileVersion,
+      "Foreign points",
+      900,
+    );
+
+    const reusable = await listReusableDigestStoryPoints(database, owner.user.id, [
+      {
+        storyId: story.id,
+        storyVersion: story.version,
+        profileVersion: owner.user.interestProfileVersion + 1,
+        summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+      },
+      {
+        storyId: story.id,
+        storyVersion: story.version,
+        profileVersion: owner.user.interestProfileVersion,
+        summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+      },
+      {
+        storyId: story.id,
+        storyVersion: story.version + 1,
+        profileVersion: owner.user.interestProfileVersion,
+        summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+      },
+      {
+        storyId: foreignStory.id,
+        storyVersion: foreignStory.version,
+        profileVersion: stranger.user.interestProfileVersion,
+        summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+      },
+      {
+        storyId: story.id,
+        storyVersion: story.version,
+        profileVersion: owner.user.interestProfileVersion,
+        summaryVersion: "legacy",
+      },
+    ], excluded.id);
+    assertEquals(
+      reusable.map((entry) => [
+        entry.storyId,
+        entry.storyVersion,
+        entry.profileVersion,
+        entry.summaryVersion,
+        entry.points[0]?.text,
+      ]),
+      [
+        [
+          story.id,
+          story.version,
+          owner.user.interestProfileVersion + 1,
+          CURRENT_STORY_SUMMARY_VERSION,
+          "Profile-specific points",
+        ],
+        [
+          story.id,
+          story.version,
+          owner.user.interestProfileVersion,
+          CURRENT_STORY_SUMMARY_VERSION,
+          "Tie winner",
+        ],
+        [
+          story.id,
+          story.version,
+          owner.user.interestProfileVersion,
+          "legacy",
+          "Newest legacy points",
+        ],
+      ],
+    );
+    assertEquals(
+      (await listReusableDigestStoryPoints(database, owner.user.id, [{
+        storyId: story.id,
+        storyVersion: story.version,
+        profileVersion: owner.user.interestProfileVersion,
+        summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+      }])).map((entry) => entry.points[0]?.text),
+      ["Excluded current points"],
+    );
+    assertEquals(
+      await listReusableDigestStoryPoints(database, owner.user.id, []),
+      [],
+    );
   });
 });

@@ -134,6 +134,13 @@
       "when": 1784901379268,
       "tag": "0018_pink_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785037543544,
+      "tag": "0019_overjoyed_cable",
+      "breakpoints": true
     }
   ]
 }

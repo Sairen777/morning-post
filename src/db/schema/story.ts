@@ -122,6 +122,7 @@ export const digestStories = pgTable(
       .references(() => stories.id, { onDelete: "cascade" }),
     storyVersion: integer("story_version").notNull(),
     profileVersion: integer("profile_version").notNull(),
+    summaryVersion: text("summary_version").notNull().default("legacy"),
     title: text("title").notNull(),
     topics: jsonb("topics").$type<string[]>().notNull(),
     entities: jsonb("entities").$type<string[]>().notNull(),

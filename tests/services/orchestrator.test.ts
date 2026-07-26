@@ -68,6 +68,7 @@ import {
 } from "../../src/repositories/digest-run-repository.ts";
 import { fixtureStoryIntelligence } from "./fixture-story-intelligence.ts";
 import type { DigestProgressEvent } from "../../src/services/digest-progress.ts";
+import type { StoryIntelligenceService } from "../../src/personalization/story.types.ts";
 
 class FakeConnector implements Connector<unknown> {
   readonly calls: Array<
@@ -610,6 +611,148 @@ test("runForUser is idempotent for the same period", async () => {
     assertEquals(first.digest.id, second.digest.id);
     assertEquals(connector.calls.length, 1);
     assertEquals(summarizer.calls.length, 1);
+  });
+});
+
+test("overlapping manual digests retain unchanged stories while scheduled digests suppress them", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-overlapping-modes@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Telegram,
+      1,
+      "channel:overlapping-modes",
+      "Overlapping Feed",
+    );
+    const responses = {
+      [setup.feed.externalId]: [
+        normalizedItem(
+          setup.feed.externalId,
+          "existing",
+          "Report existing",
+        ),
+      ],
+    };
+    const connector = new FakeConnector(responses);
+    const connectorFactory = new FakeConnectorFactory({
+      [setup.source.id]: connector,
+    });
+    const summarizer = new FakeSummarizer([
+      [{ text: "Previously delivered point", sourceUrl: null }],
+      [{ text: "New point 1", sourceUrl: null }],
+      [{ text: "New point 2", sourceUrl: null }],
+      [{ text: "New point 3", sourceUrl: null }],
+    ]);
+    const intelligence: StoryIntelligenceService = {
+      analyze: (items, options) =>
+        fixtureStoryIntelligence.analyze(items, options),
+      resolve: async (items) =>
+        items.map((item) => ({
+          canonicalKey: `fixture-story-${item.payload.externalId}`,
+          title: `Story ${item.payload.externalId}`,
+          topics: ["news"],
+          entities: [],
+          developments: [{
+            canonicalKey: `development-${item.payload.externalId}`,
+            type: "report",
+            title: `Report ${item.payload.externalId}`,
+            occurredAt: item.payload.date,
+            items: [item],
+          }],
+        })),
+      classify: async (stories) =>
+        stories.map((story) => ({
+          storyId: story.id,
+          relevant: true,
+          score: 90,
+          matchedInterestRuleIds: [],
+          blockedByInterestRuleIds: [],
+          reason: "fixture",
+        })),
+    };
+    let now = 1_000;
+    const dependencies = {
+      connectorFactory,
+      summarizer,
+      intelligence,
+      analyzerVersion: "overlapping-modes-v1",
+      now: () => now++,
+    };
+    const initialPeriod = {
+      startMs: period.startMs - 100,
+      endMs: period.startMs + 100,
+    };
+    const initial = await runForUser(database, user.id, initialPeriod, {
+      ...dependencies,
+      trigger: "manual",
+    });
+    assertEquals(initial.stories.length, 1);
+    assertEquals(initial.stories[0]!.title, "Story existing");
+    assertEquals(
+      initial.stories[0]!.points[0]!.text,
+      "Previously delivered point",
+    );
+    assertEquals(summarizer.calls.map((call) => call.items[0]!.externalId), [
+      "existing",
+    ]);
+
+    responses[setup.feed.externalId] = [
+      "existing",
+      "new-1",
+      "new-2",
+      "new-3",
+    ].map((externalId) =>
+      normalizedItem(
+        setup.feed.externalId,
+        externalId,
+        `Report ${externalId}`,
+      )
+    );
+    const manualPeriod = {
+      startMs: period.startMs - 50,
+      endMs: period.startMs + 200,
+    };
+    const manual = await runForUser(database, user.id, manualPeriod, {
+      ...dependencies,
+      trigger: "manual",
+    });
+    assertEquals(manual.digest.id === initial.digest.id, false);
+    assertEquals(
+      manual.stories.map((story) => story.title).sort(),
+      ["Story existing", "Story new-1", "Story new-2", "Story new-3"],
+    );
+    assertEquals(
+      manual.stories.find((story) => story.title === "Story existing")
+        ?.points[0]?.text,
+      "Previously delivered point",
+    );
+    assertEquals(summarizer.calls.map((call) => call.items[0]!.externalId), [
+      "existing",
+      "new-1",
+      "new-2",
+      "new-3",
+    ]);
+
+    const scheduledPeriod = {
+      startMs: period.startMs - 25,
+      endMs: period.startMs + 300,
+    };
+    const scheduled = await runForUser(database, user.id, scheduledPeriod, {
+      ...dependencies,
+      trigger: "scheduled",
+    });
+    assertEquals(scheduled.digest.status, "complete");
+    assertEquals(scheduled.stories, []);
+    assertEquals(summarizer.calls.map((call) => call.items[0]!.externalId), [
+      "existing",
+      "new-1",
+      "new-2",
+      "new-3",
+    ]);
   });
 });
 

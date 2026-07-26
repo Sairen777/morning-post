@@ -708,6 +708,7 @@ export async function runForUser(
   const modelUsageAggregate = createDigestModelUsageAggregate();
   const progressDependencies = {
     ...dependencies,
+    suppressPreviouslyDelivered: trigger === "scheduled",
     progressStartedAtMs,
     modelUsageAggregate,
   };

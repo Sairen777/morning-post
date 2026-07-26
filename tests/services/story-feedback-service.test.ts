@@ -7,6 +7,7 @@ import { storyFeedback } from "../../src/db/schema/story-feedback.ts";
 import { users } from "../../src/db/schema/user.ts";
 import { NotFoundError, ValidationError } from "../../src/server/errors.ts";
 import { submitStoryFeedback } from "../../src/services/story-feedback-service.ts";
+import { CURRENT_STORY_SUMMARY_VERSION } from "../../src/services/story-digest-service.ts";
 import { createStoryFeedbackFixture } from "../story-feedback-fixture.ts";
 import { listDigestStories, replaceDigestStories } from "../../src/repositories/story-repository.ts";
 
@@ -86,6 +87,7 @@ test("digest regeneration preserves card identity and durable feedback", async (
         matchedInterestRuleIds: [],
       },
       profileVersion: fixture.user.interestProfileVersion,
+      summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
       generatedAt: 301,
     }];
     const regenerated = await replaceDigestStories(

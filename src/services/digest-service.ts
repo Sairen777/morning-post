@@ -297,6 +297,7 @@ export async function assembleDigestForPeriod(
     periodEndMs,
     {
       ...dependencies,
+      suppressPreviouslyDelivered: dependencies.suppressPreviouslyDelivered ?? true,
       summaryConcurrency: dependencies.summaryConcurrency ??
         dependencies.summarizationConcurrency,
     },

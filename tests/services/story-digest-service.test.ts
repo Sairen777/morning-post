@@ -24,8 +24,12 @@ import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.
 import {
   listDigestStories,
   listItemAnalyses,
+  replaceDigestStories,
 } from "../../src/repositories/story-repository.ts";
-import { assembleStoryDigest } from "../../src/services/story-digest-service.ts";
+import {
+  assembleStoryDigest,
+  CURRENT_STORY_SUMMARY_VERSION,
+} from "../../src/services/story-digest-service.ts";
 import { fingerprintStoryAnalysisMember, fingerprintStoryItem, groupStoryAnalysisUnits, partitionStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
 import type {
   AnalyzedStoryItem,
@@ -63,6 +67,7 @@ test("story digest markdown renders every source link and no legacy groups", () 
       storyId: "00000000-0000-4000-8000-000000000004",
       storyVersion: 2,
       profileVersion: 3,
+      summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
       generatedAt: 1,
       title: "Shared story",
       topics: ["technology"],
@@ -390,6 +395,262 @@ test("service clusters connectors, caches analysis, preserves reruns, provenance
     assertEquals(downgraded.paidPosts.map((post) => post.title), [
       "Paid headline",
     ]);
+  });
+});
+
+test("point reuse requires exact story, profile, and summary versions while rebuilding current sources", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, {
+      name: "Reusable Points Owner",
+      email: "story-reusable-points@example.com",
+      passwordHash: "$argon2id$fake",
+      defaultLanguage: "en",
+      systemPrompt: "",
+      relevanceThreshold: 0,
+    });
+    const cipher = new CredentialCipher(
+      new EnvMasterKeyProvider(new Uint8Array(32).fill(4)),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.RSS,
+      credentials: await cipher.encrypt("{}", {
+        userId: user.id,
+        connectorId: ConnectorId.RSS,
+      }),
+    });
+    const feed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: source.id,
+      externalId: "reusable-points-feed",
+      name: "Original Feed",
+      kind: "news",
+    });
+    const reusableItem = {
+      connectorId: ConnectorId.RSS,
+      feedExternalId: feed.externalId,
+      externalId: "reusable-item",
+      date: 100,
+      title: "Reusable report",
+      text: "Original report",
+      author: null,
+      url: "https://reusable.example/report",
+    };
+    await upsertItems(database, feed.id, [reusableItem], 100);
+    const intelligence = new FixtureIntelligence();
+    const summaryCalls: string[] = [];
+    const summarizer: SummarizerService = {
+      summarize: async (items) => {
+        summaryCalls.push(items[0]!.text);
+        return [{
+          text: `Fresh summary ${summaryCalls.length}`,
+          sourceUrl: `https://summary.example/${summaryCalls.length}`,
+        }];
+      },
+    };
+    const dependencies = {
+      intelligence,
+      summarizer,
+      analyzerVersion: "reusable-points-v1",
+      suppressPreviouslyDelivered: false,
+    };
+    const seedDigest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 200,
+      status: "complete",
+    }, 100);
+    const seeded = await assembleStoryDigest(
+      database,
+      seedDigest.id,
+      user,
+      [feed],
+      0,
+      200,
+      dependencies,
+    );
+    assertEquals(summaryCalls, ["Original report"]);
+    assertEquals(seeded.stories[0]!.points, [{
+      text: "Fresh summary 1",
+      sourceUrl: "https://summary.example/1",
+    }]);
+    const {
+      id: _seededId,
+      digestId: _seededDigestId,
+      profileVersion: seededProfileVersion,
+      summaryVersion: _seededSummaryVersion,
+      generatedAt: seededGeneratedAt,
+      ...seededContent
+    } = seeded.stories[0]!;
+    const replaceSeedWithLegacyVersion = async () => {
+      await replaceDigestStories(database, user.id, seedDigest.id, [{
+        content: {
+          ...seededContent,
+          sources: seededContent.sources.map((storySource) => ({
+            ...storySource,
+            feedName: "Stale Cached Feed Name",
+          })),
+        },
+        profileVersion: seededProfileVersion,
+        summaryVersion: "legacy",
+        generatedAt: seededGeneratedAt,
+      }]);
+    };
+    await replaceSeedWithLegacyVersion();
+    const [legacySeed] = await listDigestStories(
+      database,
+      user.id,
+      seedDigest.id,
+    );
+    assertEquals(
+      [legacySeed!.summaryVersion, legacySeed!.sources[0]!.feedName],
+      ["legacy", "Stale Cached Feed Name"],
+    );
+
+    const currentDigestLegacyMiss = await assembleStoryDigest(
+      database,
+      seedDigest.id,
+      user,
+      [feed],
+      0,
+      200,
+      dependencies,
+    );
+    assertEquals(summaryCalls.length, 2);
+    assertEquals(
+      currentDigestLegacyMiss.stories[0]!.points[0]!.text,
+      "Fresh summary 2",
+    );
+    assertEquals(
+      currentDigestLegacyMiss.stories[0]!.summaryVersion,
+      CURRENT_STORY_SUMMARY_VERSION,
+    );
+    assertEquals(
+      currentDigestLegacyMiss.stories[0]!.sources[0]!.feedName,
+      "Original Feed",
+    );
+
+    await replaceSeedWithLegacyVersion();
+    const exactDigest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 201,
+      status: "complete",
+    }, 200);
+    const exact = await assembleStoryDigest(
+      database,
+      exactDigest.id,
+      user,
+      [feed],
+      0,
+      201,
+      dependencies,
+    );
+    assertEquals(summaryCalls.length, 3);
+    assertEquals(exact.stories.length, 1);
+    assertEquals(exact.stories[0]!.storyId, seeded.stories[0]!.storyId);
+    assertEquals(exact.stories[0]!.storyVersion, seeded.stories[0]!.storyVersion);
+    assertEquals(exact.stories[0]!.profileVersion, seeded.stories[0]!.profileVersion);
+    assertEquals(
+      exact.stories[0]!.summaryVersion,
+      CURRENT_STORY_SUMMARY_VERSION,
+    );
+    assertEquals(exact.stories[0]!.points[0]!.text, "Fresh summary 3");
+    assertEquals(exact.stories[0]!.sources[0]!.feedName, "Original Feed");
+
+    const currentVersionRerun = await assembleStoryDigest(
+      database,
+      exactDigest.id,
+      user,
+      [feed],
+      0,
+      201,
+      dependencies,
+    );
+    assertEquals(summaryCalls.length, 3);
+    assertEquals(currentVersionRerun.stories[0]!.points, exact.stories[0]!.points);
+    assertEquals(
+      currentVersionRerun.stories[0]!.summaryVersion,
+      CURRENT_STORY_SUMMARY_VERSION,
+    );
+
+    const newestExactDigest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 202,
+      status: "complete",
+    }, 250);
+    const newestExact = await assembleStoryDigest(
+      database,
+      newestExactDigest.id,
+      user,
+      [feed],
+      0,
+      202,
+      dependencies,
+    );
+    assertEquals(summaryCalls.length, 3);
+    assertEquals(newestExact.stories[0]!.points, exact.stories[0]!.points);
+    assertEquals(
+      newestExact.stories[0]!.summaryVersion,
+      CURRENT_STORY_SUMMARY_VERSION,
+    );
+
+    user.interestProfileVersion++;
+    const profileMismatchDigest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 203,
+      status: "complete",
+    }, 300);
+    const profileMismatch = await assembleStoryDigest(
+      database,
+      profileMismatchDigest.id,
+      user,
+      [feed],
+      0,
+      203,
+      dependencies,
+    );
+    assertEquals(summaryCalls.length, 4);
+    assertEquals(profileMismatch.stories[0]!.storyVersion, seeded.stories[0]!.storyVersion);
+    assertEquals(profileMismatch.stories[0]!.profileVersion, user.interestProfileVersion);
+    assertEquals(
+      profileMismatch.stories[0]!.summaryVersion,
+      CURRENT_STORY_SUMMARY_VERSION,
+    );
+    assertEquals(profileMismatch.stories[0]!.points[0]!.text, "Fresh summary 4");
+
+    await upsertItems(database, feed.id, [{
+      ...reusableItem,
+      text: "Materially updated report",
+    }], 400);
+    const versionMismatchDigest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 204,
+      status: "complete",
+    }, 400);
+    const versionMismatch = await assembleStoryDigest(
+      database,
+      versionMismatchDigest.id,
+      user,
+      [feed],
+      0,
+      204,
+      dependencies,
+    );
+    assertEquals(summaryCalls.length, 5);
+    assertEquals(
+      versionMismatch.stories[0]!.storyVersion,
+      seeded.stories[0]!.storyVersion + 1,
+    );
+    assertEquals(versionMismatch.stories[0]!.profileVersion, user.interestProfileVersion);
+    assertEquals(
+      versionMismatch.stories[0]!.summaryVersion,
+      CURRENT_STORY_SUMMARY_VERSION,
+    );
+    assertEquals(versionMismatch.stories[0]!.points[0]!.text, "Fresh summary 5");
   });
 });
 

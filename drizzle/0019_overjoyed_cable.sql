@@ -1,0 +1,1 @@
+ALTER TABLE "digest_stories" ADD COLUMN "summary_version" text DEFAULT 'legacy' NOT NULL;

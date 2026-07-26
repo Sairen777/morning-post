@@ -9,6 +9,7 @@ import type { User } from "../repositories/user-repository.ts";
 import {
   findLatestDeliveredStoryVersions,
   listDigestStories,
+  listReusableDigestStoryPoints,
   listRecentStoryReferences,
   listItemAnalyses,
   replaceDigestStories,
@@ -44,6 +45,8 @@ import {
 } from "./digest-progress.ts";
 import type { ModelAttemptTelemetry } from "../summarizers/openai-compatible-client.ts";
 
+export const CURRENT_STORY_SUMMARY_VERSION = "story-summary-v2";
+
 export interface StoryDigestDependencies {
   intelligence?: StoryIntelligenceService;
   summarizer?: SummarizerService;
@@ -57,6 +60,7 @@ export interface StoryDigestDependencies {
   progressReporter?: DigestProgressReporter;
   progressStartedAtMs?: number;
   modelUsageAggregate?: DigestModelUsageAggregate;
+  suppressPreviouslyDelivered?: boolean;
 }
 
 export interface StoryDigestResult {
@@ -161,11 +165,12 @@ export async function assembleStoryDigest(
   dependencies: StoryDigestDependencies = {},
 ): Promise<StoryDigestResult> {
   const currentStories = await listDigestStories(database, user.id, digestId);
-  const currentVersionByStoryId = new Map(currentStories.map((story) => [story.storyId, story.storyVersion]));
+  const currentStoryById = new Map(currentStories.map((story) => [story.storyId, story]));
   const summarizer = dependencies.summarizer ?? new OpenAICompatibleSummarizerService();
   const intelligence = dependencies.intelligence ?? new OpenAICompatibleStoryIntelligenceService();
   const analyzerVersion = dependencies.analyzerVersion ?? "story-v2";
   const now = dependencies.now ?? Date.now;
+  const suppressPreviouslyDelivered = dependencies.suppressPreviouslyDelivered ?? true;
   const progress = dependencies.progressReporter;
   const runId = dependencies.runId;
   const progressStartedAtMs = dependencies.progressStartedAtMs ?? now();
@@ -353,14 +358,16 @@ export async function assembleStoryDigest(
     status: "complete",
   });
   const decisionById = new Map(decisions.map((decision) => [decision.storyId, decision]));
-  const deliveredVersions = await findLatestDeliveredStoryVersions(database, user.id, persisted.map((story) => story.id), digestId);
+  const deliveredVersions = suppressPreviouslyDelivered
+    ? await findLatestDeliveredStoryVersions(database, user.id, persisted.map((story) => story.id), digestId)
+    : new Map<string, number>();
   const relevant: PersistedStoryCandidate[] = [];
   for (const story of persisted) {
     const decision = decisionById.get(story.id);
     if (!decision?.relevant) continue;
-    const currentVersion = currentVersionByStoryId.get(story.id);
+    const currentVersion = currentStoryById.get(story.id)?.storyVersion;
     const delivered = deliveredVersions.get(story.id);
-    if (currentVersion !== story.version && delivered !== undefined && delivered >= story.version) continue;
+    if (suppressPreviouslyDelivered && currentVersion !== story.version && delivered !== undefined && delivered >= story.version) continue;
     relevant.push(story);
   }
   relevant.sort((a, b) => (decisionById.get(b.id)!.score - decisionById.get(a.id)!.score));
@@ -383,6 +390,7 @@ export async function assembleStoryDigest(
   type SummaryValue = {
     content: DigestStoryContent;
     profileVersion: number;
+    summaryVersion: string;
     generatedAt: number;
   };
   const summaries: PromiseSettledResult<SummaryValue>[] = new Array(selected.length);
@@ -394,17 +402,40 @@ export async function assembleStoryDigest(
     const items = story.candidate.developments.flatMap((development) => development.items);
     const decision = decisionById.get(story.id)!;
     const sources: StorySource[] = items.map((item) => ({ itemId: item.itemId, connectorId: connectorBySource.get(item.sourceId)!, sourceId: item.sourceId, feedId: item.feedId, feedName: item.feedName, title: item.payload.title, url: item.payload.url, publishedAt: item.payload.date }));
-    return { content: { storyId: story.id, storyVersion: story.version, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, points, sources, relevanceScore: decision.score, matchedInterestRuleIds: decision.matchedInterestRuleIds }, profileVersion: user.interestProfileVersion, generatedAt: now() };
+    return { content: { storyId: story.id, storyVersion: story.version, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, points, sources, relevanceScore: decision.score, matchedInterestRuleIds: decision.matchedInterestRuleIds }, profileVersion: user.interestProfileVersion, summaryVersion: CURRENT_STORY_SUMMARY_VERSION, generatedAt: now() };
   };
+  const reusableInputs = selected.flatMap((story) => {
+    const current = currentStoryById.get(story.id);
+    return current?.storyVersion === story.version &&
+        current.profileVersion === user.interestProfileVersion &&
+        current.summaryVersion === CURRENT_STORY_SUMMARY_VERSION
+      ? []
+      : [{
+        storyId: story.id,
+        storyVersion: story.version,
+        profileVersion: user.interestProfileVersion,
+        summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+      }];
+  });
+  const reusable = await listReusableDigestStoryPoints(
+    database,
+    user.id,
+    reusableInputs,
+    digestId,
+  );
+  const reusableByStoryId = new Map(reusable.map((story) => [story.storyId, story]));
   selected.forEach((story, index) => {
-    const prior = currentStories.find((current) =>
-      current.storyId === story.id &&
-      current.storyVersion === story.version &&
-      current.profileVersion === user.interestProfileVersion
-    );
-    if (prior) {
-      const { id: _id, digestId: _digestId, profileVersion, generatedAt, ...content } = prior;
-      summaries[index] = { status: "fulfilled", value: { content, profileVersion, generatedAt } };
+    const current = currentStoryById.get(story.id);
+    const points = current?.storyVersion === story.version &&
+        current.profileVersion === user.interestProfileVersion &&
+        current.summaryVersion === CURRENT_STORY_SUMMARY_VERSION
+      ? current.points
+      : reusableByStoryId.get(story.id)?.points;
+    if (points) {
+      summaries[index] = {
+        status: "fulfilled",
+        value: makeSummary(story, points),
+      };
     } else {
       uncached.push({ index, story });
     }
@@ -531,10 +562,10 @@ export async function assembleStoryDigest(
   });
   const replacement = summaries.flatMap((result, index) => {
     if (result.status === "fulfilled") return [result.value];
-    const prior = currentStories.find((story) => story.storyId === selected[index].id);
+    const prior = currentStoryById.get(selected[index].id);
     if (!prior) return [];
-    const { id: _id, digestId: _digestId, profileVersion, generatedAt, ...content } = prior;
-    return [{ content, profileVersion, generatedAt }];
+    const { id: _id, digestId: _digestId, profileVersion, summaryVersion, generatedAt, ...content } = prior;
+    return [{ content, profileVersion, summaryVersion, generatedAt }];
   });
   const summaryFailure = summaries.find((result) =>
     result.status === "rejected"
