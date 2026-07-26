@@ -107,6 +107,44 @@ describe("updateSource", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("sends only summarizationMode when changing summary detail", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      const fetchCalls: Array<[string, RequestInit?]> = [];
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        fetchCalls.push([url, opts]);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "source-1",
+              userId: "user-1",
+              connectorId: "Substack",
+              position: null,
+              enabled: true,
+              showPaidPostTitles: true,
+              relevanceFilterMode: "inherit",
+              summarizationMode: "thorough",
+              connected: true,
+              createdAt: 0,
+              updatedAt: 0,
+            }),
+            { status: 200 },
+          ),
+        );
+      }) as typeof fetch;
+
+      await updateSource("source-1", { summarizationMode: "thorough" });
+
+      expect(fetchCalls[0][0]).toBe("/sources/source-1");
+      expect(fetchCalls[0][1]?.method).toBe("PATCH");
+      expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({
+        summarizationMode: "thorough",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("interest CRUD", () => {

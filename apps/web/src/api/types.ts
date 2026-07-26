@@ -16,6 +16,8 @@ export interface PublicUser {
   updatedAt: number;
 }
 
+export type SourceSummarizationMode = "basic" | "thorough";
+
 export interface PublicSource {
   id: string;
   userId: string;
@@ -24,6 +26,7 @@ export interface PublicSource {
   enabled: boolean;
   showPaidPostTitles: boolean;
   relevanceFilterMode: RelevanceFilterOverride;
+  summarizationMode: SourceSummarizationMode;
   connected: boolean;
   createdAt: number;
   updatedAt: number;

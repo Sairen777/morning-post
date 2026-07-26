@@ -257,6 +257,7 @@ describe("SourcesPanel", () => {
     showPaidPostTitles: false,
     connected: true,
     relevanceFilterMode: "inherit",
+    summarizationMode: "basic",
     createdAt: 0,
     updatedAt: 0,
   } as const;
@@ -290,6 +291,47 @@ describe("SourcesPanel", () => {
     expect(onUpdateSource).toHaveBeenCalledWith("source-1", {
       relevanceFilterMode: "include_all",
     });
+  });
+
+  it("displays and updates source summary detail", async () => {
+    const onUpdateSource = vi.fn(() => Promise.resolve());
+    render(() => (
+      <SourcesPanel
+        sources={[source]}
+        feeds={[]}
+        availableFeeds={{}}
+        sourceFeeds={{}}
+        onToggleSource={() => Promise.resolve()}
+        onUpdateSourcePosition={() => Promise.resolve()}
+        onUpdateSource={onUpdateSource}
+        onDisconnectSource={() =>
+          Promise.resolve({
+            source,
+            revokeTelegramSession: false,
+            message: "Disconnected",
+          })}
+        onDiscoverFeeds={() => Promise.resolve([])}
+        onLoadSourceFeeds={() => Promise.resolve([])}
+        onSubscribe={() => Promise.resolve()}
+        onAuthError={() => {}}
+      />
+    ));
+
+    const selector = screen.getByLabelText("Summary detail for Substack");
+    expect(selector).toHaveValue("basic");
+    expect(screen.getByText("Standard is faster and more token-efficient.")).toBeVisible();
+
+    await fireEvent.change(selector, { target: { value: "thorough" } });
+
+    expect(onUpdateSource).toHaveBeenCalledWith("source-1", {
+      summarizationMode: "thorough",
+    });
+    expect(selector).toHaveValue("thorough");
+    expect(
+      screen.getByText(
+        "Thorough is slower but captures more themes and nuance in long discussions.",
+      ),
+    ).toBeVisible();
   });
 
   it("hides Discover feeds for Substack but keeps it for Telegram", () => {

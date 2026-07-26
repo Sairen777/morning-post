@@ -14,6 +14,7 @@ import type {
   PublicUser,
   RelevanceFilterMode,
   RelevanceFilterOverride,
+  SourceSummarizationMode,
   SubstackPublicationInput,
   SubstackPublicationResponse,
   SubstackSessionInput,
@@ -176,6 +177,7 @@ export function updateSource(
     position?: number | null;
     showPaidPostTitles?: boolean;
     relevanceFilterMode?: RelevanceFilterOverride;
+    summarizationMode?: SourceSummarizationMode;
   },
 ): Promise<PublicSource> {
   return apiRequest<PublicSource>(`/sources/${id}`, {

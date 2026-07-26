@@ -5,6 +5,7 @@ import type {
   AvailableFeed,
   DisconnectSourceResponse,
   RelevanceFilterOverride,
+  SourceSummarizationMode,
 } from "../api/types";
 import { ApiClientError } from "../api/client";
 
@@ -17,7 +18,10 @@ interface SourcesPanelProps {
   onUpdateSourcePosition: (id: string, position: number | null) => Promise<void>;
   onUpdateSource?: (
     id: string,
-    input: { relevanceFilterMode: RelevanceFilterOverride },
+    input: {
+      relevanceFilterMode?: RelevanceFilterOverride;
+      summarizationMode?: SourceSummarizationMode;
+    },
   ) => Promise<void>;
   onDisconnectSource: (id: string) => Promise<DisconnectSourceResponse>;
   onDiscoverFeeds: (sourceId: string) => Promise<AvailableFeed[]>;
@@ -38,7 +42,12 @@ function isSubscribed(
 
 export default function SourcesPanel(props: SourcesPanelProps) {
   const [errors, setErrors] = createSignal<Record<string, string>>({});
-  const [loading, setLoading] = createSignal<Record<string, string>>({});
+  const [loading, setLoading] = createSignal<
+    Record<string, Record<string, boolean>>
+  >({});
+  const [summaryModeInputs, setSummaryModeInputs] = createSignal<
+    Record<string, SourceSummarizationMode>
+  >({});
   const [positionInputs, setPositionInputs] = createSignal<Record<string, string>>({});
   const [disconnectResults, setDisconnectResults] = createSignal<Record<string, DisconnectSourceResponse>>({});
 
@@ -55,13 +64,24 @@ export default function SourcesPanel(props: SourcesPanelProps) {
   };
 
   const setLoadingKey = (sourceId: string, key: string) => {
-    setLoading((l) => ({ ...l, [sourceId]: key }));
+    setLoading((l) => ({
+      ...l,
+      [sourceId]: { ...l[sourceId], [key]: true },
+    }));
   };
 
-  const clearLoading = (sourceId: string) => {
+  const clearLoading = (sourceId: string, key: string) => {
     setLoading((l) => {
+      const sourceLoading = l[sourceId];
+      if (!sourceLoading) return l;
+      const nextSourceLoading = { ...sourceLoading };
+      delete nextSourceLoading[key];
       const next = { ...l };
-      delete next[sourceId];
+      if (Object.keys(nextSourceLoading).length === 0) {
+        delete next[sourceId];
+      } else {
+        next[sourceId] = nextSourceLoading;
+      }
       return next;
     });
   };
@@ -72,6 +92,15 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         return { ...p, [source.id]: source.position != null ? String(source.position) : "" };
       }
       return p;
+    });
+  };
+
+  const initSummaryMode = (source: PublicSource) => {
+    setSummaryModeInputs((m) => {
+      if (!(source.id in m)) {
+        return { ...m, [source.id]: source.summarizationMode };
+      }
+      return m;
     });
   };
 
@@ -112,7 +141,31 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         setSourceError(sourceId, err.message);
       }
     } finally {
-      clearLoading(sourceId);
+      clearLoading(sourceId, "policy");
+    }
+  };
+
+  const handleSummarizationModeChange = async (
+    sourceId: string,
+    summarizationMode: SourceSummarizationMode,
+    previousMode: SourceSummarizationMode,
+  ) => {
+    const updateSource = props.onUpdateSource;
+    if (!updateSource) return;
+    clearSourceError(sourceId);
+    setSummaryModeInputs((m) => ({ ...m, [sourceId]: summarizationMode }));
+    setLoadingKey(sourceId, "summarization");
+    try {
+      await updateSource(sourceId, { summarizationMode });
+    } catch (err: unknown) {
+      setSummaryModeInputs((m) => ({ ...m, [sourceId]: previousMode }));
+      if (is401(err)) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setSourceError(sourceId, err.message);
+      }
+    } finally {
+      clearLoading(sourceId, "summarization");
     }
   };
 
@@ -135,7 +188,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         setSourceError(sourceId, err.message);
       }
     } finally {
-      clearLoading(sourceId);
+      clearLoading(sourceId, "position");
     }
   };
 
@@ -151,7 +204,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         setSourceError(sourceId, err.message);
       }
     } finally {
-      clearLoading(sourceId);
+      clearLoading(sourceId, "discover");
     }
   };
 
@@ -167,7 +220,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         setSourceError(sourceId, err.message);
       }
     } finally {
-      clearLoading(sourceId);
+      clearLoading(sourceId, "loadFeeds");
     }
   };
 
@@ -197,7 +250,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         setSourceError(sourceId, err.message);
       }
     } finally {
-      clearLoading(sourceId);
+      clearLoading(sourceId, "disconnect");
     }
   };
 
@@ -218,11 +271,14 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         <For each={props.sources}>
           {(source) => {
             initPosition(source);
+            initSummaryMode(source);
             const posVal = () => positionInputs()[source.id] ?? "";
+            const summaryMode = () =>
+              summaryModeInputs()[source.id] ?? source.summarizationMode;
             const sourceFeedsList = () => props.sourceFeeds[source.id] ?? [];
             const availableFeedsList = () => props.availableFeeds[source.id] ?? [];
             const disconnectResult = () => disconnectResults()[source.id];
-            const isLoading = (key: string) => loading()[source.id] === key;
+            const isLoading = (key: string) => loading()[source.id]?.[key] === true;
             const sourceError = () => errors()[source.id];
 
             return (
@@ -280,6 +336,31 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                   </select>
                   <div class="hint">
                     Inherit follows your profile; an override applies to every feed from this source.
+                  </div>
+                </div>
+
+                <div class="form-group" style="margin-top: 0.75rem;">
+                  <label for={`source-summary-${source.id}`}>Summary detail</label>
+                  <select
+                    id={`source-summary-${source.id}`}
+                    aria-label={`Summary detail for ${source.connectorId}`}
+                    aria-describedby={`source-summary-hint-${source.id}`}
+                    value={summaryMode()}
+                    disabled={isLoading("summarization") || !props.onUpdateSource}
+                    onChange={(e) =>
+                      handleSummarizationModeChange(
+                        source.id,
+                        e.currentTarget.value as SourceSummarizationMode,
+                        summaryMode(),
+                      )}
+                  >
+                    <option value="basic">Standard</option>
+                    <option value="thorough">Thorough</option>
+                  </select>
+                  <div id={`source-summary-hint-${source.id}`} class="hint">
+                    {summaryMode() === "thorough"
+                      ? "Thorough is slower but captures more themes and nuance in long discussions."
+                      : "Standard is faster and more token-efficient."}
                   </div>
                 </div>
 

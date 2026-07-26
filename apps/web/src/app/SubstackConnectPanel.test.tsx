@@ -12,6 +12,7 @@ const connectedSource: PublicSource = {
   enabled: true,
   showPaidPostTitles: false,
   relevanceFilterMode: "inherit",
+  summarizationMode: "basic",
   connected: true,
   createdAt: 0,
   updatedAt: 0,

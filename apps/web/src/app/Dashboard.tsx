@@ -40,6 +40,7 @@ import type {
   PublicSource,
   PublicUser,
   RelevanceFilterOverride,
+  SourceSummarizationMode,
 } from "../api/types";
 import DigestRunnerCard from "./DigestRunnerCard";
 import SourcesPanel from "./SourcesPanel";
@@ -314,7 +315,10 @@ export default function Dashboard(props: DashboardProps) {
 
   const handleUpdateSource = async (
     id: string,
-    input: { relevanceFilterMode: RelevanceFilterOverride },
+    input: {
+      relevanceFilterMode?: RelevanceFilterOverride;
+      summarizationMode?: SourceSummarizationMode;
+    },
   ) => {
     await updateSource(id, input);
     await refreshSources();
