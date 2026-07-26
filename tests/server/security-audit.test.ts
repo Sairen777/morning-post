@@ -15,6 +15,8 @@ import type { ServerEnvironment } from "../../src/server/app.ts";
 import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
 import type { SummarizeOptions, SummarizerService, SummaryPoint, SummaryRuleset } from "../../src/summarizers/summarizer.types.ts";
 import { fixtureStoryIntelligence } from "../services/fixture-story-intelligence.ts";
+import { createUser } from "../../src/repositories/user-repository.ts";
+import { createSession } from "../../src/auth/session-service.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const MASTER_KEY_BYTES = new Uint8Array(32).fill(67);
@@ -56,23 +58,31 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono<ServerEnvironment>, email: string): Promise<string> {
+async function ownerSession(app: Hono<ServerEnvironment>): Promise<{ userId: string; cookie: string }> {
   const response = await app.request(
-    "/auth/register",
-    jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
+    "/auth/setup",
+    jsonRequest("POST", { name: "Ada Lovelace", password: PASSWORD }),
   );
   assertEquals(response.status, 201);
-  const json = await response.json();
-  return json.id;
+  const user = await response.json();
+  const loginResp = await app.request(
+    "/auth/login",
+    jsonRequest("POST", { password: PASSWORD }),
+  );
+  assertEquals(loginResp.status, 200);
+  const cookie = extractCookie(loginResp);
+  return { userId: user.id, cookie };
 }
 
-async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
-  const response = await app.request(
-    "/auth/login",
-    jsonRequest("POST", { email, password: PASSWORD }),
-  );
-  assertEquals(response.status, 200);
-  return extractCookie(response);
+async function strangerSession(database: Database, email: string): Promise<string> {
+  const stranger = await createUser(database, {
+    name: "Stranger",
+    email,
+    passwordHash: "$argon2id$fakehash",
+    systemPrompt: "Summarize tersely.",
+  });
+  const { token } = await createSession(database, stranger.id);
+  return `__Host-session=${token}`;
 }
 
 function normalizedItem(feedExternalId: string, externalId: string, text: string): NormalizedItem {
@@ -91,10 +101,8 @@ function normalizedItem(feedExternalId: string, externalId: string, text: string
 test("security audit enforces authz and does not leak secrets in GET responses or logs", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const ownerId = await register(app, "security-owner@example.com");
-    const ownerCookie = await login(app, "security-owner@example.com");
-    await register(app, "security-other@example.com");
-    const otherCookie = await login(app, "security-other@example.com");
+    const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
+    const otherCookie = await strangerSession(database, "security-other@example.com");
 
     const source = await createSource(database, {
       userId: ownerId,

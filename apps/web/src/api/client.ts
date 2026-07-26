@@ -12,6 +12,7 @@ import type {
   PublicInterestRule,
   PublicSource,
   PublicUser,
+  SetupStatus,
   RelevanceFilterMode,
   RelevanceFilterOverride,
   SourceSummarizationMode,
@@ -72,19 +73,21 @@ export function getCurrentUser(): Promise<PublicUser> {
   return apiRequest<PublicUser>("/auth/me");
 }
 
-export function registerUser(input: {
+export function getSetupStatus(): Promise<SetupStatus> {
+  return apiRequest<SetupStatus>("/auth/setup");
+}
+
+export function setupOwner(input: {
   name: string;
-  email: string;
   password: string;
 }): Promise<PublicUser> {
-  return apiRequest<PublicUser>("/auth/register", {
+  return apiRequest<PublicUser>("/auth/setup", {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
 
 export function loginUser(input: {
-  email: string;
   password: string;
 }): Promise<PublicUser> {
   return apiRequest<PublicUser>("/auth/login", {

@@ -24,10 +24,9 @@ function jsonBody(body: unknown): RequestInit {
   };
 }
 
-function registerBody(email: string): Record<string, string> {
+function setupBody(): Record<string, string> {
   return {
     name: "Ada Lovelace",
-    email,
     password: PASSWORD,
   };
 }
@@ -56,7 +55,7 @@ function buildRateLimitedTestApp(
 function buildAuthTestApp(
   database: Database,
   options: {
-    registerRateLimiter?: MiddlewareHandler;
+    setupRateLimiter?: MiddlewareHandler;
     loginRateLimiter?: MiddlewareHandler;
   },
 ): Hono {
@@ -66,12 +65,12 @@ function buildAuthTestApp(
   return app;
 }
 
-async function register(app: Hono, email: string): Promise<Response> {
-  return await app.request("/auth/register", jsonBody(registerBody(email)));
+async function setupUser(app: Hono): Promise<Response> {
+  return await app.request("/auth/setup", jsonBody(setupBody()));
 }
 
-async function login(app: Hono, email: string, password = PASSWORD): Promise<Response> {
-  return await app.request("/auth/login", jsonBody({ email, password }));
+async function loginWithPassword(app: Hono, password: string): Promise<Response> {
+  return await app.request("/auth/login", jsonBody({ password }));
 }
 
  test("rate limit middleware allows requests until the threshold is crossed", async () => {
@@ -195,12 +194,12 @@ test("Bun server binding supplies the socket address and ignores spoofed forward
   }
 });
 
-test("register and login rate limits use separate buckets", async () => {
+test("setup and login rate limits use separate buckets", async () => {
   await withTestDb(async (database) => {
     const app = buildAuthTestApp(database, {
-      registerRateLimiter: createRateLimitMiddleware({
+      setupRateLimiter: createRateLimitMiddleware({
         database,
-        bucket: "real-register-separate",
+        bucket: "real-setup-separate",
         limit: 1,
         windowMs: 60_000,
         now: () => 1_000,
@@ -214,25 +213,24 @@ test("register and login rate limits use separate buckets", async () => {
       }),
     });
 
-    const firstRegister = await register(app, "separate@example.com");
-    const blockedRegister = await register(app, "blocked-register@example.com");
-    const firstLogin = await login(app, "ghost@example.com");
-    const blockedLogin = await login(app, "ghost@example.com");
-    const stillBlockedRegister = await register(app, "still-blocked@example.com");
+    const firstSetup = await setupUser(app);
+    const blockedSetup = await setupUser(app);
+    const firstLogin = await loginWithPassword(app, PASSWORD);
+    const blockedLogin = await loginWithPassword(app, "wrong-password");
+    const stillBlockedSetup = await setupUser(app);
 
-    assertEquals(firstRegister.status, 201);
-    assertEquals(blockedRegister.status, 429);
-    assertEquals(firstLogin.status, 401);
+    assertEquals(firstSetup.status, 201);
+    assertEquals(blockedSetup.status, 429);
+    assertEquals(firstLogin.status, 200);
     assertEquals(blockedLogin.status, 429);
-    assertEquals(stillBlockedRegister.status, 429);
+    assertEquals(stillBlockedSetup.status, 429);
   });
 });
-
 test("real auth route limits reset deterministically after the window", async () => {
   await withTestDb(async (database) => {
     let currentTime = 1_000;
     const app = buildAuthTestApp(database, {
-      registerRateLimiter: noRateLimit(),
+      setupRateLimiter: noRateLimit(),
       loginRateLimiter: createRateLimitMiddleware({
         bucket: "real-login-reset",
         database,
@@ -242,22 +240,21 @@ test("real auth route limits reset deterministically after the window", async ()
       }),
     });
 
-    const first = await login(app, "ghost@example.com");
-    const blocked = await login(app, "ghost@example.com");
+    const first = await loginWithPassword(app, "wrong-password");
+    const blocked = await loginWithPassword(app, "wrong-password");
     currentTime += 60_000;
-    const afterReset = await login(app, "ghost@example.com");
+    const afterReset = await loginWithPassword(app, "wrong-password");
 
     assertEquals(first.status, 401);
     assertEquals(blocked.status, 429);
     assertEquals(afterReset.status, 401);
   });
 });
-
 test("real auth route keeps different forwarded IP keys separate", async () => {
   await withTestDb(async (database) => {
     const app = buildAuthTestApp(database, {
-      registerRateLimiter: createRateLimitMiddleware({
-        bucket: "real-register-ip-keys",
+      setupRateLimiter: createRateLimitMiddleware({
+        bucket: "real-setup-ip-keys",
         trustedProxyCount: 1,
         database,
         limit: 1,
@@ -267,29 +264,28 @@ test("real auth route keeps different forwarded IP keys separate", async () => {
       loginRateLimiter: noRateLimit(),
     });
 
-    const first = await app.request("/auth/register", {
-      ...jsonBody(registerBody("ip-one@example.com")),
+    const first = await app.request("/auth/setup", {
+      ...jsonBody(setupBody()),
       headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173", "x-forwarded-for": "203.0.113.10" },
     });
-    const sameIp = await app.request("/auth/register", {
-      ...jsonBody(registerBody("same-ip@example.com")),
+    const sameIp = await app.request("/auth/setup", {
+      ...jsonBody(setupBody()),
       headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173", "x-forwarded-for": "203.0.113.10" },
     });
-    const differentIp = await app.request("/auth/register", {
-      ...jsonBody(registerBody("ip-two@example.com")),
+    const differentIp = await app.request("/auth/setup", {
+      ...jsonBody(setupBody()),
       headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173", "x-forwarded-for": "203.0.113.11" },
     });
 
     assertEquals(first.status, 201);
     assertEquals(sameIp.status, 429);
-    assertEquals(differentIp.status, 201);
+    assertEquals(differentIp.status, 409);
   });
 });
-
 test("real login preserves identical credential errors until rate limited", async () => {
   await withTestDb(async (database) => {
     const app = buildAuthTestApp(database, {
-      registerRateLimiter: noRateLimit(),
+      setupRateLimiter: noRateLimit(),
       loginRateLimiter: createRateLimitMiddleware({
         bucket: "real-login-identical-errors",
         database,
@@ -300,22 +296,22 @@ test("real login preserves identical credential errors until rate limited", asyn
       }),
     });
 
-    const registered = await register(app, "real-user@example.com");
+    const registered = await setupUser(app);
     assertEquals(registered.status, 201);
     await registered.body?.cancel();
 
-    const wrongPassword = await login(app, "real-user@example.com", "not-the-password");
-    const unknownEmail = await login(app, "ghost@example.com");
-    const rateLimitedWrongPassword = await login(app, "real-user@example.com", "not-the-password");
-    const rateLimitedUnknownEmail = await login(app, "ghost@example.com");
+    const wrongFirst = await loginWithPassword(app, "not-the-password");
+    const wrongSecond = await loginWithPassword(app, "also-wrong");
+    const rateLimitedFirst = await loginWithPassword(app, "not-the-password");
+    const rateLimitedSecond = await loginWithPassword(app, "still-wrong");
 
-    assertEquals(wrongPassword.status, 401);
-    assertEquals(unknownEmail.status, 401);
-    assertEquals(await wrongPassword.text(), await unknownEmail.text());
+    assertEquals(wrongFirst.status, 401);
+    assertEquals(wrongSecond.status, 401);
+    assertEquals(await wrongFirst.text(), await wrongSecond.text());
 
-    assertEquals(rateLimitedWrongPassword.status, 429);
-    assertEquals(rateLimitedUnknownEmail.status, 429);
-    assertEquals(await rateLimitedWrongPassword.text(), await rateLimitedUnknownEmail.text());
+    assertEquals(rateLimitedFirst.status, 429);
+    assertEquals(rateLimitedSecond.status, 429);
+    assertEquals(await rateLimitedFirst.text(), await rateLimitedSecond.text());
   });
 });
 test("separate app instances share default auth rate limiter counters", async () => {
@@ -325,27 +321,26 @@ test("separate app instances share default auth rate limiter counters", async ()
 
     // Same forwarded IP for the whole test
     const ip = "10.0.0.1";
-    const requestOpts = (email: string) => ({
-      ...jsonBody(registerBody(email)),
+    const requestOpts = () => ({
+      ...jsonBody(setupBody()),
       headers: { "content-type": "application/json", Origin: "http://127.0.0.1:5173", "x-forwarded-for": ip },
     });
 
-    // Exhaust app A's default register limiter (limit=5)
+    // Exhaust app A's default setup limiter (limit=5)
     for (let i = 0; i < 5; i++) {
-      const response = await appA.request("/auth/register", requestOpts(`isolated-a-${i}@example.com`));
-      assertEquals(response.status, 201, `request ${i + 1} should succeed on app A`);
-      await response.body?.cancel();
+      const status = (await appA.request("/auth/setup", requestOpts())).status;
+      assertEquals(status, i === 0 ? 201 : 409, `request ${i + 1} on app A`);
     }
 
     // 6th request hits the default limit
-    const blocked = await appA.request("/auth/register", requestOpts("isolated-a-blocked@example.com"));
+    const blocked = await appA.request("/auth/setup", requestOpts());
     assertEquals(blocked.status, 429);
     await blocked.body?.cancel();
 
     // Build app B separately — the DB-backed bucket namespace is shared.
     const appB = buildAuthTestApp(database, {});
 
-    const blockedAcrossInstances = await appB.request("/auth/register", requestOpts("isolated-b-fresh@example.com"));
+    const blockedAcrossInstances = await appB.request("/auth/setup", requestOpts());
     assertEquals(blockedAcrossInstances.status, 429, "separate app instances should share rate limit state");
     await blockedAcrossInstances.body?.cancel();
   });

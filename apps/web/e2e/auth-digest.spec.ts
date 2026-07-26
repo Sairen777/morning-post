@@ -1,26 +1,22 @@
 import { test, expect } from "@playwright/test";
 
-const UNIQUE_ID = Date.now();
-const EMAIL = `e2e-smoke-${UNIQUE_ID}@example.com`;
 const PASSWORD = "smoke-test-password-1843";
 
-test("register, save profile, run digest, and verify runs tab", async ({ page }) => {
+test("set up owner, save profile, run digest, and log back in", async ({ page }) => {
   await page.goto("/");
 
-  // Should see auth panel initially
+  // Should see the first-run owner setup form initially
   await expect(page.locator(".auth-panel")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Set up your owner account" }),
+  ).toBeVisible();
 
-  // Switch to register mode
-  await page.click("text=Register");
-
-  // Fill registration form
   await page.fill("#auth-name", "E2E Smoke");
-  await page.fill("#auth-email", EMAIL);
   await page.fill("#auth-password", PASSWORD);
   await page.click('button[type="submit"]');
 
-  // Should now see dashboard with user email
-  await expect(page.locator(".app-header")).toContainText(EMAIL);
+  // Setup returns the authenticated owner directly.
+  await expect(page.locator(".app-header")).toContainText("E2E Smoke");
 
   // Click Run digest with blank period fields
   await page.click('button:has-text("Run digest")');
@@ -46,4 +42,14 @@ test("register, save profile, run digest, and verify runs tab", async ({ page })
   // Should see the manual digest run
   await expect(page.locator("text=manual")).toBeVisible({ timeout: 5_000 });
   await expect(page.locator("text=complete")).toBeVisible({ timeout: 5_000 });
+
+  // Log out, then use the password-only sign-in form.
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page.locator(".auth-panel")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(page.locator("#auth-name")).toHaveCount(0);
+  await page.fill("#auth-password", PASSWORD);
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".app-header")).toContainText("E2E Updated Smoke");
 });
+

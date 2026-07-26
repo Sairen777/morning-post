@@ -22,6 +22,8 @@ import {
 import type { SourceSummarizationMode } from "../../src/summarization-mode.ts";
 import { buildApp } from "../../src/server/app.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
+import { createUser } from "../../src/repositories/user-repository.ts";
+import { createSession } from "../../src/auth/session-service.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const TELEGRAM_REVOKE_MESSAGE =
@@ -30,7 +32,6 @@ const MASTER_KEY_BYTES = new Uint8Array(32).fill(11);
 
 interface RegisteredUser {
   id: string;
-  email: string;
 }
 
 function buildCredentialCipher(): CredentialCipher {
@@ -57,31 +58,35 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono<ServerEnvironment>, email: string): Promise<RegisteredUser> {
+async function ownerSession(app: Hono<ServerEnvironment>): Promise<{ user: { id: string }; cookie: string }> {
   const response = await app.request(
-    "/auth/register",
-    jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
+    "/auth/setup",
+    jsonRequest("POST", { name: "Ada Lovelace", password: PASSWORD }),
   );
   assertEquals(response.status, 201);
-  const json = await response.json();
-  return { id: json.id, email: json.email };
+  const user = await response.json();
+  const loginResp = await app.request(
+    "/auth/login",
+    jsonRequest("POST", { password: PASSWORD }),
+  );
+  assertEquals(loginResp.status, 200);
+  return { user: { id: user.id }, cookie: extractCookie(loginResp) };
 }
 
-async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
-  const response = await app.request(
-    "/auth/login",
-    jsonRequest("POST", { email, password: PASSWORD }),
-  );
-  assertEquals(response.status, 200);
-  return extractCookie(response);
+async function strangerUser(database: Database, email: string): Promise<{ id: string }> {
+  const user = await createUser(database, {
+    name: "Stranger",
+    email,
+    passwordHash: "$argon2id$fakehash",
+    systemPrompt: "Summarize tersely.",
+  });
+  return { id: user.id };
 }
 
 async function registerAndLogin(
   app: Hono<ServerEnvironment>,
-  email: string,
 ): Promise<{ user: RegisteredUser; cookie: string }> {
-  const user = await register(app, email);
-  const cookie = await login(app, email);
+  const { user, cookie } = await ownerSession(app);
   return { user, cookie };
 }
 
@@ -129,14 +134,8 @@ test("GET /sources returns only the caller sources ordered by position then crea
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "sources-list@example.com",
-    );
-    const { user: otherUser } = await registerAndLogin(
-      app,
-      "sources-other@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
+    const otherUser = await strangerUser(database, "sources-other@example.com");
 
     const firstTiedSource = await createEncryptedSource(
       database,
@@ -215,10 +214,7 @@ test("PATCH /sources/:id updates position and enabled", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "sources-patch@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createEncryptedSource(
       database,
       credentialCipher,
@@ -305,10 +301,7 @@ test("PATCH /sources/:id validates and persists Substack paid-post title prefere
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "sources-paid-titles@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const substack = await createEncryptedSource(
       database,
       credentialCipher,
@@ -383,14 +376,8 @@ test("sources routes keep users scoped to their own rows", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user: userA, cookie } = await registerAndLogin(
-      app,
-      "sources-owner-a@example.com",
-    );
-    const { user: userB } = await registerAndLogin(
-      app,
-      "sources-owner-b@example.com",
-    );
+    const { user: userA, cookie } = await registerAndLogin(app);
+    const userB = await strangerUser(database, "sources-owner-b@example.com");
 
     await createEncryptedSource(
       database,
@@ -444,10 +431,7 @@ test("sources routes keep users scoped to their own rows", async () => {
 test("sources routes reject invalid UUID parameters with 422", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const { cookie } = await registerAndLogin(
-      app,
-      "sources-invalid-uuid@example.com",
-    );
+    const { cookie } = await registerAndLogin(app);
 
     const patchResponse = await app.request("/sources/not-a-uuid", {
       ...jsonRequest("PATCH", { enabled: false }),
@@ -471,10 +455,7 @@ test("PATCH /sources/:id rejects unsupported fields", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "sources-extra-field@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createEncryptedSource(
       database,
       credentialCipher,
@@ -498,10 +479,7 @@ test("PATCH /sources/:id rejects positions outside the PostgreSQL integer range"
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "sources-position-range@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createEncryptedSource(
       database,
       credentialCipher,
@@ -535,10 +513,7 @@ test("DELETE /sources/:id disconnects telegram sources and preserves the row for
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "sources-disconnect-telegram@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createEncryptedSource(
       database,
       credentialCipher,
@@ -606,10 +581,7 @@ test("PATCH /sources/:id rejects re-enabling a disconnected source", async () =>
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "sources-reenable-disconnected@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createEncryptedSource(
       database,
       credentialCipher,
@@ -651,10 +623,7 @@ test("DELETE /sources/:id returns revokeTelegramSession false for non-telegram s
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "sources-disconnect-rss@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createEncryptedSource(
       database,
       credentialCipher,
@@ -680,7 +649,7 @@ test("sources routes require authentication", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);
-    const { user } = await registerAndLogin(app, "sources-no-auth@example.com");
+    const { user } = await registerAndLogin(app);
     const source = await createEncryptedSource(
       database,
       credentialCipher,

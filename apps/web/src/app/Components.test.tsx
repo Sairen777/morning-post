@@ -45,7 +45,6 @@ describe("ProfilePanel", () => {
     const user = {
       id: "user-1",
       name: "Ada",
-      email: "ada@example.com",
       systemPrompt: "Summarize plainly.",
       summaryPrompt: "",
       defaultLanguage: null,
@@ -82,7 +81,6 @@ describe("ProfilePanel", () => {
     const user = {
       id: "user-1",
       name: "Ada",
-      email: "ada@example.com",
       systemPrompt: "Summarize plainly.",
       summaryPrompt: "",
       defaultLanguage: null,
@@ -126,7 +124,6 @@ describe("ProfilePanel", () => {
     const user = {
       id: "user-1",
       name: "Ada",
-      email: "ada@example.com",
       systemPrompt: "Summarize plainly.",
       summaryPrompt: "",
       defaultLanguage: null,
@@ -189,7 +186,6 @@ describe("ProfilePanel", () => {
     const user = {
       id: "user-1",
       name: "Ada",
-      email: "ada@example.com",
       systemPrompt: "Summarize plainly.",
       summaryPrompt: "",
       defaultLanguage: null,

@@ -49,18 +49,18 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono<ServerEnvironment>, email: string): Promise<void> {
+async function register(app: Hono<ServerEnvironment>): Promise<void> {
   const response = await app.request(
-    "/auth/register",
-    jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
+    "/auth/setup",
+    jsonRequest("POST", { name: "Ada Lovelace", password: PASSWORD }),
   );
   assertEquals(response.status, 201);
 }
 
-async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>): Promise<string> {
   const response = await app.request(
     "/auth/login",
-    jsonRequest("POST", { email, password: PASSWORD }),
+    jsonRequest("POST", { password: PASSWORD }),
   );
   assertEquals(response.status, 200);
   return extractCookie(response);
@@ -148,8 +148,8 @@ test("telegram login start and 2fa routes are rate limited", async () => {
         }),
       },
     });
-    await register(app, "connector-limit@example.com");
-    const cookie = await login(app, "connector-limit@example.com");
+    await register(app);
+    const cookie = await login(app);
 
     clientFactory.queueClient("approval");
     const firstStart = await app.request("/connectors/telegram/login", {
@@ -294,8 +294,8 @@ test("Substack session, publication, and discovery routes use separate rate-limi
         }),
       },
     });
-    await register(app, "substack-connector-limit@example.com");
-    const cookie = await login(app, "substack-connector-limit@example.com");
+    await register(app);
+    const cookie = await login(app);
     const headers = {
       "content-type": "application/json",
       cookie,

@@ -18,6 +18,8 @@ import {
   upsertSourceCredentials,
 } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
+import { createUser } from "../../src/repositories/user-repository.ts";
+import { createSession } from "../../src/auth/session-service.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
 import {
   type TelegramLoginClient,
@@ -33,7 +35,6 @@ type FakeLoginMode = "approval" | "two-factor-authentication";
 
 interface RegisteredUser {
   id: string;
-  email: string;
 }
 
 interface LoginHarness {
@@ -64,31 +65,36 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono<ServerEnvironment>, email: string): Promise<RegisteredUser> {
+async function ownerSession(app: Hono<ServerEnvironment>): Promise<{ user: { id: string }; cookie: string }> {
   const response = await app.request(
-    "/auth/register",
-    jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
+    "/auth/setup",
+    jsonRequest("POST", { name: "Ada Lovelace", password: PASSWORD }),
   );
   assertEquals(response.status, 201);
-  const json = await response.json();
-  return { id: json.id, email: json.email };
+  const user = await response.json();
+  const loginResp = await app.request(
+    "/auth/login",
+    jsonRequest("POST", { password: PASSWORD }),
+  );
+  assertEquals(loginResp.status, 200);
+  return { user: { id: user.id }, cookie: extractCookie(loginResp) };
 }
 
-async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
-  const response = await app.request(
-    "/auth/login",
-    jsonRequest("POST", { email, password: PASSWORD }),
-  );
-  assertEquals(response.status, 200);
-  return extractCookie(response);
+async function strangerSession(database: Database, email: string): Promise<string> {
+  const stranger = await createUser(database, {
+    name: "Stranger",
+    email,
+    passwordHash: "$argon2id$fakehash",
+    systemPrompt: "Summarize tersely.",
+  });
+  const { token } = await createSession(database, stranger.id);
+  return `__Host-session=${token}`;
 }
 
 async function registerAndLogin(
   app: Hono<ServerEnvironment>,
-  email: string,
 ): Promise<{ user: RegisteredUser; cookie: string }> {
-  const user = await register(app, email);
-  const cookie = await login(app, email);
+  const { user, cookie } = await ownerSession(app);
   return { user, cookie };
 }
 
@@ -299,10 +305,7 @@ class FakeTelegramLoginClient implements TelegramLoginClient {
 test("Telegram QR login stores encrypted source credentials after approval", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "telegram-login@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
 
     factory.queueClient("approval");
     const start = await startTelegramLogin(app, cookie);
@@ -329,10 +332,7 @@ test("Telegram QR login stores encrypted source credentials after approval", asy
 test("completed Telegram login sessions release clients, plaintext sessions, and capacity", async () => {
   await withTestDb(async (database) => {
     const { app, manager, factory } = buildHarness(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "telegram-complete-cleanup@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
 
     factory.queueClient("approval");
     const completedStart = await startTelegramLogin(app, cookie);
@@ -369,10 +369,7 @@ test("completed Telegram login sessions release clients, plaintext sessions, and
 test("Telegram QR login supports two-factor authentication and rejects a wrong password without writing a source", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "telegram-two-factor@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
 
     factory.queueClient("two-factor-authentication");
     const firstStart = await startTelegramLogin(app, cookie);
@@ -436,10 +433,7 @@ test("Telegram QR login supports two-factor authentication and rejects a wrong p
 test("Telegram reconnect updates an existing source without duplicating it", async () => {
   await withTestDb(async (database) => {
     const { app, factory, credentialCipher } = buildHarness(database);
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "telegram-reconnect@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const existingSource = await upsertSourceCredentials(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
@@ -486,10 +480,7 @@ test("Telegram login approval after expiry does not persist Telegram credentials
       database,
       () => now,
     );
-    const { user, cookie } = await registerAndLogin(
-      app,
-      "telegram-expired-approval@example.com",
-    );
+    const { user, cookie } = await registerAndLogin(app);
     const existingSource = await upsertSourceCredentials(database, {
       userId: user.id,
       connectorId: ConnectorId.Telegram,
@@ -538,10 +529,7 @@ test("Telegram login destroys a client created after the reservation expired", a
   await withTestDb(async (database) => {
     let now = 1_000;
     const { app, factory } = buildHarness(database, () => now);
-    const { cookie } = await registerAndLogin(
-      app,
-      "telegram-expired-start@example.com",
-    );
+    const { cookie } = await registerAndLogin(app);
     const gate = Promise.withResolvers<void>();
     factory.blockClientCreationUntil(gate.promise);
 
@@ -569,10 +557,7 @@ test("Telegram login expiry returns expired once, then unknown session is hidden
   await withTestDb(async (database) => {
     let now = 1_000;
     const { app, factory } = buildHarness(database, () => now);
-    const { cookie } = await registerAndLogin(
-      app,
-      "telegram-expiry@example.com",
-    );
+    const { cookie } = await registerAndLogin(app);
 
     factory.queueClient("approval");
     const start = await startTelegramLogin(app, cookie);
@@ -611,7 +596,7 @@ test("Telegram login expiry returns expired once, then unknown session is hidden
 test("Telegram login enforces three concurrent sessions per user", async () => {
   await withTestDb(async (database) => {
     const { app, factory } = buildHarness(database);
-    const { cookie } = await registerAndLogin(app, "telegram-cap@example.com");
+    const { cookie } = await registerAndLogin(app);
 
     factory.queueClient("approval");
     factory.queueClient("approval");
@@ -631,10 +616,7 @@ test("Telegram login enforces three concurrent sessions per user", async () => {
 test("Telegram login reserves capacity before awaiting client creation", async () => {
   await withTestDb(async (database) => {
     const { app, factory } = buildHarness(database);
-    const { cookie } = await registerAndLogin(
-      app,
-      "telegram-cap-race@example.com",
-    );
+    const { cookie } = await registerAndLogin(app);
     const gate = Promise.withResolvers<void>();
     factory.blockClientCreationUntil(gate.promise);
 
@@ -689,14 +671,8 @@ test("Telegram login reserves capacity before awaiting client creation", async (
 test("Telegram login session ownership is hidden from other users", async () => {
   await withTestDb(async (database) => {
     const { app, factory } = buildHarness(database);
-    const { cookie: ownerCookie } = await registerAndLogin(
-      app,
-      "telegram-owner@example.com",
-    );
-    const { cookie: otherCookie } = await registerAndLogin(
-      app,
-      "telegram-other@example.com",
-    );
+        const { cookie: ownerCookie } = await registerAndLogin(app);
+    const otherCookie = await strangerSession(database, "telegram-other@example.com");
 
     factory.queueClient("two-factor-authentication");
     const start = await startTelegramLogin(app, ownerCookie);

@@ -97,7 +97,6 @@ test("bootServer waits for stale recovery before registering jobs and serving", 
         mediaTtlMs: 1,
         mediaQuotaBytes: 1,
         digestRunStaleAfterMs: 1,
-        schedulerLeaseMs: 1,
         digestProgressLogging: false,
       },
       serve: (options) => {
@@ -206,7 +205,6 @@ test("bootServer recovers stale runs before serving registration", async () => {
           mediaTtlMs: 1,
           mediaQuotaBytes: 1,
           digestRunStaleAfterMs: 5_000,
-          schedulerLeaseMs: 1,
           digestProgressLogging: false,
         },
         serve: (options) => {
@@ -232,21 +230,11 @@ test("bootServer recovers stale runs before serving registration", async () => {
       assertEquals(recoveredStage.errorMessage, "digest run lease expired");
       assertExists(requestHandler);
       const response = await requestHandler(
-        new Request("http://127.0.0.1:31002/auth/register", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            origin: "http://127.0.0.1:5173",
-          },
-          body: JSON.stringify({
-            name: "Ada Lovelace",
-            email: "boot-register@example.com",
-            password: "analytical-engine-1843",
-          }),
-        }),
+        new Request("http://127.0.0.1:31002/health"),
         {} as Bun.Server<undefined>,
       );
-      assertEquals(response.status, 201);
+      assertEquals(response.status, 200);
+      assertEquals(await response.json(), { ok: true });
     } finally {
       for (const [key, value] of previousModelEnvironment) {
         if (value === undefined) delete process.env[key];

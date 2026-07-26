@@ -38,32 +38,29 @@ function extractCookie(response: Response): string | null {
 
 interface RegisteredUser {
   id: string;
-  email: string;
 }
 
 async function register(
   app: Hono<ServerEnvironment>,
-  email: string,
 ): Promise<RegisteredUser> {
   const response = await app.request(
-    "/auth/register",
-    jsonBody({ name: "Ada Lovelace", email, password: PASSWORD }),
+    "/auth/setup",
+    jsonBody({ name: "Ada Lovelace", password: PASSWORD }),
   );
   assertEquals(response.status, 201);
-  const json = await response.json();
-  return { id: json.id, email };
+  return (await response.json()) as RegisteredUser;
 }
 
-async function login(app: Hono<ServerEnvironment>, email: string, password: string): Promise<Response> {
-  return await app.request("/auth/login", jsonBody({ email, password }));
+async function login(app: Hono<ServerEnvironment>, password: string): Promise<Response> {
+  return await app.request("/auth/login", jsonBody({ password }));
 }
 
 test("login sets a session cookie and /auth/me returns the user", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const user = await register(app, "happy@example.com");
+    const user = await register(app);
 
-    const loginResponse = await login(app, user.email, PASSWORD);
+    const loginResponse = await login(app, PASSWORD);
     assertEquals(loginResponse.status, 200);
     const loginJson = await loginResponse.json();
     assertEquals(loginJson.id, user.id);
@@ -84,7 +81,6 @@ test("login sets a session cookie and /auth/me returns the user", async () => {
     assertEquals(meResponse.status, 200);
     const meJson = await meResponse.json();
     assertEquals(meJson.id, user.id);
-    assertEquals(meJson.email, user.email);
     assertEquals("passwordHash" in meJson, false);
   });
 });
@@ -92,8 +88,8 @@ test("login sets a session cookie and /auth/me returns the user", async () => {
 test("logout revokes the session — the same cookie is then rejected", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const user = await register(app, "logout@example.com");
-    const loginResponse = await login(app, user.email, PASSWORD);
+    await register(app);
+    const loginResponse = await login(app, PASSWORD);
     const cookie = extractCookie(loginResponse)!;
 
     const logoutResponse = await app.request("/auth/logout", {
@@ -108,31 +104,31 @@ test("logout revokes the session — the same cookie is then rejected", async ()
   });
 });
 
-test("wrong password and unknown email return an identical 401", async () => {
+test("wrong passwords return an identical 401", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    await register(app, "real@example.com");
+    await register(app);
 
-    const wrongPassword = await login(app, "real@example.com", "not-the-password");
-    const unknownEmail = await login(app, "ghost@example.com", PASSWORD);
+    const first = await login(app, "not-the-password");
+    const second = await login(app, "also-wrong");
 
-    assertEquals(wrongPassword.status, 401);
-    assertEquals(unknownEmail.status, 401);
+    assertEquals(first.status, 401);
+    assertEquals(second.status, 401);
 
-    const wrongBody = await wrongPassword.text();
-    const unknownBody = await unknownEmail.text();
-    assertEquals(wrongBody, unknownBody);
+    const firstBody = await first.text();
+    const secondBody = await second.text();
+    assertEquals(firstBody, secondBody);
 
     // Neither sets a session cookie.
-    assertEquals(extractCookie(wrongPassword), null);
-    assertEquals(extractCookie(unknownEmail), null);
+    assertEquals(extractCookie(first), null);
+    assertEquals(extractCookie(second), null);
   });
 });
 
 test("an expired session is rejected with 401", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const user = await register(app, "expired@example.com");
+    const user = await register(app);
 
     // Mint a session that expired one second ago.
     const { token } = await createSession(database, user.id, -1000);
@@ -147,7 +143,7 @@ test("an expired session is rejected with 401", async () => {
 test("active use refreshes idle expiry without rotating the bearer token", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const user = await register(app, "refresh@example.com");
+    const user = await register(app);
     const created = await createSession(database, user.id, 2 * 24 * 60 * 60 * 1000);
     const now = created.expiresAt - 1_000;
 
@@ -168,7 +164,7 @@ test("active use refreshes idle expiry without rotating the bearer token", async
 test("parallel requests carrying the old cookie remain valid", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const user = await register(app, "parallel@example.com");
+    const user = await register(app);
     const created = await createSession(database, user.id);
     const cookie = `__Host-session=${created.token}`;
 
@@ -187,8 +183,8 @@ test("parallel requests carrying the old cookie remain valid", async () => {
 test("a tampered/garbage cookie is rejected with 401", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const user = await register(app, "tampered@example.com");
-    const loginResponse = await login(app, user.email, PASSWORD);
+    await register(app);
+    const loginResponse = await login(app, PASSWORD);
     const cookie = extractCookie(loginResponse)!;
 
     // Flip the last character of the token to invalidate the hash match.
@@ -209,11 +205,14 @@ test("a tampered/garbage cookie is rejected with 401", async () => {
 test("the DB stores only the token hash, never the raw cookie token", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    const user = await register(app, "hashed@example.com");
-    const loginResponse = await login(app, user.email, PASSWORD);
-    await loginResponse.body?.cancel();
-    const cookie = extractCookie(loginResponse)!;
-    const rawToken = cookie.slice("__Host-session=".length);
+
+    // Use the session cookie from setup directly, not from a separate login.
+    const setupResponse = await app.request("/auth/setup", jsonBody({ name: "Ada Lovelace", password: PASSWORD }));
+    assertEquals(setupResponse.status, 201);
+    const user = await setupResponse.json();
+    const cookie = extractCookie(setupResponse);
+    assert(cookie, "setup did not set a session cookie");
+    const rawToken = cookie!.slice("__Host-session=".length);
 
     const rows = await database
       .select()

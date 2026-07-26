@@ -532,7 +532,7 @@ export default function Dashboard(props: DashboardProps) {
       <header class="app-header">
         <h1>Morning Post</h1>
         <div class="user-info">
-          <span>{props.user.email}</span>
+          <span>{props.user.name}</span>
           <button type="button" onClick={handleLogout}>Log out</button>
         </div>
       </header>

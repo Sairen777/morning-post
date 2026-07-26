@@ -4,7 +4,6 @@ import { expect, test } from "@playwright/test";
 const user = {
   id: "user-digest-recovery",
   name: "Digest recovery reader",
-  email: "digest-recovery@example.com",
   systemPrompt: "Summarize clearly",
   summaryPrompt: "Summarize clearly",
   defaultLanguage: "en",
@@ -75,7 +74,7 @@ test("recovers an active digest after reload and releases the run action", async
 
   await page.clock.install({ time: new Date(startedAt) });
   await page.goto("/");
-  await expect(page.locator(".app-header")).toContainText(user.email);
+  await expect(page.locator(".app-header")).toContainText(user.name);
 
   const runDigestButton = page.getByRole("button", { name: "Run digest" });
   await expect(runDigestButton).toBeVisible();

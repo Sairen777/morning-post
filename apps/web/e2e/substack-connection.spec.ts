@@ -43,7 +43,6 @@ test("connects Substack and adds a publication without exposing cookie values", 
   const user = {
     id: "user-1",
     name: "E2E User",
-    email: "e2e@example.com",
     systemPrompt: "",
     summaryPrompt: "",
     defaultLanguage: null,

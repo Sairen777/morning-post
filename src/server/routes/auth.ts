@@ -2,11 +2,9 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { Database } from "../../db/client.ts";
 import { getConfig } from "../../config.ts";
-import {
-  type User,
-} from "../../repositories/user-repository.ts";
-import { registerUser } from "../../services/registration-service.ts";
-import { authenticateUser } from "../../services/login-service.ts";
+import { findOwner, type User } from "../../repositories/user-repository.ts";
+import { setupOwner } from "../../services/owner-setup-service.ts";
+import { authenticateOwner } from "../../services/login-service.ts";
 import { getProfile, updateProfile } from "../../services/profile-service.ts";
 import {
   clearSessionCookie,
@@ -26,7 +24,6 @@ import { validate } from "../validate.ts";
 export interface PublicUser {
   id: string;
   name: string;
-  email: string;
   systemPrompt: string;
   summaryPrompt: string;
   defaultLanguage: string | null;
@@ -45,7 +42,6 @@ export function toPublicUser(user: User): PublicUser {
   return {
     id: user.id,
     name: user.name,
-    email: user.email,
     systemPrompt: user.systemPrompt,
     summaryPrompt: user.summaryPrompt,
     defaultLanguage: user.defaultLanguage,
@@ -59,16 +55,13 @@ export function toPublicUser(user: User): PublicUser {
 }
 
 const loginSchema = z.object({
-  email: z.string().min(1, "email is required"),
   password: z.string().min(1, "password is required"),
-});
+}).strict();
 
-// Single message for both unknown-email and wrong-password so the response is
-// byte-identical in either case — no user enumeration.
-const INVALID_CREDENTIALS = "invalid email or password";
+const INVALID_PASSWORD = "invalid password";
 
 export interface AuthRouteOptions {
-  registerRateLimiter?: MiddlewareHandler;
+  setupRateLimiter?: MiddlewareHandler;
   loginRateLimiter?: MiddlewareHandler;
   trustedProxyCount?: number;
 }
@@ -78,10 +71,10 @@ const AUTH_RATE_LIMIT = {
   windowMs: 5 * 60_000,
 };
 
-function defaultRegisterRateLimiter(database: Database, trustedProxyCount: number): MiddlewareHandler {
+function defaultSetupRateLimiter(database: Database, trustedProxyCount: number): MiddlewareHandler {
   return createRateLimitMiddleware({
     database,
-    bucket: "auth-register",
+    bucket: "auth-setup",
     trustedProxyCount,
     ...AUTH_RATE_LIMIT,
   });
@@ -102,25 +95,32 @@ export function buildAuthRoutes(
 ): Hono<{ Variables: AuthVariables }> {
   const routes = new Hono<{ Variables: AuthVariables }>();
   const trustedProxyCount = options.trustedProxyCount ?? getConfig().trustedProxyCount;
-  const registerRateLimiter = options.registerRateLimiter ??
-    defaultRegisterRateLimiter(database, trustedProxyCount);
+  const setupRateLimiter = options.setupRateLimiter ??
+    defaultSetupRateLimiter(database, trustedProxyCount);
   const loginRateLimiter = options.loginRateLimiter ??
     defaultLoginRateLimiter(database, trustedProxyCount);
 
 
 
-  routes.post("/register", registerRateLimiter, async (context) => {
+  routes.get("/setup", async (context) => {
+    const owner = await findOwner(database);
+    return context.json({ setupRequired: owner === null }, 200);
+  });
+
+  routes.post("/setup", setupRateLimiter, async (context) => {
     const body = await context.req.json();
-    const user = await registerUser(database, body);
+    const user = await setupOwner(database, body);
+    const { token, expiresAt } = await createSession(database, user.id);
+    setSessionCookie(context, token, expiresAt);
     return context.json(toPublicUser(user), 201);
   });
 
   routes.post("/login", loginRateLimiter, async (context) => {
     const body = await context.req.json();
-    const { email, password } = validate(loginSchema, body);
-    const user = await authenticateUser(database, { email, password });
+    const { password } = validate(loginSchema, body);
+    const user = await authenticateOwner(database, { password });
     if (!user) {
-      throw new AuthError(INVALID_CREDENTIALS);
+      throw new AuthError(INVALID_PASSWORD);
     }
     const { token, expiresAt } = await createSession(database, user.id);
     setSessionCookie(context, token, expiresAt);

@@ -1,10 +1,13 @@
 export type RelevanceFilterMode = "personalized" | "include_all";
 export type RelevanceFilterOverride = "inherit" | RelevanceFilterMode;
 
+export interface SetupStatus {
+  setupRequired: boolean;
+}
+
 export interface PublicUser {
   id: string;
   name: string;
-  email: string;
   systemPrompt: string;
   summaryPrompt: string;
   defaultLanguage: string | null;

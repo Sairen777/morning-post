@@ -39,6 +39,8 @@ import {
 import type { runForUser as runForUserType } from "../../src/services/orchestrator.ts";
 import type { DigestProgressReporter } from "../../src/services/digest-progress.ts";
 import { fixtureStoryIntelligence } from "../services/fixture-story-intelligence.ts";
+import { createUser } from "../../src/repositories/user-repository.ts";
+import { createSession } from "../../src/auth/session-service.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const periodStartMs = 1_700_000_000_000;
@@ -102,34 +104,36 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(
-  app: Hono<ServerEnvironment>,
-  email: string,
-): Promise<string> {
+async function ownerSession(app: Hono<ServerEnvironment>): Promise<{ userId: string; cookie: string }> {
   const response = await app.request(
-    "/auth/register",
+    "/auth/setup",
     jsonRequest("POST", {
       name: "Ada Lovelace",
-      email,
       password: PASSWORD,
     }),
   );
   assertEquals(response.status, 201);
   const json = await response.json();
-  return json.id;
+  const loginResponse = await app.request(
+    "/auth/login",
+    jsonRequest("POST", { password: PASSWORD }),
+  );
+  assertEquals(loginResponse.status, 200);
+  return { userId: json.id, cookie: extractCookie(loginResponse) };
 }
 
-async function login(
-  app: Hono<ServerEnvironment>,
-  email: string,
-): Promise<string> {
-  const response = await app.request(
-    "/auth/login",
-    jsonRequest("POST", { email, password: PASSWORD }),
-  );
-  assertEquals(response.status, 200);
-  return extractCookie(response);
+async function strangerSession(database: Database, email: string): Promise<string> {
+  const stranger = await createUser(database, {
+    name: "Stranger",
+    email,
+    passwordHash: "$argon2id$fakehash",
+    systemPrompt: "Summarize tersely.",
+  });
+  const { token } = await createSession(database, stranger.id);
+  return `__Host-session=${token}`;
 }
+
+
 
 async function createFeed(
   database: Database,
@@ -176,10 +180,8 @@ function normalizedItem(
 test("digest routes list and read user digests with grouped sections", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const ownerId = await register(app, "digests-owner@example.com");
-    const ownerCookie = await login(app, "digests-owner@example.com");
-    await register(app, "digests-other@example.com");
-    const otherCookie = await login(app, "digests-other@example.com");
+    const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
+    const otherCookie = await strangerSession(database, "digests-other@example.com");
 
     const rssFeed = await createFeed(
       database,
@@ -256,8 +258,7 @@ test("digest routes list and read user digests with grouped sections", async () 
 test("DELETE /digests/:id deletes an owned digest", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const ownerId = await register(app, "digests-delete-owner@example.com");
-    const ownerCookie = await login(app, "digests-delete-owner@example.com");
+    const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
     const feed = await createFeed(
       database,
       ownerId,
@@ -325,19 +326,8 @@ test("DELETE /digests/:id deletes an owned digest", async () => {
 test("DELETE /digests/:id hides another user's digest", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const ownerId = await register(
-      app,
-      "digests-delete-hidden-owner@example.com",
-    );
-    const ownerCookie = await login(
-      app,
-      "digests-delete-hidden-owner@example.com",
-    );
-    await register(app, "digests-delete-hidden-other@example.com");
-    const otherCookie = await login(
-      app,
-      "digests-delete-hidden-other@example.com",
-    );
+    const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
+    const otherCookie = await strangerSession(database, "digests-delete-hidden-other@example.com");
     const feed = await createFeed(
       database,
       ownerId,
@@ -388,8 +378,7 @@ test("DELETE /digests/:id hides another user's digest", async () => {
 test("GET /digests/:id.md renders story Markdown after a source feed is deleted", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const ownerId = await register(app, "digests-markdown@example.com");
-    const ownerCookie = await login(app, "digests-markdown@example.com");
+    const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
     const feed = await createFeed(
       database,
       ownerId,
@@ -433,8 +422,7 @@ test("GET /digests/:id.md renders story Markdown after a source feed is deleted"
 test("GET /digests/:id returns a redacted failure reason in JSON and escaped Markdown", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const ownerId = await register(app, "digest-failure-reason@example.com");
-    const ownerCookie = await login(app, "digest-failure-reason@example.com");
+    const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
     const digest = await assembleDigestForPeriod(
       database,
       ownerId,
@@ -502,8 +490,7 @@ test("GET /digests/:id returns a redacted failure reason in JSON and escaped Mar
 test("POST /digests/run creates an empty digest for an authenticated user with no sources", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const userId = await register(app, "digests-run-empty@example.com");
-    const cookie = await login(app, "digests-run-empty@example.com");
+    const { userId, cookie } = await ownerSession(app);
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", {
@@ -551,8 +538,7 @@ test("POST /digests/run requires authentication", async () => {
 test("POST /digests/run rejects incomplete period input", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    await register(app, "digests-run-incomplete@example.com");
-    const cookie = await login(app, "digests-run-incomplete@example.com");
+    const { cookie } = await ownerSession(app);
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", { periodStartMs: 1700000000000 }),
@@ -565,8 +551,7 @@ test("POST /digests/run rejects incomplete period input", async () => {
 test("POST /digests/run rejects inverted periods", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    await register(app, "digests-run-inverted@example.com");
-    const cookie = await login(app, "digests-run-inverted@example.com");
+    const { cookie } = await ownerSession(app);
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", {
@@ -582,8 +567,7 @@ test("POST /digests/run rejects inverted periods", async () => {
 test("POST /digests/run rate-limits repeated runs", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    await register(app, "digests-run-ratelimit@example.com");
-    const cookie = await login(app, "digests-run-ratelimit@example.com");
+    const { cookie } = await ownerSession(app);
     const body = { periodStartMs: 1700000000000, periodEndMs: 1700086400000 };
 
     const responses: number[] = [];
@@ -610,8 +594,7 @@ test("POST /digests/run rate-limits repeated runs", async () => {
 test("POST /digests/run creates a manual digest run record", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const userId = await register(app, "digests-run-record@example.com");
-    const cookie = await login(app, "digests-run-record@example.com");
+    const { userId, cookie } = await ownerSession(app);
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", {
@@ -635,11 +618,7 @@ test("POST /digests/run creates a manual digest run record", async () => {
 test("POST /digests/run conflict preserves the active run for recovery", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const userId = await register(
-      app,
-      "digests-run-active-conflict@example.com",
-    );
-    const cookie = await login(app, "digests-run-active-conflict@example.com");
+    const { userId, cookie } = await ownerSession(app);
     const activeRun = await createDigestRun(database, {
       userId,
       trigger: "manual",
@@ -697,9 +676,7 @@ test("GET /digests/runs returns only caller run records latest first", async () 
   await withTestDb(async (database) => {
     const app = buildApp(database);
 
-    const user1 = await register(app, "digests-runs-owner@example.com");
-    const user1Cookie = await login(app, "digests-runs-owner@example.com");
-    await register(app, "digests-runs-other@example.com");
+    const { userId: user1, cookie: user1Cookie } = await ownerSession(app);
 
     const now = Date.now();
 
@@ -731,7 +708,12 @@ test("GET /digests/runs returns only caller run records latest first", async () 
       now + 1000,
     );
 
-    const user2 = await register(app, "digests-runs-other2@example.com");
+    const user2 = (await createUser(database, {
+      name: "Other2",
+      email: "digests-runs-other2@example.com",
+      passwordHash: "$argon2id$fakehash",
+      systemPrompt: "Summarize tersely.",
+    })).id;
     const run3 = await createDigestRun(database, {
       userId: user2,
       trigger: "manual",
@@ -757,8 +739,7 @@ test("GET /digests/runs returns only caller run records latest first", async () 
 test("GET /digests/runs/:id returns owned run with feed stages", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const userId = await register(app, "digests-run-detail@example.com");
-    const cookie = await login(app, "digests-run-detail@example.com");
+    const { userId, cookie } = await ownerSession(app);
 
     const now = Date.now();
     const run = await createDigestRun(database, {
@@ -830,16 +811,8 @@ test("GET /digests/runs/:id hides another user's run", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
 
-    const user1 = await register(app, "digests-run-hidden-owner@example.com");
-    const user1Cookie = await login(
-      app,
-      "digests-run-hidden-owner@example.com",
-    );
-    const _user2 = await register(app, "digests-run-hidden-other@example.com");
-    const user2Cookie = await login(
-      app,
-      "digests-run-hidden-other@example.com",
-    );
+    const { userId: user1, cookie: user1Cookie } = await ownerSession(app);
+    const user2Cookie = await strangerSession(database, "digests-run-hidden-other@example.com");
 
     const now = Date.now();
     const run = await createDigestRun(database, {
@@ -911,12 +884,7 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
         runForUser,
       },
     });
-    const cookie = await login(app, "digests-run-injection@example.com").catch(
-      async () => {
-        await register(app, "digests-run-injection@example.com");
-        return await login(app, "digests-run-injection@example.com");
-      },
-    );
+    const { cookie } = await ownerSession(app);
 
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", { periodStartMs, periodEndMs }),

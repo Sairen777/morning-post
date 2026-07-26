@@ -353,17 +353,6 @@ button:focus-visible {
   margin-bottom: 1.5rem;
 }
 
-.auth-toggle {
-  text-align: center;
-  margin-top: 1rem;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.auth-toggle a {
-  cursor: pointer;
-}
-
 .meta-row {
   display: grid;
   grid-template-columns: 1fr 1fr;

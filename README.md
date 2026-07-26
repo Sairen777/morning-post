@@ -1,5 +1,13 @@
 # Morning Post App
 
+Morning Post v1 is an open-source application designed for self-hosted,
+single-owner deployment: one primary user per instance, with one local
+database and media store. Authentication, ownership scoping, and credential
+encryption are deliberate security measures that protect the single-owner
+deployment posture while keeping future deployment options open.
+
+X Chat (g-prefixed group conversations) integration is not implemented and is on hold.
+
 ## Setup
 
 ```sh
@@ -96,7 +104,6 @@ contains deployment credentials. The main settings are:
 | `MEDIA_TTL_MS` | Media file TTL | `604800000` (7 days) |
 | `MEDIA_QUOTA_BYTES` | Per-connector media quota | `524288000` (500 MiB) |
 | `DIGEST_RUN_STALE_AFTER_MS` | Stale digest-run threshold for recovery | `900000` (15 min) |
-| `SCHEDULER_LEASE_MS` | Scheduler leader lease duration | `90000` (90 sec) |
 
 #### Summarization reliability
 
@@ -156,8 +163,7 @@ bun run db:migrate
 ### Commands
 The local Hono backend runs on `Bun.serve` and listens on
 `127.0.0.1:3000` by default. Croner runs UTC five-field digest and media
-housekeeping schedules with in-process overlap protection; a PostgreSQL lease
-ensures that only one API instance performs each leader tick.
+housekeeping schedules with in-process overlap protection.
 
 | Task | What it does |
 | --- | --- |
@@ -223,14 +229,16 @@ refreshes the digest list when the run reaches a terminal state. If a
 `POST /digests/run` request loses a race and returns `409`, the Dashboard maps
 the conflict to the active-run UI instead of displaying raw error text.
 
-API startup and each scheduler leader tick transactionally recover digest runs
+API startup and each scheduler tick transactionally recover digest runs
 older than `DIGEST_RUN_STALE_AFTER_MS`. Recovery marks the stale run and only
 its still-running feed stages as failed, which releases the per-user lock.
 Fresh running rows remain untouched so another live API instance can finish
 its work safely.
 
-Open `http://127.0.0.1:5173`. Register an account, click "Run digest",
-and verify the digest appears with status `complete`.
+Open `http://127.0.0.1:5173`. On first run, navigate to `/auth/setup` to
+create the owner account (name and password), then log in with your password
+via the login form. Click "Run digest" and verify the digest appears with
+status `complete`.
 
 **Automated tests:**
 
@@ -259,7 +267,7 @@ before startup, then truncates it again during teardown.
 **Verify in the database** after a browser smoke run:
 
 ```sql
-select id, email, created_at from users order by created_at desc limit 5;
+select id, created_at from users order by created_at desc limit 5;
 select id, user_id, status, period_start_ms, period_end_ms, created_at
 from digests order by created_at desc limit 5;
 select id, user_id, connector_id, enabled, created_at
@@ -267,6 +275,10 @@ from sources order by created_at desc limit 5;
 select id, source_id, external_id, name, kind, enabled, last_fetched_period_end_ms
 from feeds order by created_at desc limit 10;
 ```
+
+The `users` table has an internal `email` column (unique, non-null) that
+carries `owner@morning-post.invalid` for the owner; it is not a login identity
+or public profile field.
 
 ## Get Telegram Credentials
 

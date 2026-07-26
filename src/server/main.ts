@@ -82,7 +82,6 @@ export async function bootServer(
     timeoutMs: config.summarizerTimeoutMs,
     summarizationConcurrency: config.summarizationConcurrency,
     progressReporter,
-    schedulerLeaseMs: config.schedulerLeaseMs,
     digestRunStaleAfterMs: config.digestRunStaleAfterMs,
   });
   scheduleMediaHousekeeping(scheduler);

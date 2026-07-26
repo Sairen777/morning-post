@@ -9,11 +9,14 @@ import {
   disconnectSource,
   getDigestRunDetail,
   getFeed,
+  getSetupStatus,
   getTelegramLoginStatus,
   listDigestRuns,
   listFeedsForSource,
   listInterests,
   listSubstackPublications,
+  loginUser,
+  setupOwner,
   startTelegramLogin,
   submitStoryFeedback,
   submitTelegramTwoFactorAuthentication,
@@ -30,7 +33,86 @@ describe("ApiClientError", () => {
     expect(error.status).toBe(422);
     expect(error.code).toBe("VALIDATION_ERROR");
     expect(error.message).toBe("Bad input");
+
     expect(error.name).toBe("ApiClientError");
+  });
+});
+
+describe("owner authentication", () => {
+  it("gets setup status from the public setup endpoint", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      const fetchCalls: Array<[string, RequestInit?]> = [];
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        fetchCalls.push([url, opts]);
+        return Promise.resolve(
+          new Response(JSON.stringify({ setupRequired: true }), { status: 200 }),
+        );
+      }) as typeof fetch;
+
+      await expect(getSetupStatus()).resolves.toEqual({ setupRequired: true });
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0][0]).toBe("/auth/setup");
+      expect(fetchCalls[0][1]?.method).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("creates the owner through setup with only name and password", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      const fetchCalls: Array<[string, RequestInit?]> = [];
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        fetchCalls.push([url, opts]);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ id: "u1", name: "Owner" }),
+            { status: 201 },
+          ),
+        );
+      }) as typeof fetch;
+
+      await expect(
+        setupOwner({ name: "Owner", password: "password-123" }),
+      ).resolves.toEqual({ id: "u1", name: "Owner" });
+      expect(fetchCalls[0][0]).toBe("/auth/setup");
+      expect(fetchCalls[0][1]?.method).toBe("POST");
+      expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({
+        name: "Owner",
+        password: "password-123",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("logs in with only the password", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      const fetchCalls: Array<[string, RequestInit?]> = [];
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        fetchCalls.push([url, opts]);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ id: "u1", name: "Owner" }),
+            { status: 200 },
+          ),
+        );
+      }) as typeof fetch;
+
+      await expect(loginUser({ password: "password-123" })).resolves.toEqual({
+        id: "u1",
+        name: "Owner",
+      });
+      expect(fetchCalls[0][0]).toBe("/auth/login");
+      expect(fetchCalls[0][1]?.method).toBe("POST");
+      expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({
+        password: "password-123",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
@@ -46,7 +128,6 @@ describe("updateCurrentUser", () => {
             JSON.stringify({
               id: "u1",
               name: "Test",
-              email: "t@t.com",
               systemPrompt: "",
               summaryPrompt: "",
               defaultLanguage: null,

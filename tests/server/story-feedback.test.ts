@@ -1,13 +1,13 @@
 import { test } from "bun:test";
-import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { assertEquals, assertExists } from "../assertions.ts";
 import type { Database } from "../../src/db/client.ts";
 import { digests } from "../../src/db/schema/digest.ts";
 import { digestStories, stories } from "../../src/db/schema/story.ts";
-import { users } from "../../src/db/schema/user.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { buildApp, type ServerEnvironment } from "../../src/server/app.ts";
+import { createUser } from "../../src/repositories/user-repository.ts";
+import { createSession } from "../../src/auth/session-service.ts";
 
 const ORIGIN = "http://127.0.0.1:5173";
 const PASSWORD = "analytical-engine-1843";
@@ -24,24 +24,35 @@ function request(body: unknown, cookie?: string): RequestInit {
   };
 }
 
-async function session(app: Hono<ServerEnvironment>, email: string): Promise<string> {
-  assertEquals((await app.request("/auth/register", request({
+async function ownerSession(app: Hono<ServerEnvironment>): Promise<{ userId: string; cookie: string }> {
+  const setup = await app.request("/auth/setup", request({
     name: "Feedback User",
-    email,
     password: PASSWORD,
-  }))).status, 201);
-  const login = await app.request("/auth/login", request({ email, password: PASSWORD }));
-  assertEquals(login.status, 200);
-  const setCookie = login.headers.get("set-cookie");
+  }));
+  assertEquals(setup.status, 201);
+  const user = await setup.json();
+  const loginResp = await app.request("/auth/login", request({ password: PASSWORD }));
+  assertEquals(loginResp.status, 200);
+  const setCookie = loginResp.headers.get("set-cookie");
   assertExists(setCookie);
-  return setCookie.split(";")[0];
+  return { userId: user.id, cookie: setCookie.split(";")[0] };
 }
 
-async function deliveredStory(database: Database, email: string) {
-  const [user] = await database.select().from(users).where(eq(users.email, email));
+async function strangerSession(database: Database, sessionEmail: string): Promise<string> {
+  const stranger = await createUser(database, {
+    name: "Stranger",
+    email: sessionEmail,
+    passwordHash: "$argon2id$fakehash",
+    systemPrompt: "Summarize tersely.",
+  });
+  const { token } = await createSession(database, stranger.id);
+  return `__Host-session=${token}`;
+}
+
+async function deliveredStory(database: Database, userId: string) {
   const [story] = await database.insert(stories).values({
-    userId: user.id,
-    canonicalKey: `server-${email}`,
+    userId,
+    canonicalKey: `server-${userId}`,
     title: "Server feedback",
     topics: ["Climate"],
     entities: ["Example Corp"],
@@ -50,7 +61,7 @@ async function deliveredStory(database: Database, email: string) {
     lastUpdatedAt: 2,
   }).returning();
   const [digest] = await database.insert(digests).values({
-    userId: user.id,
+    userId,
     periodStartMs: 1,
     periodEndMs: 2,
     status: "complete",
@@ -74,13 +85,12 @@ async function deliveredStory(database: Database, email: string) {
   }).returning();
   return { story, delivered };
 }
-
 test("POST story feedback requires ownership and returns public feedback with current rules", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const ownerCookie = await session(app, "feedback-route-owner@example.com");
-    const strangerCookie = await session(app, "feedback-route-stranger@example.com");
-    const fixture = await deliveredStory(database, "feedback-route-owner@example.com");
+    const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
+    const strangerCookie = await strangerSession(database, "feedback-route-stranger@example.com");
+    const fixture = await deliveredStory(database, ownerId);
     const path = `/stories/${fixture.story.id}/feedback`;
     const body = {
       digestStoryId: fixture.delivered.id,
@@ -108,8 +118,8 @@ test("POST story feedback requires ownership and returns public feedback with cu
 test("POST story feedback validates action target shape and delivered target membership", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const cookie = await session(app, "feedback-route-validation@example.com");
-    const fixture = await deliveredStory(database, "feedback-route-validation@example.com");
+    const { userId, cookie } = await ownerSession(app);
+    const fixture = await deliveredStory(database, userId);
     const path = `/stories/${fixture.story.id}/feedback`;
 
     assertEquals((await app.request(path, request({

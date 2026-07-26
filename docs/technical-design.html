@@ -181,8 +181,12 @@
     section {
       padding: 30px;
       margin: 22px 0;
+      scroll-margin-top: 140px;
     }
 
+    #x-chat-research {
+      scroll-margin-top: 140px;
+    }
     .section-kicker {
       color: var(--accent-2);
       font-size: 0.8rem;
@@ -222,6 +226,16 @@
       padding: 16px;
     }
 
+    pre code {
+      display: block;
+      min-width: 100%;
+      width: max-content;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      white-space: pre;
+    }
+
     .mermaid {
       background: #fffdf7;
       text-align: left;
@@ -241,6 +255,7 @@
 
     table {
       width: 100%;
+      table-layout: fixed;
       border-collapse: collapse;
       margin: 16px 0 8px;
       overflow: hidden;
@@ -254,6 +269,15 @@
       padding: 11px 12px;
       text-align: left;
       vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+
+    th code,
+    td code,
+    th .path,
+    td .path {
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
 
     th {
@@ -349,7 +373,7 @@
       .summary-grid,
       .risk-grid,
       .two-col {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
       }
       header.hero,
       section {
@@ -362,6 +386,17 @@
       code,
       .path {
         white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        table-layout: auto;
+      }
+      th,
+      td {
+        min-width: 160px;
       }
     }
 
@@ -388,9 +423,9 @@
     <main class="page">
       <header class="hero">
         <p class="eyebrow">Morning Post · Technical Design Documentation</p>
-        <h1>Current architecture, security posture, and scalability review</h1>
+        <h1>Current architecture, self-host posture, security, and scalability review</h1>
         <p
-          class="lede">This document captures the repository architecture as implemented on 2026-07-24 and records the security and scalability decisions for the current Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence layer, connector-neutral story pipeline, Telegram and Substack connectors, and OpenAI-compatible analysis and summarization boundary.</p>
+          class="lede">This document records the repository architecture as reviewed on 2026-07-26 and the supported v1 deployment posture of one independently operated single-owner self-host. Current implementation coverage includes first-run owner setup and password-only login, the Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence and rate limiting, stale-recovery-first scheduling for zero or one owner, the connector-neutral story pipeline, Telegram and Substack connectors, and the OpenAI-compatible analysis and summarization boundary. X Chat is not implemented and its retained research is explicitly on hold outside the current roadmap.</p>
         <p
           class="diagram-note">Diagrams are embedded as Mermaid source and intentionally do not load a CDN; this keeps the file offline and self-contained. Render with a local Mermaid tool if a graphical version is needed.</p>
         <div class="meta-grid" aria-label="document metadata">
@@ -401,13 +436,13 @@
           </div>
           <div class="card">
             <div class="card-title">Primary assets</div>
-            <strong>Credentials, sessions, messages</strong>
-            <p>Telegram session strings, imported Substack session-cookie values, Morning Post session cookies, user prompts and interest rules, message/post text and media, story analyses, summaries, feedback, and digest history.</p>
+            <strong>Credentials, sessions, messages, key material</strong>
+            <p>Telegram session strings, imported Substack session-cookie values, Morning Post session cookies, owner prompts and interest rules, message/post text and media, story analyses, summaries, feedback, and digest history. The on-hold X Chat research describes additional tokens and Chat key material only as hypothetical assets; they do not exist in the current system.</p>
           </div>
           <div class="card">
             <div class="card-title">Main risk</div>
-            <strong>Trusted-custodian service</strong>
-            <p>The server must decrypt connector credentials and send content to the configured summarizer while users are offline.</p>
+            <strong>Trusted self-hosted custodian</strong>
+            <p>The operator-run server must decrypt connector credentials and may send plaintext content to the configured summarizer while the primary owner is offline.</p>
           </div>
           <div class="card">
             <div class="card-title">Review basis</div>
@@ -420,6 +455,7 @@
       <nav class="toc" aria-label="table of contents">
         <a href="#executive-summary">Summary</a>
         <a href="#context">Context</a>
+        <a href="#x-chat-research">X Chat (on hold)</a>
         <a href="#runtime-startup">Runtime/startup</a>
         <a href="#containers">Containers</a>
         <a href="#domain-model">Domain model</a>
@@ -432,12 +468,13 @@
 
       <section id="executive-summary">
         <div class="section-kicker">Executive summary</div>
-        <h2>Architecture is cleanly layered; production hardening is not complete.</h2>
+        <h2>The current architecture is a layered, single-owner self-host with explicit security and operating boundaries.</h2>
         <div class="summary-grid">
           <div class="card">
             <div class="card-title">What is strong</div>
             <ul>
               <li>Repository functions consistently accept <code>userId</code> and scope reads/writes to ownership.</li>
+              <li>First-run setup creates exactly one owner atomically and starts a session; later sign-in uses only that owner's password, never email.</li>
               <li>Session tokens are random 256-bit values; only SHA-256 token hashes are stored.</li>
               <li>Connector credentials use envelope encryption with AES-256-GCM and owner-bound AAD.</li>
               <li>Item analyses, stories, delivered story cards, feedback, and digests use database uniqueness constraints and idempotent upserts.</li>
@@ -445,11 +482,11 @@
             </ul>
           </div>
           <div class="card">
-            <div class="card-title">What blocks safe production scaling</div>
+            <div class="card-title">Operational boundaries and limits</div>
             <ul>
               <li>Bun processes inherit the operating-system privileges of their account; filesystem, environment, network, subprocess, and native-module boundaries must therefore be enforced by deployment isolation and application code.</li>
-              <li>Rate limiting is process-local and trusts request forwarding headers without an app-level trusted-proxy policy.</li>
-              <li>Croner prevents overlapping callbacks within a process, while PostgreSQL scheduler leases coordinate digest ticks across API instances.</li>
+              <li>Rate limiting uses atomic PostgreSQL <code>rate_limit_buckets</code> counters. Direct socket addresses are trusted by default; forwarding headers are considered only when <code>TRUSTED_PROXY_COUNT</code> explicitly describes the proxy chain.</li>
+              <li>Each digest tick recovers stale runs before selecting the earliest user row as the owner, then processes zero or one owner. Croner <code>protect: true</code> skips overlapping callbacks in the supported single API process; there is no scheduler lease or runtime leader election.</li>
               <li>Story analysis and summarization are provider boundaries with deployment-wide text and vision endpoints, deterministic text/item/image caps, and run-local media-description fallback behavior.</li>
               <li>Connector media remain local, but per-connector quotas and a weekly TTL sweep bound retention on a single host.</li>
             </ul>
@@ -465,37 +502,50 @@
         </div>
 
         <div class="callout warning">
-        <strong>Security decision:</strong> Morning Post is not zero-knowledge. Scheduled digests require the backend to decrypt connector credentials without the user present. The honest target is narrower: a database or backup leak alone should not expose credentials; provider boundaries should be explicit; operational access should be minimized and auditable.
+        <strong>Security decision:</strong> Self-hosting changes who holds custody; it does not make Morning Post zero-knowledge. The primary owner controls the instance, database, media, and tokens, but scheduled work still requires local decryption. Plaintext exists in the process after decryption and crosses the operator-controlled host boundary when a remote summarizer is configured. Credential encryption, owner authentication, internal <code>userId</code> ownership scoping, PostgreSQL-backed rate limits, TLS, protected backups, and host hardening remain defense-in-depth; Morning Post v1 does not introduce a shared service, database, or centralized credential vault. The X Chat research is on hold and describes no current asset or boundary.
       </div>
       </section>
 
       <section id="context">
         <div class="section-kicker">System context</div>
-        <h2>Morning Post is a multi-user digest service with external connector and LLM boundaries.</h2>
-        <p>The web UI calls the Bun API with cookie credentials. The API owns authentication, connector credential custody, feed subscription state, ingestion, connector-neutral item analysis, cross-feed story resolution, relevance classification, story summarization, feedback, digest assembly, and scheduled runs. PostgreSQL stores users, sessions, encrypted source credentials, feed subscriptions, item and analysis caches, personalized rules, evolving stories and developments, delivered story snapshots, durable feedback, historical legacy summaries, digests, and digest-run audit rows.</p>
+        <h2>Morning Post v1 supports independent, single-owner self-hosts; the code retains user-scoped boundaries.</h2>
+        <p>Morning Post is open-source software deployed and operated independently: each supported v1 instance has one primary owner and its own API process, PostgreSQL database, media directories, connector credentials, and summarizer configuration. There is no shared Morning Post control plane, hosted database, or project-operated credential store. The account surface is <code>GET /auth/setup</code>, atomic first-run <code>POST /auth/setup</code>, password-only <code>POST /auth/login</code>, <code>POST /auth/logout</code>, and authenticated <code>GET</code>/<code>PATCH /auth/me</code>; <code>/auth/register</code> is absent and email is neither a login identity nor a public profile field. Internally, tables and repositories remain <code>userId</code>-scoped as a containment boundary. The earliest <code>users</code> row by <code>(createdAt, id)</code> is the owner after an upgrade; later legacy rows remain stored but cannot use public login and are never scheduled.</p>
 
         <pre class="mermaid">flowchart LR
-  Browser["Browser\nSolidStart SPA"] -->|credentials: include| API["Bun 1.3.14 + Hono API"]
-  API -->|Drizzle/postgres.js| DB[("PostgreSQL")]
+  Browser["Primary owner's browser\nSolidStart SPA"]
+
+  subgraph Instance["One operator-controlled Morning Post v1 instance"]
+    API["Bun 1.3.14 + Hono API"]
+    DB[("PostgreSQL")]
+    Media[("Local media dirs\nall connector dirs + media/")]
+    Scheduler["Croner scheduler\nrecover stale → zero or one owner"]
+    API -->|Drizzle/postgres.js| DB
+    API -->|read/write media| Media
+    Scheduler --> API
+  end
+
+  Browser -->|credentials: include| API
   API -->|MTProto / connector APIs| Telegram["Telegram"]
   API -->|public archive + authenticated post APIs| Substack["Substack publications"]
-  API -->|/chat/completions| LLM["OpenAI-compatible text + vision providers\nconfigured deployment-wide"]
-  API -->|read/write media| Media[("Local media dirs\nall connector dirs + media/")]
-  Scheduler["Croner scheduler"] --> API
+  API -->|/chat/completions| LLM["Configured OpenAI-compatible\ntext + vision providers"]
 
   classDef external fill:#fbeccf,stroke:#8a5a10,color:#342107;
   classDef storage fill:#e5efe6,stroke:#20603d,color:#0e2818;
   class Telegram,Substack,LLM external;
   class DB,Media storage;</pre>
+        <p class="diagram-note">The deployment box is the v1 service boundary. Different operators run separate boxes and do not share Morning Post databases, media, OAuth tokens, connector credentials, or encryption-key custody.</p>
 
         <div class="two-col">
           <div>
             <h3>Trust boundaries</h3>
             <ul>
-              <li><strong>Browser → API:</strong> cookie-authenticated requests. Origin guard middleware on unsafe requests validates <code>Origin</code> or <code>Referer</code> against the configured <code>ALLOWED_ORIGINS</code>. Security headers include HSTS, frame denial (<code>DENY</code>), and <code>nosniff</code>. Body size limited by <code>MAX_REQUEST_BODY_BYTES</code>.</li>
+              <li><strong>Deployment boundary:</strong> one primary owner operates one independent instance and controls its database, media, connector tokens, encryption configuration, backups, and host. Self-hosting removes project-wide custody, not the need for least privilege, TLS where traffic leaves loopback, protected backups, patching, and host isolation.</li>
+              <li><strong>Browser → API:</strong> cookie-authenticated requests. Origin guard middleware on unsafe requests validates <code>Origin</code> or <code>Referer</code> against the configured <code>ALLOWED_ORIGINS</code>. Security headers include HSTS, frame denial (<code>DENY</code>), and <code>nosniff</code>. Body size is limited by <code>MAX_REQUEST_BODY_BYTES</code>. Even with one primary owner, authentication and <code>userId</code> filters contain stale-session, route, and persistence mistakes and remain future-safe boundaries.</li>
               <li><strong>API → PostgreSQL:</strong> persistence for sensitive metadata and encrypted credentials. <code>DB_SSL_MODE</code> configures TLS (default <code>disable</code> for local loopback; <code>require</code> or <code>verify-full</code> for remote). Pool size, idle timeout, and connect timeout are explicitly configured from env vars.</li>
               <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
               <li><strong>API → Substack:</strong> users explicitly import <code>substack.sid</code> and may also provide <code>connect.sid</code> when their browser has it; Morning Post never accepts a Substack password or raw cookie header. Account-subscription discovery and paid/full post retrieval send only the provided session cookies to the fixed <code>https://substack.com</code> origin. Manual publication validation fetches public archives without cookies through the IP-pinned HTTPS boundary. The integration replays an unsupported browser session and may conflict with Substack terms; the UI discloses that risk before connection.</li>
+              <li><strong>On-hold research → X Chat:</strong> no X Chat connector, authorization flow, polling job, normalized-message state, or Chat key custody is implemented. If the project ever reopens the research, a read-only connector would require operator-controlled user-context authorization and local signature verification/key recovery for one official <code>g</code>-prefixed group. This is not current architecture or current roadmap work.</li>
+              <li><strong>API → summarizer:</strong> normalized message/post plaintext and selected media remain visible to the local process. A loopback summarizer stays within the operator-controlled host; enabling a remote endpoint sends that plaintext across a separately configured provider boundary. Self-hosting therefore does not remove the privacy decision represented by <code>ALLOW_REMOTE_SUMMARIZATION</code>.</li>
               <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), and a weekly TTL sweep (<code>MEDIA_TTL_MS</code>). Bun's Node-compatible filesystem APIs operate with the process account's privileges rather than runtime permission flags. Deployment ownership and filesystem ACLs should restrict the process to every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> (<code>telegram_media</code>, <code>substack_media</code>, <code>youtube_media</code>, <code>reddit_media</code>, <code>x_media</code>, <code>rss_media</code>) plus the shared/legacy <code>./media</code>; application path validation, feed isolation, quotas, eviction, and TTL traversal remain the in-process boundaries.</li>
             </ul>
               </div>
@@ -529,6 +579,53 @@
                 </table>
               </div>
               </div>
+              <h3 id="x-chat-research">X Chat integration research — on hold</h3>
+              <div class="callout warning">
+                <strong>Status: on hold/deferred, not implemented, and not a current roadmap priority.</strong> No X Chat connector or X-specific persistence exists. The conditional material below is retained only as subordinate research in case the idea is reassessed; its requirements and verbs describe hypothetical constraints, not approved implementation work. The researched scope was official X Chat, one operator-configured <code>g</code>-prefixed group, scheduled read-only access, no sends, and no webhook or real-time dependency.
+              </div>
+
+              <pre class="mermaid">flowchart LR
+  Operator["Primary owner\nX developer app + credits"]
+  XAPI["X Chat API\nciphertext events + public-key records"]
+
+  subgraph SelfHost["Same operator-controlled Morning Post self-host"]
+    Poller["Deferred X Chat reader\none g-prefixed group"]
+    ChatXDK["@xdevplatform/chat-xdk\nkey recovery • verify • decrypt"]
+    State[("PostgreSQL\nnormalized messages + signed message_id set\nnormalized-message watermark/state")]
+    Digest["Existing digest pipeline"]
+    Local["Configured local summarizer"]
+    Poller -->|key-change events before messages| ChatXDK
+    ChatXDK -->|verified plaintext| State
+    State --> Digest
+    Digest -->|plaintext, local option| Local
+  end
+
+  Remote["Configured remote summarizer"]
+  Operator -->|per-instance app, user auth, unlock choice| Poller
+  XAPI -->|scheduled history/event reads| Poller
+  Digest -->|plaintext crosses host, remote option| Remote
+
+  classDef external fill:#fbeccf,stroke:#8a5a10,color:#342107;
+  classDef storage fill:#e5efe6,stroke:#20603d,color:#0e2818;
+  class XAPI,Remote external;
+  class State storage;</pre>
+
+              <dl class="decision-list">
+                <dt>Research question: per-instance provisioning and durable user authorization</dt>
+                <dd>Every operator must create and configure their own X developer app, purchase or monitor its API credits, and supply user-context credentials; an open-source repository cannot ship a project-wide client secret or billing account. The preferred unattended path is OAuth 2.0 Authorization Code with PKCE plus <code>offline.access</code>, so a refresh token can survive access-token expiry and process restarts. A narrow first cut may instead accept operator-provisioned OAuth 1.0a user credentials. Request only <code>dm.read</code>, <code>users.read</code>, and <code>tweet.read</code>; add <code>dm.write</code> only if public-key registration, conversation-key initialization, or a later send feature actually requires it.</dd>
+
+                <dt>Research question: outbound polling and minimal state</dt>
+                <dd>On every digest schedule, start from the newest conversation history/events at <a href="https://docs.x.com/x-api/chat/get-chat-conversation-events"><code>GET /2/chat/conversations/{id}/events</code></a> for the single configured <code>g</code>-prefixed ID, then page backward with <code>pagination_token</code> values that live only for that polling run until a previously persisted signed <code>message_id</code> is reached or history is exhausted. A pagination token pages one result set; it is not a safe durable cross-run cursor and must not be persisted or reused as one. No webhook or real-time dependency belongs in the first digest path; the <a href="https://docs.x.com/xchat/real-time-events">real-time events guide</a> remains a possible later delivery option. Persist only normalized messages needed by the digest, signed <code>message_id</code> values for deduplication and the stop watermark, and any other digest-ingestion state; never use unsigned delivery metadata as message identity.</dd>
+
+                <dt>Research question: ciphertext, keys, signatures, and existing-identity unlock</dt>
+                <dd>The X Chat API returns ciphertext. The local <a href="https://docs.x.com/xchat/xchat-xdk">Chat XDK</a> must load participant signing keys, process and verify conversation key-change events before dependent messages, recover the applicable conversation key, verify message signatures, and then decrypt. To reuse an existing X Chat identity, fetch the authenticated user's public-key record, pass its <code>juicebox_config</code> to the XDK, and unlock with the user's X Chat passcode. OAuth continuity and Chat-key unlock are separate restart requirements: the operator must choose either manual passcode unlock after each restart or storage of an unlock secret under Morning Post's existing encrypted-secret model. The latter enables unattended scheduling but increases local secret-custody risk and must not be an implicit default.</dd>
+
+                <dt>Research question: plaintext and custody boundary</dt>
+                <dd>Decryption happens on the operator's host, but plaintext then exists in process memory and in any normalized message rows retained for the digest. A local summarizer keeps processing within that self-host; a configured remote summarizer receives the selected plaintext across its provider boundary. The operator—not the Morning Post project—controls the database, media, OAuth tokens, X Chat key material, secret model, and backups. Existing credential encryption, authentication, <code>userId</code> ownership scoping, database TLS configuration, backup protection, filesystem permissions, and host hardening remain defense-in-depth. There is no shared Morning Post database or centralized X credential custody.</dd>
+
+                <dt>Official design sources</dt>
+                <dd><a href="https://docs.x.com/xchat/introduction">X Chat introduction</a>; <a href="https://docs.x.com/xchat/xchat-xdk">Chat XDK reference</a>; <a href="https://docs.x.com/xchat/real-time-events">real-time delivery options</a>; <a href="https://docs.x.com/x-api/chat/get-chat-conversation-events">conversation event history endpoint</a>; <a href="https://docs.x.com/fundamentals/authentication/oauth-2-0/authorization-code">OAuth 2.0 Authorization Code with PKCE and <code>offline.access</code></a>; and <a href="https://docs.x.com/x-api/getting-started/pricing">X API credits and pricing</a>.</dd>
+              </dl>
               </section>
 
               <section id="runtime-startup">
@@ -538,8 +635,9 @@
                 <p>The database client dependency is pinned to postgres.js <code>3.4.9</code>. This release clamps reconnect delays before they reach the runtime timer boundary, preventing a stale idle connection from producing a negative timeout when the pool reconnects.</p>
 
                 <div class="callout ok">
-                  <strong>Current runtime:</strong> Hono is served by <code>Bun.serve</code>. Croner <code>10.0.1</code> schedules retained jobs in UTC with five-part expressions, rejects duplicate job names, uses <code>protect: true</code> to skip overlapping callbacks within a process, sanitizes and logs callback errors through its <code>catch</code> handler, and stops and clears every retained job when <code>CronScheduler.stop()</code> is called. Digest ticks additionally acquire the existing PostgreSQL <code>scheduler_leases</code> lease so only one API instance performs the work.
+                  <strong>Current runtime:</strong> Hono is served by <code>Bun.serve</code>. Croner <code>10.0.1</code> schedules retained jobs in UTC with five-part expressions, rejects duplicate job names, uses <code>protect: true</code> to skip overlapping callbacks within the process, sanitizes and logs callback errors through its <code>catch</code> handler, and stops and clears every retained job when <code>CronScheduler.stop()</code> is called. API boot recovers stale digest runs before registering jobs. Every digest tick repeats stale-run recovery, selects the earliest user by <code>(createdAt, id)</code>, and runs for that owner or returns without work when no owner exists.
                 </div>
+                <p>Migration <code>0021_large_madame_hydra.sql</code> drops <code>scheduler_leases</code>. The lease schema and repository, runtime leader election, user paging, bounded user concurrency, and <code>SCHEDULER_LEASE_MS</code> configuration have been removed because the supported deployment has one owner and one scheduler process. Croner callback protection prevents in-process overlap; it is not a distributed-scheduler claim.</p>
 
                 <h3>Corrected startup contract</h3>
                 <table>
@@ -561,6 +659,11 @@
               <code>3000</code>.</td>
                       <td><code>GET http://127.0.0.1:3000/health</code> returns the
               backend health response.</td>
+                    </tr>
+                    <tr>
+                      <td>Scheduler</td>
+                      <td>Server boot calls <code>recoverStaleDigestRuns()</code> before registering the digest and media jobs. A digest callback recovers stale runs again, resolves the earliest user row as the owner, returns when none exists, and otherwise invokes <code>runForUser()</code> once. Croner <code>protect: true</code> skips a callback that overlaps the prior callback in the same process.</td>
+                      <td>A supported instance schedules no user when unconfigured and exactly one owner when configured; no user page, concurrency pool, PostgreSQL lease, or leader-election path is involved.</td>
                     </tr>
                     <tr>
                       <td>Frontend</td>
@@ -692,13 +795,13 @@
                   <tbody>
                     <tr>
                       <td>Frontend</td>
-                      <td>SolidStart SPA, preference editors, story-mode and historical digest views, provenance links, and story/topic feedback controls.</td>
-                      <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>; Vinxi proxies authenticated API namespaces including <code>/interests</code> and <code>/stories</code>.</td>
+                      <td>SolidStart SPA, setup-status check, first-run owner form, password-only sign-in, preference editors, story-mode and historical digest views, provenance links, and story/topic feedback controls.</td>
+                      <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>. The auth panel selects setup or login from <code>GET /auth/setup</code>; it never asks for a public email identity.</td>
                     </tr>
                     <tr>
                       <td>Server routes</td>
-                      <td>HTTP shape, authentication, ownership-scoped request parsing, response projection, and feedback validation.</td>
-                      <td>Routes are thin. Known errors go through the centralized Hono <code>errorHandler</code>.</td>
+                      <td>Atomic owner setup, password-only owner login, session lifecycle, authenticated HTTP shape, ownership-scoped request parsing, response projection, and feedback validation.</td>
+                      <td>Auth routes expose setup, login, logout, and <code>/auth/me</code>, with no registration route or public email. Other routes remain thin and known errors pass through the centralized Hono <code>errorHandler</code>.</td>
                     </tr>
                     <tr>
                       <td>Services</td>
@@ -717,13 +820,13 @@
                     </tr>
                     <tr>
                       <td>Repositories</td>
-                      <td>Ownership filters, cached analyses, story/development versioning, stable delivered-card replacement, feedback identity, and transactional profile invalidation.</td>
-                      <td>User-row locks establish a common mutation order for explicit and feedback-derived interest changes.</td>
+                      <td>Earliest-row owner resolution, ownership filters, PostgreSQL rate-limit counters, cached analyses, story/development versioning, stable delivered-card replacement, feedback identity, and transactional profile invalidation.</td>
+                      <td><code>userId</code> filters and user-row locks remain internal containment boundaries. The legacy non-null unique <code>users.email</code> column is persisted but is not used to choose or authenticate the owner.</td>
                     </tr>
                     <tr>
                       <td>Scheduler</td>
-                      <td>Daily digest ticks, user paging, distributed leases, bounded user concurrency, stale-run recovery, and weekly media TTL cleanup.</td>
-                      <td>PostgreSQL leases coordinate scheduler leaders across API processes.</td>
+                      <td>Startup and per-tick stale-run recovery, zero-or-one-owner daily digest execution, Croner callback protection, and weekly media TTL cleanup.</td>
+                      <td>The earliest user row is the owner. The supported single scheduler has no user paging/concurrency pool, PostgreSQL lease, or runtime leader election; migration <code>0021_large_madame_hydra.sql</code> removes the former lease table.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -731,8 +834,9 @@
 
               <section id="domain-model">
                 <div class="section-kicker">Domain model</div>
-                <h2>The story model is connector-neutral and user-scoped.</h2>
+                <h2>The story model is connector-neutral and internally user-scoped around one supported owner.</h2>
                 <p>Sources represent connector accounts and feeds represent subscriptions. Connector items are cached once, analyzed into common topics/entities/story and development keys, then linked into evolving user-owned stories. New digests persist selected story-version snapshots with every source; historical pre-story summaries remain read-only so old digests continue to render. Interest rules and feed/source policy overrides control zero-to-all relevance filtering. Feedback records the delivered digest/story/version identity and can update the same interest profile transactionally.</p>
+                <p><strong>Owner identity and legacy rows:</strong> <code>users.email</code> deliberately remains a non-null unique legacy column so upgraded databases and existing repository/schema invariants are preserved. Atomic first-run setup writes the non-routable sentinel <code>owner@morning-post.invalid</code>; email is never accepted by setup or login and is omitted from <code>PublicUser</code>. <code>findOwner()</code> deterministically selects the earliest row by <code>createdAt</code> and then <code>id</code>. Other legacy user rows are retained rather than destructively migrated, but public authentication and scheduled execution address only that owner. Existing <code>userId</code> foreign keys and filters remain security and ownership boundaries, not a supported multi-owner deployment surface.</p>
 
                 <pre class="mermaid">erDiagram
   users ||--o{ sessions : owns
@@ -853,8 +957,8 @@
                   <tbody>
                     <tr>
                       <td>User</td>
-                      <td>Owns every personalized object; prompts and policy changes must invalidate generated story snapshots without leaking the password hash.</td>
-                      <td>The public projection enumerates safe fields. <code>interestProfileVersion</code> increments for effective filtering/summary configuration or interest-policy changes.</td>
+                      <td>The earliest row owns the supported deployment; every personalized object remains <code>userId</code>-scoped, and prompts or policy changes must invalidate generated story snapshots without exposing password or legacy identity data.</td>
+                      <td>First-run setup inserts <code>owner@morning-post.invalid</code> into the retained non-null unique email column under a table lock. The public projection enumerates safe fields and excludes both <code>email</code> and <code>passwordHash</code>. <code>interestProfileVersion</code> increments for effective filtering/summary configuration or interest-policy changes.</td>
                     </tr>
                     <tr>
                       <td>Session</td>
@@ -919,23 +1023,37 @@
                 <div class="section-kicker">Main flows</div>
                 <h2>Authentication, Substack onboarding, and digest generation are the load-bearing flows.</h2>
 
-                <h3>Authentication and session flow</h3>
+                <h3>Owner setup, password login, and session flow</h3>
                 <pre class="mermaid">sequenceDiagram
   participant B as Browser
   participant A as Hono API
-  participant R as User/session repositories
+  participant R as Owner/session repositories
   participant D as PostgreSQL
 
-  B->>A: POST /auth/login {email,password}
-  A->>R: authenticateUser(email,password)
-  R->>D: find user by email
-  A->>A: verify argon2id or dummy hash
+  B->>A: GET /auth/setup
+  A->>R: findOwner()
+  R->>D: earliest user by createdAt, then id
+  A-->>B: {setupRequired}
+  alt First run
+    B->>A: POST /auth/setup {name,password}
+    A->>A: validate; hash password with argon2id
+    A->>D: transaction: lock users; recheck empty; insert owner@morning-post.invalid
+  else Owner already configured
+    B->>A: POST /auth/login {password}
+    A->>R: authenticateOwner(password)
+    R->>D: load earliest owner
+    A->>A: verify owner hash or dummy hash
+  end
   A->>A: mint 32-byte random token
   A->>D: store SHA-256 token hash + expiry
-  A-->>B: Set-Cookie session; HttpOnly; Secure; SameSite=Lax
+  A-->>B: Set-Cookie __Host-session; HttpOnly; Secure; SameSite=Lax
   B->>A: GET /auth/me with cookie
-  A->>D: lookup non-expired token hash
-  A-->>B: explicit PublicUser projection</pre>
+  A->>D: lookup non-expired token hash and owner by userId
+  A-->>B: explicit PublicUser projection without email
+  B->>A: POST /auth/logout
+  A->>D: revoke token hash
+  A-->>B: clear __Host-session</pre>
+                <p><code>POST /auth/setup</code> is atomic: it checks for an owner, hashes the password, locks the <code>users</code> table inside a transaction, checks again, inserts the sentinel internal email, and immediately creates the session returned with the 201 response. A concurrent or later setup attempt conflicts. <code>POST /auth/login</code> accepts only <code>{password}</code> and authenticates the deterministic owner. There is no public email field and no <code>/auth/register</code> route. Setup and login attempts use PostgreSQL-backed rate-limit buckets.</p>
 
                 <h3>Substack connection and publication flow</h3>
                 <pre class="mermaid">sequenceDiagram
@@ -963,7 +1081,7 @@
 
                 <h3>Digest generation flow</h3>
                 <pre class="mermaid">sequenceDiagram
-  participant S as Scheduler or /digests/run
+  participant S as Owner scheduler or /digests/run
   participant O as runForUser
   participant C as ConnectorFactory/Connector
   participant I as Story intelligence
@@ -1025,11 +1143,11 @@
   F-->>B: feedback + active rules
   B->>B: announce per-action result; refresh profile and interests</pre>
 
-                <p>One running digest per user is intentional. After a Dashboard reload, the initial run-status check restores any persisted running state and duplicate submission remains blocked until that check settles. While a run is active, the Dashboard polls its status every five seconds without overlapping requests and refreshes the digest list when the run reaches a terminal state. If <code>POST /digests/run</code> loses a race and returns <code>409</code>, the Dashboard maps the conflict to the active-run UI instead of displaying raw error text.</p>
+                <p>One running digest per internal user is intentional; in the supported deployment, scheduled work targets only the owner. After a Dashboard reload, the initial run-status check restores any persisted running state and duplicate submission remains blocked until that check settles. While a run is active, the Dashboard polls its status every five seconds without overlapping requests and refreshes the digest list when the run reaches a terminal state. If <code>POST /digests/run</code> loses a race and returns <code>409</code>, the Dashboard maps the conflict to the active-run UI instead of displaying raw error text.</p>
 
                 <p>Each digest-list row exposes when its latest linked run started and, when that run is terminal, its elapsed wall-clock time from <code>digest_runs.started_at</code> to <code>finished_at</code>. Digests without a linked run fall back to their own creation timestamp. The repository selects one run per listed digest with deterministic newest-first ordering, so pagination does not inflate the response with historical run rows.</p>
 
-                <p>API startup and every scheduler leader tick call <code>recoverStaleDigestRuns()</code>. The recovery transaction marks only runs older than <code>DIGEST_RUN_STALE_AFTER_MS</code> and their still-running feed stages as <code>failed</code>; terminal feed stages remain unchanged. Fresh running rows are preserved so a rolling multi-instance deployment cannot fail work owned by another live process.</p>
+                <p>API startup and every digest scheduler tick call <code>recoverStaleDigestRuns()</code>. On a tick, recovery completes before <code>findOwner()</code>; the callback then processes no user when the table is empty or exactly the earliest owner row. Recovery marks only runs older than <code>DIGEST_RUN_STALE_AFTER_MS</code> and their still-running feed stages as <code>failed</code>; terminal feed stages and fresh manual or scheduled runs remain unchanged. Croner <code>protect: true</code> prevents an overlapping tick in the same process, and the partial unique index on running <code>userId</code> remains the persistence guard against a duplicate active digest.</p>
 
                 <h3>Digest model deadlines and content-safe progress telemetry</h3>
                 <p><code>SUMMARIZER_TIMEOUT_MS</code> defaults to <code>120000</code> milliseconds and bounds each individual OpenAI-compatible model request rather than the whole digest. The API startup wiring passes the same value into both entry paths: authenticated manual <code>POST /digests/run</code> and scheduled <code>runForUser()</code> calls. Story analysis checkpoints, relevance-classification batches, selected-story summarization, media description, and internal chunk/merge calls propagate that per-request deadline to the provider boundary. Deterministic story resolution has no model request. Stage-specific output and retry budgets are independently configurable: analysis <code>30000</code>/3 attempts, classification <code>6000</code>/3, one-story summary <code>4000</code>/2, five-story batch summary <code>6500</code>/2, and media description <code>300</code>/2 by default. DeepSeek reasoning tokens count against these output budgets; a successful HTTP response with empty or malformed completion content is retried and reports only sanitized response metadata such as finish reason, refusal presence, and tool-call count. A timeout or exhausted retry budget rejects the affected request through the ordinary failure path; partial output is never accepted.</p>
@@ -1095,7 +1213,10 @@
 
                     <section id="security">
                       <div class="section-kicker">Security review</div>
-                      <h2>Primary risks are permission breadth, provider boundaries, and edge hardening.</h2>
+                      <h2>For an owner-operated self-host, process privilege, credential custody, plaintext provider boundaries, and edge hardening remain primary risks.</h2>
+                      <div class="callout warning">
+                        <strong>Supported v1 threat model:</strong> one primary owner administers one independent instance; there is no Morning Post-operated shared API, database, or credential vault. The operator is the custodian, not an absence of custody. Host or process compromise can expose credentials and locally decrypted plaintext, and configured remote summarization sends selected content beyond the host. First-run setup and password-only login remove public email identity and open registration, but sessions, Argon2id hashing, atomic setup, PostgreSQL-backed rate limits, <code>userId</code> ownership filters, credential encryption, database TLS where applicable, protected backups, filesystem ACLs, updates, and host isolation remain required defense-in-depth. X Chat is on hold and contributes no current token, key, or plaintext asset.
+                      </div>
 
                       <h3>Security controls already in place</h3>
                       <table>
@@ -1113,9 +1234,14 @@
                             <td>Baseline resistance to offline password cracking; parameters are encoded in the hash.</td>
                           </tr>
                           <tr>
-                            <td>Login enumeration resistance</td>
-                            <td>Unknown email and bad password return the same message; dummy hash path is verified.</td>
-                            <td>Reduces user enumeration and simple timing leaks.</td>
+                            <td>Atomic owner setup</td>
+                            <td><code>POST /auth/setup</code> accepts only name and password, takes a PostgreSQL table lock, rechecks that no owner exists, inserts the internal sentinel email, and creates a session in the successful request.</td>
+                            <td>Two first-run requests cannot create two owners; no public registration or email identity is exposed.</td>
+                          </tr>
+                          <tr>
+                            <td>Password-only owner authentication</td>
+                            <td>Login resolves the deterministic earliest owner and verifies only <code>{password}</code>. A dummy Argon2id hash is verified when no owner exists, and failures return the same <code>invalid password</code> response.</td>
+                            <td>A public email identifier cannot be enumerated or used to select a legacy row; the public setup-status endpoint intentionally reports only whether an owner exists.</td>
                           </tr>
                           <tr>
                             <td>Session token storage</td>
@@ -1124,7 +1250,7 @@
                           </tr>
                           <tr>
                             <td>Cookie flags</td>
-                            <td><code>httpOnly: true</code>, <code>secure: true</code>, <code>sameSite: "Lax"</code>, <code>path: "/"</code>.</td>
+                            <td><code>__Host-session</code> with <code>httpOnly: true</code>, <code>secure: true</code>, <code>sameSite: "Lax"</code>, <code>path: "/"</code>, and no Domain attribute.</td>
                             <td>Protects the token from JavaScript read access and normal cross-site form posts.</td>
                           </tr>
                           <tr>
@@ -1149,8 +1275,8 @@
                           </tr>
                           <tr>
                             <td>Ownership scoping</td>
-                            <td>Repositories generally take <code>userId</code> and include ownership filters; route handlers use <code>requireAuth</code>.</td>
-                            <td>Prevents cross-user object access at the persistence layer.</td>
+                            <td>Repositories generally take <code>userId</code> and include ownership filters; route handlers use <code>requireAuth</code>. Public auth resolves only the earliest owner, while later legacy user rows remain inaccessible through login and scheduling.</td>
+                            <td>Contains route and persistence mistakes in the supported single-owner deployment and prevents retained legacy rows from becoming an accidental public multi-owner surface.</td>
                           </tr>
                           <tr>
                             <td>Input validation</td>
@@ -1197,22 +1323,24 @@
                         </tr>
                         <tr>
                           <td><span class="badge high">S4</span></td>
-                          <td>Rate limiting is process-local and can be bypassed in multi-instance deployments.</td>
-                          <td><code>rate-limit.ts</code> uses a module-level <code>Map</code>. The default key trusts <code>x-forwarded-for</code> or <code>x-real-ip</code> before falling back to <code>global</code>.</td>
-                          <td>For one VPS, document as best-effort only. Before public multi-instance deployment, use Redis/Postgres-backed shared counters and accept forwarding headers only from a trusted proxy path.</td>
+                          <td>Request limits must be shared, atomic, and proxy-aware.</td>
+                          <td><code>createRateLimitMiddleware()</code> calls <code>consumeRateLimit()</code>, which stores counters in PostgreSQL <code>rate_limit_buckets</code>. The direct Bun socket address is used by default; forwarded headers are consulted only when <code>TRUSTED_PROXY_COUNT</code> is positive.</td>
+                          <td>Retain PostgreSQL-backed counters for setup, login, and other limited routes; configure the exact trusted proxy hop count and periodically delete expired buckets.</td>
+                          <td><strong>Remediated.</strong> Shared PostgreSQL counters and explicit trusted-proxy handling are implemented in <code>src/server/middleware/rate-limit.ts</code> and <code>src/repositories/rate-limit-repository.ts</code>.</td>
                         </tr>
                         <tr>
                           <td><span class="badge high">S5</span></td>
-                          <td>Database transport security is not enforced by code.</td>
-                          <td><code>src/db/client.ts</code> calls <code>postgres(url)</code> directly. README examples use local <code>postgres://...</code> URLs.</td>
-                          <td>For remote production DBs, require <code>sslmode=require</code> or <code>verify-full</code> in <code>DATABASE_URL</code>, or enforce TLS in client configuration. Local Docker DB can stay plaintext on loopback.</td>
+                          <td>Database transport policy must distinguish loopback from remote PostgreSQL.</td>
+                          <td><code>getDatabaseClientOptions()</code> accepts only <code>disable</code>, <code>require</code>, or <code>verify-full</code>; it rejects <code>disable</code> when <code>DATABASE_URL</code> is not loopback and passes the selected mode to postgres.js.</td>
+                          <td>Keep plaintext transport limited to a loopback database. Use <code>require</code> or preferably <code>verify-full</code> whenever PostgreSQL is remote.</td>
+                          <td><strong>Remediated.</strong> <code>DB_SSL_MODE</code> is validated at startup, remote databases require TLS, and explicit pool/connect/idle options share the same configuration path in <code>src/db/client.ts</code>.</td>
                         </tr>
                         <tr>
                           <td><span class="badge medium">S6</span></td>
-                          <td>Session hardening is good but not complete for a credential-holding service.</td>
-                          <td>Cookie name is <code>session</code>, TTL is 30 days, <code>touchSession()</code> exists in the repository layer but <code>requireAuth</code> currently only validates and sets <code>userId</code>.</td>
-                          <td>Rename cookie to <code>__Host-session</code>. Decide shorter absolute TTL and sliding last-seen behavior. Add MFA/WebAuthn/TOTP to the security roadmap before broader multi-user exposure.</td>
-                          <td><strong>Remediated.</strong> Cookie renamed to <code>__Host-session</code>. Stable token (concurrent requests stay valid). 30-day idle expiry; <code>touchSessionIfDue()</code> extends without changing token; <code>requireAuth</code> sets refreshed <code>Set-Cookie</code> when <code>refreshExpiresAt</code> is non-null. MFA/WebAuthn/TOTP deferred. See <code>src/auth/session-service.ts</code>, <code>src/repositories/session-repository.ts</code>. Tests in <code>tests/server/session.test.ts</code>, <code>tests/server/security-audit.test.ts</code>.</td>
+                          <td>Session lifecycle is hardened for owner password authentication.</td>
+                          <td>The stable <code>__Host-session</code> token has a 30-day idle expiry. <code>requireAuth</code> validates the stored hash and <code>touchSessionIfDue()</code> extends the expiry without rotating the token under concurrent requests.</td>
+                          <td>Retain hashed token storage, idle refresh, origin validation, and secure cookie flags. MFA/WebAuthn/TOTP remains optional deferred hardening for higher-assurance operators, not a prerequisite for a broader account service.</td>
+                          <td><strong>Remediated.</strong> Cookie naming and flags, stable concurrent refresh, expiry enforcement, and logout revocation are implemented in <code>src/auth/session-service.ts</code> and <code>src/repositories/session-repository.ts</code>.</td>
                         </tr>
                         <tr>
                           <td><span class="badge medium">S7</span></td>
@@ -1245,7 +1373,8 @@
 
                     <section id="scalability">
                       <div class="section-kicker">Scalability review</div>
-                      <h2>The current shape supports moderate usage; the next bottlenecks are provider throughput, cold analysis volume, summary fan-out, database work, and multi-host media storage.</h2>
+                      <h2>The supported scale target is one owner's workload on one host; internal scoping and bounded pipeline work provide containment and predictable pressure.</h2>
+                      <p>The runtime is intentionally single-owner. Data remains <code>userId</code>-scoped and persistence operations remain idempotent, but public authentication, owner selection, and scheduling do not expose a multi-user service. Each digest tick recovers stale runs and processes zero or one deterministic owner. The former user paging, user-concurrency pool, PostgreSQL scheduler leases, and runtime leader election were removed rather than retained as unsupported distributed complexity.</p>
 
                       <h3>Scalability strengths</h3>
                       <table>
@@ -1258,14 +1387,9 @@
                         </thead>
                         <tbody>
                           <tr>
-                            <td>User paging</td>
-                            <td>Scheduler pages users by <code>(createdAt, id)</code> with default page size 100.</td>
-                            <td>A daily tick does not need to load all users into memory at once.</td>
-                          </tr>
-                          <tr>
-                            <td>Bounded per-process user concurrency</td>
-                            <td><code>DEFAULT_USER_CONCURRENCY = 5</code> in <code>digest-job.ts</code>.</td>
-                            <td>Prevents one process from starting all users at once.</td>
+                            <td>Single-owner scheduler bound</td>
+                            <td>A tick first recovers stale runs, then <code>findOwner()</code> loads at most the earliest <code>(createdAt, id)</code> row and invokes <code>runForUser()</code> once. Croner <code>protect: true</code> skips in-process callback overlap.</td>
+                            <td>Scheduled fan-out is constant: zero users before setup and one owner afterward. Legacy rows cannot multiply scheduled provider, database, or connector work.</td>
                           </tr>
                           <tr>
                             <td>Idempotent item cache</td>
@@ -1333,17 +1457,17 @@
                           </tr>
                           <tr>
                             <td><span class="badge high">P3</span></td>
-                            <td>Scheduler coordination is process-local.</td>
-                            <td><code>scheduleDigestJob()</code> registers a scheduler callback in each process. <code>runningUsers</code> is a module-level <code>Set</code> and only prevents overlap inside one runtime.</td>
-                            <td>Before running multiple API instances or workers, guard scheduled work with Postgres advisory locks or a dedicated job table with leased rows.</td>
-                            <td><strong>Remediated.</strong> <code>CronScheduler</code> retains uniquely named Croner jobs configured with <code>timezone: "UTC"</code>, <code>mode: "5-part"</code>, <code>protect: true</code>, and a sanitizing <code>catch</code> handler; <code>stop()</code> stops and clears all retained jobs. The <code>scheduler_leases</code> table with primary key <code>name</code> provides cross-process coordination: <code>tryAcquireSchedulerLease("digest-job")</code> runs before every tick and only the winner calls <code>runDigestTick</code>. See <code>src/scheduler/digest-job.ts</code>, <code>src/scheduler/scheduler.ts</code>, <code>src/server/main.ts</code>. Tests in <code>tests/scheduler/digest-job.test.ts</code> and <code>tests/scheduler/scheduler.test.ts</code>.</td>
+                            <td>The scheduler must match the supported single-process, single-owner deployment instead of implying distributed coordination.</td>
+                            <td><code>CronScheduler</code> retains uniquely named UTC five-part jobs with <code>protect: true</code> and a sanitizing <code>catch</code> handler. <code>runDigestTick()</code> performs stale recovery, loads at most one owner, and runs once.</td>
+                            <td>Operate one scheduler process per supported self-host. Treat Croner protection only as an in-process overlap guard; any future multi-process scheduling mode would require a new explicit design rather than an undocumented assumption.</td>
+                            <td><strong>Single-owner cutover completed.</strong> Migration <code>0021_large_madame_hydra.sql</code> drops <code>scheduler_leases</code>; the lease schema/repository, <code>SCHEDULER_LEASE_MS</code>, user paging/concurrency, and runtime leader election are removed.</td>
                           </tr>
                           <tr>
                             <td><span class="badge high">P4</span></td>
-                            <td>In-flight digest runs have no crash recovery state transition.</td>
-                            <td><code>runForUser()</code> creates <code>digest_runs.status = running</code> and marks finished at the end. A process crash between those points leaves running rows.</td>
-                            <td>On startup or scheduler tick, mark stale <code>running</code> runs older than a threshold as failed/stale, then retry based on period and idempotent upserts.</td>
-                            <td><strong>Remediated.</strong> <code>runForUser()</code> immediately finalizes unexpected in-process failures as <code>failed</code> without masking the original error. For process death or a database outage during finalization, API startup and each scheduler leader tick call <code>recoverStaleDigestRuns()</code>. It transactionally updates <code>running</code> rows older than <code>DIGEST_RUN_STALE_AFTER_MS</code> (default 15 min) and their still-running feed stages to <code>failed</code> with redacted error text. Fresh rows remain untouched for multi-instance safety. The partial unique index on <code>digest_runs(userId) WHERE status='running'</code> prevents duplicate active work. See <code>src/server/main.ts</code>, <code>src/services/orchestrator.ts</code>, and <code>src/repositories/digest-run-repository.ts</code>. Tests in <code>tests/server/main.test.ts</code>, <code>tests/services/orchestrator.test.ts</code>, and <code>tests/db/digest-run-repository.test.ts</code>.</td>
+                            <td>In-flight digest runs require crash recovery before new scheduled work.</td>
+                            <td><code>runForUser()</code> immediately finalizes unexpected in-process failures as <code>failed</code> without masking the original error. Process death can still leave a persisted <code>running</code> row until it becomes stale.</td>
+                            <td>Recover stale parent and running feed stages at API startup and before owner selection on each tick; preserve fresh and already-terminal rows, then rely on idempotent period persistence for retry.</td>
+                            <td><strong>Remediated.</strong> <code>recoverStaleDigestRuns()</code> runs at boot and first in every tick using <code>DIGEST_RUN_STALE_AFTER_MS</code> (default 15 minutes). The partial unique index on <code>digest_runs(userId) WHERE status='running'</code> prevents a second active run for the owner.</td>
                           </tr>
                           <tr>
                             <td><span class="badge high">P5</span></td>
@@ -1400,7 +1524,10 @@
 
                     <section id="roadmap">
                       <div class="section-kicker">Prioritized roadmap</div>
-                      <h2>Do hardening before horizontal scale; do payload budgets before summarizer concurrency.</h2>
+                      <h2>Remaining priorities harden the owner-operated deployment and improve throughput; X Chat is explicitly outside the current roadmap.</h2>
+                      <div class="callout">
+                        <strong>X Chat is on hold.</strong> It is not a current connector, milestone, or roadmap priority. The retained <a href="#x-chat-research">research subsection</a> records conditional constraints only so that a future reassessment would not lose prior security and API findings; no implementation work should be inferred from it.
+                      </div>
 
                       <h3>Phase 1 — production safety baseline</h3>
                       <table>
@@ -1446,7 +1573,8 @@
                         </tbody>
                       </table>
 
-                      <h3>Phase 2 — multi-user and multi-instance readiness</h3>
+                      <h3>Phase 2 — single-owner persistence and operational resilience</h3>
+                      <p>These completed or deferred capabilities support one owner on one independently operated host. Internal <code>userId</code> scoping remains defense-in-depth for upgraded databases; it does not advertise public multi-owner authentication or a shared Morning Post service.</p>
                       <table>
                         <thead>
                           <tr>
@@ -1458,22 +1586,22 @@
                         </thead>
                         <tbody>
                           <tr>
-                            <td>Shared rate limiter.</td>
-                            <td>Required once more than one API process can receive traffic.</td>
-                            <td>Postgres counters enforce the same limits across instances and ignore spoofed forwarding headers unless request came from a trusted proxy.</td>
-                            <td><strong>Completed.</strong> <code>rate_limit_buckets</code> table; trusted proxy via <code>TRUSTED_PROXY_COUNT</code>.</td>
+                            <td>PostgreSQL-backed rate limiter.</td>
+                            <td>Setup, login, and authenticated routes need atomic limits that survive process-local cache loss and use the correct client address behind an explicitly configured proxy.</td>
+                            <td>PostgreSQL counters enforce each bucket window; direct addresses are the default and forwarding headers are ignored unless the trusted proxy hop count is configured.</td>
+                            <td><strong>Completed.</strong> <code>rate_limit_buckets</code>, <code>consumeRateLimit()</code>, and <code>TRUSTED_PROXY_COUNT</code> implement the shared proxy-aware limiter.</td>
                           </tr>
                           <tr>
-                            <td>Distributed scheduler lock or leased job table.</td>
-                            <td>Prevents duplicate scheduled digests in multi-instance deployment.</td>
-                            <td>Only one worker processes a user-period at a time. Stale leases expire safely.</td>
-                            <td><strong>Completed.</strong> <code>scheduler_leases</code> table with atomic <code>tryAcquireSchedulerLease</code>.</td>
+                            <td>Single-owner scheduler cutover.</td>
+                            <td>Removing unused distributed machinery keeps runtime behavior aligned with the one-owner, one-scheduler support contract.</td>
+                            <td>Ticks recover stale runs first and process zero or one owner; Croner prevents in-process overlap. No lease, leader election, user page, or user-concurrency setting remains.</td>
+                            <td><strong>Completed.</strong> Migration <code>0021_large_madame_hydra.sql</code> drops <code>scheduler_leases</code>; runtime lease code and <code>SCHEDULER_LEASE_MS</code> are removed.</td>
                           </tr>
                           <tr>
                             <td>Crash recovery for digest runs.</td>
-                            <td>Operational truth must survive process death.</td>
-                            <td>Startup/tick reconciles stale <code>running</code> rows to failed and can retry idempotently.</td>
-                            <td><strong>Completed.</strong> <code>recoverStaleDigestRuns()</code> runs at API startup and leader tick start, transactionally failing stale parent runs and running feed stages while preserving fresh multi-instance work. Partial unique index prevents duplicates.</td>
+                            <td>Operational truth must survive process death before the next owner run begins.</td>
+                            <td>Startup and every tick reconcile stale <code>running</code> rows to failed while preserving fresh and already-terminal rows; period upserts and the running-user index make retry safe.</td>
+                            <td><strong>Completed.</strong> <code>recoverStaleDigestRuns()</code> runs at API startup and at tick start before deterministic owner selection.</td>
                           </tr>
                           <tr>
                             <td>Explicit database pool and TLS configuration.</td>
@@ -1483,9 +1611,9 @@
                           </tr>
                           <tr>
                             <td>Credential custody hardening.</td>
-                            <td>Telegram session strings are full-account bearer tokens.</td>
-                            <td>Master key moves off-box to KMS/Vault/secret manager, backup encryption uses a separate key, and MFA is available for user accounts.</td>
-                            <td><strong>Deferred.</strong> <code>KeyProvider</code> seam preserved; KMS/MFA/object-storage belong to separate provider/product plans.</td>
+                            <td>Telegram session strings are full-account bearer tokens even on a single-owner host.</td>
+                            <td>For higher-assurance self-hosts, move the master key off-box to KMS/Vault/secret manager, encrypt backups with a separate key, and consider MFA for operator access.</td>
+                            <td><strong>Deferred.</strong> The <code>KeyProvider</code> seam is preserved. Current credential encryption, owner authentication, ownership scoping, TLS options, backup protection, and host hardening remain defense-in-depth.</td>
                           </tr>
                         </tbody>
                       </table>
@@ -1537,19 +1665,22 @@
 
                     <section id="evidence">
                       <div class="section-kicker">Evidence map</div>
-                      <h2>Review claims are tied to observed files.</h2>
+                      <h2>Current-state claims are tied to observed files; the on-hold X Chat subsection cites official research sources without implying implementation status.</h2>
                       <dl class="decision-list">
                         <dt>Route and middleware shape</dt>
                         <dd><span class="path">src/server/app.ts</span>, <span class="path">src/server/routes/auth.ts</span>, <span class="path">src/server/routes/digests.ts</span>, <span class="path">src/server/routes/interests.ts</span>, <span class="path">src/server/routes/story-feedback.ts</span>, <span class="path">src/server/middleware/require-auth.ts</span>, <span class="path">src/server/middleware/rate-limit.ts</span>, <span class="path">src/server/middleware/origin-guard.ts</span>.</dd>
 
-                        <dt>Authentication and session storage</dt>
-                        <dd><span class="path">src/auth/password.ts</span>, <span class="path">src/auth/session-service.ts</span>, <span class="path">src/repositories/session-repository.ts</span>.</dd>
+                        <dt>Owner setup, password login, and session storage</dt>
+                        <dd><span class="path">src/server/routes/auth.ts</span>, <span class="path">src/services/owner-setup-service.ts</span>, <span class="path">src/services/login-service.ts</span>, <span class="path">src/repositories/user-repository.ts</span>, <span class="path">src/auth/password.ts</span>, <span class="path">src/auth/session-service.ts</span>, <span class="path">src/repositories/session-repository.ts</span>, and <span class="path">apps/web/src/app/AuthPanel.tsx</span>.</dd>
+
+                        <dt>PostgreSQL-backed rate limiting and proxy identity</dt>
+                        <dd><span class="path">src/server/middleware/rate-limit.ts</span>, <span class="path">src/repositories/rate-limit-repository.ts</span>, <span class="path">src/db/schema/rate-limit.ts</span>, and <span class="path">src/config.ts</span>.</dd>
 
                         <dt>Credential encryption and source custody</dt>
                         <dd><span class="path">src/crypto/credential-cipher.ts</span>, <span class="path">src/crypto/key-provider.ts</span>, <span class="path">src/db/schema/source.ts</span>, <span class="path">src/repositories/source-repository.ts</span>.</dd>
 
-                        <dt>Digest generation and scheduler behavior</dt>
-                        <dd><span class="path">src/services/orchestrator.ts</span>, <span class="path">src/services/ingestion-service.ts</span>, <span class="path">src/services/story-digest-service.ts</span>, <span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/services/digest-service.ts</span>, <span class="path">src/scheduler/digest-job.ts</span>, and <span class="path">src/server/main.ts</span>.</dd>
+                        <dt>Digest generation and single-owner scheduler behavior</dt>
+                        <dd><span class="path">src/services/orchestrator.ts</span>, <span class="path">src/services/ingestion-service.ts</span>, <span class="path">src/services/story-digest-service.ts</span>, <span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/services/digest-service.ts</span>, <span class="path">src/scheduler/digest-job.ts</span>, <span class="path">src/scheduler/scheduler.ts</span>, <span class="path">src/repositories/user-repository.ts</span>, <span class="path">src/server/main.ts</span>, and <span class="path">drizzle/0021_large_madame_hydra.sql</span>.</dd>
 
                         <dt>Story analysis and summarizer boundary</dt>
                         <dd><span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/summarizers/openai-compatible-summarizer.ts</span>, and <span class="path">src/summarizers/prompts.ts</span>.</dd>
@@ -1592,10 +1723,10 @@
                         <dd><span class="path">package.json</span>, <span class="path">bun.lock</span>, and <span class="path">README.md</span>.</dd>
                       </dl>
                       <div class="callout ok">
-        <strong>Documentation status:</strong> This HTML document reflects the connector-neutral story pipeline, relevance policies, durable story feedback, story-card web UI, historical legacy projection, scheduler/media lifecycle, and current production-hardening state implemented on 2026-07-23.
+        <strong>Documentation status:</strong> This HTML document reflects the single-owner auth cutover, retained internal ownership scoping, PostgreSQL-backed rate limiting, stale-recovery-first zero-or-one-owner scheduler, connector-neutral story pipeline, relevance policies, durable story feedback, story-card web UI, historical legacy projection, media lifecycle, and current production-hardening state as reviewed on 2026-07-26. X Chat is on hold, not observed runtime behavior or current roadmap work.
       </div>
                       <div class="callout">
-        <strong>Explicit deferrals:</strong> KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for multi-host media, and automatic feed theme classification are not implemented. Deployment-wide text/vision provider configuration, global story resolution, personalization, and the single-host media lifecycle are implemented.
+        <strong>Explicit status and deferrals:</strong> Public email registration/login is removed. New setup stores <code>owner@morning-post.invalid</code> only to satisfy the retained internal <code>users.email</code> invariant; upgraded databases keep all legacy rows while only the earliest row can log in or be scheduled. Migration <code>0021_large_madame_hydra.sql</code> removes scheduler leases, and <code>SCHEDULER_LEASE_MS</code>, user paging/concurrency, and runtime leader election are gone. KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for multi-host media, automatic feed theme classification, and the entire X Chat integration remain deferred; X Chat is specifically on hold. Deployment-wide text/vision provider configuration, global story resolution, personalization, PostgreSQL rate limiting, and the single-host media lifecycle are implemented. No shared Morning Post service, database, developer app, or centralized credential custody is part of the supported v1 posture.
       </div>
                     </section>
                     </main>

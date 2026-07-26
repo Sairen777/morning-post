@@ -29,13 +29,11 @@ function passRateLimit(): MiddlewareHandler {
 
 async function registerAndLogin(
   app: Hono<ServerEnvironment>,
-  email: string,
 ): Promise<{ userId: string; cookie: string }> {
   const registration = await app.request(
-    "/auth/register",
+    "/auth/setup",
     jsonRequest({
       name: "Ada Lovelace",
-      email,
       password: PASSWORD,
     }),
   );
@@ -43,7 +41,7 @@ async function registerAndLogin(
   const user = await registration.json();
   const login = await app.request(
     "/auth/login",
-    jsonRequest({ email, password: PASSWORD }),
+    jsonRequest({ password: PASSWORD }),
   );
   assertEquals(login.status, 200);
   const setCookie = login.headers.get("set-cookie");
@@ -82,10 +80,7 @@ test("POST /connectors/substack/session validates and returns a secret-free sour
         substackPublicationRateLimiter: passRateLimit(),
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { userId, cookie } = await registerAndLogin(
-      app,
-      "substack-route@example.com",
-    );
+    const { userId, cookie } = await registerAndLogin(app);
     const response = await app.request(
       "/connectors/substack/session",
       jsonRequest({
@@ -123,11 +118,7 @@ test("Substack session route enforces Morning Post auth and strict body validati
     );
     assertEquals(unauthenticated.status, 401);
 
-    const { cookie } = await registerAndLogin(
-      app,
-      "substack-route-validation@example.com",
-    );
-
+    const { cookie } = await registerAndLogin(app);
     const invalid = await app.request(
       "/connectors/substack/session",
       jsonRequest({
@@ -164,10 +155,7 @@ test("Substack session route bounds services that ignore abort", async () => {
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(
-      app,
-      "substack-route-timeout@example.com",
-    );
+    const { cookie } = await registerAndLogin(app);
     const response = await app.request(
       "/connectors/substack/session",
       jsonRequest({
@@ -185,6 +173,7 @@ test("Substack session route cancels its deadline before a deferred credential c
     const mutation = Promise.withResolvers<PublicSource>();
     let deadlineCallback: (() => void) | undefined;
     let deadlineCancelled = false;
+    let responseSettled = false;
     const now = Date.now();
     const source: PublicSource = {
       id: "00000000-0000-4000-8000-000000000112",
@@ -234,11 +223,7 @@ test("Substack session route cancels its deadline before a deferred credential c
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(
-      app,
-      "substack-route-deferred-commit@example.com",
-    );
-    let responseSettled = false;
+    const { cookie } = await registerAndLogin(app);
     const responsePromise = Promise.resolve(app.request(
       "/connectors/substack/session",
       jsonRequest({
@@ -321,17 +306,14 @@ test("Substack session route blocks a late credential commit after the deadline 
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(
-      app,
-      "substack-route-late-commit@example.com",
-    );
-    const responsePromise = Promise.resolve(app.request(
+    const { cookie } = await registerAndLogin(app);
+    const responsePromise = app.request(
       "/connectors/substack/session",
       jsonRequest({
         substackSessionId: "s%3Asubstack.signature",
         connectSessionId: "s%3Aconnect.signature",
       }, cookie),
-    ));
+    );
 
     await remoteValidationStarted.promise;
     assertExists(deadlineCallback);

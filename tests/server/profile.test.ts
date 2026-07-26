@@ -10,7 +10,6 @@ const PASSWORD = "analytical-engine-1843";
 
 interface RegisteredUser {
   id: string;
-  email: string;
   systemPrompt: string;
 }
 
@@ -28,20 +27,20 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono<ServerEnvironment>, email: string): Promise<RegisteredUser> {
+async function register(app: Hono<ServerEnvironment>): Promise<RegisteredUser> {
   const response = await app.request(
-    "/auth/register",
-    jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
+    "/auth/setup",
+    jsonRequest("POST", { name: "Ada Lovelace", password: PASSWORD }),
   );
   assertEquals(response.status, 201);
   const json = await response.json();
-  return { id: json.id, email: json.email, systemPrompt: json.systemPrompt };
+  return { id: json.id, systemPrompt: json.systemPrompt };
 }
 
-async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
+async function login(app: Hono<ServerEnvironment>): Promise<string> {
   const response = await app.request(
     "/auth/login",
-    jsonRequest("POST", { email, password: PASSWORD }),
+    jsonRequest("POST", { password: PASSWORD }),
   );
   assertEquals(response.status, 200);
   return extractCookie(response);
@@ -49,11 +48,10 @@ async function login(app: Hono<ServerEnvironment>, email: string): Promise<strin
 
 async function authenticatedApp(
   database: Database,
-  email: string,
 ): Promise<{ app: Hono<ServerEnvironment>; cookie: string; user: RegisteredUser }> {
   const app = buildApp(database);
-  const user = await register(app, email);
-  const cookie = await login(app, email);
+  const user = await register(app);
+  const cookie = await login(app);
   return { app, cookie, user };
 }
 
@@ -70,7 +68,7 @@ async function patchProfile(
 
 test("PATCH /auth/me updates systemPrompt and GET /auth/me reflects it", async () => {
   await withTestDb(async (database: Database) => {
-    const { app, cookie, user } = await authenticatedApp(database, "profile-happy@example.com");
+    const { app, cookie, user } = await authenticatedApp(database);
     const systemPrompt = "Prefer terse summaries with risks first.";
 
     const patchResponse = await patchProfile(app, cookie, { systemPrompt });
@@ -89,18 +87,16 @@ test("PATCH /auth/me updates systemPrompt and GET /auth/me reflects it", async (
 
 test("partial profile patch leaves unspecified fields intact", async () => {
   await withTestDb(async (database: Database) => {
-    const { app, cookie, user } = await authenticatedApp(database, "profile-partial@example.com");
+    const { app, cookie, user } = await authenticatedApp(database);
 
     const response = await patchProfile(app, cookie, { defaultLanguage: " fr " });
     assertEquals(response.status, 200);
     const json = await response.json();
     assertEquals(json.defaultLanguage, "fr");
     assertEquals(json.systemPrompt, user.systemPrompt);
-    assertEquals(json.email, user.email);
     assertEquals(json.name, "Ada Lovelace");
   });
 });
-
 test("unauthenticated PATCH /auth/me is rejected", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
@@ -115,7 +111,7 @@ test("unauthenticated PATCH /auth/me is rejected", async () => {
 
 test("PATCH /auth/me rejects email and passwordHash mutation attempts", async () => {
   await withTestDb(async (database: Database) => {
-    const { app, cookie } = await authenticatedApp(database, "profile-sensitive@example.com");
+    const { app, cookie } = await authenticatedApp(database);
 
     const emailResponse = await patchProfile(app, cookie, { email: "other@example.com" });
     assertEquals(emailResponse.status, 422);
@@ -129,9 +125,8 @@ test("PATCH /auth/me rejects email and passwordHash mutation attempts", async ()
 
 test("PATCH /auth/me rejects oversized systemPrompt", async () => {
   await withTestDb(async (database: Database) => {
-    const { app, cookie } = await authenticatedApp(database, "profile-oversized@example.com");
+    const { app, cookie } = await authenticatedApp(database);
     const oversizedPrompt = "x".repeat(8 * 1024 + 1);
-
     const response = await patchProfile(app, cookie, { systemPrompt: oversizedPrompt });
     assertEquals(response.status, 422);
     await response.body?.cancel();
@@ -140,7 +135,7 @@ test("PATCH /auth/me rejects oversized systemPrompt", async () => {
 
 test("PATCH /auth/me allows an empty systemPrompt and round-trips it", async () => {
   await withTestDb(async (database: Database) => {
-    const { app, cookie } = await authenticatedApp(database, "profile-empty@example.com");
+    const { app, cookie } = await authenticatedApp(database);
 
     const patchResponse = await patchProfile(app, cookie, { systemPrompt: "" });
     assertEquals(patchResponse.status, 200);
@@ -156,7 +151,7 @@ test("PATCH /auth/me allows an empty systemPrompt and round-trips it", async () 
 
 test("PATCH /auth/me trims name and language; unknown model fields are rejected", async () => {
   await withTestDb(async (database: Database) => {
-    const { app, cookie } = await authenticatedApp(database, "profile-trim@example.com");
+    const { app, cookie } = await authenticatedApp(database);
 
     const trimResponse = await patchProfile(app, cookie, {
       name: "  Ada Byron  ",
@@ -175,7 +170,7 @@ test("PATCH /auth/me trims name and language; unknown model fields are rejected"
 
 test("PATCH /auth/me rejects the removed defaultModel field", async () => {
   await withTestDb(async (database) => {
-    const { app, cookie } = await authenticatedApp(database, "profile-removed-model@example.com");
+    const { app, cookie } = await authenticatedApp(database);
     const response = await patchProfile(app, cookie, { defaultModel: "ignored" });
     assertEquals(response.status, 422);
     await response.body?.cancel();
@@ -184,7 +179,7 @@ test("PATCH /auth/me rejects the removed defaultModel field", async () => {
 
 test("PATCH /auth/me treats the story cap as cost-only while relevance changes invalidate stories", async () => {
   await withTestDb(async (database: Database) => {
-    const { app, cookie } = await authenticatedApp(database, "profile-filtering@example.com");
+    const { app, cookie } = await authenticatedApp(database);
 
     const initialResponse = await app.request("/auth/me", { headers: { cookie } });
     const initial = await initialResponse.json();
@@ -225,7 +220,7 @@ test("PATCH /auth/me treats the story cap as cost-only while relevance changes i
 
 test("PATCH /auth/me updates summaryPrompt and invalidates generated stories", async () => {
   await withTestDb(async (database: Database) => {
-    const { app, cookie } = await authenticatedApp(database, "profile-summary@example.com");
+    const { app, cookie } = await authenticatedApp(database);
     const initialResponse = await app.request("/auth/me", { headers: { cookie } });
     const initial = await initialResponse.json();
     assertEquals(initial.summaryPrompt, "");

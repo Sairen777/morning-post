@@ -12,13 +12,14 @@ import { createSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
 import type { FeedDiscoveryFactory, FeedDiscoveryHandle } from "../../src/services/feed-service.ts";
+import { createUser } from "../../src/repositories/user-repository.ts";
+import { createSession } from "../../src/auth/session-service.ts";
 
 const PASSWORD = "analytical-engine-1843";
 const MASTER_KEY_BYTES = new Uint8Array(32).fill(19);
 
 interface RegisteredUser {
   id: string;
-  email: string;
 }
 
 class FakeFeedDiscoveryFactory implements FeedDiscoveryFactory {
@@ -58,31 +59,36 @@ function extractCookie(response: Response): string {
   return header.split(";")[0];
 }
 
-async function register(app: Hono<ServerEnvironment>, email: string): Promise<RegisteredUser> {
+async function ownerSession(app: Hono<ServerEnvironment>): Promise<{ user: { id: string }; cookie: string }> {
   const response = await app.request(
-    "/auth/register",
-    jsonRequest("POST", { name: "Ada Lovelace", email, password: PASSWORD }),
+    "/auth/setup",
+    jsonRequest("POST", { name: "Ada Lovelace", password: PASSWORD }),
   );
   assertEquals(response.status, 201);
-  const json = await response.json();
-  return { id: json.id, email: json.email };
+  const user = await response.json();
+  const loginResp = await app.request(
+    "/auth/login",
+    jsonRequest("POST", { password: PASSWORD }),
+  );
+  assertEquals(loginResp.status, 200);
+  return { user: { id: user.id }, cookie: extractCookie(loginResp) };
 }
 
-async function login(app: Hono<ServerEnvironment>, email: string): Promise<string> {
-  const response = await app.request(
-    "/auth/login",
-    jsonRequest("POST", { email, password: PASSWORD }),
-  );
-  assertEquals(response.status, 200);
-  return extractCookie(response);
+async function strangerSession(database: Database, email: string): Promise<string> {
+  const stranger = await createUser(database, {
+    name: "Stranger",
+    email,
+    passwordHash: "$argon2id$fakehash",
+    systemPrompt: "Summarize tersely.",
+  });
+  const { token } = await createSession(database, stranger.id);
+  return `__Host-session=${token}`;
 }
 
 async function registerAndLogin(
   app: Hono<ServerEnvironment>,
-  email: string,
 ): Promise<{ user: RegisteredUser; cookie: string }> {
-  const user = await register(app, email);
-  const cookie = await login(app, email);
+  const { user, cookie } = await ownerSession(app);
   return { user, cookie };
 }
 
@@ -118,7 +124,7 @@ test("GET /sources/:id/available-feeds returns discovery results and disposes co
       { externalId: "group", name: "Group", kind: "discussion" },
     ]);
     const app = buildApp(database, { feeds: { discoveryFactory } });
-    const { user, cookie } = await registerAndLogin(app, "feeds-discovery@example.com");
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createOwnedSource(database, user.id, ConnectorId.Telegram);
 
     const response = await app.request(`/sources/${source.id}/available-feeds`, { headers: { cookie } });
@@ -133,7 +139,7 @@ test("generic discovery and subscription reject Substack sources", async () => {
   await withTestDb(async (database) => {
     const discoveryFactory = new FakeFeedDiscoveryFactory([]);
     const app = buildApp(database, { feeds: { discoveryFactory } });
-    const { user, cookie } = await registerAndLogin(app, "substack-feed-guard@example.com");
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createOwnedSource(database, user.id, ConnectorId.Substack);
 
     const discovery = await app.request(`/sources/${source.id}/available-feeds`, {
@@ -161,7 +167,7 @@ test("generic discovery and subscription reject Substack sources", async () => {
 test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "feeds-lifecycle@example.com");
+    const { user, cookie } = await registerAndLogin(app);
     const telegram = await createOwnedSource(database, user.id, ConnectorId.Telegram, 2);
     const rss = await createOwnedSource(database, user.id, ConnectorId.RSS, 1);
 
@@ -221,7 +227,7 @@ test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
 test("subscribing a soft-deleted feed revives the same row", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "feeds-revive@example.com");
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createOwnedSource(database, user.id, ConnectorId.Telegram);
 
     const firstResponse = await app.request(`/sources/${source.id}/feeds`, {
@@ -247,7 +253,7 @@ test("subscribing a soft-deleted feed revives the same row", async () => {
 test("subscribing a disconnected source is rejected", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "feeds-disconnected-source@example.com");
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createOwnedSource(database, user.id, ConnectorId.Telegram);
     const firstResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "same", name: "Old", kind: "news" }),
@@ -285,8 +291,8 @@ test("subscribing a disconnected source is rejected", async () => {
 test("feed routes keep users scoped to their own sources and feeds", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const { user: owner, cookie: ownerCookie } = await registerAndLogin(app, "feeds-owner@example.com");
-    const { cookie: otherCookie } = await registerAndLogin(app, "feeds-other@example.com");
+    const { user: owner, cookie: ownerCookie } = await registerAndLogin(app);
+    const otherCookie = await strangerSession(database, "feeds-other@example.com");
     const source = await createOwnedSource(database, owner.id, ConnectorId.Telegram);
     const feed = await createOrReviveFeed(database, {
       userId: owner.id,
@@ -320,7 +326,7 @@ test("feed routes keep users scoped to their own sources and feeds", async () =>
 test("feed routes validate bodies and parameters", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
-    const { user, cookie } = await registerAndLogin(app, "feeds-validation@example.com");
+    const { user, cookie } = await registerAndLogin(app);
     const source = await createOwnedSource(database, user.id, ConnectorId.Telegram);
     const feed = await createOrReviveFeed(database, {
       userId: user.id,

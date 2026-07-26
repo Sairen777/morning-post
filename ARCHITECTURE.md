@@ -216,11 +216,10 @@ section never renders preview/body text or claims access to it.
 
 Readable date formatting happens here.
 
-### 4. Persistence layer _(planned)_
+### 4. Persistence layer
 
-Multi-user storage for accounts, subscriptions, cached items, and generated
-summaries. No ORM/DB is chosen yet; the field-level model lives in `ROADMAP.md`
-→ Entities. The conceptual shape:
+Storage for accounts, subscriptions, cached items, and generated summaries
+using Drizzle ORM over PostgreSQL. The conceptual shape:
 
 - **User** directly owns its summarization `systemPrompt` (one editable field —
   no separate profile or tag entities) and many **Source** rows (one per
@@ -275,13 +274,11 @@ account.
 user is offline, so the server must decrypt and use a credential without the
 user present. That rules out client-side / end-to-end custody (the desktop-app
 OS-keychain model): a service that acts on your behalf at 6am must hold the
-decryption capability at 6am — user-/password-derived keys can't be present then
-without caching them server-side, which restores server custody. **Per-user data
-keys therefore limit blast radius and enable per-user revocation/rotation; they
-do not make the server unable to read.** The achievable goal is not "even we
-can't read it" but: a DB/backup leak alone does not expose secrets, access can
-be revoked instantly, and we hold the least-powerful credential each connector
-allows — the trusted-custodian posture of any SaaS that holds your OAuth tokens.
+decryption capability at 6am. User- or password-derived keys cannot be present
+at that hour without caching them server-side, which restores server custody.
+A DB/backup leak alone does not expose secrets, access can be revoked instantly,
+and we hold the least-powerful credential each connector allows — the
+trusted-custodian posture of any SaaS that holds your OAuth tokens.
 
 - **Encrypt at the application layer** with authenticated encryption
   (AES-256-GCM or libsodium secretbox). The key lives **outside the DB** — env
@@ -297,19 +294,17 @@ allows — the trusted-custodian posture of any SaaS that holds your OAuth token
   and make "disconnect" delete the row. For Telegram, prompt the user to revoke
   the session in Telegram → Devices, since deleting your copy cannot revoke a
   copy an attacker already exfiltrated.
-- **This deploy — multi-user on a VPS.** App, DB, and backups share one box, so
-  a key sitting on that box barely raises the bar: a rooted VPS reads decrypted
-  secrets regardless. The moves that matter: (1) **envelope encryption with
-  per-user data keys** so one user's leak is not everyone's; (2) hold the
-  **master key off the box** — a managed KMS or external secrets service (cloud
-  KMS, Vault, Infisical/Doppler, or SOPS+age injected at runtime), never on the
-  VPS disk or in DB backups. That removes the key from the backup/snapshot blast
-  radius and gives a **revocation kill-switch**: revoke the master key and every
-  stored credential is instantly dead. Also encrypt backups with a separate key
-  and keep the DB off the public network behind a least-privilege user. Honest
-  residual: a KMS limits offline/backup exposure and enables revocation, but
-  cannot stop a currently-rooted box from using the key in-process. (The
-  OS-keychain option applies only to a single-user local build — not this one.)
+- **This deploy — self-hosted, single owner.** App, DB, and backups share one
+  box, so a key sitting on that box barely raises the bar: a rooted host reads
+  decrypted secrets regardless. The moves that matter: (1) hold the **master key
+  off the box** — a managed KMS or external secrets service (cloud KMS, Vault,
+  Infisical/Doppler, or SOPS+age injected at runtime), never on the disk or in
+  DB backups. That removes the key from the backup/snapshot blast radius and
+  gives a **revocation kill-switch**: revoke the master key and every stored
+  credential is instantly dead. (2) Encrypt backups with a separate key and keep
+  the DB off the public network behind a least-privilege user. Honest residual:
+  a KMS limits offline/backup exposure and enables revocation, but cannot stop a
+  currently-rooted box from using the key in-process.
 
 #### Scheduling, caching & lifecycle invariants
 
@@ -391,6 +386,29 @@ heading, and never include facts from another article.
 
 ### 5. Session lifecycle
 
+#### First-run owner setup
+
+On a fresh database (no users), `GET /auth/setup` returns
+`{ setupRequired: true }`. The first caller submits `POST /auth/setup`
+with `{ name, password }`; the service atomically creates the owner with
+email `owner@morning-post.invalid` (a unique non-null legacy column) and
+returns a session cookie immediately. Subsequent calls return 409 —
+setup is one-shot. See `src/services/owner-setup-service.ts` and
+`src/server/routes/auth.ts`.
+
+#### Password-only login
+
+Login is `POST /auth/login { password }`. The service looks up the owner
+by the `owner@morning-post.invalid` email, verifies the argon2id hash, and
+creates a session. A dummy hash provides timing-constant comparison when
+no owner exists yet, preventing user-enumeration. See
+`src/services/login-service.ts`.
+
+Logout (`POST /auth/logout`) revokes the session token immediately.
+`GET /auth/me` returns the authenticated user's profile; `/auth/me` may
+also be patched to update profile fields. The `/auth/register` endpoint and
+public email-based registration do not exist.
+
 Sessions use the `__Host-session` cookie (HttpOnly, Secure, SameSite=Lax,
 Path=/). Tokens are stable 256-bit random values; the database stores only the
 SHA-256 hash. Concurrent SPA requests never invalidate one another — each token
@@ -430,7 +448,7 @@ atomic `INSERT ... ON CONFLICT DO UPDATE WHERE resetsAt > now` statement. The
 consumption; delete expired rows opportunistically.
 
 `createRateLimitMiddleware` receives a `Database` instance and uses stable
-literal namespaces: `auth-register`, `auth-login`, `telegram-login`,
+literal namespaces: `auth-setup`, `auth-login`, `telegram-login`,
 `telegram-two-factor`, and `digest-run`. Digest-run keys are `userId`; pre-auth
 keys use the client address resolved through `getConnInfo` and the configured
 `TRUSTED_PROXY_COUNT`. When `TRUSTED_PROXY_COUNT=0`, forwarded headers are
@@ -439,23 +457,19 @@ the same rate-limit buckets. See `src/server/middleware/rate-limit.ts` and
 `src/repositories/rate-limit-repository.ts`. {/* Tests:
 tests/server/rate-limit.test.ts, tests/db/rate-limit-repository.test.ts */}
 
-### 8. Scheduling and multi-instance coordination
+### 8. Scheduling
 
-**Scheduler lease.** A `scheduler_leases` table with primary key `name` supports
-leader election.
-`tryAcquireSchedulerLease(database, "digest-job",
-ownerId, now, leaseMs)` uses
-an atomic insert/upsert; only the acquiring process calls `runDigestTick`.
-Croner invokes the UTC five-field callback in every process with in-process
-overlap protection, while the database lease ensures only the leader calls
-`runDigestTick`. See `src/scheduler/digest-job.ts`,
-`src/scheduler/scheduler.ts`, `src/server/main.ts`.
+Croner runs the UTC five-field digest job with `protect: true` preventing
+callback overlap (see `src/scheduler/scheduler.ts`). The scheduled callback
+(`scheduleDigestJob` in `src/scheduler/digest-job.ts`) recovers stale runs
+then processes the single owner. Migration `0021_large_madame_hydra` removed
+the `scheduler_leases` table; there is no leader election, database lease, or
+per-user paging — the scheduler is owner-only.
 
 **Active-run uniqueness.** A partial unique index on
-`digest_runs(userId) WHERE
-status = 'running'` prevents duplicate active digest
+`digest_runs(userId) WHERE status = 'running'` prevents duplicate active digest
 runs per user. `createDigestRun` surfaces a typed conflict result; manual
-`/digests/run` returns a controlled error, and the scheduler skips the user and
+`/digests/run` returns a controlled error, and the scheduler skips and
 continues. See `src/repositories/digest-run-repository.ts`.
 
 **In-process run finalization.** `runForUser` owns an outer lifecycle boundary
@@ -465,18 +479,15 @@ of that exact run to `failed` with a sanitized error before the original error
 is rethrown. This prevents ordinary application failures from occupying the
 active-run uniqueness slot.
 
-**Stale-run recovery.** `recoverStaleDigestRuns(database, now,
-staleAfterMs)`
+**Stale-run recovery.** `recoverStaleDigestRuns(database, now, staleAfterMs)`
 updates `running` rows older than the threshold to `failed`, storing a redacted
-error message. Recovery runs at the start of each leader tick. The active-run
-unique index prevents duplicate work after recovery. See
+error message. Recovery runs at the start of each tick. The active-run unique
+index prevents duplicate work after recovery. See
 `src/repositories/digest-run-repository.ts`.
 
-Configuration: `DIGEST_RUN_STALE_AFTER_MS` (default 15 minutes) and
-`SCHEDULER_LEASE_MS` (default 90 seconds). {/* Tests:
+Configuration: `DIGEST_RUN_STALE_AFTER_MS` (default 15 minutes). {/* Tests:
 tests/services/orchestrator.test.ts, tests/scheduler/digest-job.test.ts,
 tests/db/digest-run-repository.test.ts */}
-
 ### 9. Connector batching and deadlines
 
 **Source batching.** When two or more feeds need ingestion from the same source,
@@ -595,6 +606,8 @@ plans:
   multi-host scaling requires it.
 - **Automatic feed theme classification.** Per-feed `customPrompt` handles
   manual steering; LLM-inferred theming is deferred.
+- **X Chat integration.** No implementation work is active; scope and timeline
+  are undetermined, and it is not a current roadmap priority.
 
 ### 14. Runtime network boundary
 
@@ -630,7 +643,7 @@ avoids an HTTP proxy hop and DNS rebinding between validation and connection.
   status, error) is deferred — console/file logs suffice until there is a real
   scheduler with failure history worth mining. Re-add additively later.
 - **Connector feed-filtering**: today `getNormalizedData(from, to)` fetches
-  every dialog. Multi-user makes that wasteful — each user only wants their
-  subscriptions. The interface should evolve to accept the user's subscribed
-  feed external ids (constructor arg or per-call) so a fetch is scoped to one
-  user's feeds. Belongs with the persistence-integration phase.
+  every dialog for the owner. For future multi-owner or multi-feed deployments,
+  the interface should evolve to accept the user's subscribed feed external ids
+  (constructor arg or per-call) so a fetch is scoped to one user's feeds.
+  Belongs with the persistence-integration phase.

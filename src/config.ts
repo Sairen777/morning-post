@@ -79,7 +79,6 @@ export interface Config {
   mediaTtlMs: number;
   mediaQuotaBytes: number;
   digestRunStaleAfterMs: number;
-  schedulerLeaseMs: number;
 }
 
 export interface AppSecurityOptions {
@@ -118,7 +117,6 @@ const DEFAULT_SUMMARIZATION_CONCURRENCY = 2;
 const DEFAULT_MEDIA_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MEDIA_QUOTA_BYTES = 500 * 1024 * 1024;
 const DEFAULT_DIGEST_RUN_STALE_AFTER_MS = 15 * 60 * 1_000;
-const DEFAULT_SCHEDULER_LEASE_MS = 90_000;
 const DEFAULT_SUMMARIZER_MODEL = "local-model";
 const DEFAULT_SUMMARIZER_BASE_URL = "http://127.0.0.1:1234/v1";
 
@@ -630,12 +628,6 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
       "DIGEST_RUN_STALE_AFTER_MS",
       overrides.digestRunStaleAfterMs,
       DEFAULT_DIGEST_RUN_STALE_AFTER_MS,
-    ),
-    schedulerLeaseMs: numberSetting(
-      "SCHEDULER_LEASE_MS",
-      "SCHEDULER_LEASE_MS",
-      overrides.schedulerLeaseMs,
-      DEFAULT_SCHEDULER_LEASE_MS,
     ),
   };
 }

@@ -1,10 +1,12 @@
 import { test } from "bun:test";
 import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts"
+import { eq } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
+import { users } from "../../src/db/schema/user.ts";
 import {
   createUser,
   type CreateUserInput,
-  findUserByEmail,
+  findOwner,
   findUserById,
   updateUser,
 } from "../../src/repositories/user-repository.ts";
@@ -48,28 +50,47 @@ test("createUser then findUserById round-trips all fields", async () => {
   });
 });
 
-test("createUser stores email lowercased; findUserByEmail is case-insensitive", async () => {
+test("createUser retains and normalizes internal fixture email", async () => {
   await withTestDb(async (database) => {
     const created = await createUser(database, userInput({ email: "Foo@X.com" }));
     assertEquals(created.email, "foo@x.com");
 
-    const byUpper = await findUserByEmail(database, "Foo@X.com");
-    assertExists(byUpper);
-    assertEquals(byUpper.id, created.id);
-
-    const byLower = await findUserByEmail(database, "foo@x.com");
-    assertExists(byLower);
-    assertEquals(byLower.id, created.id);
+    const owner = await findOwner(database);
+    assertExists(owner);
+    assertEquals(owner.id, created.id);
+    assertEquals(owner.email, "foo@x.com");
   });
 });
 
-test("findUserById / findUserByEmail return null when absent", async () => {
+test("findUserById and findOwner return null when absent", async () => {
   await withTestDb(async (database) => {
     const byId = await findUserById(database, "00000000-0000-0000-0000-000000000000");
     assertEquals(byId, null);
+    assertEquals(await findOwner(database), null);
+  });
+});
 
-    const byEmail = await findUserByEmail(database, "nobody@example.com");
-    assertEquals(byEmail, null);
+test("findOwner orders users by createdAt and then id", async () => {
+  await withTestDb(async (database) => {
+    const first = await createUser(database, userInput({ email: "first@example.com" }));
+    const second = await createUser(database, userInput({ email: "second@example.com" }));
+
+    await database
+      .update(users)
+      .set({ createdAt: 2 })
+      .where(eq(users.id, first.id));
+    await database
+      .update(users)
+      .set({ createdAt: 1 })
+      .where(eq(users.id, second.id));
+    assertEquals((await findOwner(database))?.id, second.id);
+
+    await database
+      .update(users)
+      .set({ createdAt: 1 })
+      .where(eq(users.id, first.id));
+    const expectedTieWinner = first.id < second.id ? first.id : second.id;
+    assertEquals((await findOwner(database))?.id, expectedTieWinner);
   });
 });
 

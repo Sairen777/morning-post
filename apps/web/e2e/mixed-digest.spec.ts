@@ -8,7 +8,6 @@ import type {
 const user = {
   id: "user-mixed-digest",
   name: "Mixed digest reader",
-  email: "mixed-digest@example.com",
   systemPrompt: "Summarize clearly",
   summaryPrompt: "Summarize clearly",
   defaultLanguage: "en",

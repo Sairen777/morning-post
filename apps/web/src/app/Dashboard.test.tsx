@@ -26,7 +26,6 @@ const source: PublicSource = {
 const user: PublicUser = {
   id: "user-1",
   name: "Dashboard Reader",
-  email: "dashboard-reader@example.com",
   systemPrompt: "",
   summaryPrompt: "",
   defaultLanguage: null,

@@ -65,7 +65,6 @@ const ENV_KEYS = [
   "MEDIA_TTL_MS",
   "MEDIA_QUOTA_BYTES",
   "DIGEST_RUN_STALE_AFTER_MS",
-  "SCHEDULER_LEASE_MS",
 ] as const;
 type EnvKey = (typeof ENV_KEYS)[number];
 
@@ -112,7 +111,6 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.mediaTtlMs, 604_800_000);
   assertEquals(config.mediaQuotaBytes, 524_288_000);
   assertEquals(config.digestRunStaleAfterMs, 900_000);
-  assertEquals(config.schedulerLeaseMs, 90_000);
   assertEquals(config.analysisMaxItemsPerRequest, 50);
   assertEquals(config.classificationMaxItemsPerRequest, 100);
   assertEquals(config.summaryBatchMaxStories, 5);
@@ -251,7 +249,6 @@ test("environment values override defaults and parse strictly", () => {
       MEDIA_TTL_MS: "7000",
       MEDIA_QUOTA_BYTES: "9000",
       DIGEST_RUN_STALE_AFTER_MS: "10000",
-      SCHEDULER_LEASE_MS: "11000",
       ANALYSIS_MAX_ITEMS_PER_REQUEST: "42",
       CLASSIFICATION_MAX_ITEMS_PER_REQUEST: "84",
       SUMMARY_BATCH_MAX_STORIES: "25",
@@ -289,7 +286,6 @@ test("environment values override defaults and parse strictly", () => {
     assertEquals(config.mediaTtlMs, 7000);
     assertEquals(config.mediaQuotaBytes, 9000);
     assertEquals(config.digestRunStaleAfterMs, 10000);
-    assertEquals(config.schedulerLeaseMs, 11000);
     assertEquals(config.analysisMaxItemsPerRequest, 42);
     assertEquals(config.classificationMaxItemsPerRequest, 84);
     assertEquals(config.summaryBatchMaxStories, 25);

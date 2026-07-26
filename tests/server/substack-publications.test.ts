@@ -33,13 +33,11 @@ function passRateLimit(): MiddlewareHandler {
 
 async function registerAndLogin(
   app: Hono<ServerEnvironment>,
-  email: string,
 ): Promise<{ userId: string; cookie: string }> {
   const registration = await app.request(
-    "/auth/register",
+    "/auth/setup",
     jsonRequest({
       name: "Ada Lovelace",
-      email,
       password: PASSWORD,
     }),
   );
@@ -47,7 +45,7 @@ async function registerAndLogin(
   const user = await registration.json();
   const login = await app.request(
     "/auth/login",
-    jsonRequest({ email, password: PASSWORD }),
+    jsonRequest({ password: PASSWORD }),
   );
   assertEquals(login.status, 200);
   const setCookie = login.headers.get("set-cookie");
@@ -100,10 +98,7 @@ test("POST /connectors/substack/publications creates a canonical publication fee
         substackPublicationRateLimiter: passRateLimit(),
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { userId, cookie } = await registerAndLogin(
-      app,
-      "substack-publication-route@example.com",
-    );
+    const { userId, cookie } = await registerAndLogin(app);
     const response = await app.request(
       "/connectors/substack/publications",
       jsonRequest({
@@ -128,6 +123,7 @@ test("Substack publication route cancels its deadline before a deferred feed com
     >();
     let deadlineCallback: (() => void) | undefined;
     let deadlineCancelled = false;
+    let responseSettled = false;
     const now = Date.now();
     const source: PublicSource = {
       id: "00000000-0000-4000-8000-000000000213",
@@ -192,11 +188,7 @@ test("Substack publication route cancels its deadline before a deferred feed com
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(
-      app,
-      "substack-publication-deferred-commit@example.com",
-    );
-    let responseSettled = false;
+    const { cookie } = await registerAndLogin(app);
     const responsePromise = Promise.resolve(app.request(
       "/connectors/substack/publications",
       jsonRequest({ publicationUrl: "https://example.substack.com" }, cookie),
@@ -291,14 +283,11 @@ test("Substack publication route blocks a late feed commit after the deadline wi
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(
-      app,
-      "substack-publication-late-commit@example.com",
-    );
-    const responsePromise = Promise.resolve(app.request(
+    const { cookie } = await registerAndLogin(app);
+    const responsePromise = app.request(
       "/connectors/substack/publications",
       jsonRequest({ publicationUrl: "https://example.substack.com" }, cookie),
-    ));
+    );
 
     await remoteProbeStarted.promise;
     assertExists(deadlineCallback);
@@ -324,10 +313,7 @@ test("Substack publication route rejects schema-invalid bodies", async () => {
         substackPublicationRateLimiter: passRateLimit(),
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(
-      app,
-      "substack-publication-validation@example.com",
-    );
+    const { cookie } = await registerAndLogin(app);
     const response = await app.request(
       "/connectors/substack/publications",
       jsonRequest({
@@ -363,10 +349,7 @@ test("GET /connectors/substack/publications requires auth and returns a direct a
     assertEquals(unauthorized.status, 401);
     assertEquals(calls, []);
 
-    const { userId, cookie } = await registerAndLogin(
-      app,
-      "substack-publication-discovery@example.com",
-    );
+    const { userId, cookie } = await registerAndLogin(app);
     const response = await app.request("/connectors/substack/publications", {
       headers: { cookie, Origin: ORIGIN },
     });
@@ -404,14 +387,11 @@ test("GET /connectors/substack/publications uses the connector deadline", async 
         },
       },
     }, { allowedOrigins: [ORIGIN], maxRequestBodyBytes: 1_000_000 });
-    const { cookie } = await registerAndLogin(
-      app,
-      "substack-publication-discovery-deadline@example.com",
-    );
-    const responsePromise = Promise.resolve(app.request(
+    const { cookie } = await registerAndLogin(app);
+    const responsePromise = app.request(
       "/connectors/substack/publications",
       { headers: { cookie, Origin: ORIGIN } },
-    ));
+    );
     await started.promise;
     assertExists(deadlineCallback);
     deadlineCallback();
