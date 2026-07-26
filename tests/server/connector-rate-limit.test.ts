@@ -231,6 +231,7 @@ test("Substack session, publication, and discovery routes use separate rate-limi
       position: null,
       enabled: true,
       showPaidPostTitles: false,
+      summarizationMode: "basic",
       connected: true,
       relevanceFilterMode: "inherit",
       createdAt: now,

@@ -77,15 +77,20 @@ test("source repository encrypts at rest and decrypts with owner-bound context",
     assertEquals(created.userId, user.id);
     assertEquals(created.connectorId, ConnectorId.Telegram);
     assertEquals(created.enabled, true);
+    assertEquals(created.summarizationMode, "basic");
     assert(!("credentials" in created));
 
     const rows = await database
-      .select({ credentials: sources.credentials })
+      .select({
+        credentials: sources.credentials,
+        summarizationMode: sources.summarizationMode,
+      })
       .from(sources)
       .where(eq(sources.id, created.id))
       .limit(1);
     assertExists(rows[0]);
     assertEquals(typeof rows[0].credentials, "object");
+    assertEquals(rows[0].summarizationMode, "basic");
     assert(
       !JSON.stringify(rows[0].credentials).includes(
         telegramCredentials.sessionString,
@@ -159,6 +164,7 @@ test("source repository hides credentials in public list shape", async () => {
     assertEquals(listed.length, 1);
     assert(!("credentials" in listed[0]));
     assertEquals(Object.keys(listed[0]).includes("credentials"), false);
+    assertEquals(listed[0].summarizationMode, "basic");
   });
 });
 
@@ -184,23 +190,32 @@ test("source repository finds, updates, and orders public source rows", async ()
         ConnectorId.RSS,
       ),
       position: 3,
+      summarizationMode: "thorough",
     });
+    assertEquals(rss.summarizationMode, "thorough");
 
     const updated = await updateSource(database, rss.id, user.id, {
       enabled: false,
       position: 1,
+      summarizationMode: "basic",
     });
     assertEquals(updated.enabled, false);
     assertEquals(updated.position, 1);
+    assertEquals(updated.summarizationMode, "basic");
     assert(!("credentials" in updated));
 
     const found = await findSourceById(database, rss.id, user.id);
     assertExists(found);
     assertEquals(found.id, rss.id);
     assertEquals(found.enabled, false);
+    assertEquals(found.summarizationMode, "basic");
 
     const listed = await listSourcesForUser(database, user.id);
     assertEquals(listed.map((source) => source.id), [rss.id, telegram.id]);
+    assertEquals(
+      listed.map((source) => source.summarizationMode),
+      ["basic", "basic"],
+    );
   });
 });
 
@@ -334,6 +349,7 @@ test("deleteSourceCredentials disconnects by wiping credentials and disabling so
       user.id,
     );
     assertEquals(disconnected.enabled, false);
+    assertEquals(disconnected.summarizationMode, "basic");
     assert(!("credentials" in disconnected));
 
     const rows = await database

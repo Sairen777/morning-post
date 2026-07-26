@@ -13,6 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { EncryptedBlob } from "../../crypto/credential-cipher.ts";
 import type { RelevanceFilterOverride } from "../../personalization/personalization.types.ts";
+import type { SourceSummarizationMode } from "../../summarization-mode.ts";
 import { users } from "./user.ts";
 
 /**
@@ -35,6 +36,10 @@ export const sources = pgTable(
     showPaidPostTitles: boolean("show_paid_post_titles").notNull().default(
       false,
     ),
+    summarizationMode: text("summarization_mode")
+      .$type<SourceSummarizationMode>()
+      .notNull()
+      .default("basic"),
     relevanceFilterMode: text("relevance_filter_mode")
       .$type<RelevanceFilterOverride>()
       .notNull()
@@ -55,6 +60,10 @@ export const sources = pgTable(
     check(
       "sources_credentials_disabled_check",
       sql`${table.credentials} is not null or ${table.enabled} = false`,
+    ),
+    check(
+      "sources_summarization_mode_check",
+      sql`${table.summarizationMode} in ('basic', 'thorough')`,
     ),
     check(
       "sources_relevance_filter_mode_check",

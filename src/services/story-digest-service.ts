@@ -1,5 +1,6 @@
 import type { Database } from "../db/client.ts";
 import { ConnectorId, DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../constants.ts";
+import type { SourceSummarizationMode } from "../summarization-mode.ts";
 import { getSummarizerBudgetConfig } from "../config.ts";
 import type { PublicFeed } from "../repositories/feed-repository.ts";
 import { listActiveInterestRules } from "../repositories/interest-rule-repository.ts";
@@ -25,7 +26,12 @@ import type {
   StoryRelevanceDecision,
   StorySource,
 } from "../personalization/story.types.ts";
-import { DEFAULT_SYSTEM_PROMPT, buildBatchStorySummaryPrompt, buildStorySummaryPrompt } from "../summarizers/prompts.ts";
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  buildBatchStorySummaryPrompt,
+  buildStorySummaryPrompt,
+  buildThoroughStorySummaryPrompt,
+} from "../summarizers/prompts.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
 import { serializeBatchSummaryInput, type BatchSummaryInput, type SummarizerService, type SummaryPoint } from "../summarizers/summarizer.types.ts";
 import {
@@ -46,6 +52,7 @@ import {
 import type { ModelAttemptTelemetry } from "../summarizers/openai-compatible-client.ts";
 
 export const CURRENT_STORY_SUMMARY_VERSION = "story-summary-v2";
+export const THOROUGH_STORY_SUMMARY_VERSION = "story-summary-thorough-v1";
 
 export interface StoryDigestDependencies {
   intelligence?: StoryIntelligenceService;
@@ -153,6 +160,25 @@ function storyHasMedia(story: PersistedStoryCandidate): boolean {
   return story.candidate.developments.some((development) =>
     development.items.some((item) => item.payload.media !== undefined)
   );
+}
+
+function resolveStorySummarizationMode(
+  story: PersistedStoryCandidate,
+  sourceById: Map<string, PublicSource>,
+): SourceSummarizationMode {
+  return story.candidate.developments.some((development) =>
+      development.items.some((item) =>
+        sourceById.get(item.sourceId)!.summarizationMode === "thorough"
+      )
+    )
+    ? "thorough"
+    : "basic";
+}
+
+function summaryVersionForMode(mode: SourceSummarizationMode): string {
+  return mode === "thorough"
+    ? THOROUGH_STORY_SUMMARY_VERSION
+    : CURRENT_STORY_SUMMARY_VERSION;
 }
 
 export async function assembleStoryDigest(
@@ -375,10 +401,18 @@ export async function assembleStoryDigest(
     0,
     user.maximumStoriesPerDigest ?? DEFAULT_MAXIMUM_STORIES_PER_DIGEST,
   );
+  const summarizationModeByStoryId = new Map(
+    selected.map((story) => [
+      story.id,
+      resolveStorySummarizationMode(story, sourceById),
+    ]),
+  );
   const storyRules = buildStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
   storyRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), storyRules.systemPrompt].filter(Boolean).join("\n\n");
   const batchRules = buildBatchStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
   batchRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), batchRules.systemPrompt].filter(Boolean).join("\n\n");
+  const thoroughStoryRules = buildThoroughStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
+  thoroughStoryRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), thoroughStoryRules.systemPrompt].filter(Boolean).join("\n\n");
   if (runId) reportDigestProgress(progress, {
     event: "summarization",
     runId,
@@ -394,7 +428,12 @@ export async function assembleStoryDigest(
     generatedAt: number;
   };
   const summaries: PromiseSettledResult<SummaryValue>[] = new Array(selected.length);
-  const uncached: Array<{ index: number; story: PersistedStoryCandidate }> = [];
+  type SummaryEntry = {
+    index: number;
+    story: PersistedStoryCandidate;
+    mode: SourceSummarizationMode;
+  };
+  const uncached: SummaryEntry[] = [];
   const makeSummary = (
     story: PersistedStoryCandidate,
     points: SummaryPoint[],
@@ -402,19 +441,25 @@ export async function assembleStoryDigest(
     const items = story.candidate.developments.flatMap((development) => development.items);
     const decision = decisionById.get(story.id)!;
     const sources: StorySource[] = items.map((item) => ({ itemId: item.itemId, connectorId: connectorBySource.get(item.sourceId)!, sourceId: item.sourceId, feedId: item.feedId, feedName: item.feedName, title: item.payload.title, url: item.payload.url, publishedAt: item.payload.date }));
-    return { content: { storyId: story.id, storyVersion: story.version, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, points, sources, relevanceScore: decision.score, matchedInterestRuleIds: decision.matchedInterestRuleIds }, profileVersion: user.interestProfileVersion, summaryVersion: CURRENT_STORY_SUMMARY_VERSION, generatedAt: now() };
+    const summaryVersion = summaryVersionForMode(
+      summarizationModeByStoryId.get(story.id)!,
+    );
+    return { content: { storyId: story.id, storyVersion: story.version, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, points, sources, relevanceScore: decision.score, matchedInterestRuleIds: decision.matchedInterestRuleIds }, profileVersion: user.interestProfileVersion, summaryVersion, generatedAt: now() };
   };
   const reusableInputs = selected.flatMap((story) => {
+    const summaryVersion = summaryVersionForMode(
+      summarizationModeByStoryId.get(story.id)!,
+    );
     const current = currentStoryById.get(story.id);
     return current?.storyVersion === story.version &&
         current.profileVersion === user.interestProfileVersion &&
-        current.summaryVersion === CURRENT_STORY_SUMMARY_VERSION
+        current.summaryVersion === summaryVersion
       ? []
       : [{
         storyId: story.id,
         storyVersion: story.version,
         profileVersion: user.interestProfileVersion,
-        summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+        summaryVersion,
       }];
   });
   const reusable = await listReusableDigestStoryPoints(
@@ -425,10 +470,12 @@ export async function assembleStoryDigest(
   );
   const reusableByStoryId = new Map(reusable.map((story) => [story.storyId, story]));
   selected.forEach((story, index) => {
+    const mode = summarizationModeByStoryId.get(story.id)!;
+    const summaryVersion = summaryVersionForMode(mode);
     const current = currentStoryById.get(story.id);
     const points = current?.storyVersion === story.version &&
         current.profileVersion === user.interestProfileVersion &&
-        current.summaryVersion === CURRENT_STORY_SUMMARY_VERSION
+        current.summaryVersion === summaryVersion
       ? current.points
       : reusableByStoryId.get(story.id)?.points;
     if (points) {
@@ -437,14 +484,18 @@ export async function assembleStoryDigest(
         value: makeSummary(story, points),
       };
     } else {
-      uncached.push({ index, story });
+      uncached.push({ index, story, mode });
     }
   });
   const budget = getSummarizerBudgetConfig();
   const batchMax = Math.min(5, budget.summaryBatchMaxStories);
-  const batches: Array<Array<{ index: number; story: PersistedStoryCandidate; input: BatchSummaryInput }>> = [];
-  const singles: Array<{ index: number; story: PersistedStoryCandidate }> = [];
+  const batches: Array<Array<SummaryEntry & { input: BatchSummaryInput }>> = [];
+  const singles: SummaryEntry[] = [];
   for (const candidate of uncached) {
+    if (candidate.mode === "thorough") {
+      singles.push(candidate);
+      continue;
+    }
     const rawItems = candidate.story.candidate.developments.flatMap((development) => development.items.map((item) => item.payload));
     const rawBytes = rawItems.reduce((total, item) => total + encoder.encode(item.text).byteLength, 0);
     if (!summarizer.summarizeBatch || storyHasMedia(candidate.story) || rawBytes > budget.summarizerTextBytesPerChunk) {
@@ -485,7 +536,7 @@ export async function assembleStoryDigest(
     ...singles.map((entry) => ({ kind: "single" as const, entry })),
   ];
   const summarizeOne = async (
-    entry: { index: number; story: PersistedStoryCandidate },
+    entry: SummaryEntry,
   ): Promise<void> => {
     const { index, story } = entry;
     try {
@@ -494,7 +545,7 @@ export async function assembleStoryDigest(
       );
       const points = await summarizer.summarize(
         items.map((item) => item.payload),
-        storyRules,
+        entry.mode === "thorough" ? thoroughStoryRules : storyRules,
         {
           signal: dependencies.signal,
           requestTimeoutMs: dependencies.timeoutMs,
@@ -563,7 +614,10 @@ export async function assembleStoryDigest(
   const replacement = summaries.flatMap((result, index) => {
     if (result.status === "fulfilled") return [result.value];
     const prior = currentStoryById.get(selected[index].id);
-    if (!prior) return [];
+    const expectedSummaryVersion = summaryVersionForMode(
+      summarizationModeByStoryId.get(selected[index].id)!,
+    );
+    if (!prior || prior.summaryVersion !== expectedSummaryVersion) return [];
     const { id: _id, digestId: _digestId, profileVersion, summaryVersion, generatedAt, ...content } = prior;
     return [{ content, profileVersion, summaryVersion, generatedAt }];
   });

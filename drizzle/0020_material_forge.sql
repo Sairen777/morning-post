@@ -1,0 +1,2 @@
+ALTER TABLE "sources" ADD COLUMN "summarization_mode" text DEFAULT 'basic' NOT NULL;--> statement-breakpoint
+ALTER TABLE "sources" ADD CONSTRAINT "sources_summarization_mode_check" CHECK ("sources"."summarization_mode" in ('basic', 'thorough'));

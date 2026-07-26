@@ -15,6 +15,7 @@ import {
   buildArticlePrompt,
   buildDiscussionPrompt,
   buildNewsPrompt,
+  buildThoroughStorySummaryPrompt,
   buildVisionAnalysisPrompt,
   selectRuleset,
 } from "../src/summarizers/prompts.ts";
@@ -158,6 +159,25 @@ test("buildDiscussionPrompt — requires topic, arguments, and conclusion status
   // Must require conclusion status including explicit unresolved.
   assertStringIncludes(systemPrompt, "unresolved");
   assertStringIncludes(systemPrompt, "no shared conclusion");
+});
+
+test("buildThoroughStorySummaryPrompt — preserves nuance without invention or padding", () => {
+  const rules = buildThoroughStorySummaryPrompt({ language: "English" });
+  for (const requiredInstruction of [
+    "every material theme",
+    "distinct development",
+    "chronology",
+    "disagreements and minority perspectives",
+    "uncertainty and caveats",
+    "conflicting accounts",
+    "Do not invent facts",
+    "Do not pad",
+  ]) {
+    assertStringIncludes(rules.systemPrompt, requiredInstruction);
+  }
+  assertEquals(rules.showAuthors, true);
+  assertEquals(rules.showTitle, true);
+  assertEquals(rules.includeMedia, true);
 });
 test("buildArticlePrompt — requires every article and forbids generated headings", () => {
   const rules = buildArticlePrompt({
@@ -1106,6 +1126,53 @@ test("summarize — chunks items and merges when maxItemsPerChunk is exceeded", 
     assertEquals(results.length, 2);
     assertEquals(results[0].text, "final X");
     assertEquals(results[1].text, "final Y");
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — thorough discussion rules retain the existing chunk and merge pipeline", async () => {
+  const { captured, callCount, restore } = captureFetchSequence([
+    { status: 200, body: modelResponse('[{"t":"first position","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"minority position","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"merged nuanced account","i":0}]') },
+  ]);
+  try {
+    const service = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 1,
+    });
+    const rules = buildThoroughStorySummaryPrompt();
+    const result = await service.summarize([
+      item({
+        externalId: "discussion-1",
+        author: "Ada",
+        text: "Initial proposal with an explicit caveat.",
+        meta: { isGroup: true },
+      }),
+      item({
+        externalId: "discussion-2",
+        author: "Lin",
+        text: "Minority disagreement left unresolved.",
+        meta: { isGroup: true },
+      }),
+    ], rules);
+    assertEquals(callCount(), 3);
+    assertEquals(
+      captured.every((request) =>
+        request.body.messages[0]!.content === rules.systemPrompt
+      ),
+      true,
+    );
+    assertStringIncludes(
+      String(captured[0]!.body.messages[1]!.content),
+      "Initial proposal with an explicit caveat.",
+    );
+    assertStringIncludes(
+      String(captured[1]!.body.messages[1]!.content),
+      "Minority disagreement left unresolved.",
+    );
+    assertEquals(result[0]!.text, "merged nuanced account");
   } finally {
     restore();
   }

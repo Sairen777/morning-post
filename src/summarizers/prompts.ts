@@ -149,6 +149,25 @@ export function buildStorySummaryPrompt(
   };
 }
 
+export function buildThoroughStorySummaryPrompt(
+  options: PromptOptions = {},
+): SummaryRuleset {
+  return {
+    systemPrompt: withTrailingRules([
+      "Produce a comprehensive, faithful summary of the supplied source items as one already-selected story.",
+      "Do not omit the story, re-evaluate whether the reader wants it, or collapse materially different developments into one.",
+      "Preserve every material theme and distinct development, their chronology when the sources establish it, and the important supporting detail needed to understand what happened and why it matters.",
+      "Represent disagreements and minority perspectives fairly. Distinguish reported claims from established facts, retain uncertainty and caveats, and state unresolved questions or conflicting accounts instead of inventing a resolution or consensus.",
+      "Consolidate genuinely repetitive coverage, but do not erase meaningful differences between sources or stages of the story.",
+      "Do not invent facts, motives, implications, causal links, or chronology. Do not pad the summary with generic background, repetition, scene-setting, or trivial detail.",
+      INDEX_INSTRUCTION,
+    ], options),
+    showAuthors: true,
+    includeMedia: true,
+    showTitle: true,
+  };
+}
+
 export function buildBatchStorySummaryPrompt(
   options: PromptOptions = {},
 ): SummaryRuleset {

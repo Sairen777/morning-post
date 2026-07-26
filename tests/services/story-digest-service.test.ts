@@ -29,6 +29,7 @@ import {
 import {
   assembleStoryDigest,
   CURRENT_STORY_SUMMARY_VERSION,
+  THOROUGH_STORY_SUMMARY_VERSION,
 } from "../../src/services/story-digest-service.ts";
 import { fingerprintStoryAnalysisMember, fingerprintStoryItem, groupStoryAnalysisUnits, partitionStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
 import type {
@@ -1348,5 +1349,315 @@ test("cached separators preserve rootless discussion unit boundaries", async () 
     assertEquals(rerun.hadSummaryFailure, false);
     assertEquals(observedUnitSizes, [[1], [1, 1]]);
     assertEquals(intelligence.analyzeCalls, 2);
+  });
+});
+
+test("per-story summary modes isolate thorough stories and key cache reuse by mode", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, {
+      name: "Summary Mode Owner",
+      email: "story-summary-mode@example.com",
+      passwordHash: "$argon2id$fake",
+      defaultLanguage: "en",
+      systemPrompt: "",
+      summaryPrompt: "Keep concrete source distinctions.",
+      relevanceThreshold: 0,
+    });
+    const cipher = new CredentialCipher(
+      new EnvMasterKeyProvider(new Uint8Array(32).fill(8)),
+    );
+    const makeSource = async (connectorId: ConnectorId) =>
+      await createSource(database, {
+        userId: user.id,
+        connectorId,
+        credentials: await cipher.encrypt("{}", {
+          userId: user.id,
+          connectorId,
+        }),
+      });
+    const basicSource = await makeSource(ConnectorId.RSS);
+    const switchingSource = await makeSource(ConnectorId.Telegram);
+    const basicFeed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: basicSource.id,
+      externalId: "summary-mode-basic",
+      name: "Basic feed",
+      kind: "news",
+    });
+    const switchingFeed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: switchingSource.id,
+      externalId: "summary-mode-switching",
+      name: "Switching discussion",
+      kind: "discussion",
+    });
+    const longDiscussionText = `Minority view with supporting detail: ${
+      "material chronology and caveat ".repeat(320)
+    }`;
+    await upsertItems(database, basicFeed.id, [
+      {
+        connectorId: ConnectorId.RSS,
+        feedExternalId: basicFeed.externalId,
+        externalId: "basic-only",
+        date: 100,
+        title: "Basic only",
+        text: "A routine basic story.",
+        author: null,
+        url: "https://basic.example/only",
+      },
+      {
+        connectorId: ConnectorId.RSS,
+        feedExternalId: basicFeed.externalId,
+        externalId: "mixed-basic",
+        date: 120,
+        title: "Mixed context",
+        text: "The first source reports the initial development.",
+        author: null,
+        url: "https://basic.example/mixed",
+      },
+    ], 200);
+    await upsertItems(database, switchingFeed.id, [
+      {
+        connectorId: ConnectorId.Telegram,
+        feedExternalId: switchingFeed.externalId,
+        externalId: "switch-only",
+        date: 110,
+        title: "Switch only",
+        text: "A standalone discussion report.",
+        author: "Reporter",
+        url: "https://t.me/summary-mode/1",
+        meta: { isGroup: true },
+      },
+      {
+        connectorId: ConnectorId.Telegram,
+        feedExternalId: switchingFeed.externalId,
+        externalId: "mixed-thorough",
+        date: 130,
+        title: "Mixed disagreement",
+        text: longDiscussionText,
+        author: "Dissenting participant",
+        url: "https://t.me/summary-mode/2",
+        meta: { isGroup: true },
+      },
+    ], 200);
+
+    const intelligence = new FixtureIntelligence();
+    intelligence.resolve = async (items) => {
+      const itemByExternalId = new Map(
+        items.map((item) => [item.payload.externalId, item]),
+      );
+      const makeStory = (
+        canonicalKey: string,
+        title: string,
+        externalIds: string[],
+      ) => ({
+        canonicalKey,
+        title,
+        topics: ["technology"],
+        entities: ["Example"],
+        developments: externalIds.map((externalId) => {
+          const item = itemByExternalId.get(externalId)!;
+          return {
+            canonicalKey: `development-${externalId}`,
+            type: "report",
+            title: item.payload.title ?? externalId,
+            occurredAt: item.payload.date,
+            items: [item],
+          };
+        }),
+      });
+      return [
+        makeStory("mode-basic", "Basic-only story", ["basic-only"]),
+        makeStory("mode-switch", "Switch-only story", ["switch-only"]),
+        makeStory("mode-mixed", "Mixed-source story", [
+          "mixed-basic",
+          "mixed-thorough",
+        ]),
+      ];
+    };
+    const batchCalls: string[][][] = [];
+    const singleCalls: Array<{
+      externalIds: string[];
+      texts: string[];
+      systemPrompt: string;
+      maxItemsPerChunk: number | undefined;
+      maxTextBytesPerChunk: number | undefined;
+    }> = [];
+    const summarizer: SummarizerService = {
+      summarizeBatch: async (stories) => {
+        batchCalls.push(stories.map((story) =>
+          story.items.map((item) => item.externalId)
+        ));
+        return stories.map((story) => ({
+          storyId: story.storyId,
+          points: [{
+            text: `Standard ${story.items.map((item) => item.externalId).join("+")}`,
+            sourceUrl: story.items[0]!.url,
+          }],
+        }));
+      },
+      summarize: async (items, rules, options) => {
+        singleCalls.push({
+          externalIds: items.map((item) => item.externalId),
+          texts: items.map((item) => item.text),
+          systemPrompt: rules.systemPrompt,
+          maxItemsPerChunk: options?.maxItemsPerChunk,
+          maxTextBytesPerChunk: options?.maxTextBytesPerChunk,
+        });
+        return [{
+          text: `Thorough ${items.map((item) => item.externalId).join("+")}`,
+          sourceUrl: items[0]!.url,
+        }];
+      },
+    };
+    const dependencies = {
+      intelligence,
+      summarizer,
+      analyzerVersion: "summary-mode-v1",
+      suppressPreviouslyDelivered: false,
+    };
+    const createAndAssemble = async (periodEndMs: number, createdAt: number) => {
+      const digest = await upsertDigestForPeriod(database, {
+        userId: user.id,
+        periodStartMs: 0,
+        periodEndMs,
+        status: "complete",
+      }, createdAt);
+      const result = await assembleStoryDigest(
+        database,
+        digest.id,
+        user,
+        [basicFeed, switchingFeed],
+        0,
+        periodEndMs,
+        dependencies,
+      );
+      return { digest, result };
+    };
+
+    const seed = await createAndAssemble(1_000, 300);
+    assertEquals(batchCalls.length, 1);
+    assertEquals(
+      batchCalls[0]!.map((members) => members.join("+")).sort(),
+      ["basic-only", "mixed-basic+mixed-thorough", "switch-only"],
+    );
+    assertEquals(singleCalls.length, 0);
+    assertEquals(
+      seed.result.stories.every((story) =>
+        story.summaryVersion === CURRENT_STORY_SUMMARY_VERSION
+      ),
+      true,
+    );
+    const seedByTitle = new Map(
+      seed.result.stories.map((story) => [story.title, story]),
+    );
+    const sameModeReuse = await createAndAssemble(1_001, 350);
+    assertEquals(batchCalls.length, 1);
+    assertEquals(singleCalls.length, 0);
+    let failedThoroughCalls = 0;
+    let failedBasicBatchCalls = 0;
+    await updateSource(database, switchingSource.id, user.id, {
+      summarizationMode: "thorough",
+    });
+    const failedModeChange = await assembleStoryDigest(
+      database,
+      sameModeReuse.digest.id,
+      user,
+      [basicFeed, switchingFeed],
+      0,
+      1_001,
+      {
+        ...dependencies,
+        summarizer: {
+          summarize: async () => {
+            failedThoroughCalls++;
+            throw new Error("thorough summary failed");
+          },
+          summarizeBatch: async () => {
+            failedBasicBatchCalls++;
+            throw new Error("unexpected basic batch");
+          },
+        },
+      },
+    );
+    assertEquals(failedModeChange.hadSummaryFailure, true);
+    assertEquals(failedThoroughCalls, 2);
+    assertEquals(failedBasicBatchCalls, 0);
+    assertEquals(
+      failedModeChange.stories.map((story) => story.title),
+      ["Basic-only story"],
+    );
+    assertEquals(
+      failedModeChange.stories[0]!.summaryVersion,
+      CURRENT_STORY_SUMMARY_VERSION,
+    );
+
+    const thorough = await createAndAssemble(1_002, 400);
+    assertEquals(batchCalls.length, 1);
+    assertEquals(
+      singleCalls.map((call) => call.externalIds.join("+")).sort(),
+      ["mixed-basic+mixed-thorough", "switch-only"],
+    );
+    assertEquals(
+      singleCalls.every((call) =>
+        call.systemPrompt.includes("comprehensive, faithful summary") &&
+        call.systemPrompt.includes("Keep concrete source distinctions.") &&
+        call.maxItemsPerChunk === undefined &&
+        call.maxTextBytesPerChunk === undefined
+      ),
+      true,
+    );
+    const mixedCall = singleCalls.find((call) =>
+      call.externalIds.includes("mixed-thorough")
+    )!;
+    assertEquals(
+      mixedCall.texts[mixedCall.externalIds.indexOf("mixed-thorough")],
+      longDiscussionText,
+    );
+    const thoroughByTitle = new Map(
+      thorough.result.stories.map((story) => [story.title, story]),
+    );
+    assertEquals(
+      thoroughByTitle.get("Basic-only story")!.summaryVersion,
+      CURRENT_STORY_SUMMARY_VERSION,
+    );
+    assertEquals(
+      thoroughByTitle.get("Basic-only story")!.points,
+      seedByTitle.get("Basic-only story")!.points,
+    );
+    assertEquals(
+      thoroughByTitle.get("Switch-only story")!.summaryVersion,
+      THOROUGH_STORY_SUMMARY_VERSION,
+    );
+    assertEquals(
+      thoroughByTitle.get("Mixed-source story")!.summaryVersion,
+      THOROUGH_STORY_SUMMARY_VERSION,
+    );
+
+    await assembleStoryDigest(
+      database,
+      thorough.digest.id,
+      user,
+      [basicFeed, switchingFeed],
+      0,
+      1_002,
+      dependencies,
+    );
+    assertEquals(batchCalls.length, 1);
+    assertEquals(singleCalls.length, 2);
+
+    await updateSource(database, switchingSource.id, user.id, {
+      summarizationMode: "basic",
+    });
+    const reverted = await createAndAssemble(1_003, 500);
+    assertEquals(batchCalls.length, 1);
+    assertEquals(singleCalls.length, 2);
+    assertEquals(
+      reverted.result.stories.every((story) =>
+        story.summaryVersion === CURRENT_STORY_SUMMARY_VERSION &&
+        story.points[0]!.text === seedByTitle.get(story.title)!.points[0]!.text
+      ),
+      true,
+    );
   });
 });
