@@ -3,7 +3,7 @@ import type { ConnectorId } from "../constants.ts";
 export interface Connector<TRawData> {
   getRawData(from: number, to: number, feedExternalIds?: string[], signal?: AbortSignal): Promise<TRawData>;
   getNormalizedData(from: number, to: number, feedExternalIds?: string[], signal?: AbortSignal): Promise<NormalizedData>;
-  listAvailableFeeds?(): Promise<AvailableFeed[]>;
+  listAvailableFeeds?(signal?: AbortSignal): Promise<AvailableFeed[]>;
 }
 
 export interface AvailableFeed {

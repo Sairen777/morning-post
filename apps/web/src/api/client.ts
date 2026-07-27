@@ -24,6 +24,8 @@ import type {
   StoryFeedbackResponse,
   TelegramLoginSessionStatus,
   TelegramLoginStart,
+  XLoginStartResponse,
+  XLoginStatusResponse,
 } from "./types.ts";
 
 export class ApiClientError extends Error {
@@ -141,6 +143,47 @@ export function submitTelegramTwoFactorAuthentication(
     },
   );
 }
+// X browser login
+export function startXLogin(): Promise<XLoginStartResponse> {
+  return apiRequest<XLoginStartResponse>("/connectors/x/login", {
+    method: "POST",
+  });
+}
+
+export function getXLoginStatus(
+  sessionId: string,
+): Promise<XLoginStatusResponse> {
+  return apiRequest<XLoginStatusResponse>(
+    `/connectors/x/login/${encodeURIComponent(sessionId)}`,
+  );
+}
+
+export function verifyXLogin(
+  sessionId: string,
+): Promise<XLoginStatusResponse> {
+  return apiRequest<XLoginStatusResponse>(
+    `/connectors/x/login/${encodeURIComponent(sessionId)}/verify`,
+    { method: "POST" },
+  );
+}
+
+export function cancelXLogin(sessionId: string): Promise<void> {
+  return apiRequest<void>(
+    `/connectors/x/login/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function addXTarget(input: {
+  sourceId: string;
+  url: string;
+}): Promise<PublicFeed> {
+  return apiRequest<PublicFeed>("/connectors/x/targets", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 
 // Substack
 export function connectSubstackSession(

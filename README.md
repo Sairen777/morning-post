@@ -6,7 +6,7 @@ database and media store. Authentication, ownership scoping, and credential
 encryption are deliberate security measures that protect the single-owner
 deployment posture while keeping future deployment options open.
 
-X Chat (g-prefixed group conversations) integration is not implemented and is on hold.
+X posts, Lists, and X Chat conversations can be collected through a dedicated Playwright-managed Chromium profile.
 
 ## Setup
 
@@ -46,6 +46,7 @@ directly.
 - [Node.js](https://nodejs.org/) 22.13+ (frontend and Playwright toolchain)
 - [PostgreSQL](https://www.postgresql.org/) 16+ (or Docker)
 - [OpenSSL](https://www.openssl.org/) (for generating the credential master key)
+- Playwright Chromium (`bun run playwright:install`) when using X or browser E2E tests
 
 ### Database
 
@@ -96,6 +97,8 @@ contains deployment credentials. The main settings are:
 | `DB_SSL_MODE` | Postgres SSL mode: `disable`, `require`, `verify-full` | `disable` |
 | `ALLOW_REMOTE_SUMMARIZATION` | Allow non-loopback summarizer providers | `false` |
 | `CONNECTOR_TIMEOUT_MS` | Connector call timeout in milliseconds | `120000` |
+| `X_BROWSER_PROFILE_ROOT` | Dedicated persistent Chromium profiles; restrict this path to the Morning Post process user | `.x-browser-profiles` |
+| `X_BROWSER_LOGIN_TIMEOUT_MS` | Maximum time allowed for one headed X connection session | `900000` (15 min) |
 | `SUMMARIZER_TEXT_BYTES_PER_CHUNK` | Max text bytes per summarizer chunk | `120000` |
 | `SUMMARIZER_MAX_ITEMS_PER_CHUNK` | Max items per summarizer chunk | `50` |
 | `SUMMARIZER_MAX_IMAGE_BYTES` | Oversize images become `[IMAGE_OMITTED]` | `1000000` |
@@ -184,18 +187,25 @@ Vinxi at `127.0.0.1:5173`. Its Vite proxy forwards API calls, including
 
 **Pre-flight.** Before the first frontend run:
 
-1. Install web dependencies:
+1. Install workspace dependencies:
 
    ```sh
    bun install
    ```
 
-2. Postgres must be running (`docker compose up -d` or local service).
+2. Install the managed Chromium build used by the X connector and browser E2E
+   tests:
 
-3. `.env.production.local` must include `DATABASE_URL` and `TEST_DATABASE_URL`.
+   ```sh
+   bun run playwright:install
+   ```
+
+3. Postgres must be running (`docker compose up -d` or local service).
+
+4. `.env.production.local` must include `DATABASE_URL` and `TEST_DATABASE_URL`.
    See [Environment](#environment) above for the full variable list.
 
-4. Apply migrations:
+5. Apply migrations:
 
    ```sh
    bun run db:migrate
@@ -277,13 +287,15 @@ check.
 
 | Command | What it does |
 | --- | --- |
-| `bun run test` | Full backend suite (`bun:test`, 507 tests) |
+| `bun run test` | Full backend suite (`bun:test`) |
+| `bun run test:x:live` | Opt-in contract check against an already authenticated managed X profile and target |
+| `bun run playwright:install` | Install the pinned Chromium build used by Playwright |
 | `bun run db:cleanup` | Destructively truncate every public table in the loopback development database from `DATABASE_URL` |
 | `bun run db:reset` | Destructively drop and recreate the database schema and migration history in the loopback development database from `DATABASE_URL`, then reapply migrations |
-| `bun run web:test` | Frontend unit/component suite (Vitest, 73 tests) |
+| `bun run web:test` | Frontend unit/component suite (Vitest) |
 | `bun run web:typecheck` | Web TypeScript type checking |
 | `bun run web:build` | Production web build |
-| `bun run web:e2e` | Four Playwright smoke tests with dedicated backend/frontend processes and an isolated database |
+| `bun run web:e2e` | Playwright smoke tests with dedicated backend/frontend processes and an isolated database |
 
 `bun run db:cleanup` clears all application data from the local development
 database while preserving its schema and applied migration records. It refuses
@@ -384,3 +396,89 @@ context window. See the comment in `openai-compatible-summarizer.ts` for options
 **Anonymous admins posting as the channel** In supergroups, admins can post
 anonymously — their `message.sender` is the group's linked channel rather than a
 `User`. These show up with the channel title as the author name.
+
+## X Browser Connection
+
+Morning Post collects the authenticated owner's Following feed, selected public
+or private Lists, and selected X Chat conversations through rendered browser
+pages. Direct messages and group conversations use the same explicit target
+model; conversation IDs are treated as opaque X identifiers rather than being
+used to infer whether a conversation is a group.
+
+### Browser independence and managed Chromium profile
+
+**Connections → X** launches a dedicated persistent Chromium profile managed
+by Playwright. It is separate from the owner's daily Safari, Firefox, Chrome,
+or other browser profile. Morning Post creates and stores the profile beneath
+`X_BROWSER_PROFILE_ROOT`; the owner does not need a separately installed
+Chrome. Run `bun run playwright:install` once after dependency installation to
+install the pinned Chromium build.
+
+The managed profile contains authenticated X cookies and local storage. Treat
+it as a credential artifact: run Morning Post as a dedicated user, restrict the
+profile root to that user, and include the directory in backup and destruction
+procedures. The profile root is ignored by Git. Disconnecting X commits the
+source disconnection before deleting the profile under its exclusive lease. A
+browser shutdown releases that lease only after its persistent context closes
+or its backing Browser disconnects; if filesystem cleanup fails, retrying
+disconnect retries the idempotent cleanup.
+
+### Connection and collection flow
+
+Connect X opens a **headed** Chromium window. Sign in to X directly in that
+window, complete 2FA or platform challenges, and open/unlock X Chat if
+necessary. Morning Post never receives the X password. Verification accepts
+only account-specific authenticated UI and records only the managed profile
+identifier in the encrypted source credential. The web UI stores only the
+opaque active login-session ID in browser `sessionStorage`; switching Dashboard
+tabs or remounting the panel resumes status polling and Verify/Cancel controls.
+
+After connection, feed discovery and digest runs reuse the profile
+**headlessly**. The connector discovers Following, Lists, and accessible Chat
+conversations. Adding a canonical X target validates browser-rendered evidence
+and persists the feed in the same connector request; the generic feed endpoint
+cannot create X targets independently.
+
+Subscribed targets use bounded virtual scrolling. Rendered DOM is extracted
+directly into normalized posts and chat messages; raw DOM is not persisted.
+Post engagement counts and visible chat reactions are retained as metadata.
+Platform IDs are globally deduplicated. Ordered overlap preserves duplicate
+ID-less messages when the rendered windows prove their multiplicity; ambiguous
+ID-less overlaps, missing timestamps, inaccessible targets, authentication
+loss, scroll failures, or unresolved safety limits fail collection instead of
+advancing the cursor across an uncertain partial window.
+
+The headed connection window requires a desktop display. A remote/headless
+server needs an operator-provided remote desktop, VNC, or equivalent display
+path for initial connection. Scheduled collection itself is headless.
+
+### Unsupported platform risk
+
+This is browser automation, not an official X integration surface. X can
+change DOM structure, challenge the login, restrict the account, or block
+automation without notice. Morning Post does not spoof browser fingerprints or
+hide Playwright automation. Operators assume the account and policy risk.
+
+### Retention
+
+Captured X posts and messages—including disappearing messages captured before
+they disappear—are retained indefinitely with their normalized items and
+downstream analyses, stories, summaries, feedback, and digest artifacts.
+Capture therefore overrides X disappearance after ingestion. Disconnecting X
+deletes the authenticated browser profile but does not delete previously
+captured content. Configurable cascading retention remains deferred; there is
+currently no retention environment variable or UI control.
+
+### Opt-in live contract check
+
+The deterministic suite does not contact X. To check the current rendered-DOM
+contract against an already authenticated managed profile, set
+`X_BROWSER_LIVE_PROFILE_ID` to that profile's canonical UUID and
+`X_BROWSER_LIVE_TARGET_URL` to a Following, List, or Chat target, then run:
+
+```sh
+bun run test:x:live
+```
+
+The check is intentionally opt-in and does not read or print cookies, local
+storage, or passwords.

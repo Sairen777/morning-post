@@ -264,7 +264,21 @@ export interface SubstackPublicationResponse {
   source: PublicSource;
   feed: PublicFeed;
 }
+export type XLoginStatus =
+  | "awaiting_login"
+  | "awaiting_chat_unlock"
+  | "complete"
+  | "error"
+  | "expired";
 
+export interface XLoginStatusResponse {
+  sessionId: string;
+  status: XLoginStatus;
+  expiresAtMs: number;
+  error?: string;
+}
+
+export type XLoginStartResponse = XLoginStatusResponse;
 export type TelegramLoginStatus =
   | "pending"
   | "needs_2fa"

@@ -1,8 +1,17 @@
 import { test } from "bun:test";
-import { assertEquals, assertExists, assertRejects } from "../assertions.ts";
+import {
+  assert,
+  assertEquals,
+  assertExists,
+  assertRejects,
+} from "../assertions.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { bootServer } from "../../src/server/main.ts";
+import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
+import { createSource } from "../../src/repositories/source-repository.ts";
+import type { XLoginSessionManager } from "../../src/services/x-login-service.ts";
+import type { XBrowserRuntime } from "../../src/connectors/x/index.ts";
 import {
   createDigestRun,
   listDigestRunFeedsForRun,
@@ -268,4 +277,154 @@ test("bootServer rejects invalid model configuration before serving", async () =
     if (previous === undefined) delete process.env["SUMMARIZER_MODEL"];
     else process.env["SUMMARIZER_MODEL"] = previous;
   }
+});
+
+test("bootServer aborts before attempting every cleanup exactly once", async () => {
+  await withTestDb(async (database) => {
+    const owner = await createUser(database, {
+      name: "Lifecycle Owner",
+      email: "lifecycle-owner@example.com",
+      passwordHash: "$argon2id$fakehash",
+      systemPrompt: "Summarize tersely.",
+      defaultLanguage: "en",
+    });
+    const source = await createSource(database, {
+      userId: owner.id,
+      connectorId: "Telegram",
+      credentials: {
+        v: 1,
+        wrappedDataKey: "",
+        iv: "",
+        ciphertext: "",
+      },
+    });
+    await createOrReviveFeed(database, {
+      userId: owner.id,
+      sourceId: source.id,
+      externalId: "lifecycle:feed",
+      name: "Lifecycle Feed",
+      kind: "news",
+    });
+
+    let digestSignal: AbortSignal | undefined;
+    const connectorFactory = {
+      forSource: () =>
+        Promise.resolve({
+          connector: {
+            getRawData: () => Promise.resolve({}),
+            getNormalizedData: (
+              _from: number,
+              _to: number,
+              _feedExternalIds?: string[],
+              signal?: AbortSignal,
+            ) => {
+              digestSignal = signal;
+              return Promise.resolve({});
+            },
+          },
+          ingestionMode: "batch" as const,
+        }),
+    };
+    const cleanupFailure = new Error("server stop failed");
+    const cleanupObservations: Array<{
+      resource: "server" | "scheduler" | "login";
+      signalAborted: boolean;
+    }> = [];
+    const scheduler = new class extends FakeScheduler {
+      stop(): void {
+        cleanupObservations.push({
+          resource: "scheduler",
+          signalAborted: digestSignal?.aborted ?? false,
+        });
+      }
+    }();
+    const xLoginSessionManager = {
+      dispose(): Promise<void> {
+        cleanupObservations.push({
+          resource: "login",
+          signalAborted: digestSignal?.aborted ?? false,
+        });
+        return Promise.resolve();
+      },
+    } as unknown as XLoginSessionManager;
+    const xBrowserRuntime = {} as unknown as XBrowserRuntime;
+
+    const lifecycle = await bootServer({
+      database,
+      scheduler,
+      summarizer: { summarize: () => Promise.resolve([]) },
+      connectorFactory,
+      xLoginSessionManager,
+      xBrowserRuntime,
+      recoverStaleRuns: () => Promise.resolve(0),
+      config: {
+        databaseUrl: "postgres://unused",
+        port: 31_003,
+        allowedOrigins: ["http://127.0.0.1:5173"],
+        trustedProxyCount: 0,
+        maxRequestBodyBytes: 1_000,
+        databasePoolMax: 1,
+        databaseIdleTimeoutSeconds: 1,
+        databaseConnectTimeoutSeconds: 1,
+        databaseSslMode: "disable",
+        allowRemoteSummarization: false,
+        connectorTimeoutMs: 1,
+        summarizerTextBytesPerChunk: 1,
+        summarizerMaxItemsPerChunk: 1,
+        summarizerMaxImageBytes: 1,
+        analysisMaxItemsPerRequest: 50,
+        classificationMaxItemsPerRequest: 100,
+        summaryBatchMaxStories: 5,
+        analysisMaxOutputTokens: 12_000,
+        classificationMaxOutputTokens: 6_000,
+        summaryMaxOutputTokens: 1_200,
+        summaryBatchMaxOutputTokens: 5_000,
+        mediaMaxOutputTokens: 300,
+        analysisMaxAttempts: 3,
+        classificationMaxAttempts: 3,
+        summaryMaxAttempts: 2,
+        mediaMaxAttempts: 2,
+        summarizerTimeoutMs: 1,
+        summarizationConcurrency: 1,
+        mediaTtlMs: 1,
+        mediaQuotaBytes: 1,
+        digestRunStaleAfterMs: 1,
+        digestProgressLogging: false,
+        xBrowserProfileRoot: "/tmp/morning-post-lifecycle-test",
+        xBrowserLoginTimeoutMs: 1_000,
+      },
+      serve: () => ({
+        stop: () => {
+          cleanupObservations.push({
+            resource: "server",
+            signalAborted: digestSignal?.aborted ?? false,
+          });
+          return Promise.reject(cleanupFailure);
+        },
+      }),
+      log: () => {},
+    });
+
+    const digestJob = scheduler.jobs.find(({ name }) => name === "digest-job");
+    assertExists(digestJob);
+    await digestJob.handler();
+    assertExists(digestSignal);
+    assertEquals(digestSignal.aborted, false);
+
+    const disposeResults = await Promise.allSettled([
+      lifecycle.dispose(),
+      lifecycle.dispose(),
+    ]);
+
+    for (const result of disposeResults) {
+      assert(result.status === "rejected");
+      assert(result.reason instanceof AggregateError);
+      assertEquals(result.reason.errors, [cleanupFailure]);
+    }
+    assertEquals(cleanupObservations, [
+      { resource: "server", signalAborted: true },
+      { resource: "scheduler", signalAborted: true },
+      { resource: "login", signalAborted: true },
+    ]);
+  });
 });

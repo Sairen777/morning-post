@@ -138,7 +138,7 @@ test("GET /sources/:id/available-feeds returns discovery results and disposes co
   });
 });
 
-test("generic discovery and subscription reject Substack sources", async () => {
+test("generic feed routes reject connector-owned Substack and X creation paths", async () => {
   await withTestDb(async (database) => {
     const discoveryFactory = new FakeFeedDiscoveryFactory([]);
     const app = buildApp(database, { feeds: { discoveryFactory } });
@@ -164,6 +164,21 @@ test("generic discovery and subscription reject Substack sources", async () => {
       },
     });
     assertEquals(subscribe.status, 409);
+
+    const xSource = await createOwnedSource(database, user.id, ConnectorId.X);
+    const xSubscribe = await app.request(`/sources/${xSource.id}/feeds`, {
+      ...jsonRequest("POST", {
+        externalId: "x:chat:compose",
+        name: "Unverified X target",
+        kind: "discussion",
+      }),
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
+    });
+    assertEquals(xSubscribe.status, 409);
   });
 });
 

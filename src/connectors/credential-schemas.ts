@@ -23,9 +23,20 @@ export const substackCredentialSchema = z.object({
   connectSessionId: sessionCookieSchema.optional(),
 }).strict();
 
+export const xCredentialSchema = z.object({
+  profileId: z.string().regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    "profileId must be a canonical lowercase UUID",
+  ),
+}).strict();
+
 export type TelegramCredentials = z.infer<typeof telegramCredentialSchema>;
 export type SubstackCredentials = z.infer<typeof substackCredentialSchema>;
-export type ConnectorCredentials = TelegramCredentials | SubstackCredentials;
+export type XCredentials = z.infer<typeof xCredentialSchema>;
+export type ConnectorCredentials =
+  | TelegramCredentials
+  | SubstackCredentials
+  | XCredentials;
 
 export function credentialSchemaFor(connectorId: ConnectorId | string): z.ZodType<unknown> {
   switch (connectorId) {
@@ -33,6 +44,8 @@ export function credentialSchemaFor(connectorId: ConnectorId | string): z.ZodTyp
       return telegramCredentialSchema;
     case ConnectorId.Substack:
       return substackCredentialSchema;
+    case ConnectorId.X:
+      return xCredentialSchema;
     default:
       throw new ValidationError(`unsupported credential schema for connector: ${connectorId}`);
   }

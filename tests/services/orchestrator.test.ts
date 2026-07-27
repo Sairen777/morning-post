@@ -74,6 +74,7 @@ class FakeConnector implements Connector<unknown> {
   readonly calls: Array<
     { from: number; to: number; feedExternalIds?: string[] }
   > = [];
+  readonly signals: Array<AbortSignal | undefined> = [];
 
   constructor(
     readonly responses: Record<string, NormalizedItem[]>,
@@ -88,8 +89,10 @@ class FakeConnector implements Connector<unknown> {
     from: number,
     to: number,
     feedExternalIds?: string[],
+    signal?: AbortSignal,
   ): Promise<NormalizedData> {
     this.calls.push({ from, to, feedExternalIds });
+    this.signals.push(signal);
     const selectedFeedExternalId = feedExternalIds?.[0];
     if (
       selectedFeedExternalId &&
@@ -265,28 +268,32 @@ test("runForUser ingests feeds, summarizes them, and returns a complete digest",
       "rss:1",
       "Second Feed",
     );
+    const firstConnector = new FakeConnector({
+      [first.feed.externalId]: [
+        normalizedItem(first.feed.externalId, "1", "first item"),
+      ],
+    });
+    const secondConnector = new FakeConnector({
+      [second.feed.externalId]: [
+        normalizedItem(second.feed.externalId, "1", "second item"),
+      ],
+    });
     const connectorFactory = new FakeConnectorFactory({
-      [first.source.id]: new FakeConnector({
-        [first.feed.externalId]: [
-          normalizedItem(first.feed.externalId, "1", "first item"),
-        ],
-      }),
-      [second.source.id]: new FakeConnector({
-        [second.feed.externalId]: [
-          normalizedItem(second.feed.externalId, "1", "second item"),
-        ],
-      }),
+      [first.source.id]: firstConnector,
+      [second.source.id]: secondConnector,
     });
     const summarizer = new FakeSummarizer([
       [{ text: "first summary", sourceUrl: null }],
       [{ text: "second summary", sourceUrl: null }],
     ]);
+    const abortController = new AbortController();
 
     const view = await runForUser(database, user.id, period, {
       connectorFactory,
       summarizer,
       intelligence: fixtureStoryIntelligence,
       now: () => 200,
+      signal: abortController.signal,
     });
 
     assertEquals(view.digest.status, "complete");
@@ -307,6 +314,15 @@ test("runForUser ingests feeds, summarizes them, and returns a complete digest",
       1,
     );
     assertEquals(connectorFactory.disposeCalls.length, 2);
+    assertEquals(
+      [...firstConnector.signals, ...secondConnector.signals].map(
+        (signal) => signal?.aborted,
+      ),
+      [false, false],
+    );
+    abortController.abort();
+    assertEquals(firstConnector.signals[0]?.aborted, true);
+    assertEquals(secondConnector.signals[0]?.aborted, true);
 
     const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
     assertEquals(runs.length >= 1, true);
@@ -985,20 +1001,87 @@ test("runForUser batches multiple feeds from the same source", async () => {
       [setup1.source.id]: connector,
     });
     const summarizer = new FakeSummarizer([[{ text: "sum", sourceUrl: null }]]);
+    const abortController = new AbortController();
 
     const view = await runForUser(database, user.id, period, {
       connectorFactory,
       summarizer,
       intelligence: fixtureStoryIntelligence,
       now: () => 205,
+      signal: abortController.signal,
     });
 
     // Exactly one connector call for both feeds
     assertEquals(connector.calls.length, 1);
     assert(connector.calls[0].feedExternalIds?.includes("channel:1"));
     assert(connector.calls[0].feedExternalIds?.includes("channel:2"));
+    assert(connector.signals[0] instanceof AbortSignal);
+    assertEquals(connector.signals[0]?.aborted, false);
 
     assertEquals(view.digest.status, "complete");
+  });
+});
+
+test("runForUser propagates an in-flight parent abort to batched connector work", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("batch-parent-abort-orchestrator@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Telegram,
+      1,
+      "channel:abort-1",
+      "Abort Feed One",
+    );
+    await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: setup.source.id,
+      externalId: "channel:abort-2",
+      name: "Abort Feed Two",
+      kind: "news",
+    });
+
+    let connectorSignal: AbortSignal | undefined;
+    const connectorStarted = Promise.withResolvers<void>();
+    const connectorRelease = Promise.withResolvers<NormalizedData>();
+    const connector: Connector<unknown> = {
+      getRawData: () => Promise.resolve({}),
+      getNormalizedData: (_from, _to, _feedExternalIds, signal) => {
+        connectorSignal = signal;
+        connectorStarted.resolve();
+        return connectorRelease.promise;
+      },
+    };
+    const connectorFactory = new FakeConnectorFactory({
+      [setup.source.id]: connector,
+    });
+    const parent = new AbortController();
+    const run = runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer: new FakeSummarizer([]),
+      intelligence: fixtureStoryIntelligence,
+      now: () => 205,
+      signal: parent.signal,
+    });
+
+    await connectorStarted.promise;
+    assert(connectorSignal);
+    assertEquals(connectorSignal.aborted, false);
+    const connectorAborted = Promise.withResolvers<void>();
+    connectorSignal.addEventListener("abort", () => connectorAborted.resolve(), {
+      once: true,
+    });
+    parent.abort(new DOMException("server shutdown", "AbortError"));
+    await connectorAborted.promise;
+    assertEquals(connectorSignal.aborted, true);
+    connectorRelease.resolve({});
+
+    const view = await run;
+    assertEquals(view.digest.status, "failed");
+    assertEquals(connectorFactory.disposeCalls, [setup.source.id]);
   });
 });
 
@@ -1085,12 +1168,14 @@ test("runForUser uses one individual handle and requests each feed separately", 
       { [setup1.source.id]: "individual" },
     );
     const summarizer = new FakeSummarizer([[{ text: "sum", sourceUrl: null }]]);
+    const abortController = new AbortController();
 
     const view = await runForUser(database, user.id, period, {
       connectorFactory,
       summarizer,
       intelligence: fixtureStoryIntelligence,
       now: () => 205,
+      signal: abortController.signal,
     });
 
     assertEquals(view.digest.status, "complete");
@@ -1099,6 +1184,14 @@ test("runForUser uses one individual handle and requests each feed separately", 
     assertEquals(connector.calls.map((call) => call.feedExternalIds), [[
       "channel:1",
     ], ["channel:2"]]);
+    assertEquals(
+      connector.signals.map((signal) => signal instanceof AbortSignal),
+      [true, true],
+    );
+    assertEquals(
+      connector.signals.map((signal) => signal?.aborted),
+      [false, false],
+    );
   });
 });
 

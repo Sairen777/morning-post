@@ -1,13 +1,17 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { getXBrowserConfig } from "../../config.ts";
 import { ConnectorId } from "../../constants.ts";
+import type { XBrowserRuntime } from "../../connectors/x/index.ts";
 import type { Database } from "../../db/client.ts";
 import {
   deleteSourceCredentials,
+  findSourceById,
   listSourcesForUser,
   updateSource,
 } from "../../repositories/source-repository.ts";
 import { type AuthVariables, requireAuth } from "../middleware/require-auth.ts";
+import { NotFoundError } from "../errors.ts";
 import { validate } from "../validate.ts";
 
 const sourceParamsSchema = z.object({
@@ -32,9 +36,27 @@ function disconnectMessage(connectorId: string): string {
   return "Source disconnected.";
 }
 
+export interface SourceRouteDependencies {
+  xBrowserRuntime?: Pick<XBrowserRuntime, "disconnectProfile">;
+}
+
 export function buildSourceRoutes(
   database: Database,
+  dependencies: SourceRouteDependencies = {},
 ): Hono<{ Variables: AuthVariables }> {
+  let defaultXBrowserRuntime: Promise<XBrowserRuntime> | undefined;
+  const resolveXBrowserRuntime = async (): Promise<
+    Pick<XBrowserRuntime, "disconnectProfile">
+  > => {
+    if (dependencies.xBrowserRuntime) return dependencies.xBrowserRuntime;
+    defaultXBrowserRuntime ??= import("../../connectors/x/index.ts").then(
+      ({ XBrowserRuntime }) =>
+        new XBrowserRuntime({
+          profileRoot: getXBrowserConfig().profileRoot,
+        }),
+    );
+    return await defaultXBrowserRuntime;
+  };
   const routes = new Hono<{ Variables: AuthVariables }>();
 
   routes.use("*", requireAuth(database));
@@ -59,11 +81,19 @@ export function buildSourceRoutes(
 
   routes.delete("/:id", async (context) => {
     const { id } = validate(sourceParamsSchema, context.req.param());
-    const source = await deleteSourceCredentials(
-      database,
-      id,
-      context.var.userId,
-    );
+    const userId = context.var.userId;
+    const existingSource = await findSourceById(database, id, userId);
+    if (!existingSource) {
+      throw new NotFoundError("source not found");
+    }
+
+    const source = existingSource.connectorId === ConnectorId.X
+      ? await (await resolveXBrowserRuntime()).disconnectProfile(
+        userId,
+        async () => await deleteSourceCredentials(database, id, userId),
+        context.req.raw.signal,
+      )
+      : await deleteSourceCredentials(database, id, userId);
     const revokeTelegramSession = source.connectorId === ConnectorId.Telegram;
     return context.json({
       source,

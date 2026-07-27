@@ -842,6 +842,8 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
   await withTestDb(async (database) => {
     const sharedSummarizer = new FakeSummarizer([]);
     const progressReporter = { report: () => {} } satisfies DigestProgressReporter;
+    const lifetimeAbortController = new AbortController();
+    const receivedSignals: AbortSignal[] = [];
     let receivedSummarizer: SummarizerService | undefined;
     let receivedTimeoutMs: number | undefined;
     let receivedSummarizationConcurrency: number | undefined;
@@ -856,6 +858,9 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
       receivedTimeoutMs = dependencies.timeoutMs;
       receivedSummarizationConcurrency = dependencies.summarizationConcurrency;
       receivedProgressReporter = dependencies.progressReporter;
+      if (dependencies.signal !== undefined) {
+        receivedSignals.push(dependencies.signal);
+      }
       return Promise.resolve({
         digest: {
           id: crypto.randomUUID(),
@@ -880,19 +885,43 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
         timeoutMs: 42_000,
         summarizationConcurrency: 7,
         progressReporter,
+        signal: lifetimeAbortController.signal,
         runForUser,
       },
     });
     const { cookie } = await ownerSession(app);
 
+    const requestAbortController = new AbortController();
     const response = await app.request("/digests/run", {
       ...jsonRequest("POST", { periodStartMs, periodEndMs }),
       headers: { cookie, Origin: "http://127.0.0.1:5173" },
+      signal: requestAbortController.signal,
     });
     assertEquals(response.status, 200);
     assertEquals(receivedSummarizer, sharedSummarizer);
     assertEquals(receivedTimeoutMs, 42_000);
     assertEquals(receivedSummarizationConcurrency, 7);
     assertEquals(receivedProgressReporter, progressReporter);
+    assertEquals(receivedSignals.length, 1);
+    assertEquals(receivedSignals[0].aborted, false);
+    assertEquals(receivedSignals[0] === requestAbortController.signal, false);
+    assertEquals(receivedSignals[0] === lifetimeAbortController.signal, false);
+
+    requestAbortController.abort();
+    assertEquals(receivedSignals[0].aborted, true);
+
+    const secondRequestAbortController = new AbortController();
+    const secondResponse = await app.request("/digests/run", {
+      ...jsonRequest("POST", { periodStartMs, periodEndMs }),
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+      signal: secondRequestAbortController.signal,
+    });
+    assertEquals(secondResponse.status, 200);
+    assertEquals(receivedSignals.length, 2);
+    assertEquals(receivedSignals[1].aborted, false);
+
+    lifetimeAbortController.abort();
+    assertEquals(receivedSignals[1].aborted, true);
+    assertEquals(secondRequestAbortController.signal.aborted, false);
   });
 });

@@ -10,7 +10,10 @@ import { buildConnectorRoutes, type ConnectorRouteDependencies } from "./routes/
 import { buildDigestRoutes, type DigestRouteOptions } from "./routes/digests.ts";
 import { buildFeedRoutes, type FeedRouteDependencies } from "./routes/feeds.ts";
 import { buildInterestRoutes } from "./routes/interests.ts";
-import { buildSourceRoutes } from "./routes/sources.ts";
+import {
+  buildSourceRoutes,
+  type SourceRouteDependencies,
+} from "./routes/sources.ts";
 import { buildStoryFeedbackRoutes } from "./routes/story-feedback.ts";
 
 export interface ServerBindings {
@@ -28,6 +31,7 @@ export interface AppSecurityOptions {
 
 export interface AppDependencies {
   connectors?: ConnectorRouteDependencies;
+  sources?: SourceRouteDependencies;
   feeds?: FeedRouteDependencies;
   digests?: DigestRouteOptions;
 }
@@ -59,7 +63,7 @@ export function buildApp(
   });
 
   app.route("/auth", buildAuthRoutes(database));
-  app.route("/sources", buildSourceRoutes(database));
+  app.route("/sources", buildSourceRoutes(database, dependencies.sources));
   app.route("/connectors", buildConnectorRoutes(database, dependencies.connectors));
   app.route("/digests", buildDigestRoutes(database, dependencies.digests));
   app.route("/", buildFeedRoutes(database, dependencies.feeds));

@@ -322,6 +322,16 @@ export async function deleteSourceCredentials(
 ): Promise<PublicSource> {
   const now = Date.now();
   return await database.transaction(async (transaction) => {
+    const existingRows = await transaction
+      .select(selectableColumns())
+      .from(sources)
+      .where(and(eq(sources.id, id), eq(sources.userId, userId)))
+      .limit(1)
+      .for("update");
+    if (!existingRows[0]) {
+      throw new NotFoundError("source not found");
+    }
+
     const rows = await transaction
       .update(sources)
       .set({ credentials: null, enabled: false, updatedAt: now })

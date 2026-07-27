@@ -405,6 +405,69 @@ button:focus-visible {
   font-style: italic;
 }
 
+.x-connect-intro {
+  max-width: 52rem;
+}
+
+.x-connect-safety {
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-light);
+}
+
+.x-connect-safety strong {
+  display: block;
+  margin-bottom: var(--space-2);
+}
+
+.x-connect-safety .bullet-list {
+  margin: 0;
+}
+
+.x-connect-status,
+.x-connect-target {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+.x-connect-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.x-connect-status-header h3,
+.x-connect-target h3 {
+  margin-bottom: var(--space-1);
+}
+
+.x-connect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.x-connect-examples {
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.x-connect-examples strong {
+  display: block;
+  margin-bottom: var(--space-2);
+}
+
+.x-connect-examples .bullet-list {
+  margin: 0;
+}
+
 .substack-discovery {
   margin-top: 1.5rem;
   padding-top: 1.25rem;
@@ -784,6 +847,16 @@ button:focus-visible {
 }
 
 @media (max-width: 640px) {
+  .x-connect-status-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .x-connect-actions {
+    flex-direction: column;
+  }
+  .x-connect-actions button {
+    width: 100%;
+  }
   .substack-discovery-header {
     flex-direction: column;
   }

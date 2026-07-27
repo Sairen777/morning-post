@@ -1,3 +1,4 @@
+import { getXBrowserConfig } from "../config.ts";
 import { ConnectorId } from "../constants.ts";
 import { CredentialCipher } from "../crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../crypto/key-provider.ts";
@@ -12,6 +13,7 @@ import {
   type SubstackCredentials,
   substackCredentialSchema,
   telegramCredentialSchema,
+  xCredentialSchema,
 } from "./credential-schemas.ts";
 import type { TelegramConnector } from "./telegram/telegram-connector.ts";
 import type { TelegramConnectorRawData } from "./telegram/telegram-connector.types.ts";
@@ -21,6 +23,7 @@ import type {
   SubstackPostReader,
   SubstackRawData,
 } from "./substack/substack-connector.ts";
+import type { XBrowserRuntime } from "./x/index.ts";
 
 export type TelegramClientHandle = ConstructorParameters<
   typeof TelegramConnector
@@ -84,12 +87,26 @@ const defaultSubstackPublicationReader: PublicationPageReader = async (
   );
   return await readPublicArchive(publicationUrl, {}, offset, limit, signal);
 };
+export type XBrowserRuntimeLoader = () => Promise<
+  Pick<XBrowserRuntime, "createConnector">
+>;
+
+const loadXBrowserRuntime: XBrowserRuntimeLoader = async () => {
+  // Deliberately lazy: Playwright is loaded only when an X source is requested.
+  const { XBrowserRuntime } = await import("./x/index.ts");
+  return new XBrowserRuntime({
+    profileRoot: getXBrowserConfig().profileRoot,
+  });
+};
+
 
 export interface ConnectorFactoryDependencies {
   credentialCipher?: CredentialCipher;
   telegramClientFactory?: TelegramClientFactory;
   substackClientFactory?: SubstackClientFactory;
   substackPublicationReader?: PublicationPageReader;
+  xBrowserRuntime?: Pick<XBrowserRuntime, "createConnector">;
+  xBrowserRuntimeLoader?: XBrowserRuntimeLoader;
 }
 
 export class ConnectorFactory {
@@ -98,6 +115,11 @@ export class ConnectorFactory {
   readonly #telegramClientFactory: TelegramClientFactory;
   readonly #substackClientFactory: SubstackClientFactory;
   readonly #substackPublicationReader: PublicationPageReader;
+  readonly #xBrowserRuntime?: Pick<XBrowserRuntime, "createConnector">;
+  readonly #xBrowserRuntimeLoader: XBrowserRuntimeLoader;
+  #loadedXBrowserRuntime?: Promise<
+    Pick<XBrowserRuntime, "createConnector">
+  >;
 
   constructor(
     database: Database,
@@ -112,6 +134,9 @@ export class ConnectorFactory {
       new DefaultSubstackClientFactory();
     this.#substackPublicationReader = dependencies.substackPublicationReader ??
       defaultSubstackPublicationReader;
+    this.#xBrowserRuntime = dependencies.xBrowserRuntime;
+    this.#xBrowserRuntimeLoader = dependencies.xBrowserRuntimeLoader ??
+      loadXBrowserRuntime;
   }
 
   async forSource(
@@ -123,6 +148,8 @@ export class ConnectorFactory {
         return await this.#telegramConnector(source, userId);
       case ConnectorId.Substack:
         return await this.#substackConnector(source, userId);
+      case ConnectorId.X:
+        return await this.#xConnector(source, userId);
       default:
         throw new ConflictError(
           `connector is not supported: ${source.connectorId}`,
@@ -159,6 +186,43 @@ export class ConnectorFactory {
       connector: new TelegramConnectorClass(client),
       ingestionMode: "batch",
       dispose: async () => await destroyTelegramClient(client),
+    };
+  }
+
+  async #resolveXBrowserRuntime(): Promise<
+    Pick<XBrowserRuntime, "createConnector">
+  > {
+    if (this.#xBrowserRuntime) return this.#xBrowserRuntime;
+    try {
+      this.#loadedXBrowserRuntime ??= this.#xBrowserRuntimeLoader();
+      return await this.#loadedXBrowserRuntime;
+    } catch (error) {
+      this.#loadedXBrowserRuntime = undefined;
+      throw new Error("Failed to load X browser runtime", { cause: error });
+    }
+  }
+
+  async #xConnector(
+    source: PublicSource,
+    userId: string,
+  ): Promise<ConnectorHandle> {
+    const credentials = xCredentialSchema.parse(
+      await getDecryptedCredentials(
+        this.#database,
+        source.id,
+        userId,
+        this.#credentialCipher,
+      ),
+    );
+    if (credentials.profileId !== userId) {
+      throw new ConflictError("X source has invalid browser profile credentials");
+    }
+    const runtime = await this.#resolveXBrowserRuntime();
+    const connector = runtime.createConnector(credentials.profileId);
+    return {
+      connector,
+      ingestionMode: "batch",
+      dispose: async () => await connector.dispose(),
     };
   }
 

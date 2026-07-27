@@ -225,8 +225,8 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         when={props.sources.length > 0}
         fallback={
           <p class="hint">
-            Connectors are available through the existing Telegram login API;
-            this screen displays connected sources once they exist.
+            Connectors are available through the Connections tab; this screen
+            displays connected sources once they exist.
           </p>
         }
       >
@@ -343,7 +343,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                 </div>
 
                 {/* Discover feeds */}
-                <Show when={source.connectorId !== "Substack"}>
+                <Show when={source.connectorId !== "Substack" && source.connectorId !== "X"}>
                 <div style="margin-top: 0.5rem;">
                   <button
                     onClick={() => handleDiscover(source.id)}

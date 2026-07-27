@@ -55,6 +55,7 @@ export interface OrchestratorDependencies extends AssembleDigestDependencies {
     finish: typeof finishDigestRunFeed;
   };
   trigger?: DigestRunTrigger;
+  signal?: AbortSignal;
   now?: () => number;
 }
 
@@ -108,6 +109,7 @@ interface RunContext {
   now: () => number;
   progressStartedAtMs: number;
   progressReporter: OrchestratorDependencies["progressReporter"];
+  signal?: AbortSignal;
   modelUsageAggregate: DigestModelUsageAggregate;
 }
 
@@ -282,7 +284,7 @@ async function ingestUserFeeds(
             userId,
             feedsNeedingIngestion,
             handle.connector,
-            { feedWindows, fetchedAt: now() },
+            { feedWindows, fetchedAt: now(), signal: runContext.signal },
           );
 
           for (const result of individualResult.feedResults) {
@@ -363,6 +365,7 @@ async function ingestUserFeeds(
             {
               window: ingestionWindow(feed, period, paidRefreshFeedIds),
               fetchedAt: now(),
+              signal: runContext.signal,
             },
           );
           await digestRunFeedRepository.finish(database, feedRun.id, {
@@ -434,7 +437,7 @@ async function ingestUserFeeds(
             userId,
             feedsNeedingIngestion,
             handle.connector,
-            { feedWindows, fetchedAt: now() },
+            { feedWindows, fetchedAt: now(), signal: runContext.signal },
           );
 
           for (const result of batchResult.feedResults) {
@@ -591,6 +594,7 @@ async function executeDigestRun(
     now,
     progressStartedAtMs: dependencies.progressStartedAtMs ?? now(),
     progressReporter: dependencies.progressReporter,
+    signal: dependencies.signal,
     modelUsageAggregate: dependencies.modelUsageAggregate!,
   };
 

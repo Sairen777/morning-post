@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   addSubstackPublication,
   ApiClientError,
+  cancelXLogin,
   connectSubstackSession,
   createInterest,
   deleteDigest,
@@ -10,14 +11,18 @@ import {
   getDigestRunDetail,
   getFeed,
   getSetupStatus,
+  getXLoginStatus,
   getTelegramLoginStatus,
   listDigestRuns,
   listFeedsForSource,
   listInterests,
   listSubstackPublications,
   loginUser,
+  addXTarget,
   setupOwner,
   startTelegramLogin,
+  startXLogin,
+  subscribeFeed,
   submitStoryFeedback,
   submitTelegramTwoFactorAuthentication,
   unsubscribeFeed,
@@ -25,6 +30,7 @@ import {
   updateInterest,
   updateSource,
   updateFeed,
+  verifyXLogin,
 } from "../api/client";
 
 describe("ApiClientError", () => {
@@ -647,6 +653,113 @@ describe("deleteDigest", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("X connector API", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("uses the headed-login lifecycle endpoints and encodes the session id", async () => {
+    const calls: Array<[string, RequestInit?]> = [];
+    const sessionId = "session/with space";
+    globalThis.fetch = ((url: string, options?: RequestInit) => {
+      calls.push([url, options]);
+      if (options?.method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            sessionId,
+            status: "awaiting_login",
+            expiresAtMs: 4_102_444_800_000,
+          }),
+          { status: 200 },
+        ),
+      );
+    }) as typeof fetch;
+
+    const started = await startXLogin();
+    const status = await getXLoginStatus(sessionId);
+    const verified = await verifyXLogin(sessionId);
+    const canceled = await cancelXLogin(sessionId);
+
+    expect(started.sessionId).toBe(sessionId);
+    expect(status.status).toBe("awaiting_login");
+    expect(verified.status).toBe("awaiting_login");
+    expect(canceled).toBeUndefined();
+    expect(calls.map(([path, options]) => ({
+      path,
+      method: options?.method ?? "GET",
+      body: options?.body,
+      credentials: options?.credentials,
+    }))).toEqual([
+      {
+        path: "/connectors/x/login",
+        method: "POST",
+        body: undefined,
+        credentials: "include",
+      },
+      {
+        path: "/connectors/x/login/session%2Fwith%20space",
+        method: "GET",
+        body: undefined,
+        credentials: "include",
+      },
+      {
+        path: "/connectors/x/login/session%2Fwith%20space/verify",
+        method: "POST",
+        body: undefined,
+        credentials: "include",
+      },
+      {
+        path: "/connectors/x/login/session%2Fwith%20space",
+        method: "DELETE",
+        body: undefined,
+        credentials: "include",
+      },
+    ]);
+  });
+
+  it("adds an X target through one evidence-bound connector request", async () => {
+    const calls: Array<[string, RequestInit?]> = [];
+    globalThis.fetch = ((url: string, options?: RequestInit) => {
+      calls.push([url, options]);
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "feed-x-chat",
+            sourceId: "source-x",
+            externalId: "x:chat:conversation_1",
+            name: "Project chat",
+            kind: "discussion",
+          }),
+          { status: 201 },
+        ),
+      );
+    }) as typeof fetch;
+
+    const feed = await addXTarget({
+      sourceId: "source-x",
+      url: "https://x.com/messages/conversation_1",
+    });
+
+    expect(calls.map(([path, options]) => [path, options?.method])).toEqual([
+      ["/connectors/x/targets", "POST"],
+    ]);
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      sourceId: "source-x",
+      url: "https://x.com/messages/conversation_1",
+    });
+    expect(calls[0][1]?.credentials).toBe("include");
+    expect(calls[0][1]?.headers).toEqual({
+      "content-type": "application/json",
+    });
+    expect(feed.id).toBe("feed-x-chat");
   });
 });
 

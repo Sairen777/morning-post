@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { ConnectorFactoryLike } from "../../connectors/connector-factory.ts";
 import { z } from "zod";
 import { getConfig } from "../../config.ts";
 import type { Database } from "../../db/client.ts";
@@ -61,6 +62,8 @@ export interface DigestRouteOptions {
   summarizationConcurrency?: number;
   progressReporter?: DigestProgressReporter;
   runForUser?: typeof runForUserType;
+  connectorFactory?: ConnectorFactoryLike;
+  signal?: AbortSignal;
 }
 
 export function buildDigestRoutes(
@@ -111,11 +114,16 @@ export function buildDigestRoutes(
         throw new Error("Failed to load digest orchestrator", { cause: error });
       }
     }
+    const signal = options.signal === undefined
+      ? context.req.raw.signal
+      : AbortSignal.any([context.req.raw.signal, options.signal]);
     const digest = await runForUser(database, context.var.userId, { startMs, endMs }, {
       summarizer: options.summarizer,
       timeoutMs: options.timeoutMs,
       summarizationConcurrency: options.summarizationConcurrency,
       progressReporter: options.progressReporter,
+      connectorFactory: options.connectorFactory,
+      signal,
     });
     return context.json(digest, 200);
   });

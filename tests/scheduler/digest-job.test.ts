@@ -255,10 +255,12 @@ test("runDigestTick forwards shared digest dependencies to scheduled execution",
   await withTestDb(async (database: Database) => {
     const sharedSummarizer = {} as SummarizerService;
     const progressReporter = { report: () => {} } satisfies DigestProgressReporter;
+    const abortController = new AbortController();
     let receivedSummarizer: SummarizerService | undefined;
     let receivedTimeoutMs: number | undefined;
     let receivedSummarizationConcurrency: number | undefined;
     let receivedProgressReporter: DigestProgressReporter | undefined;
+    let receivedSignal: AbortSignal | undefined;
     await createUser(
       database,
       userInput("scheduler-shared-summarizer@example.com"),
@@ -269,12 +271,14 @@ test("runDigestTick forwards shared digest dependencies to scheduled execution",
       timeoutMs: 37_000,
       summarizationConcurrency: 6,
       progressReporter,
+      signal: abortController.signal,
       now: () => 1_500,
       runForUser: (_database, userId, period, dependencies = {}) => {
         receivedSummarizer = dependencies.summarizer;
         receivedTimeoutMs = dependencies.timeoutMs;
         receivedSummarizationConcurrency = dependencies.summarizationConcurrency;
         receivedProgressReporter = dependencies.progressReporter;
+        receivedSignal = dependencies.signal;
         return Promise.resolve(completedDigest(userId, period));
       },
     });
@@ -283,6 +287,10 @@ test("runDigestTick forwards shared digest dependencies to scheduled execution",
     assertEquals(receivedTimeoutMs, 37_000);
     assertEquals(receivedSummarizationConcurrency, 6);
     assertEquals(receivedProgressReporter, progressReporter);
+    assertEquals(receivedSignal === abortController.signal, true);
+    assertEquals(receivedSignal?.aborted, false);
+    abortController.abort();
+    assertEquals(receivedSignal?.aborted, true);
   });
 });
 

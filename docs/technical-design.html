@@ -425,7 +425,7 @@
         <p class="eyebrow">Morning Post · Technical Design Documentation</p>
         <h1>Current architecture, self-host posture, security, and scalability review</h1>
         <p
-          class="lede">This document records the repository architecture as reviewed on 2026-07-26 and the supported v1 deployment posture of one independently operated single-owner self-host. Current implementation coverage includes name-only first-run owner setup, passwordless continuation with compatibility for existing password-backed owners, the Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence and rate limiting, stale-recovery-first scheduling for zero or one owner, the connector-neutral story pipeline, Telegram and Substack connectors, and the OpenAI-compatible analysis and summarization boundary. X Chat is not implemented and its retained research is explicitly on hold outside the current roadmap.</p>
+          class="lede">This document records the repository architecture as reviewed on 2026-07-27 and the supported v1 deployment posture of one independently operated single-owner self-host. Current implementation coverage includes name-only first-run owner setup, passwordless continuation with compatibility for existing password-backed owners, the Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence and rate limiting, stale-recovery-first scheduling for zero or one owner, the connector-neutral story pipeline, Telegram and Substack connectors, the Playwright 1.61 X browser connector, and the OpenAI-compatible analysis and summarization boundary. X uses a separate persistent Chromium profile, headed manual login and unlock, and headless rendered-DOM discovery and capture. It remains an unsupported and brittle browser-automation integration that can trigger X account restrictions.</p>
         <p
           class="diagram-note">Diagrams are embedded as Mermaid source and intentionally do not load a CDN; this keeps the file offline and self-contained. Render with a local Mermaid tool if a graphical version is needed.</p>
         <div class="meta-grid" aria-label="document metadata">
@@ -437,12 +437,12 @@
           <div class="card">
             <div class="card-title">Primary assets</div>
             <strong>Credentials, sessions, messages, key material</strong>
-            <p>Telegram session strings, imported Substack session-cookie values, Morning Post session cookies, owner prompts and interest rules, message/post text and media, story analyses, summaries, feedback, and digest history. The on-hold X Chat research describes additional tokens and Chat key material only as hypothetical assets; they do not exist in the current system.</p>
+            <p>Telegram session strings, imported Substack session-cookie values, Morning Post session cookies, owner prompts and interest rules, message/post text and media, story analyses, summaries, feedback, and digest history. The X browser connector also holds X session cookies and local storage in its dedicated Chromium profile directory, stores only the encrypted canonical profile ID in the database, briefly processes rendered-DOM content, and persists normalized X posts and chat messages with visible metrics or reactions.</p>
           </div>
           <div class="card">
             <div class="card-title">Main risk</div>
-            <strong>Trusted self-hosted custodian</strong>
-            <p>The operator-run server must decrypt connector credentials and may send plaintext content to the configured summarizer while the primary owner is offline.</p>
+            <strong>Trusted self-hosted custodian and browser-profile holder</strong>
+            <p>The operator-run server must decrypt connector credentials, protect the X automation profile as an account-equivalent bearer asset, and may send plaintext content to the configured summarizer while the primary owner is offline. Unsupported X browser automation adds breakage, policy, and account-restriction risk.</p>
           </div>
           <div class="card">
             <div class="card-title">Review basis</div>
@@ -455,7 +455,7 @@
       <nav class="toc" aria-label="table of contents">
         <a href="#executive-summary">Summary</a>
         <a href="#context">Context</a>
-        <a href="#x-chat-research">X Chat (on hold)</a>
+        <a href="#x-chat-research">X integration</a>
         <a href="#runtime-startup">Runtime/startup</a>
         <a href="#containers">Containers</a>
         <a href="#domain-model">Domain model</a>
@@ -489,6 +489,7 @@
               <li>Each digest tick recovers stale runs before selecting the earliest user row as the owner, then processes zero or one owner. Croner <code>protect: true</code> skips overlapping callbacks in the supported single API process; there is no scheduler lease or runtime leader election.</li>
               <li>Story analysis and summarization are provider boundaries with deployment-wide text and vision endpoints, deterministic text/item/image caps, and run-local media-description fallback behavior.</li>
               <li>Connector media remain local, but per-connector quotas and a weekly TTL sweep bound retention on a single host.</li>
+              <li>The X connector retains normalized captured posts and chat messages indefinitely, including messages that later disappear on X. Its rendered DOM is ephemeral, and future configurable retention must cascade through raw and derived records rather than relying on X-side disappearance.</li>
             </ul>
           </div>
           <div class="card">
@@ -502,8 +503,7 @@
         </div>
 
         <div class="callout warning">
-        <strong>Security decision:</strong> Self-hosting changes who holds custody; it does not make Morning Post zero-knowledge. The primary owner controls the instance, database, media, and tokens, but scheduled work still requires local decryption. Plaintext exists in the process after decryption and crosses the operator-controlled host boundary when a remote summarizer is configured. Credential encryption, owner authentication, internal <code>userId</code> ownership scoping, PostgreSQL-backed rate limits, TLS, protected backups, and host hardening remain defense-in-depth; Morning Post v1 does not introduce a shared service, database, or centralized credential vault. The X Chat research is on hold and describes no current asset or boundary.
-      </div>
+        <strong>Security decision:</strong> Self-hosting changes who holds custody; it does not make Morning Post zero-knowledge. The primary owner controls the instance, database, media, tokens, and dedicated X Chromium profile, but scheduled work still requires local decryption. Plaintext exists in the process after decryption and crosses the operator-controlled host boundary when a remote summarizer is configured. Credential encryption, owner authentication, internal <code>userId</code> ownership scoping, PostgreSQL-backed rate limits, TLS, protected backups, profile-directory access controls, and host hardening remain defense-in-depth; Morning Post v1 does not introduce a shared service, database, or centralized credential vault. X browser automation is implemented but is not official, stable, or hidden from X, and it can cause challenges or account restrictions.</div>
       </section>
 
       <section id="context">
@@ -544,7 +544,7 @@
               <li><strong>API → PostgreSQL:</strong> persistence for sensitive metadata and encrypted credentials. <code>DB_SSL_MODE</code> configures TLS (default <code>disable</code> for local loopback; <code>require</code> or <code>verify-full</code> for remote). Pool size, idle timeout, and connect timeout are explicitly configured from env vars.</li>
               <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
               <li><strong>API → Substack:</strong> users explicitly import <code>substack.sid</code> and may also provide <code>connect.sid</code> when their browser has it; Morning Post never accepts a Substack password or raw cookie header. Account-subscription discovery and paid/full post retrieval send only the provided session cookies to the fixed <code>https://substack.com</code> origin. Manual publication validation fetches public archives without cookies through the IP-pinned HTTPS boundary. The integration replays an unsupported browser session and may conflict with Substack terms; the UI discloses that risk before connection.</li>
-              <li><strong>On-hold research → X Chat:</strong> no X Chat connector, authorization flow, polling job, normalized-message state, or Chat key custody is implemented. If the project ever reopens the research, a read-only connector would require operator-controlled user-context authorization and local signature verification/key recovery for one official <code>g</code>-prefixed group. This is not current architecture or current roadmap work.</li>
+              <li><strong>API → dedicated X Chromium profile → X:</strong> the implemented Playwright 1.61 connector uses a separate persistent Chromium profile, never the operator's daily browser. A headed window with a working display is required for the owner to perform manual X login, 2FA/challenges, and X Chat unlock; discovery and capture subsequently reuse the profile headlessly. Every headed or headless browser operation and profile deletion takes an exclusive profile lease. X cookies and local storage remain in the profile directory, while the encrypted source credential contains only its canonical profile ID. The connector does not spoof or conceal automation. It is unsupported and brittle, can break when the rendered DOM changes, and can cause X challenges, suspension, or other restrictions.</li>
               <li><strong>API → summarizer:</strong> normalized message/post plaintext and selected media remain visible to the local process. A loopback summarizer stays within the operator-controlled host; enabling a remote endpoint sends that plaintext across a separately configured provider boundary. Self-hosting therefore does not remove the privacy decision represented by <code>ALLOW_REMOTE_SUMMARIZATION</code>.</li>
               <li><strong>API → filesystem:</strong> media are local files with feed-isolated paths, per-connector quota (<code>MEDIA_QUOTA_BYTES</code>), and a weekly TTL sweep (<code>MEDIA_TTL_MS</code>). Bun's Node-compatible filesystem APIs operate with the process account's privileges rather than runtime permission flags. Deployment ownership and filesystem ACLs should restrict the process to every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> (<code>telegram_media</code>, <code>substack_media</code>, <code>youtube_media</code>, <code>reddit_media</code>, <code>x_media</code>, <code>rss_media</code>) plus the shared/legacy <code>./media</code>; application path validation, feed isolation, quotas, eviction, and TTL traversal remain the in-process boundaries.</li>
             </ul>
@@ -579,52 +579,66 @@
                 </table>
               </div>
               </div>
-              <h3 id="x-chat-research">X Chat integration research — on hold</h3>
-              <div class="callout warning">
-                <strong>Status: on hold/deferred, not implemented, and not a current roadmap priority.</strong> No X Chat connector or X-specific persistence exists. The conditional material below is retained only as subordinate research in case the idea is reassessed; its requirements and verbs describe hypothetical constraints, not approved implementation work. The researched scope was official X Chat, one operator-configured <code>g</code>-prefixed group, scheduled read-only access, no sends, and no webhook or real-time dependency.
-              </div>
+              <h3 id="x-chat-research">X integration — implemented Playwright browser connector</h3>
+              <div class="callout danger">
+                <strong>Implemented, but unsupported and inherently brittle.</strong> Morning Post uses Playwright 1.61 with a dedicated persistent Chromium profile because the official X API and Chat surfaces do not fit the intended personal capture use case. This is not an official or stable X integration: rendered-DOM changes and authentication challenges can interrupt collection, and browser automation can cause account or policy restrictions. Morning Post does not spoof or hide that automation.</div>
 
               <pre class="mermaid">flowchart LR
-  Operator["Primary owner\nX developer app + credits"]
-  XAPI["X Chat API\nciphertext events + public-key records"]
+  Owner["Owner's browser of choice\n(Safari, Firefox, Chrome, …)"]
+  Chromium["Dedicated Playwright 1.61 Chromium\npersistent automation profile"]
 
-  subgraph SelfHost["Same operator-controlled Morning Post self-host"]
-    Poller["Deferred X Chat reader\none g-prefixed group"]
-    ChatXDK["@xdevplatform/chat-xdk\nkey recovery • verify • decrypt"]
-    State[("PostgreSQL\nnormalized messages + signed message_id set\nnormalized-message watermark/state")]
-    Digest["Existing digest pipeline"]
-    Local["Configured local summarizer"]
-    Poller -->|key-change events before messages| ChatXDK
-    ChatXDK -->|verified plaintext| State
-    State --> Digest
-    Digest -->|plaintext, local option| Local
+  subgraph SelfHost["Morning Post self-host"]
+    subgraph Profile["Chromium automation profile"]
+      Headed["Headed window\nmanual X login, 2FA,\nX Chat unlock"]
+      Headless["Headless scheduled\nrendered-DOM capture"]
+      Lock["Exclusive profile lease\nlogin, discovery, capture, delete"]
+    end
+
+    Collector["X browser collector\n(Playwright controller)"]
+    Import["Ephemeral rendered DOM\n→ normalized posts/messages\n+ visible metrics/reactions"]
+    State[("PostgreSQL\ncaptured posts + messages\nanalyses, stories, summaries")]
+    Pipeline["Existing digest pipeline"]
+
+    Profile --> Collector
+    Collector --> Import
+    Import --> State
+    State --> Pipeline
   end
 
-  Remote["Configured remote summarizer"]
-  Operator -->|per-instance app, user auth, unlock choice| Poller
-  XAPI -->|scheduled history/event reads| Poller
-  Digest -->|plaintext crosses host, remote option| Remote
+  Owner -.->|"initial connection requires a display\nmanual login, 2FA, Chat unlock"| Chromium
+  Chromium --> Profile
 
-  classDef external fill:#fbeccf,stroke:#8a5a10,color:#342107;
-  classDef storage fill:#e5efe6,stroke:#20603d,color:#0e2818;
-  class XAPI,Remote external;
-  class State storage;</pre>
+  Pipeline -->|plaintext| Summarizer["Configured summarizer\n(local or remote)"]
+
+  classDef ext fill:#fbeccf,stroke:#8a5a10,color:#342107;
+  classDef sto fill:#e5efe6,stroke:#20603d,color:#0e2818;
+  class Summarizer ext;
+  class State,Import,Pipeline sto;</pre>
 
               <dl class="decision-list">
-                <dt>Research question: per-instance provisioning and durable user authorization</dt>
-                <dd>Every operator must create and configure their own X developer app, purchase or monitor its API credits, and supply user-context credentials; an open-source repository cannot ship a project-wide client secret or billing account. The preferred unattended path is OAuth 2.0 Authorization Code with PKCE plus <code>offline.access</code>, so a refresh token can survive access-token expiry and process restarts. A narrow first cut may instead accept operator-provisioned OAuth 1.0a user credentials. Request only <code>dm.read</code>, <code>users.read</code>, and <code>tweet.read</code>; add <code>dm.write</code> only if public-key registration, conversation-key initialization, or a later send feature actually requires it.</dd>
+                <dt>Connection, profile identity, and display requirement</dt>
+                <dd>The owner starts an X connection from Morning Post, which opens a <em>headed</em> Playwright 1.61 Chromium window backed by a dedicated persistent profile beneath <code>X_BROWSER_PROFILE_ROOT</code>. The owner signs in to X directly, completes any 2FA or provider challenge, and unlocks X Chat when required; Morning Post never receives the X password. Verification commits the source with an encrypted credential containing only the canonical profile ID. Cookies, local storage, and other session state stay in that profile, never in the database credential. The SPA retains only the opaque active login-session ID in browser <code>sessionStorage</code>, so switching Dashboard tabs or remounting the connection panel resumes status polling and verify/cancel controls; a missing or expired server session clears that browser entry. Initial connection requires a working display: a remote or otherwise headless deployment must provide an operator-accessible graphical session. Later discovery and capture open the managed profile headlessly.</dd>
 
-                <dt>Research question: outbound polling and minimal state</dt>
-                <dd>On every digest schedule, start from the newest conversation history/events at <a href="https://docs.x.com/x-api/chat/get-chat-conversation-events"><code>GET /2/chat/conversations/{id}/events</code></a> for the single configured <code>g</code>-prefixed ID, then page backward with <code>pagination_token</code> values that live only for that polling run until a previously persisted signed <code>message_id</code> is reached or history is exhausted. A pagination token pages one result set; it is not a safe durable cross-run cursor and must not be persisted or reused as one. No webhook or real-time dependency belongs in the first digest path; the <a href="https://docs.x.com/xchat/real-time-events">real-time events guide</a> remains a possible later delivery option. Persist only normalized messages needed by the digest, signed <code>message_id</code> values for deduplication and the stop watermark, and any other digest-ingestion state; never use unsigned delivery metadata as message identity.</dd>
+                <dt>Headless discovery and opaque target identifiers</dt>
+                <dd>Authenticated discovery visits X's Following, Lists, and Messages surfaces, scrolls the rendered lists within explicit safety bounds, and exposes canonical Following, List, and Chat targets. Direct target addition accepts one canonical URL and performs rendered-browser evidence validation and feed persistence within the same <code>POST /connectors/x/targets</code> request; its commit barrier prevents a connector deadline from reporting failure after persistence has begun. The generic feed-subscription route rejects X sources, so a client cannot replace validated evidence with a different feed identifier. Conversation IDs are opaque identifiers: the connector does not interpret prefixes or infer whether a conversation is a group from its ID.</dd>
 
-                <dt>Research question: ciphertext, keys, signatures, and existing-identity unlock</dt>
-                <dd>The X Chat API returns ciphertext. The local <a href="https://docs.x.com/xchat/xchat-xdk">Chat XDK</a> must load participant signing keys, process and verify conversation key-change events before dependent messages, recover the applicable conversation key, verify message signatures, and then decrypt. To reuse an existing X Chat identity, fetch the authenticated user's public-key record, pass its <code>juicebox_config</code> to the XDK, and unlock with the user's X Chat passcode. OAuth continuity and Chat-key unlock are separate restart requirements: the operator must choose either manual passcode unlock after each restart or storage of an unlock secret under Morning Post's existing encrypted-secret model. The latter enables unattended scheduling but increases local secret-custody risk and must not be an implicit default.</dd>
+                <dt>Bounded rendered-DOM capture and normalization</dt>
+                <dd>Digest ingestion opens selected targets headlessly in the persistent profile and traverses X's virtualized rendered DOM within bounded rounds, item counts, no-progress limits, and the requested time window. Timeline posts are normalized with any visible reply, repost, like, and view counts; chat messages are normalized with visible reactions and viewer-reaction state. Platform message IDs are globally deduplicated. ID-less messages use ordered window-overlap reconciliation so co-rendered identical messages receive distinct deterministic fallback IDs; if movement leaves multiple possible overlaps or an otherwise indistinguishable ID-less window, capture fails as unprovable instead of advancing the ingestion cursor. Raw DOM and extractor intermediates are ephemeral. Scroll-action failures, safety limits, and unproved requested time-window boundaries likewise fail rather than silently treating a truncated window as complete.</dd>
 
-                <dt>Research question: plaintext and custody boundary</dt>
-                <dd>Decryption happens on the operator's host, but plaintext then exists in process memory and in any normalized message rows retained for the digest. A local summarizer keeps processing within that self-host; a configured remote summarizer receives the selected plaintext across its provider boundary. The operator—not the Morning Post project—controls the database, media, OAuth tokens, X Chat key material, secret model, and backups. Existing credential encryption, authentication, <code>userId</code> ownership scoping, database TLS configuration, backup protection, filesystem permissions, and host hardening remain defense-in-depth. There is no shared Morning Post database or centralized X credential custody.</dd>
+                <dt>Exclusive profile lease and security boundary</dt>
+                <dd>Headed login, connection inspection, feed discovery, target validation, scheduled capture, and profile removal serialize through an exclusive profile lease. Shutdown first closes the persistent browser context and falls back to closing its backing Browser when necessary; the lease is released only after the context is closed or the Browser is confirmed disconnected, including a later <code>disconnected</code> event after an initially failed cleanup. The profile is separate from every daily browser profile and contains account-equivalent X session material. Restrict <code>X_BROWSER_PROFILE_ROOT</code> to the Morning Post process identity and protect the host, volume, backups, and encryption at rest accordingly. Application credential encryption protects only the canonical user-bound profile ID; it does not encrypt the Chromium profile directory.</dd>
 
-                <dt>Official design sources</dt>
-                <dd><a href="https://docs.x.com/xchat/introduction">X Chat introduction</a>; <a href="https://docs.x.com/xchat/xchat-xdk">Chat XDK reference</a>; <a href="https://docs.x.com/xchat/real-time-events">real-time delivery options</a>; <a href="https://docs.x.com/x-api/chat/get-chat-conversation-events">conversation event history endpoint</a>; <a href="https://docs.x.com/fundamentals/authentication/oauth-2-0/authorization-code">OAuth 2.0 Authorization Code with PKCE and <code>offline.access</code></a>; and <a href="https://docs.x.com/x-api/getting-started/pricing">X API credits and pricing</a>.</dd>
+                <dt>Disconnect ordering and retryable cleanup</dt>
+                <dd>X disconnect holds the profile lease, commits the source disconnection first, and then removes the managed profile. If profile cleanup fails, the source remains disconnected and the API reports a retryable cleanup failure rather than rolling the source back to connected. A later disconnect retry can complete removal without permitting concurrent discovery or capture to race profile deletion.</dd>
+
+                <dt>Unsupported and brittle platform risk</dt>
+                <dd>X does not provide a documented, stable, or supported rendered-DOM collection surface. DOM structure, accessible names, navigation, authentication challenges, and page behavior can change without notice. CAPTCHA, device verification, suspicious-login flags, suspension, or other restrictions may interrupt or permanently block access. The connector does not spoof or hide automation. Operators accept this residual platform and account risk; future work may improve diagnostics and selector resilience but cannot turn browser automation into an official X integration.</dd>
+
+                <dt>Indefinite retention of captured X content</dt>
+                <dd>Normalized X posts and chat messages—including captured disappearing messages—are retained indefinitely, together with visible metrics or reactions and downstream analyses, stories, summaries, feedback, and digest-derived content. <em>Capture overrides X disappearance:</em> deleting or expiring content on X does not delete the already ingested Morning Post copy. The rendered DOM itself is not retained.</dd>
+
+                <dt>Roadmap: configurable retention and resilience</dt>
+                <dd>The remaining X roadmap is not implementation of the collector. Configurable retention must cascade through items, analyses, media, summaries, stories, story-feedback records, and digest-derived content, with complete deletion of captured X artifacts. Future resilience work may improve bounded selector diagnostics and recovery from ordinary DOM changes, while preserving explicit failures and the warning that the integration remains unsupported. No retention configuration key exists today.</dd>
               </dl>
               </section>
 
@@ -632,6 +646,7 @@
                 <div class="section-kicker">Runtime and startup</div>
                 <h2>Local startup pins the Bun toolchain, listener addresses, scheduler semantics, and browser proxy path.</h2>
                 <p>The backend runtime and workspace package manager require Bun <code>1.3.14</code>; PostgreSQL and OpenSSL are service/cryptography prerequisites. Node.js <code>22.13+</code> remains a frontend and Playwright toolchain prerequisite because <code>apps/web</code> declares that engine; it is not the top-level package manager. <code>bun install</code> installs the root package and the <code>apps/web</code> workspace. Root backend scripts explicitly load <code>.env.production.local</code>, so startup does not depend on implicit environment-file discovery. Canonical operations are <code>bun run db:migrate</code>, <code>bun run dev:api</code>, <code>bun run start</code>, <code>bun run dev:cli</code>, <code>bun run test</code>, <code>bun run typecheck</code>, <code>bun run web:test</code>, and <code>bun run web:e2e</code>; generation, cleanup, fixture capture, web development, build, preview, and focused typecheck commands use the other exact scripts declared in <code>package.json</code>.</p>
+                <p>X operation additionally requires the Chromium build pinned for Playwright <code>1.61.0</code>; install it with <code>bun run playwright:install</code>. The API can perform discovery and scheduled capture headlessly, but the first X connection cannot: manual login, 2FA or provider challenges, and X Chat unlock require a headed browser on a working display. Headless servers therefore need an operator-accessible graphical session for connection setup.</p>
                 <p>The database client dependency is pinned to postgres.js <code>3.4.9</code>. This release clamps reconnect delays before they reach the runtime timer boundary, preventing a stale idle connection from producing a negative timeout when the pool reconnects.</p>
 
                 <div class="callout ok">
@@ -1292,6 +1307,11 @@
                             <td>A database or backup leak alone should not expose connector credentials.</td>
                           </tr>
                           <tr>
+                            <td>X profile custody and credential minimization</td>
+                            <td>Playwright uses a dedicated persistent Chromium profile protected by exclusive operation leases. The encrypted source credential stores only the canonical profile ID; X cookies and local storage remain in the profile directory. Initial authentication is manual in a headed window, and later discovery and capture are headless.</td>
+                            <td>A database leak alone does not contain the browser session, but profile or host compromise can expose the X account. Filesystem isolation, encrypted storage/backups, and strict process ownership remain operator responsibilities.</td>
+                          </tr>
+                          <tr>
                             <td>Telegram client identity</td>
                             <td><code>TelegramClient</code> receives nonempty <code>deviceModel</code> and <code>systemVersion</code> strings instead of deriving and disclosing host operating-system details through <code>node:os.type()</code> and <code>node:os.release()</code>.</td>
                             <td>Supplying stable client identity strings minimizes host fingerprinting. Bun's Node-compatible system APIs use the process account's privileges, so deployment isolation—not runtime flags—controls access to host information.</td>
@@ -1346,6 +1366,13 @@
                           <td>The API, CLI, tests, migrations, and generation commands inherit their operating-system account's environment, network, filesystem, subprocess, and native-module privileges. Telegram DC addresses are dynamic and stored inside the session, and configurable provider endpoints (<code>SUMMARIZER_BASE_URL</code>, <code>VISION_BASE_URL</code>) resolve to deployment-selected hosts. Media lifecycle code uses Node-compatible filesystem APIs and needs read and write access to every connector-specific media directory from <code>CONNECTORS_MEDIA_DIR</code> plus <code>./media</code>. The pinned archive transport uses Node-compatible DNS and TLS/socket APIs so the validated IP is the actual TCP destination while the original hostname remains the SNI and certificate-verification identity. Native dependencies include <code>sharp</code> and database/transport libraries operating through the same process boundary.</td>
                           <td>Use a dedicated process identity and deployment-level filesystem, secret, subprocess, and network controls. Within the application, keep connector schemas, media path isolation and quotas, database ownership filters, and the IP-pinned archive transport as enforcement boundaries; never replace the latter with ordinary <code>fetch()</code> after a separate DNS check.</td>
                           <td><strong>Implemented application boundary.</strong> <code>requestPinnedHttps()</code> accepts only prevalidated global-unicast IP literals, connects to the selected IP, and retains the original domain for TLS SNI and certificate verification. Tests cover private-address rejection, pinned TCP destination, redirects, framing, encoding, and byte limits. Process-wide least privilege remains a deployment responsibility because Bun exposes no per-script permission profile.</td>
+                        </tr>
+                        <tr>
+                          <td><span class="badge critical">S2</span></td>
+                          <td>The X persistent browser profile is account-equivalent session material, and its automation surface is unsupported by X.</td>
+                          <td>The implemented connector keeps cookies and local storage in a dedicated profile, stores only its encrypted canonical profile ID in PostgreSQL, serializes browser use and deletion with an exclusive lease, and does not spoof or conceal automation. Rendered-DOM or authentication changes can stop discovery and capture, while automation can cause challenges, suspension, or other account restrictions.</td>
+                          <td>Run Morning Post under a dedicated identity, restrict and encrypt <code>X_BROWSER_PROFILE_ROOT</code> and its backups, never reuse a daily browser profile, keep failures explicit rather than accepting incomplete capture, and treat X platform/account risk as irreducible. Add resilience only where it preserves bounded operation and visible failure.</td>
+                          <td><strong>Implemented boundary with residual risk.</strong> Dedicated profile custody, canonical-ID-only encrypted credentials, exclusive leases, bounded capture, and disconnect cleanup ordering reduce local races and exposure. They do not make browser automation official, stable, or safe from X restrictions.</td>
                         </tr>
                         <tr>
                           <td><span class="badge high">S3</span></td>
@@ -1557,10 +1584,9 @@
 
                     <section id="roadmap">
                       <div class="section-kicker">Prioritized roadmap</div>
-                      <h2>Remaining priorities harden the owner-operated deployment and improve throughput; X Chat is explicitly outside the current roadmap.</h2>
+                      <h2>Remaining priorities harden the owner-operated deployment and improve throughput; the X browser connector itself is implemented.</h2>
                       <div class="callout">
-                        <strong>X Chat is on hold.</strong> It is not a current connector, milestone, or roadmap priority. The retained <a href="#x-chat-research">research subsection</a> records conditional constraints only so that a future reassessment would not lose prior security and API findings; no implementation work should be inferred from it.
-                      </div>
+                        <strong>X roadmap scope is retention and resilience, not collector implementation.</strong> The <a href="#x-chat-research">current integration subsection</a> records the implemented Playwright Chromium connector and its unsupported, brittle, account-risk posture. Remaining work is configurable cascading deletion of captured and derived X content plus bounded diagnostics and resilience for ordinary DOM changes; it cannot make browser automation an official or stable X surface.</div>
 
                       <h3>Phase 1 — production safety baseline</h3>
                       <table>
@@ -1698,7 +1724,7 @@
 
                     <section id="evidence">
                       <div class="section-kicker">Evidence map</div>
-                      <h2>Current-state claims are tied to observed files; the on-hold X Chat subsection cites official research sources without implying implementation status.</h2>
+                      <h2>Current-state claims are tied to observed files, including the implemented X browser connector and its deterministic and opt-in live contract boundaries.</h2>
                       <dl class="decision-list">
                         <dt>Route and middleware shape</dt>
                         <dd><span class="path">src/server/app.ts</span>, <span class="path">src/server/routes/auth.ts</span>, <span class="path">src/server/routes/digests.ts</span>, <span class="path">src/server/routes/interests.ts</span>, <span class="path">src/server/routes/story-feedback.ts</span>, <span class="path">src/server/middleware/require-auth.ts</span>, <span class="path">src/server/middleware/rate-limit.ts</span>, <span class="path">src/server/middleware/origin-guard.ts</span>.</dd>
@@ -1739,6 +1765,8 @@
 
                         <dt>Substack connector and frontend onboarding</dt>
                         <dd><span class="path">src/connectors/substack/session-client.ts</span>, <span class="path">src/services/substack-publication-discovery-service.ts</span>, <span class="path">src/server/routes/connectors.ts</span>, and <span class="path">apps/web/src/app/SubstackConnectPanel.tsx</span>.</dd>
+                        <dt>X browser connection, discovery, capture, disconnect, UI, and tests</dt>
+                        <dd>Core browser and normalization behavior is in <span class="path">src/connectors/x/</span>, including profile storage and leasing, headed/headless sessions, target parsing, discovery, virtual scrolling, DOM extraction, collection, and <span class="path">x-connector.ts</span>. Connection and target orchestration are in <span class="path">src/services/x-login-service.ts</span>, <span class="path">src/services/x-target-service.ts</span>, <span class="path">src/server/routes/connectors.ts</span>, <span class="path">src/server/routes/sources.ts</span>, and <span class="path">src/connectors/connector-factory.ts</span>; the owner UI is <span class="path">apps/web/src/app/XConnectPanel.tsx</span>. Deterministic coverage is located in <span class="path">tests/x-connector.test.ts</span>, <span class="path">tests/x-targets-and-scroll.test.ts</span>, <span class="path">tests/services/x-login-service.test.ts</span>, <span class="path">tests/server/x-login.test.ts</span>, <span class="path">tests/server/sources.test.ts</span>, <span class="path">tests/connector-factory.test.ts</span>, <span class="path">apps/web/src/app/XConnectPanel.test.tsx</span>, and <span class="path">apps/web/src/api/client.test.ts</span>; these tests do not contact X. <span class="path">tests/live-x-browser-contract.test.ts</span> is explicitly opt-in via <code>bun run test:x:live</code> and targets a pre-authenticated managed profile rather than running with the deterministic suite.</dd>
 
                         <dt>Error handling and redaction</dt>
                         <dd><span class="path">src/server/errors.ts</span>, <span class="path">src/server/error-sanitizer.ts</span>.</dd>
@@ -1756,11 +1784,9 @@
                         <dd><span class="path">package.json</span>, <span class="path">bun.lock</span>, and <span class="path">README.md</span>.</dd>
                       </dl>
                       <div class="callout ok">
-        <strong>Documentation status:</strong> This HTML document reflects the single-owner auth cutover, retained internal ownership scoping, PostgreSQL-backed rate limiting, stale-recovery-first zero-or-one-owner scheduler, connector-neutral story pipeline, relevance policies, durable story feedback, story-card web UI, historical legacy projection, media lifecycle, and current production-hardening state as reviewed on 2026-07-26. X Chat is on hold, not observed runtime behavior or current roadmap work.
-      </div>
+        <strong>Documentation status:</strong> This HTML document reflects the single-owner auth cutover, retained internal ownership scoping, PostgreSQL-backed rate limiting, stale-recovery-first zero-or-one-owner scheduler, connector-neutral story pipeline, relevance policies, durable story feedback, story-card web UI, historical legacy projection, media lifecycle, implemented X browser connector, and current production-hardening state as reviewed on 2026-07-27. X is observed implementation work with deterministic test coverage and a separate opt-in live contract; it remains unsupported browser automation rather than an official or stable X integration.</div>
                       <div class="callout">
-        <strong>Explicit status and deferrals:</strong> Public email registration/login is removed. New setup stores <code>owner@morning-post.invalid</code> only to satisfy the retained internal <code>users.email</code> invariant; upgraded databases keep all legacy rows while only the earliest row can log in or be scheduled. Migration <code>0021_large_madame_hydra.sql</code> removes scheduler leases, and <code>SCHEDULER_LEASE_MS</code>, user paging/concurrency, and runtime leader election are gone. KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for multi-host media, automatic feed theme classification, and the entire X Chat integration remain deferred; X Chat is specifically on hold. Deployment-wide text/vision provider configuration, global story resolution, personalization, PostgreSQL rate limiting, and the single-host media lifecycle are implemented. No shared Morning Post service, database, developer app, or centralized credential custody is part of the supported v1 posture.
-      </div>
+        <strong>Explicit status and deferrals:</strong> Public email registration/login is removed. New setup stores <code>owner@morning-post.invalid</code> only to satisfy the retained internal <code>users.email</code> invariant; upgraded databases keep all legacy rows while only the earliest row can log in or be scheduled. Migration <code>0021_large_madame_hydra.sql</code> removes scheduler leases, and <code>SCHEDULER_LEASE_MS</code>, user paging/concurrency, and runtime leader election are gone. KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for multi-host media, automatic feed theme classification, configurable retention cascading through items, analyses, media, summaries, stories, feedback, and digest-derived content, and future X browser resilience remain deferred. The X browser collector itself is implemented with a dedicated managed profile and explicit unsupported-platform warnings. Deployment-wide text/vision provider configuration, global story resolution, personalization, PostgreSQL rate limiting, and the single-host media lifecycle are implemented. No shared Morning Post service, database, developer app, or centralized credential custody is part of the supported v1 posture.</div>
                     </section>
                     </main>
                     </body>

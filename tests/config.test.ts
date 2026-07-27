@@ -20,6 +20,8 @@ const ENV_KEYS = [
   "DB_SSL_MODE",
   "ALLOW_REMOTE_SUMMARIZATION",
   "CONNECTOR_TIMEOUT_MS",
+  "X_BROWSER_PROFILE_ROOT",
+  "X_BROWSER_LOGIN_TIMEOUT_MS",
   "SUMMARIZER_MODEL",
   "SUMMARIZER_BASE_URL",
   "SUMMARIZER_API_KEY",
@@ -102,6 +104,8 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.databaseSslMode, "disable");
   assertEquals(config.allowRemoteSummarization, false);
   assertEquals(config.connectorTimeoutMs, 120_000);
+  assertEquals(config.xBrowserProfileRoot, ".x-browser-profiles");
+  assertEquals(config.xBrowserLoginTimeoutMs, 900_000);
   assertEquals(config.summarizerTextBytesPerChunk, 120_000);
   assertEquals(config.summarizerMaxItemsPerChunk, 50);
   assertEquals(config.summarizerMaxImageBytes, 1_000_000);
@@ -240,6 +244,8 @@ test("environment values override defaults and parse strictly", () => {
       VISION_BASE_URL: "http://localhost:4321/v1",
       VISION_API_KEY: "key-b",
       CONNECTOR_TIMEOUT_MS: "5000",
+      X_BROWSER_PROFILE_ROOT: "/tmp/morning-post-x-profiles",
+      X_BROWSER_LOGIN_TIMEOUT_MS: "12345",
       SUMMARIZER_TEXT_BYTES_PER_CHUNK: "9000",
       SUMMARIZER_MAX_ITEMS_PER_CHUNK: "7",
       SUMMARIZER_MAX_IMAGE_BYTES: "8000",
@@ -277,6 +283,8 @@ test("environment values override defaults and parse strictly", () => {
     assertEquals(config.databaseSslMode, "verify-full");
     assertEquals(config.allowRemoteSummarization, true);
     assertEquals(config.connectorTimeoutMs, 5000);
+    assertEquals(config.xBrowserProfileRoot, "/tmp/morning-post-x-profiles");
+    assertEquals(config.xBrowserLoginTimeoutMs, 12345);
     assertEquals(config.summarizerTextBytesPerChunk, 9000);
     assertEquals(config.summarizerMaxItemsPerChunk, 7);
     assertEquals(config.summarizerMaxImageBytes, 8000);
@@ -321,6 +329,8 @@ test("constructor values take precedence over environment", () => {
       "MAX_REQUEST_BODY_BYTES",
       "DB_SSL_MODE",
       "ALLOW_REMOTE_SUMMARIZATION",
+      "X_BROWSER_PROFILE_ROOT",
+      "X_BROWSER_LOGIN_TIMEOUT_MS",
     ].map((key) => [key, process.env[key]]),
   );
   try {
@@ -329,18 +339,24 @@ test("constructor values take precedence over environment", () => {
     process.env["MAX_REQUEST_BODY_BYTES"] = "100";
     process.env["DB_SSL_MODE"] = "require";
     process.env["ALLOW_REMOTE_SUMMARIZATION"] = "true";
+    process.env["X_BROWSER_PROFILE_ROOT"] = "./env-x-profiles";
+    process.env["X_BROWSER_LOGIN_TIMEOUT_MS"] = "12345";
     const config = getConfig({
       port: 4311,
       allowedOrigins: ["https://constructor.example"],
       maxRequestBodyBytes: 200,
       databaseSslMode: "verify-full",
       allowRemoteSummarization: false,
+      xBrowserProfileRoot: "./constructor-x-profiles",
+      xBrowserLoginTimeoutMs: 54_321,
     });
     assertEquals(config.port, 4311);
     assertEquals(config.allowedOrigins, ["https://constructor.example"]);
     assertEquals(config.maxRequestBodyBytes, 200);
     assertEquals(config.databaseSslMode, "verify-full");
     assertEquals(config.allowRemoteSummarization, false);
+    assertEquals(config.xBrowserProfileRoot, "./constructor-x-profiles");
+    assertEquals(config.xBrowserLoginTimeoutMs, 54_321);
     assertEquals(resolveAppSecurityOptions({ maxRequestBodyBytes: 300 }), {
       allowedOrigins: ["https://env.example"],
       maxRequestBodyBytes: 300,
@@ -361,6 +377,7 @@ test("invalid numeric and boolean values fail at startup", () => {
         key === "ALLOWED_ORIGINS" ||
         key === "DB_SSL_MODE" ||
         key === "ALLOW_REMOTE_SUMMARIZATION" ||
+        key === "X_BROWSER_PROFILE_ROOT" ||
         key.endsWith("_MODEL") ||
         key.endsWith("_BASE_URL") ||
         key.endsWith("_API_KEY") ||

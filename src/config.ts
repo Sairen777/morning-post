@@ -46,6 +46,11 @@ export interface SummarizerBudgetConfig {
   mediaMaxAttempts: number;
 }
 
+export interface XBrowserConfig {
+  profileRoot: string;
+  loginTimeoutMs: number;
+}
+
 export interface Config {
   databaseUrl: string;
   port: number;
@@ -79,6 +84,8 @@ export interface Config {
   mediaTtlMs: number;
   mediaQuotaBytes: number;
   digestRunStaleAfterMs: number;
+  xBrowserProfileRoot?: string;
+  xBrowserLoginTimeoutMs?: number;
 }
 
 export interface AppSecurityOptions {
@@ -117,6 +124,8 @@ const DEFAULT_SUMMARIZATION_CONCURRENCY = 2;
 const DEFAULT_MEDIA_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MEDIA_QUOTA_BYTES = 500 * 1024 * 1024;
 const DEFAULT_DIGEST_RUN_STALE_AFTER_MS = 15 * 60 * 1_000;
+const DEFAULT_X_BROWSER_PROFILE_ROOT = ".x-browser-profiles";
+const DEFAULT_X_BROWSER_LOGIN_TIMEOUT_MS = 15 * 60 * 1_000;
 const DEFAULT_SUMMARIZER_MODEL = "local-model";
 const DEFAULT_SUMMARIZER_BASE_URL = "http://127.0.0.1:1234/v1";
 
@@ -394,6 +403,24 @@ export function resolveAllowRemoteSummarization(override?: boolean): boolean {
   );
 }
 
+export function getXBrowserConfig(
+  overrides: Partial<XBrowserConfig> = {},
+): XBrowserConfig {
+  return {
+    profileRoot: requiredStringSetting(
+      "X_BROWSER_PROFILE_ROOT",
+      overrides.profileRoot,
+      DEFAULT_X_BROWSER_PROFILE_ROOT,
+    ),
+    loginTimeoutMs: numberSetting(
+      "X_BROWSER_LOGIN_TIMEOUT_MS",
+      "X_BROWSER_LOGIN_TIMEOUT_MS",
+      overrides.loginTimeoutMs,
+      DEFAULT_X_BROWSER_LOGIN_TIMEOUT_MS,
+    ),
+  };
+}
+
 function originsSetting(override: string[] | undefined): string[] {
   if (override !== undefined) {
     if (
@@ -544,6 +571,10 @@ export function getSummarizerBudgetConfig(
 export function getConfig(overrides: Partial<Config> = {}): Config {
   const port = numberSetting("PORT", "PORT", overrides.port, DEFAULT_PORT);
   if (port > 65_535) throw invalidConfig("PORT", "expected a valid TCP port");
+  const xBrowserConfig = getXBrowserConfig({
+    profileRoot: overrides.xBrowserProfileRoot,
+    loginTimeoutMs: overrides.xBrowserLoginTimeoutMs,
+  });
   return {
     databaseUrl: overrides.databaseUrl ?? process.env["DATABASE_URL"] ?? "",
     port,
@@ -629,6 +660,8 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
       overrides.digestRunStaleAfterMs,
       DEFAULT_DIGEST_RUN_STALE_AFTER_MS,
     ),
+    xBrowserProfileRoot: xBrowserConfig.profileRoot,
+    xBrowserLoginTimeoutMs: xBrowserConfig.loginTimeoutMs,
   };
 }
 

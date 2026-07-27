@@ -87,7 +87,13 @@ export function buildFeedRoutes(
 
   routes.get("/sources/:sourceId/available-feeds", async (context) => {
     const { sourceId } = validate(sourceIdParamsSchema, context.req.param());
-    const feeds = await discoverFeeds(database, context.var.userId, sourceId, dependencies.discoveryFactory);
+    const feeds = await discoverFeeds(
+      database,
+      context.var.userId,
+      sourceId,
+      dependencies.discoveryFactory,
+      context.req.raw.signal,
+    );
     return context.json(feeds, 200);
   });
 

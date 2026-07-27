@@ -49,6 +49,7 @@ import DigestsPanel from "./DigestsPanel";
 import DigestRunsPanel from "./DigestRunsPanel";
 import TelegramConnectPanel from "./TelegramConnectPanel";
 import SubstackConnectPanel from "./SubstackConnectPanel";
+import XConnectPanel from "./XConnectPanel";
 import ProfilePanel from "./ProfilePanel";
 
 interface DashboardProps {
@@ -517,6 +518,16 @@ export default function Dashboard(props: DashboardProps) {
     if (substackSourceId) await refreshSourceFeedsIfLoaded(substackSourceId);
   };
 
+  const handleXConnected = async () => {
+    await refreshSources();
+    await refreshFeeds();
+  };
+
+  const handleXTargetAdded = async (sourceId: string) => {
+    await refreshFeeds();
+    await refreshSourceFeedsIfLoaded(sourceId);
+  };
+
   const tabLabel = (tab: TabId, label: string) => (
     <button
       type="button"
@@ -599,6 +610,13 @@ export default function Dashboard(props: DashboardProps) {
           onConnected={handleSubstackConnected}
           onPublicationAdded={handleSubstackPublicationAdded}
           onSourceUpdated={handleSubstackSourceUpdated}
+          onAuthError={props.onAuthError}
+        />
+        <XConnectPanel
+          sources={sources()}
+          feeds={feeds()}
+          onConnected={handleXConnected}
+          onTargetAdded={handleXTargetAdded}
           onAuthError={props.onAuthError}
         />
       </Show>
