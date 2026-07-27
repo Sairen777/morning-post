@@ -45,7 +45,7 @@ async function register(
 ): Promise<RegisteredUser> {
   const response = await app.request(
     "/auth/setup",
-    jsonBody({ name: "Ada Lovelace", password: PASSWORD }),
+    jsonBody({ name: "Ada Lovelace" }),
   );
   assertEquals(response.status, 201);
   return (await response.json()) as RegisteredUser;
@@ -104,10 +104,9 @@ test("logout revokes the session — the same cookie is then rejected", async ()
   });
 });
 
-test("wrong passwords return an identical 401", async () => {
+test("missing-owner logins return an identical 401", async () => {
   await withTestDb(async (database: Database) => {
     const app = buildApp(database);
-    await register(app);
 
     const first = await login(app, "not-the-password");
     const second = await login(app, "also-wrong");
@@ -207,7 +206,7 @@ test("the DB stores only the token hash, never the raw cookie token", async () =
     const app = buildApp(database);
 
     // Use the session cookie from setup directly, not from a separate login.
-    const setupResponse = await app.request("/auth/setup", jsonBody({ name: "Ada Lovelace", password: PASSWORD }));
+    const setupResponse = await app.request("/auth/setup", jsonBody({ name: "Ada Lovelace" }));
     assertEquals(setupResponse.status, 201);
     const user = await setupResponse.json();
     const cookie = extractCookie(setupResponse);

@@ -39,18 +39,27 @@ describe("ApiClientError", () => {
 });
 
 describe("owner authentication", () => {
-  it("gets setup status from the public setup endpoint", async () => {
+  it("gets setup and password requirements from the public setup endpoint", async () => {
     const originalFetch = globalThis.fetch;
     try {
       const fetchCalls: Array<[string, RequestInit?]> = [];
       globalThis.fetch = ((url: string, opts?: RequestInit) => {
         fetchCalls.push([url, opts]);
         return Promise.resolve(
-          new Response(JSON.stringify({ setupRequired: true }), { status: 200 }),
+          new Response(
+            JSON.stringify({
+              setupRequired: true,
+              passwordRequired: false,
+            }),
+            { status: 200 },
+          ),
         );
       }) as typeof fetch;
 
-      await expect(getSetupStatus()).resolves.toEqual({ setupRequired: true });
+      await expect(getSetupStatus()).resolves.toEqual({
+        setupRequired: true,
+        passwordRequired: false,
+      });
       expect(fetchCalls).toHaveLength(1);
       expect(fetchCalls[0][0]).toBe("/auth/setup");
       expect(fetchCalls[0][1]?.method).toBeUndefined();
@@ -59,7 +68,7 @@ describe("owner authentication", () => {
     }
   });
 
-  it("creates the owner through setup with only name and password", async () => {
+  it("sets up the owner with only a name", async () => {
     const originalFetch = globalThis.fetch;
     try {
       const fetchCalls: Array<[string, RequestInit?]> = [];
@@ -74,20 +83,19 @@ describe("owner authentication", () => {
       }) as typeof fetch;
 
       await expect(
-        setupOwner({ name: "Owner", password: "password-123" }),
+        setupOwner({ name: "Owner" }),
       ).resolves.toEqual({ id: "u1", name: "Owner" });
       expect(fetchCalls[0][0]).toBe("/auth/setup");
       expect(fetchCalls[0][1]?.method).toBe("POST");
       expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({
         name: "Owner",
-        password: "password-123",
       });
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
 
-  it("logs in with only the password", async () => {
+  it("logs in a password-backed owner with only the password", async () => {
     const originalFetch = globalThis.fetch;
     try {
       const fetchCalls: Array<[string, RequestInit?]> = [];
@@ -110,6 +118,32 @@ describe("owner authentication", () => {
       expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({
         password: "password-123",
       });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("logs in a passwordless owner with an empty request object", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      const fetchCalls: Array<[string, RequestInit?]> = [];
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        fetchCalls.push([url, opts]);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ id: "u1", name: "Owner" }),
+            { status: 200 },
+          ),
+        );
+      }) as typeof fetch;
+
+      await expect(loginUser({})).resolves.toEqual({
+        id: "u1",
+        name: "Owner",
+      });
+      expect(fetchCalls[0][0]).toBe("/auth/login");
+      expect(fetchCalls[0][1]?.method).toBe("POST");
+      expect(JSON.parse(fetchCalls[0][1]?.body as string)).toEqual({});
     } finally {
       globalThis.fetch = originalFetch;
     }

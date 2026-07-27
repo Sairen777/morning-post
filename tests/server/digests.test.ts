@@ -109,7 +109,6 @@ async function ownerSession(app: Hono<ServerEnvironment>): Promise<{ userId: str
     "/auth/setup",
     jsonRequest("POST", {
       name: "Ada Lovelace",
-      password: PASSWORD,
     }),
   );
   assertEquals(response.status, 201);

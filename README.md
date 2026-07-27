@@ -258,10 +258,20 @@ its still-running feed stages as failed, which releases the per-user lock.
 Fresh running rows remain untouched so another live API instance can finish
 its work safely.
 
-Open `http://127.0.0.1:5173`. On first run, navigate to `/auth/setup` to
-create the owner account (name and password), then log in with your password
-via the login form. Click "Run digest" and verify the digest appears with
-status `complete`.
+Open `http://127.0.0.1:5173`. On first run, navigate to `/auth/setup` and
+choose the name shown in your digests. Setup creates the owner and starts the
+session without an account password. After logout or session expiry, a
+passwordless owner can use the one-click continuation screen; upgraded owners
+whose existing row still has a password hash continue to sign in with that
+password. Click "Run digest" and verify the digest appears with status
+`complete`.
+
+Passwordless continuation makes the deployment boundary the access boundary:
+anyone who can reach the unauthenticated app can start an owner session. Keep
+the default listener on loopback, or put non-loopback access behind an
+operator-controlled authenticated reverse proxy, VPN, or equivalent network
+control. Existing password-backed owners retain their additional credential
+check.
 
 **Automated tests:**
 

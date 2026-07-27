@@ -425,7 +425,7 @@
         <p class="eyebrow">Morning Post · Technical Design Documentation</p>
         <h1>Current architecture, self-host posture, security, and scalability review</h1>
         <p
-          class="lede">This document records the repository architecture as reviewed on 2026-07-26 and the supported v1 deployment posture of one independently operated single-owner self-host. Current implementation coverage includes first-run owner setup and password-only login, the Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence and rate limiting, stale-recovery-first scheduling for zero or one owner, the connector-neutral story pipeline, Telegram and Substack connectors, and the OpenAI-compatible analysis and summarization boundary. X Chat is not implemented and its retained research is explicitly on hold outside the current roadmap.</p>
+          class="lede">This document records the repository architecture as reviewed on 2026-07-26 and the supported v1 deployment posture of one independently operated single-owner self-host. Current implementation coverage includes name-only first-run owner setup, passwordless continuation with compatibility for existing password-backed owners, the Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence and rate limiting, stale-recovery-first scheduling for zero or one owner, the connector-neutral story pipeline, Telegram and Substack connectors, and the OpenAI-compatible analysis and summarization boundary. X Chat is not implemented and its retained research is explicitly on hold outside the current roadmap.</p>
         <p
           class="diagram-note">Diagrams are embedded as Mermaid source and intentionally do not load a CDN; this keeps the file offline and self-contained. Render with a local Mermaid tool if a graphical version is needed.</p>
         <div class="meta-grid" aria-label="document metadata">
@@ -474,7 +474,7 @@
             <div class="card-title">What is strong</div>
             <ul>
               <li>Repository functions consistently accept <code>userId</code> and scope reads/writes to ownership.</li>
-              <li>First-run setup creates exactly one owner atomically and starts a session; later sign-in uses only that owner's password, never email.</li>
+              <li>First-run setup atomically creates exactly one owner from the digest display name and starts a session; subsequent passwordless continuation requires no credential, while upgraded owners with a retained password hash still verify it.</li>
               <li>Session tokens are random 256-bit values; only SHA-256 token hashes are stored.</li>
               <li>Connector credentials use envelope encryption with AES-256-GCM and owner-bound AAD.</li>
               <li>Item analyses, stories, delivered story cards, feedback, and digests use database uniqueness constraints and idempotent upserts.</li>
@@ -509,7 +509,7 @@
       <section id="context">
         <div class="section-kicker">System context</div>
         <h2>Morning Post v1 supports independent, single-owner self-hosts; the code retains user-scoped boundaries.</h2>
-        <p>Morning Post is open-source software deployed and operated independently: each supported v1 instance has one primary owner and its own API process, PostgreSQL database, media directories, connector credentials, and summarizer configuration. There is no shared Morning Post control plane, hosted database, or project-operated credential store. The account surface is <code>GET /auth/setup</code>, atomic first-run <code>POST /auth/setup</code>, password-only <code>POST /auth/login</code>, <code>POST /auth/logout</code>, and authenticated <code>GET</code>/<code>PATCH /auth/me</code>; <code>/auth/register</code> is absent and email is neither a login identity nor a public profile field. Internally, tables and repositories remain <code>userId</code>-scoped as a containment boundary. The earliest <code>users</code> row by <code>(createdAt, id)</code> is the owner after an upgrade; later legacy rows remain stored but cannot use public login and are never scheduled.</p>
+        <p>Morning Post is open-source software deployed and operated independently: each supported v1 instance has one primary owner and its own API process, PostgreSQL database, media directories, connector credentials, and summarizer configuration. There is no shared Morning Post control plane, hosted database, or project-operated credential store. The account surface is <code>GET /auth/setup</code>, atomic name-only first-run <code>POST /auth/setup</code>, owner <code>POST /auth/login</code> with an optional password determined by the setup-status response, <code>POST /auth/logout</code>, and authenticated <code>GET</code>/<code>PATCH /auth/me</code>; <code>/auth/register</code> is absent and email is neither a login identity nor a public profile field. Fresh owners are passwordless, while an upgraded earliest owner whose existing hash was preserved remains password-protected. Internally, tables and repositories remain <code>userId</code>-scoped as a containment boundary. The earliest <code>users</code> row by <code>(createdAt, id)</code> is the owner after an upgrade; later legacy rows remain stored but cannot use public login and are never scheduled.</p>
 
         <pre class="mermaid">flowchart LR
   Browser["Primary owner's browser\nSolidStart SPA"]
@@ -811,13 +811,13 @@
                   <tbody>
                     <tr>
                       <td>Frontend</td>
-                      <td>SolidStart SPA, setup-status check, first-run owner form, password-only sign-in, preference editors, per-feed summary-detail controls, story-mode and historical digest views, provenance links, and story/topic feedback controls.</td>
-                      <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>. The auth panel selects setup or login from <code>GET /auth/setup</code>; it never asks for a public email identity. Each feed renders a Standard/Thorough selector labeled with that channel or publication name and persists it through <code>PATCH /feeds/:id</code>, independently of sibling feeds under the same source.</td>
+                      <td>SolidStart SPA, two-field setup-status check, name-only first-run welcome form, passwordless one-click continuation or compatible password sign-in, preference editors, per-feed summary-detail controls, story-mode and historical digest views, provenance links, and story/topic feedback controls.</td>
+                      <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>. From <code>GET /auth/setup</code>, the auth panel asks a fresh owner only for the name shown in digests, offers an existing passwordless owner one-click continuation, and asks for a password only when <code>passwordRequired</code> is true; it never asks for a public email identity. Each feed renders a Standard/Thorough selector labeled with that channel or publication name and persists it through <code>PATCH /feeds/:id</code>, independently of sibling feeds under the same source.</td>
                     </tr>
                     <tr>
                       <td>Server routes</td>
-                      <td>Atomic owner setup, password-only owner login, session lifecycle, authenticated HTTP shape, ownership-scoped request parsing, response projection, feed-granular summary-detail updates, and feedback validation.</td>
-                      <td>Auth routes expose setup, login, logout, and <code>/auth/me</code>, with no registration route or public email. <code>PublicFeed</code> and every feed API response require <code>summarizationMode</code>. Feed POST/PATCH inputs accept it optionally and strictly validate a supplied value as <code>basic | thorough</code>; omission defaults a new or revived feed to <code>basic</code> and leaves an ordinary partial update unchanged. <code>PublicSource</code> and source create/PATCH inputs omit the field. Other routes remain thin and known errors pass through the centralized Hono <code>errorHandler</code>.</td>
+                      <td>Atomic name-only owner setup, passwordless owner continuation with password-backed upgrade compatibility, session lifecycle, authenticated HTTP shape, ownership-scoped request parsing, response projection, feed-granular summary-detail updates, and feedback validation.</td>
+                      <td>Auth routes expose setup status as <code>{setupRequired,passwordRequired}</code>, strict <code>{name}</code> setup, strict <code>{password?: string}</code> login, logout, and <code>/auth/me</code>, with no registration route or public email. <code>PublicFeed</code> and every feed API response require <code>summarizationMode</code>. Feed POST/PATCH inputs accept it optionally and strictly validate a supplied value as <code>basic | thorough</code>; omission defaults a new or revived feed to <code>basic</code> and leaves an ordinary partial update unchanged. <code>PublicSource</code> and source create/PATCH inputs omit the field. Other routes remain thin and known errors pass through the centralized Hono <code>errorHandler</code>.</td>
                     </tr>
                     <tr>
                       <td>Services</td>
@@ -837,7 +837,7 @@
                     <tr>
                       <td>Repositories</td>
                       <td>Earliest-row owner resolution, ownership filters, PostgreSQL rate-limit counters, cached analyses, story/development versioning, stable delivered-card replacement, feedback identity, and transactional profile invalidation.</td>
-                      <td><code>userId</code> filters and user-row locks remain internal containment boundaries. The legacy non-null unique <code>users.email</code> column is persisted but is not used to choose or authenticate the owner.</td>
+                      <td><code>userId</code> filters and user-row locks remain internal containment boundaries. The legacy non-null unique <code>users.email</code> column is persisted but is not used to choose or authenticate the owner; <code>users.passwordHash</code> is nullable so fresh owners need no credential while existing hashes remain usable.</td>
                     </tr>
                     <tr>
                       <td>Scheduler</td>
@@ -853,7 +853,7 @@
                 <h2>The story model is connector-neutral and internally user-scoped around one supported owner.</h2>
                 <p>Sources represent connector accounts and feeds represent subscriptions. Connector items are cached once, analyzed into common topics/entities/story and development keys, then linked into evolving user-owned stories. New digests persist selected story-version snapshots with every source; historical pre-story summaries remain read-only so old digests continue to render. Interest rules and feed/source policy overrides control zero-to-all relevance filtering. Feedback records the delivered digest/story/version identity and can update the same interest profile transactionally.</p>
                 <p><strong>Summary-detail boundary:</strong> detail belongs to an individual feed, not its connector source. The shared <code>summarizationModes</code> values and <code>SummarizationMode</code> type define <code>basic | thorough</code>, displayed as Standard and Thorough. Channels and publications attached to the same source may therefore select different modes. A mixed story resolves to <code>thorough</code> when any contributing item belongs to a thorough feed; otherwise it resolves to <code>basic</code>.</p>
-                <p><strong>Owner identity and legacy rows:</strong> <code>users.email</code> deliberately remains a non-null unique legacy column so upgraded databases and existing repository/schema invariants are preserved. Atomic first-run setup writes the non-routable sentinel <code>owner@morning-post.invalid</code>; email is never accepted by setup or login and is omitted from <code>PublicUser</code>. <code>findOwner()</code> deterministically selects the earliest row by <code>createdAt</code> and then <code>id</code>. Other legacy user rows are retained rather than destructively migrated, but public authentication and scheduled execution address only that owner. Existing <code>userId</code> foreign keys and filters remain security and ownership boundaries, not a supported multi-owner deployment surface.</p>
+                <p><strong>Owner identity and legacy rows:</strong> <code>users.email</code> deliberately remains a non-null unique legacy column so upgraded databases and existing repository/schema invariants are preserved. Atomic first-run setup writes the non-routable sentinel <code>owner@morning-post.invalid</code>, the name displayed in digests, and a null password hash; email is never accepted by setup or login and is omitted from the unchanged <code>PublicUser</code> shape. Migration <code>0023_thin_steve_rogers.sql</code> makes only <code>users.password_hash</code> nullable, preserving every existing non-null hash so the upgraded owner retains password sign-in and future account credentials remain representable. <code>findOwner()</code> deterministically selects the earliest row by <code>createdAt</code> and then <code>id</code>. Other legacy user rows are retained rather than destructively migrated, but public authentication and scheduled execution address only that owner. Existing <code>userId</code> foreign keys and filters remain security and ownership boundaries, not a claim of supported multi-user operation.</p>
 
                 <pre class="mermaid">erDiagram
   users ||--o{ sessions : owns
@@ -878,6 +878,8 @@
 
   users {
     uuid id PK
+    text name
+    text password_hash "nullable"
     text email UK
     text system_prompt
     text summary_prompt
@@ -977,7 +979,7 @@
                     <tr>
                       <td>User</td>
                       <td>The earliest row owns the supported deployment; every personalized object remains <code>userId</code>-scoped, and prompts or policy changes must invalidate generated story snapshots without exposing password or legacy identity data.</td>
-                      <td>First-run setup inserts <code>owner@morning-post.invalid</code> into the retained non-null unique email column under a table lock. The public projection enumerates safe fields and excludes both <code>email</code> and <code>passwordHash</code>. <code>interestProfileVersion</code> increments for effective filtering/summary configuration or interest-policy changes.</td>
+                      <td>First-run setup inserts the digest display name, null password hash, and <code>owner@morning-post.invalid</code> into the retained non-null unique email column under a table lock. Migration <code>0023_thin_steve_rogers.sql</code> preserves existing hashes while making the column nullable. The unchanged public projection enumerates safe fields and excludes both <code>email</code> and <code>passwordHash</code>. <code>interestProfileVersion</code> increments for effective filtering/summary configuration or interest-policy changes.</td>
                     </tr>
                     <tr>
                       <td>Session</td>
@@ -1037,13 +1039,14 @@
                   </tbody>
                 </table>
                 <p><strong>Feed-mode migration:</strong> the cutover first adds <code>feeds.summarization_mode</code> as non-null with database default <code>basic</code> and a <code>basic | thorough</code> check. It then backfills every existing feed from its parent source's former <code>sources.summarization_mode</code>. Only after the backfill does it drop the old source check and column. Existing deployments therefore retain each feed's effective detail setting at upgrade, while subsequent same-source feeds can change independently.</p>
+                <p><strong>Owner-password migration:</strong> migration <code>0023_thin_steve_rogers.sql</code> drops the non-null requirement from <code>users.password_hash</code> without rewriting existing values. New name-only setups store <code>NULL</code>; upgraded password-backed owners retain their Argon2id hashes and password-required status. The nullable field also leaves a credential slot for a future account model without changing the current <code>PublicUser</code> contract.</p>
               </section>
 
               <section id="flows">
                 <div class="section-kicker">Main flows</div>
                 <h2>Authentication, Substack onboarding, and digest generation are the load-bearing flows.</h2>
 
-                <h3>Owner setup, password login, and session flow</h3>
+                <h3>Name-only owner setup, compatible login, and session flow</h3>
                 <pre class="mermaid">sequenceDiagram
   participant B as Browser
   participant A as Hono API
@@ -1053,16 +1056,19 @@
   B->>A: GET /auth/setup
   A->>R: findOwner()
   R->>D: earliest user by createdAt, then id
-  A-->>B: {setupRequired}
+  A-->>B: {setupRequired,passwordRequired}
   alt First run
-    B->>A: POST /auth/setup {name,password}
-    A->>A: validate; hash password with argon2id
-    A->>D: transaction: lock users; recheck empty; insert owner@morning-post.invalid
-  else Owner already configured
+    B->>A: POST /auth/setup {name}
+    A->>D: transaction: lock users; recheck empty; insert name + null password hash
+  else Existing passwordless owner
+    B->>A: POST /auth/login {}
+    A->>R: authenticateOwner(undefined)
+    R->>D: load earliest owner; confirm password hash is null
+  else Existing password-backed owner
     B->>A: POST /auth/login {password}
     A->>R: authenticateOwner(password)
     R->>D: load earliest owner
-    A->>A: verify owner hash or dummy hash
+    A->>A: require nonempty password; verify Argon2id hash
   end
   A->>A: mint 32-byte random token
   A->>D: store SHA-256 token hash + expiry
@@ -1073,7 +1079,7 @@
   B->>A: POST /auth/logout
   A->>D: revoke token hash
   A-->>B: clear __Host-session</pre>
-                <p><code>POST /auth/setup</code> is atomic: it checks for an owner, hashes the password, locks the <code>users</code> table inside a transaction, checks again, inserts the sentinel internal email, and immediately creates the session returned with the 201 response. A concurrent or later setup attempt conflicts. <code>POST /auth/login</code> accepts only <code>{password}</code> and authenticates the deterministic owner. There is no public email field and no <code>/auth/register</code> route. Setup and login attempts use PostgreSQL-backed rate-limit buckets.</p>
+                <p><code>GET /auth/setup</code> always returns <code>{setupRequired,passwordRequired}</code>; <code>passwordRequired</code> is true only for an existing owner with a non-null password hash. <code>POST /auth/setup</code> strictly accepts <code>{name}</code>: it checks for an owner, locks the <code>users</code> table inside a transaction, checks again, inserts the digest display name with the sentinel internal email and a null password hash, and immediately creates the session returned with the 201 response. A concurrent or later setup attempt conflicts. <code>POST /auth/login</code> strictly accepts <code>{password?: string}</code>: passwordless owners continue with the password omitted, whereas a password-backed owner requires and verifies a nonempty password. There is no public email field and no <code>/auth/register</code> route. Setup and login attempts use PostgreSQL-backed rate-limit buckets.</p>
 
                 <h3>Substack connection and publication flow</h3>
                 <pre class="mermaid">sequenceDiagram
@@ -1242,7 +1248,7 @@
                       <div class="section-kicker">Security review</div>
                       <h2>For an owner-operated self-host, process privilege, credential custody, plaintext provider boundaries, and edge hardening remain primary risks.</h2>
                       <div class="callout warning">
-                        <strong>Supported v1 threat model:</strong> one primary owner administers one independent instance; there is no Morning Post-operated shared API, database, or credential vault. The operator is the custodian, not an absence of custody. Host or process compromise can expose credentials and locally decrypted plaintext, and configured remote summarization sends selected content beyond the host. First-run setup and password-only login remove public email identity and open registration, but sessions, Argon2id hashing, atomic setup, PostgreSQL-backed rate limits, <code>userId</code> ownership filters, credential encryption, database TLS where applicable, protected backups, filesystem ACLs, updates, and host isolation remain required defense-in-depth. X Chat is on hold and contributes no current token, key, or plaintext asset.
+                        <strong>Supported v1 threat model:</strong> one primary owner administers one independent instance; there is no Morning Post-operated shared API, database, or credential vault. The operator is the custodian, not an absence of custody. Host or process compromise can expose credentials and locally decrypted plaintext, and configured remote summarization sends selected content beyond the host. Name-only setup and passwordless continuation remove public email identity and open registration, but they also make network reachability sufficient to obtain an owner session on a fresh deployment; keep the app on loopback or behind an operator-controlled authenticated reverse proxy, VPN, or equivalent boundary. Existing owners with retained hashes still receive Argon2id password verification. Sessions, atomic setup, PostgreSQL-backed rate limits, <code>userId</code> ownership filters, credential encryption, database TLS where applicable, protected backups, filesystem ACLs, updates, and host isolation remain required defense-in-depth.
                       </div>
 
                       <h3>Security controls already in place</h3>
@@ -1256,19 +1262,19 @@
                         </thead>
                         <tbody>
                           <tr>
-                            <td>Password hashing</td>
-                            <td><code>hash-wasm</code> Argon2id with 19 MiB memory, 2 iterations, parallelism 1.</td>
-                            <td>Baseline resistance to offline password cracking; parameters are encoded in the hash.</td>
+                            <td>Password-backed compatibility</td>
+                            <td>Existing non-null hashes remain verified with <code>hash-wasm</code> Argon2id using 19 MiB memory, 2 iterations, and parallelism 1; fresh owner rows store no hash.</td>
+                            <td>Upgrades preserve the existing owner's password barrier and encoded hash parameters without imposing an account password on a new self-host.</td>
                           </tr>
                           <tr>
                             <td>Atomic owner setup</td>
-                            <td><code>POST /auth/setup</code> accepts only name and password, takes a PostgreSQL table lock, rechecks that no owner exists, inserts the internal sentinel email, and creates a session in the successful request.</td>
-                            <td>Two first-run requests cannot create two owners; no public registration or email identity is exposed.</td>
+                            <td><code>POST /auth/setup</code> accepts only the digest display name, takes a PostgreSQL table lock, rechecks that no owner exists, inserts the internal sentinel email with a null password hash, and creates a session in the successful request.</td>
+                            <td>Two first-run requests cannot create two owners; no public registration, email identity, or setup password is exposed.</td>
                           </tr>
                           <tr>
-                            <td>Password-only owner authentication</td>
-                            <td>Login resolves the deterministic earliest owner and verifies only <code>{password}</code>. A dummy Argon2id hash is verified when no owner exists, and failures return the same <code>invalid password</code> response.</td>
-                            <td>A public email identifier cannot be enumerated or used to select a legacy row; the public setup-status endpoint intentionally reports only whether an owner exists.</td>
+                            <td>Owner continuation and compatible authentication</td>
+                            <td>Login accepts only <code>{password?: string}</code> for the deterministic earliest owner. A null-hash owner continues with no password; a non-null-hash owner must supply a nonempty password that verifies.</td>
+                            <td><code>{setupRequired,passwordRequired}</code> lets the web select name-only setup, one-click passwordless continuation, or legacy password sign-in without exposing email or allowing caller-selected identities. Passwordless mode relies on the deployment network boundary.</td>
                           </tr>
                           <tr>
                             <td>Session token storage</td>
@@ -1697,7 +1703,7 @@
                         <dt>Route and middleware shape</dt>
                         <dd><span class="path">src/server/app.ts</span>, <span class="path">src/server/routes/auth.ts</span>, <span class="path">src/server/routes/digests.ts</span>, <span class="path">src/server/routes/interests.ts</span>, <span class="path">src/server/routes/story-feedback.ts</span>, <span class="path">src/server/middleware/require-auth.ts</span>, <span class="path">src/server/middleware/rate-limit.ts</span>, <span class="path">src/server/middleware/origin-guard.ts</span>.</dd>
 
-                        <dt>Owner setup, password login, and session storage</dt>
+                        <dt>Name-only owner setup, compatible passwordless/password-backed login, and session storage</dt>
                         <dd><span class="path">src/server/routes/auth.ts</span>, <span class="path">src/services/owner-setup-service.ts</span>, <span class="path">src/services/login-service.ts</span>, <span class="path">src/repositories/user-repository.ts</span>, <span class="path">src/auth/password.ts</span>, <span class="path">src/auth/session-service.ts</span>, <span class="path">src/repositories/session-repository.ts</span>, and <span class="path">apps/web/src/app/AuthPanel.tsx</span>.</dd>
 
                         <dt>PostgreSQL-backed rate limiting and proxy identity</dt>

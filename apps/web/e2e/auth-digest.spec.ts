@@ -1,19 +1,20 @@
 import { test, expect } from "@playwright/test";
 
-const PASSWORD = "smoke-test-password-1843";
-
-test("set up owner, save profile, run digest, and log back in", async ({ page }) => {
+test("set up Morning Post, save profile, run digest, and continue back in", async ({ page }) => {
   await page.goto("/");
 
-  // Should see the first-run owner setup form initially
+  // First run asks only for the name shown in digests.
   await expect(page.locator(".auth-panel")).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Set up your owner account" }),
+    page.getByRole("heading", { name: "Welcome to Morning Post" }),
   ).toBeVisible();
+  await expect(
+    page.getByText("Choose the name shown in your digests."),
+  ).toBeVisible();
+  await expect(page.locator("#auth-password")).toHaveCount(0);
 
   await page.fill("#auth-name", "E2E Smoke");
-  await page.fill("#auth-password", PASSWORD);
-  await page.click('button[type="submit"]');
+  await page.getByRole("button", { name: "Get started" }).click();
 
   // Setup returns the authenticated owner directly.
   await expect(page.locator(".app-header")).toContainText("E2E Smoke");
@@ -43,13 +44,13 @@ test("set up owner, save profile, run digest, and log back in", async ({ page })
   await expect(page.locator("text=manual")).toBeVisible({ timeout: 5_000 });
   await expect(page.locator("text=complete")).toBeVisible({ timeout: 5_000 });
 
-  // Log out, then use the password-only sign-in form.
+  // Passwordless owners return through a one-click continuation.
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page.locator(".auth-panel")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
   await expect(page.locator("#auth-name")).toHaveCount(0);
-  await page.fill("#auth-password", PASSWORD);
-  await page.click('button[type="submit"]');
+  await expect(page.locator("#auth-password")).toHaveCount(0);
+  await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.locator(".app-header")).toContainText("E2E Updated Smoke");
 });
 

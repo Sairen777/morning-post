@@ -419,20 +419,31 @@ heading, and never include facts from another article.
 #### First-run owner setup
 
 On a fresh database (no users), `GET /auth/setup` returns
-`{ setupRequired: true }`. The first caller submits `POST /auth/setup`
-with `{ name, password }`; the service atomically creates the owner with
-email `owner@morning-post.invalid` (a unique non-null legacy column) and
-returns a session cookie immediately. Subsequent calls return 409 —
-setup is one-shot. See `src/services/owner-setup-service.ts` and
+`{ setupRequired: true, passwordRequired: false }`. The first caller submits
+strictly `POST /auth/setup { name }`; the service atomically creates the owner
+with a null password hash and the internal email
+`owner@morning-post.invalid` (a unique non-null legacy column), then returns a
+session cookie immediately. The name is the digest display name and remains
+part of the unchanged `PublicUser` projection. Subsequent setup calls return
+409 — setup is one-shot. See `src/services/owner-setup-service.ts` and
 `src/server/routes/auth.ts`.
 
-#### Password-only login
+#### Owner login and passwordless continuation
 
-Login is `POST /auth/login { password }`. The service looks up the owner
-by the `owner@morning-post.invalid` email, verifies the argon2id hash, and
-creates a session. A dummy hash provides timing-constant comparison when
-no owner exists yet, preventing user-enumeration. See
+`GET /auth/setup` always returns both setup-state fields. For an existing
+owner, `setupRequired` is false and `passwordRequired` is true only when that
+owner has a non-null password hash. Login is strictly
+`POST /auth/login { password?: string }`: a passwordless owner authenticates
+with the password omitted, while an upgraded password-backed owner must supply
+a nonempty password whose Argon2id hash verifies. Both paths create the same
+session and neither accepts email or selects among users. See
 `src/services/login-service.ts`.
+
+Migration `0023_thin_steve_rogers.sql` makes `users.password_hash`
+nullable without clearing existing hashes. Fresh name-only owners therefore
+store `NULL`; existing password-backed owners retain their hashes and login
+behavior, preserving upgrade compatibility while leaving room for a future
+account-credential design.
 
 Logout (`POST /auth/logout`) revokes the session token immediately.
 `GET /auth/me` returns the authenticated user's profile; `/auth/me` may
@@ -648,6 +659,15 @@ reader implements a narrower application-level boundary: it resolves with
 Node-compatible DNS APIs, rejects non-public addresses, and connects directly
 to a validated IP with Node TLS while preserving hostname verification. This
 avoids an HTTP proxy hop and DNS rebinding between validation and connection.
+
+The inbound boundary is security-sensitive for fresh passwordless owners:
+`POST /auth/login` can establish the owner's session without a secret, so any
+client that can reach the unauthenticated app can continue as that owner. Keep
+the API and web listener on loopback unless an authenticated reverse proxy,
+VPN, or equivalent operator-controlled network boundary restricts access.
+Password-backed owners migrated from earlier versions retain password
+verification, but that compatibility must not be treated as protection for a
+fresh passwordless deployment.
 
 ---
 

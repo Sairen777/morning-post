@@ -20,7 +20,7 @@ export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
+  passwordHash: text("password_hash"),
   systemPrompt: text("system_prompt").notNull(),
   summaryPrompt: text("summary_prompt").notNull().default(""),
   defaultLanguage: text("default_language"),

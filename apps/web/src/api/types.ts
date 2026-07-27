@@ -3,6 +3,7 @@ export type RelevanceFilterOverride = "inherit" | RelevanceFilterMode;
 
 export interface SetupStatus {
   setupRequired: boolean;
+  passwordRequired: boolean;
 }
 
 export interface PublicUser {

@@ -27,7 +27,6 @@ function jsonBody(body: unknown): RequestInit {
 function setupBody(): Record<string, string> {
   return {
     name: "Ada Lovelace",
-    password: PASSWORD,
   };
 }
 
@@ -282,7 +281,7 @@ test("real auth route keeps different forwarded IP keys separate", async () => {
     assertEquals(differentIp.status, 409);
   });
 });
-test("real login preserves identical credential errors until rate limited", async () => {
+test("real login preserves identical missing-owner errors until rate limited", async () => {
   await withTestDb(async (database) => {
     const app = buildAuthTestApp(database, {
       setupRateLimiter: noRateLimit(),
@@ -296,9 +295,6 @@ test("real login preserves identical credential errors until rate limited", asyn
       }),
     });
 
-    const registered = await setupUser(app);
-    assertEquals(registered.status, 201);
-    await registered.body?.cancel();
 
     const wrongFirst = await loginWithPassword(app, "not-the-password");
     const wrongSecond = await loginWithPassword(app, "also-wrong");

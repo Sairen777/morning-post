@@ -34,7 +34,6 @@ async function registerAndLogin(
     "/auth/setup",
     jsonRequest({
       name: "Ada Lovelace",
-      password: PASSWORD,
     }),
   );
   assertEquals(registration.status, 201);

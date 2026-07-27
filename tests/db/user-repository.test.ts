@@ -50,6 +50,20 @@ test("createUser then findUserById round-trips all fields", async () => {
   });
 });
 
+test("createUser round-trips a null password hash", async () => {
+  await withTestDb(async (database) => {
+    const created = await createUser(database, userInput({
+      email: "passwordless@example.com",
+      passwordHash: null,
+    }));
+    assertEquals(created.passwordHash, null);
+
+    const found = await findUserById(database, created.id);
+    assertExists(found);
+    assertEquals(found.passwordHash, null);
+  });
+});
+
 test("createUser retains and normalizes internal fixture email", async () => {
   await withTestDb(async (database) => {
     const created = await createUser(database, userInput({ email: "Foo@X.com" }));

@@ -61,7 +61,7 @@ function extractCookie(response: Response): string {
 async function ownerSession(app: Hono<ServerEnvironment>): Promise<{ userId: string; cookie: string }> {
   const response = await app.request(
     "/auth/setup",
-    jsonRequest("POST", { name: "Ada Lovelace", password: PASSWORD }),
+    jsonRequest("POST", { name: "Ada Lovelace" }),
   );
   assertEquals(response.status, 201);
   const user = await response.json();

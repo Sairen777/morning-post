@@ -14,7 +14,7 @@ const userRowSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   email: z.string(),
-  passwordHash: z.string(),
+  passwordHash: z.string().nullable(),
   systemPrompt: z.string(),
   summaryPrompt: z.string(),
   defaultLanguage: z.string().nullable(),
@@ -31,7 +31,7 @@ export type User = z.infer<typeof userRowSchema>;
 export interface CreateUserInput {
   name: string;
   email: string;
-  passwordHash: string;
+  passwordHash: string | null;
   systemPrompt: string;
   summaryPrompt?: string;
   defaultLanguage?: string | null;

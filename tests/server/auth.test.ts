@@ -7,10 +7,13 @@ import {
 } from "../assertions.ts";
 import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { verifyPassword } from "../../src/auth/password.ts";
+import { hashPassword } from "../../src/auth/password.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
-import { findOwner } from "../../src/repositories/user-repository.ts";
+import {
+  createUser,
+  findOwner,
+} from "../../src/repositories/user-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import { ConflictError } from "../../src/server/errors.ts";
 import {
@@ -22,13 +25,11 @@ const PASSWORD = "analytical-engine-1843";
 
 interface SetupBody {
   name: string;
-  password: string;
 }
 
 function setupBody(overrides: Partial<SetupBody> = {}): SetupBody {
   return {
     name: "Ada Lovelace",
-    password: PASSWORD,
     ...overrides,
   };
 }
@@ -53,12 +54,27 @@ async function postLogin(database: Database, body: unknown): Promise<Response> {
   return await buildApp(database).request("/auth/login", jsonRequest(body));
 }
 
-test("GET /auth/setup reports setup state before and after owner creation", async () => {
+async function createPasswordOwner(
+  database: Database,
+  password = PASSWORD,
+) {
+  return await createUser(database, {
+    name: "Ada Lovelace",
+    email: OWNER_EMAIL,
+    passwordHash: await hashPassword(password),
+    systemPrompt: "Summarize tersely.",
+  });
+}
+
+test("GET /auth/setup reports passwordless setup state before and after owner creation", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const before = await app.request("/auth/setup");
     assertEquals(before.status, 200);
-    assertEquals(await before.json(), { setupRequired: true });
+    assertEquals(await before.json(), {
+      setupRequired: true,
+      passwordRequired: false,
+    });
 
     const setup = await app.request("/auth/setup", jsonRequest(setupBody()));
     assertEquals(setup.status, 201);
@@ -66,11 +82,27 @@ test("GET /auth/setup reports setup state before and after owner creation", asyn
 
     const after = await app.request("/auth/setup");
     assertEquals(after.status, 200);
-    assertEquals(await after.json(), { setupRequired: false });
+    assertEquals(await after.json(), {
+      setupRequired: false,
+      passwordRequired: false,
+    });
   });
 });
 
-test("POST /auth/setup creates the reserved owner with an Argon2id password hash", async () => {
+test("GET /auth/setup requires a password only for an existing password-backed owner", async () => {
+  await withTestDb(async (database) => {
+    await createPasswordOwner(database);
+
+    const response = await buildApp(database).request("/auth/setup");
+    assertEquals(response.status, 200);
+    assertEquals(await response.json(), {
+      setupRequired: false,
+      passwordRequired: true,
+    });
+  });
+});
+
+test("POST /auth/setup creates the reserved owner without a password", async () => {
   await withTestDb(async (database) => {
     const response = await postSetup(database, setupBody({ name: "  Ada Lovelace  " }));
     assertEquals(response.status, 201);
@@ -82,12 +114,11 @@ test("POST /auth/setup creates the reserved owner with an Argon2id password hash
     assertExists(owner);
     assertEquals(owner.id, json.id);
     assertEquals(owner.email, OWNER_EMAIL);
-    assert(owner.passwordHash.startsWith("$argon2id$"));
-    assertEquals(await verifyPassword(PASSWORD, owner.passwordHash), true);
+    assertEquals(owner.passwordHash, null);
   });
 });
 
-test("setup response is authenticated and no public auth response exposes email or password data", async () => {
+test("setup and passwordless login return sessions without exposing private user fields", async () => {
   await withTestDb(async (database) => {
     const app = buildApp(database);
     const setup = await app.request("/auth/setup", jsonRequest(setupBody()));
@@ -110,7 +141,7 @@ test("setup response is authenticated and no public auth response exposes email 
     assertEquals("email" in meJson, false);
     assertEquals("passwordHash" in meJson, false);
 
-    const login = await app.request("/auth/login", jsonRequest({ password: PASSWORD }));
+    const login = await app.request("/auth/login", jsonRequest({}));
     assertEquals(login.status, 200);
     assertExists(login.headers.get("set-cookie"));
     const loginJson = await login.json();
@@ -120,19 +151,22 @@ test("setup response is authenticated and no public auth response exposes email 
   });
 });
 
-test("POST /auth/login accepts only a password and uses the fixed failure message", async () => {
+test("POST /auth/login preserves password sign-in for a password-backed owner", async () => {
   await withTestDb(async (database) => {
-    const setup = await postSetup(database, setupBody());
-    assertEquals(setup.status, 201);
-    await setup.body?.cancel();
+    await createPasswordOwner(database);
 
     const success = await postLogin(database, { password: PASSWORD });
     assertEquals(success.status, 200);
     await success.body?.cancel();
 
-    const wrong = await postLogin(database, { password: "wrong-password" });
-    assertEquals(wrong.status, 401);
-    assertEquals((await wrong.json()).error.message, "invalid password");
+    for (const body of [
+      { password: "wrong-password" },
+      {},
+    ]) {
+      const rejected = await postLogin(database, body);
+      assertEquals(rejected.status, 401);
+      assertEquals((await rejected.json()).error.message, "invalid password");
+    }
 
     const legacyEmailBody = await postLogin(database, {
       email: "ada@example.com",
@@ -140,18 +174,49 @@ test("POST /auth/login accepts only a password and uses the fixed failure messag
     });
     assertEquals(legacyEmailBody.status, 422);
     await legacyEmailBody.body?.cancel();
+
+    const invalidPasswordType = await postLogin(database, { password: null });
+    assertEquals(invalidPasswordType.status, 422);
+    await invalidPasswordType.body?.cancel();
   });
 });
 
-test("POST /auth/setup validates name and password without accepting email", async () => {
+test("POST /auth/login rejects an empty password for a password-backed owner", async () => {
+  await withTestDb(async (database) => {
+    await createPasswordOwner(database);
+
+    const response = await postLogin(database, { password: "" });
+    assertEquals(response.status, 401);
+    assertEquals((await response.json()).error.message, "invalid password");
+  });
+});
+
+test("POST /auth/login uses the same failure for a missing owner", async () => {
+  await withTestDb(async (database) => {
+    for (const body of [{ password: PASSWORD }, {}]) {
+      const response = await postLogin(database, body);
+      assertEquals(response.status, 401);
+      assertEquals((await response.json()).error.message, "invalid password");
+    }
+  });
+});
+
+test("POST /auth/setup strictly validates a name-only body", async () => {
   await withTestDb(async (database) => {
     const emptyName = await postSetup(database, setupBody({ name: "   " }));
     assertEquals(emptyName.status, 422);
     await emptyName.body?.cancel();
 
-    const shortPassword = await postSetup(database, setupBody({ password: "short" }));
-    assertEquals(shortPassword.status, 422);
-    await shortPassword.body?.cancel();
+    const missingName = await postSetup(database, {});
+    assertEquals(missingName.status, 422);
+    await missingName.body?.cancel();
+
+    const passwordBody = await postSetup(database, {
+      ...setupBody(),
+      password: PASSWORD,
+    });
+    assertEquals(passwordBody.status, 422);
+    await passwordBody.body?.cancel();
 
     const legacyEmailBody = await postSetup(database, {
       ...setupBody(),
@@ -170,7 +235,6 @@ test("POST /auth/setup returns 409 once an owner exists", async () => {
 
     const second = await postSetup(database, setupBody({
       name: "Grace Hopper",
-      password: "compiler-pioneer-1906",
     }));
     assertEquals(second.status, 409);
     await second.body?.cancel();

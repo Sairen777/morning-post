@@ -19,12 +19,12 @@ const PASSWORD = "analytical-engine-1843";
 async function createStoredUser(
   database: Database,
   email: string,
-  password = PASSWORD,
+  password: string | null = PASSWORD,
 ) {
   return await createUser(database, {
     name: "Ada Lovelace",
     email,
-    passwordHash: await hashPassword(password),
+    passwordHash: password === null ? null : await hashPassword(password),
     systemPrompt: "Summarize tersely.",
   });
 }
@@ -41,6 +41,23 @@ test("authenticateOwner returns the owner for the correct password", async () =>
   });
 });
 
+test("authenticateOwner returns a passwordless owner without credentials", async () => {
+  await withTestDb(async (database) => {
+    const createdOwner = await createStoredUser(
+      database,
+      "owner@example.com",
+      null,
+    );
+
+    for (const input of [{}, { password: "" }, { password: "unused" }]) {
+      assertEquals(
+        await authenticateOwner(database, input),
+        createdOwner,
+      );
+    }
+  });
+});
+
 test("authenticateOwner returns null for the owner's wrong password", async () => {
   await withTestDb(async (database) => {
     await createStoredUser(database, "owner@example.com");
@@ -53,13 +70,25 @@ test("authenticateOwner returns null for the owner's wrong password", async () =
   });
 });
 
-test("authenticateOwner returns null when no owner exists", async () => {
+test("authenticateOwner rejects a missing or empty password for a password-backed owner", async () => {
   await withTestDb(async (database) => {
-    const authenticatedUser = await authenticateOwner(database, {
-      password: PASSWORD,
-    });
+    await createStoredUser(database, "owner@example.com");
 
-    assertEquals(authenticatedUser, null);
+    assertEquals(await authenticateOwner(database, {}), null);
+    assertEquals(
+      await authenticateOwner(database, { password: "" }),
+      null,
+    );
+  });
+});
+
+test("authenticateOwner returns null for a missing owner with or without a password", async () => {
+  await withTestDb(async (database) => {
+    assertEquals(
+      await authenticateOwner(database, { password: PASSWORD }),
+      null,
+    );
+    assertEquals(await authenticateOwner(database, {}), null);
   });
 });
 

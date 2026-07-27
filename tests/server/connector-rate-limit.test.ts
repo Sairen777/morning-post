@@ -52,7 +52,7 @@ function extractCookie(response: Response): string {
 async function register(app: Hono<ServerEnvironment>): Promise<void> {
   const response = await app.request(
     "/auth/setup",
-    jsonRequest("POST", { name: "Ada Lovelace", password: PASSWORD }),
+    jsonRequest("POST", { name: "Ada Lovelace" }),
   );
   assertEquals(response.status, 201);
 }

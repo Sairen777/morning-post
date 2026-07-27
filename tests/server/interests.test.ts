@@ -25,7 +25,7 @@ function request(method: string, body?: unknown, cookie?: string): RequestInit {
 
 async function ownerSession(app: Hono<ServerEnvironment>): Promise<string> {
   const setup = await app.request("/auth/setup", request("POST", {
-    name: "Ada Lovelace", password: PASSWORD,
+    name: "Ada Lovelace",
   }));
   assertEquals(setup.status, 201);
   const loginResp = await app.request("/auth/login", request("POST", { password: PASSWORD }));

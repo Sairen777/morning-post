@@ -5,14 +5,14 @@ import {
   loginUser,
   setupOwner,
 } from "../api/client";
-import type { PublicUser } from "../api/types";
+import type { PublicUser, SetupStatus } from "../api/types";
 
 interface AuthPanelProps {
   onLogin: (user: PublicUser) => void;
 }
 
 export default function AuthPanel(props: AuthPanelProps) {
-  const [setupRequired, setSetupRequired] = createSignal<boolean | null>(null);
+  const [setupStatus, setSetupStatus] = createSignal<SetupStatus | null>(null);
   const [statusError, setStatusError] = createSignal<string | null>(null);
   const [submitError, setSubmitError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
@@ -20,14 +20,18 @@ export default function AuthPanel(props: AuthPanelProps) {
   const [name, setName] = createSignal("");
   const [password, setPassword] = createSignal("");
 
+  const setupRequired = () => setupStatus()?.setupRequired === true;
+  const passwordRequired = () =>
+    setupStatus()?.setupRequired === false &&
+    setupStatus()?.passwordRequired === true;
+
   const loadSetupStatus = async () => {
     setStatusError(null);
     setSubmitError(null);
-    setSetupRequired(null);
+    setSetupStatus(null);
 
     try {
-      const status = await getSetupStatus();
-      setSetupRequired(status.setupRequired);
+      setSetupStatus(await getSetupStatus());
     } catch (err) {
       if (err instanceof ApiClientError) {
         setStatusError(err.message);
@@ -41,15 +45,21 @@ export default function AuthPanel(props: AuthPanelProps) {
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
-    if (loading() || setupRequired() === null) return;
+    const status = setupStatus();
+    if (loading() || status === null) return;
 
     setSubmitError(null);
     setLoading(true);
 
     try {
-      const user = setupRequired()
-        ? await setupOwner({ name: name(), password: password() })
-        : await loginUser({ password: password() });
+      let user: PublicUser;
+      if (status.setupRequired) {
+        user = await setupOwner({ name: name() });
+      } else if (status.passwordRequired) {
+        user = await loginUser({ password: password() });
+      } else {
+        user = await loginUser({});
+      }
       props.onLogin(user);
     } catch (err) {
       if (err instanceof ApiClientError) {
@@ -68,7 +78,7 @@ export default function AuthPanel(props: AuthPanelProps) {
         <h1>Morning Post</h1>
 
         <Show
-          when={setupRequired() !== null}
+          when={setupStatus() !== null}
           fallback={
             <Show
               when={statusError()}
@@ -87,9 +97,22 @@ export default function AuthPanel(props: AuthPanelProps) {
 
           <Show
             when={setupRequired()}
-            fallback={<h2>Sign in</h2>}
+            fallback={
+              <Show
+                when={passwordRequired()}
+                fallback={
+                  <>
+                    <h2>Welcome back</h2>
+                    <p>Continue to your Morning Post.</p>
+                  </>
+                }
+              >
+                <h2>Sign in</h2>
+              </Show>
+            }
           >
-            <h2>Set up your owner account</h2>
+            <h2>Welcome to Morning Post</h2>
+            <p>Choose the name shown in your digests.</p>
           </Show>
 
           <form onSubmit={handleSubmit}>
@@ -108,26 +131,30 @@ export default function AuthPanel(props: AuthPanelProps) {
               </div>
             </Show>
 
-            <div class="form-group">
-              <label for="auth-password">Password</label>
-              <input
-                id="auth-password"
-                type="password"
-                value={password()}
-                onInput={(e) => setPassword(e.currentTarget.value)}
-                required
-                disabled={loading()}
-                autocomplete={setupRequired() ? "new-password" : "current-password"}
-              />
-            </div>
+            <Show when={passwordRequired()}>
+              <div class="form-group">
+                <label for="auth-password">Password</label>
+                <input
+                  id="auth-password"
+                  type="password"
+                  value={password()}
+                  onInput={(e) => setPassword(e.currentTarget.value)}
+                  required
+                  disabled={loading()}
+                  autocomplete="current-password"
+                />
+              </div>
+            </Show>
 
             <div class="form-actions">
               <button type="submit" class="primary" disabled={loading()}>
                 {loading()
                   ? "Please wait…"
                   : setupRequired()
-                    ? "Create owner account"
-                    : "Sign in"}
+                    ? "Get started"
+                    : passwordRequired()
+                      ? "Sign in"
+                      : "Continue"}
               </button>
             </div>
           </form>

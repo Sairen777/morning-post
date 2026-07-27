@@ -79,7 +79,6 @@ export function getSetupStatus(): Promise<SetupStatus> {
 
 export function setupOwner(input: {
   name: string;
-  password: string;
 }): Promise<PublicUser> {
   return apiRequest<PublicUser>("/auth/setup", {
     method: "POST",
@@ -88,7 +87,7 @@ export function setupOwner(input: {
 }
 
 export function loginUser(input: {
-  password: string;
+  password?: string;
 }): Promise<PublicUser> {
   return apiRequest<PublicUser>("/auth/login", {
     method: "POST",

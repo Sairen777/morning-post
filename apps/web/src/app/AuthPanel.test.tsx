@@ -49,9 +49,13 @@ describe("AuthPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "Checking setup status…",
     );
+    expect(screen.queryByLabelText("Name")).toBeNull();
     expect(screen.queryByLabelText("Password")).toBeNull();
 
-    status.resolve(jsonResponse({ setupRequired: true }));
+    status.resolve(jsonResponse({
+      setupRequired: true,
+      passwordRequired: false,
+    }));
     await waitFor(() => expect(screen.getByLabelText("Name")).toBeVisible());
   });
 
@@ -65,7 +69,10 @@ describe("AuthPanel", () => {
               { error: { code: "UNAVAILABLE", message: "setup unavailable" } },
               503,
             )
-          : jsonResponse({ setupRequired: false }),
+          : jsonResponse({
+              setupRequired: false,
+              passwordRequired: true,
+            }),
       );
     }) as typeof fetch;
     render(() => <AuthPanel onLogin={() => {}} />);
@@ -78,41 +85,136 @@ describe("AuthPanel", () => {
     expect(screen.getByRole("heading", { name: "Sign in" })).toBeVisible();
   });
 
-  it("submits first-run setup once and passes the authenticated owner to onLogin", async () => {
+  it("submits name-only setup once and passes the authenticated owner to onLogin", async () => {
     const setupResponse = createDeferred<Response>();
     const requests: Array<{ path: string; init?: RequestInit }> = [];
     globalThis.fetch = vi.fn((input, init) => {
       requests.push({ path: String(input), init });
       if (init?.method === "POST") return setupResponse.promise;
-      return Promise.resolve(jsonResponse({ setupRequired: true }));
+      return Promise.resolve(jsonResponse({
+        setupRequired: true,
+        passwordRequired: false,
+      }));
     }) as typeof fetch;
     const onLogin = vi.fn();
     render(() => <AuthPanel onLogin={onLogin} />);
-    await waitFor(() => expect(screen.getByLabelText("Name")).toBeVisible());
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Welcome to Morning Post" }),
+      ).toBeVisible()
+    );
 
-    await fireEvent.input(screen.getByLabelText("Name"), {
+    expect(
+      screen.getByText("Choose the name shown in your digests."),
+    ).toBeVisible();
+    expect(screen.queryByText(/account/i)).toBeNull();
+    expect(screen.queryByLabelText("Password")).toBeNull();
+    const nameInput = screen.getByLabelText("Name");
+    expect(nameInput).toBeRequired();
+    await fireEvent.input(nameInput, {
       target: { value: "Morning Post Owner" },
     });
-    await fireEvent.input(screen.getByLabelText("Password"), {
-      target: { value: "owner-password-123" },
-    });
-    const submit = screen.getByRole("button", { name: "Create owner account" });
+
+    const submit = screen.getByRole("button", { name: "Get started" });
     await fireEvent.click(submit);
     expect(submit).toBeDisabled();
     await fireEvent.click(submit);
-    expect(
-      requests.filter(({ path, init }) => path === "/auth/setup" && init?.method === "POST"),
-    ).toHaveLength(1);
+
+    const setupRequests = requests.filter(
+      ({ path, init }) =>
+        path === "/auth/setup" && init?.method === "POST",
+    );
+    expect(setupRequests).toHaveLength(1);
+    expect(JSON.parse(setupRequests[0].init?.body as string)).toEqual({
+      name: "Morning Post Owner",
+    });
 
     setupResponse.resolve(jsonResponse(owner, 201));
     await waitFor(() => expect(onLogin).toHaveBeenCalledWith(owner));
-    expect(screen.queryByRole("button", { name: /sign in/i })).toBeNull();
+    expect(onLogin).toHaveBeenCalledTimes(1);
   });
 
-  it("uses password-only login and displays API submit errors", async () => {
+  it("continues a passwordless owner with no fields or credentials", async () => {
+    const loginResponse = createDeferred<Response>();
     const requests: Array<{ path: string; init?: RequestInit }> = [];
     globalThis.fetch = vi.fn((input, init) => {
       requests.push({ path: String(input), init });
+      if (init?.method === "POST") return loginResponse.promise;
+      return Promise.resolve(jsonResponse({
+        setupRequired: false,
+        passwordRequired: false,
+      }));
+    }) as typeof fetch;
+    const onLogin = vi.fn();
+    render(() => <AuthPanel onLogin={onLogin} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Welcome back" }),
+      ).toBeVisible()
+    );
+
+    expect(screen.getByText("Continue to your Morning Post.")).toBeVisible();
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    expect(screen.queryByLabelText("Password")).toBeNull();
+    const submit = screen.getByRole("button", { name: "Continue" });
+    await fireEvent.click(submit);
+    expect(submit).toBeDisabled();
+    await fireEvent.click(submit);
+
+    const loginRequests = requests.filter(
+      ({ path, init }) =>
+        path === "/auth/login" && init?.method === "POST",
+    );
+    expect(loginRequests).toHaveLength(1);
+    expect(JSON.parse(loginRequests[0].init?.body as string)).toEqual({});
+
+    loginResponse.resolve(jsonResponse(owner));
+    await waitFor(() => expect(onLogin).toHaveBeenCalledWith(owner));
+    expect(onLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("signs in a password-backed owner with only the password", async () => {
+    const requests: Array<{ path: string; init?: RequestInit }> = [];
+    globalThis.fetch = vi.fn((input, init) => {
+      requests.push({ path: String(input), init });
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse(owner));
+      }
+      return Promise.resolve(jsonResponse({
+        setupRequired: false,
+        passwordRequired: true,
+      }));
+    }) as typeof fetch;
+    const onLogin = vi.fn();
+    render(() => <AuthPanel onLogin={onLogin} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Sign in" }),
+      ).toBeVisible()
+    );
+
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    const passwordInput = screen.getByLabelText("Password");
+    expect(passwordInput).toBeRequired();
+    await fireEvent.input(passwordInput, {
+      target: { value: "owner-password-123" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => expect(onLogin).toHaveBeenCalledWith(owner));
+    expect(onLogin).toHaveBeenCalledTimes(1);
+    const loginRequest = requests.find(
+      ({ path, init }) =>
+        path === "/auth/login" && init?.method === "POST",
+    );
+    expect(loginRequest).toBeDefined();
+    expect(JSON.parse(loginRequest?.init?.body as string)).toEqual({
+      password: "owner-password-123",
+    });
+  });
+
+  it("displays password sign-in API errors", async () => {
+    globalThis.fetch = vi.fn((_input, init) => {
       if (init?.method === "POST") {
         return Promise.resolve(
           jsonResponse(
@@ -121,11 +223,13 @@ describe("AuthPanel", () => {
           ),
         );
       }
-      return Promise.resolve(jsonResponse({ setupRequired: false }));
+      return Promise.resolve(jsonResponse({
+        setupRequired: false,
+        passwordRequired: true,
+      }));
     }) as typeof fetch;
     render(() => <AuthPanel onLogin={() => {}} />);
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Sign in" })).toBeVisible());
-    expect(screen.queryByLabelText("Name")).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText("Password")).toBeVisible());
 
     await fireEvent.input(screen.getByLabelText("Password"), {
       target: { value: "wrong-password" },
@@ -135,12 +239,5 @@ describe("AuthPanel", () => {
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent("invalid password")
     );
-    const loginRequest = requests.find(
-      ({ path, init }) => path === "/auth/login" && init?.method === "POST",
-    );
-    expect(loginRequest).toBeDefined();
-    expect(JSON.parse(loginRequest?.init?.body as string)).toEqual({
-      password: "wrong-password",
-    });
   });
 });

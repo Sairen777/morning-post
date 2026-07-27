@@ -55,7 +55,7 @@ export function toPublicUser(user: User): PublicUser {
 }
 
 const loginSchema = z.object({
-  password: z.string().min(1, "password is required"),
+  password: z.string().optional(),
 }).strict();
 
 const INVALID_PASSWORD = "invalid password";
@@ -104,7 +104,10 @@ export function buildAuthRoutes(
 
   routes.get("/setup", async (context) => {
     const owner = await findOwner(database);
-    return context.json({ setupRequired: owner === null }, 200);
+    return context.json({
+      setupRequired: owner === null,
+      passwordRequired: owner !== null && owner.passwordHash !== null,
+    }, 200);
   });
 
   routes.post("/setup", setupRateLimiter, async (context) => {

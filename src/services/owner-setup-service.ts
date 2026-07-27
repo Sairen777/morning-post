@@ -1,6 +1,5 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { hashPassword } from "../auth/password.ts";
 import type { Database } from "../db/client.ts";
 import { users } from "../db/schema/user.ts";
 import {
@@ -16,7 +15,6 @@ export const OWNER_EMAIL = "owner@morning-post.invalid";
 
 export const setupOwnerSchema = z.object({
   name: z.string().trim().min(1, "name must not be empty"),
-  password: z.string().min(8, "password must be at least 8 characters"),
 }).strict();
 
 export type SetupOwnerInput = z.infer<typeof setupOwnerSchema>;
@@ -25,13 +23,12 @@ export async function setupOwner(
   database: Database,
   input: SetupOwnerInput,
 ): Promise<User> {
-  const { name, password } = validate(setupOwnerSchema, input);
+  const { name } = validate(setupOwnerSchema, input);
 
   if (await findOwner(database)) {
     throw new ConflictError("owner already exists");
   }
 
-  const passwordHash = await hashPassword(password);
 
   return await database.transaction(async (transaction) => {
     const tx = transaction as Database;
@@ -44,7 +41,7 @@ export async function setupOwner(
     return await createUser(tx, {
       name,
       email: OWNER_EMAIL,
-      passwordHash,
+      passwordHash: null,
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
     });
   });
