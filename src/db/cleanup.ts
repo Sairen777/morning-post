@@ -58,29 +58,11 @@ export function resolveLocalDatabaseUrl(
   return parsedUrl.toString();
 }
 
-export async function truncatePublicTables(
-  client: postgres.Sql,
-): Promise<void> {
-  const tables = await client<{ tablename: string }[]>`
-    select tablename
-    from pg_tables
-    where schemaname = 'public'
-    order by tablename
-  `;
-  if (tables.length === 0) return;
-
-  const tableNames = tables.map(({ tablename }) =>
-    `"${tablename.replaceAll('"', '""')}"`
-  ).join(", ");
-  await client.unsafe(`truncate table ${tableNames} restart identity cascade`);
-}
-
-export async function cleanupLocalDatabase(
-  databaseUrl = resolveLocalDatabaseUrl(),
-): Promise<void> {
-  const parsedUrl = new URL(databaseUrl);
-  const client = postgres(
-    databaseUrl,
+export function createLocalDatabaseClient(databaseUrl: string): postgres.Sql {
+  const safeDatabaseUrl = resolveLocalDatabaseUrl({ DATABASE_URL: databaseUrl });
+  const parsedUrl = new URL(safeDatabaseUrl);
+  return postgres(
+    safeDatabaseUrl,
     {
       host: parsedUrl.hostname,
       port: Number(parsedUrl.port || 5432),
@@ -102,6 +84,29 @@ export async function cleanupLocalDatabase(
       target_session_attrs: "read-write",
     } as Parameters<typeof postgres>[1],
   );
+}
+
+export async function truncatePublicTables(
+  client: postgres.Sql,
+): Promise<void> {
+  const tables = await client<{ tablename: string }[]>`
+    select tablename
+    from pg_tables
+    where schemaname = 'public'
+    order by tablename
+  `;
+  if (tables.length === 0) return;
+
+  const tableNames = tables.map(({ tablename }) =>
+    `"${tablename.replaceAll('"', '""')}"`
+  ).join(", ");
+  await client.unsafe(`truncate table ${tableNames} restart identity cascade`);
+}
+
+export async function cleanupLocalDatabase(
+  databaseUrl = resolveLocalDatabaseUrl(),
+): Promise<void> {
+  const client = createLocalDatabaseClient(databaseUrl);
   try {
     await truncatePublicTables(client);
   } finally {

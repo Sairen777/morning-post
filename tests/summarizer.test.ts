@@ -13,6 +13,7 @@ import { OpenAICompatibleSummarizerService } from "../src/summarizers/openai-com
 import { ModelApiError } from "../src/summarizers/openai-compatible-client.ts";
 import {
   buildArticlePrompt,
+  buildConstrainedSummaryRecoveryPrompt,
   buildDiscussionPrompt,
   buildNewsPrompt,
   buildThoroughStorySummaryPrompt,
@@ -178,6 +179,33 @@ test("buildThoroughStorySummaryPrompt — preserves nuance without invention or 
   assertEquals(rules.showAuthors, true);
   assertEquals(rules.showTitle, true);
   assertEquals(rules.includeMedia, true);
+});
+
+test("buildConstrainedSummaryRecoveryPrompt — preserves capabilities and adds bounded output rules", () => {
+  const original = {
+    systemPrompt: "ORIGINAL SUMMARY RULES",
+    showAuthors: true,
+    includeMedia: false,
+    showTitle: true,
+  };
+  const recovery = buildConstrainedSummaryRecoveryPrompt(original);
+
+  assertEquals(recovery.systemPrompt.startsWith(original.systemPrompt), true);
+  for (const requiredInstruction of [
+    "valid JSON array",
+    "no preamble",
+    "at most 12 summary points total",
+    'at most 500 characters',
+    "Densely consolidate related evidence",
+    "distinct material development",
+    "source attribution only from the supplied input",
+  ]) {
+    assertStringIncludes(recovery.systemPrompt, requiredInstruction);
+  }
+  assertEquals(recovery.showAuthors, true);
+  assertEquals(recovery.includeMedia, false);
+  assertEquals(recovery.showTitle, true);
+  assertEquals(original.systemPrompt, "ORIGINAL SUMMARY RULES");
 });
 test("buildArticlePrompt — requires every article and forbids generated headings", () => {
   const rules = buildArticlePrompt({
@@ -664,6 +692,34 @@ test("summarizeBatch — sends batch token and JSON options and stops after two 
     restore();
   }
 });
+
+test("summarizeBatch — output limit propagates without semantic recovery", async () => {
+  const { callCount, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse("[]", "length"),
+    },
+    {
+      status: 200,
+      body: modelResponse("[]", "stop"),
+    },
+  ]);
+  try {
+    const error = await assertRejects(
+      () =>
+        createTestSummarizer({ retryBaseDelayMs: 0 }).summarizeBatch(
+          batchStories(),
+          buildNewsPrompt(),
+        ),
+      ModelApiError,
+      "exhausted output token limit",
+    );
+    assertEquals((error as ModelApiError).kind, "output_limit");
+    assertEquals(callCount(), 1);
+  } finally {
+    restore();
+  }
+});
 // --- retry / API error helpers ---
 
 type ResponseSpec = { status: number; body: string };
@@ -728,9 +784,12 @@ function captureFetchSequence(specs: ResponseSpec[]): {
   };
 }
 
-function modelResponse(content: string): string {
+function modelResponse(content: string, finishReason?: string): string {
   return JSON.stringify({
-    choices: [{ message: { content } }],
+    choices: [{
+      ...(finishReason === undefined ? {} : { finish_reason: finishReason }),
+      message: { content },
+    }],
   });
 }
 
@@ -824,6 +883,226 @@ test("summarize — renews the timeout for every chunk and merge request", async
     assertEquals(new Set(requestSignals).size, 3);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("summarize — retries one output limit with bounded rules and unchanged input budget", async () => {
+  const sourceItems = [
+    item({
+      externalId: "first",
+      text: "First source evidence",
+      url: "https://t.me/test/first",
+    }),
+    item({
+      externalId: "second",
+      text: "Second source evidence",
+      url: "https://t.me/test/second",
+    }),
+  ];
+  const rules = buildThoroughStorySummaryPrompt({ language: "English" });
+  const { captured, callCount, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(
+        '[{"t":"valid-looking truncated content that must be discarded","i":0}]',
+        "length",
+      ),
+    },
+    {
+      status: 200,
+      body: modelResponse(
+        '[{"t":"Recovered second-source development","i":1},{"t":"Recovered first-source development","i":0}]',
+        "stop",
+      ),
+    },
+  ]);
+  const attempts: ModelAttemptTelemetry[] = [];
+
+  try {
+    const result = await createTestSummarizer({ retryBaseDelayMs: 0 })
+      .summarize(sourceItems, rules, {
+        requestTimeoutMs: 1_000,
+        onAttempt: (attempt) => {
+          attempts.push(attempt);
+        },
+      });
+
+    assertEquals(result.map(({ text, sourceUrl }) => ({ text, sourceUrl })), [
+      {
+        text: "Recovered second-source development",
+        sourceUrl: "https://t.me/test/second",
+      },
+      {
+        text: "Recovered first-source development",
+        sourceUrl: "https://t.me/test/first",
+      },
+    ]);
+    assertEquals(callCount(), 2);
+    assertEquals(captured.map(({ body }) => body.max_tokens), [4000, 4000]);
+    assertEquals(
+      captured[1].body.messages[1].content,
+      captured[0].body.messages[1].content,
+    );
+    assertEquals(captured[0].body.messages[0].content, rules.systemPrompt);
+    const recoveryPrompt = String(captured[1].body.messages[0].content);
+    assertEquals(recoveryPrompt.startsWith(rules.systemPrompt), true);
+    for (const requiredInstruction of [
+      "valid JSON array",
+      "no preamble",
+      "at most 12 summary points total",
+      'at most 500 characters',
+      "Densely consolidate related evidence",
+      "distinct material development",
+      "source attribution only from the supplied input",
+    ]) {
+      assertStringIncludes(recoveryPrompt, requiredInstruction);
+    }
+    assertEquals(
+      attempts.map(({ attempt, status }) => ({ attempt, status })),
+      [
+        { attempt: 1, status: "failure" },
+        { attempt: 1, status: "success" },
+      ],
+    );
+    assertEquals(
+      result.some((point) => point.text.includes("must be discarded")),
+      false,
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — successful first completion does not invoke recovery", async () => {
+  const rules = buildNewsPrompt();
+  const { captured, callCount, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse('[{"t":"ordinary success","i":0}]', "stop"),
+    },
+  ]);
+  try {
+    const result = await createTestSummarizer().summarize([item()], rules);
+    assertEquals(result[0].text, "ordinary success");
+    assertEquals(callCount(), 1);
+    assertEquals(captured[0].body.messages[0].content, rules.systemPrompt);
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — non-output ModelApiError does not invoke semantic recovery", async () => {
+  const { callCount, restore } = captureFetchSequence([
+    { status: 400, body: '{"error":"bad request"}' },
+    {
+      status: 200,
+      body: modelResponse('[{"t":"must not be requested","i":0}]', "stop"),
+    },
+  ]);
+  try {
+    const error = await assertRejects(
+      () =>
+        createTestSummarizer({ retryBaseDelayMs: 0 }).summarize(
+          [item()],
+          buildNewsPrompt(),
+        ),
+      ModelApiError,
+      "Model API 400",
+    );
+    assertEquals((error as ModelApiError).kind, "api");
+    assertEquals(callCount(), 1);
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — second output limit propagates after exactly two semantic calls", async () => {
+  const { captured, callCount, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse('[{"t":"first truncated result","i":0}]', "length"),
+    },
+    {
+      status: 200,
+      body: modelResponse('[{"t":"second truncated result","i":0}]', "length"),
+    },
+    {
+      status: 200,
+      body: modelResponse('[{"t":"must not be requested","i":0}]', "stop"),
+    },
+  ]);
+  try {
+    const error = await assertRejects(
+      () =>
+        createTestSummarizer({ retryBaseDelayMs: 0 }).summarize(
+          [item()],
+          buildNewsPrompt(),
+        ),
+      ModelApiError,
+      "exhausted output token limit",
+    );
+    assertEquals((error as ModelApiError).kind, "output_limit");
+    assertEquals(callCount(), 2);
+    assertEquals(captured.length, 2);
+    assertEquals(captured.map(({ body }) => body.max_tokens), [4000, 4000]);
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — merge completion uses the same bounded output-limit recovery", async () => {
+  const rules = buildNewsPrompt();
+  const { captured, callCount, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse('[{"t":"first chunk","i":0}]', "stop"),
+    },
+    {
+      status: 200,
+      body: modelResponse('[{"t":"second chunk","i":0}]', "stop"),
+    },
+    {
+      status: 200,
+      body: modelResponse('[{"t":"truncated merge","i":0}]', "length"),
+    },
+    {
+      status: 200,
+      body: modelResponse('[{"t":"recovered merge","i":1}]', "stop"),
+    },
+  ]);
+  try {
+    const result = await createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 1,
+    }).summarize([
+      item({
+        externalId: "first",
+        text: "first",
+        url: "https://t.me/test/first",
+      }),
+      item({
+        externalId: "second",
+        text: "second",
+        url: "https://t.me/test/second",
+      }),
+    ], rules);
+
+    assertEquals(result[0].text, "recovered merge");
+    assertEquals(result[0].sourceUrl, "https://t.me/test/second");
+    assertEquals(callCount(), 4);
+    assertEquals(captured[2].body.max_tokens, 4000);
+    assertEquals(captured[3].body.max_tokens, 4000);
+    assertEquals(
+      captured[3].body.messages[1].content,
+      captured[2].body.messages[1].content,
+    );
+    assertEquals(captured[2].body.messages[0].content, rules.systemPrompt);
+    assertStringIncludes(
+      String(captured[3].body.messages[0].content),
+      "at most 12 summary points total",
+    );
+  } finally {
+    restore();
   }
 });
 
@@ -1783,6 +2062,55 @@ test("summarize — same-model routing sends valid images directly as multimodal
     assertStringIncludes(
       JSON.stringify(captured[0].body.messages[1].content),
       "image_url",
+    );
+  } finally {
+    restore();
+    await rm(temporaryDirectory, { recursive: true });
+  }
+});
+
+test("summarize — same-model multimodal completion uses bounded output-limit recovery", async () => {
+  const temporaryDirectory = await createRoutingTestDirectory(
+    "same-model-output-limit-recovery",
+  );
+  const imagePath = `${temporaryDirectory}/photo.jpg`;
+  await writeFile(imagePath, new Uint8Array([1, 2, 3]));
+  const rules = buildNewsPrompt();
+  const { captured, callCount, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse(
+        '[{"t":"truncated multimodal summary","i":0}]',
+        "length",
+      ),
+    },
+    {
+      status: 200,
+      body: modelResponse('[{"t":"recovered multimodal summary","i":0}]', "stop"),
+    },
+  ]);
+  try {
+    const result = await createTestSummarizer({ retryBaseDelayMs: 0 })
+      .summarize(
+        [item({ media: { type: "photo", localPath: imagePath } })],
+        rules,
+      );
+
+    assertEquals(result[0].text, "recovered multimodal summary");
+    assertEquals(callCount(), 2);
+    assertEquals(captured.map(({ body }) => body.max_tokens), [4000, 4000]);
+    assertEquals(
+      captured[1].body.messages[1].content,
+      captured[0].body.messages[1].content,
+    );
+    assertStringIncludes(
+      JSON.stringify(captured[1].body.messages[1].content),
+      "image_url",
+    );
+    assertEquals(captured[0].body.messages[0].content, rules.systemPrompt);
+    assertStringIncludes(
+      String(captured[1].body.messages[0].content),
+      "at most 12 summary points total",
     );
   } finally {
     restore();

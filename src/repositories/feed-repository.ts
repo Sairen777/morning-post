@@ -7,6 +7,10 @@ import { users } from "../db/schema/user.ts";
 import { ConflictError, NotFoundError } from "../server/errors.ts";
 import type { FeedKind } from "../connectors/connector.types.ts";
 import { isUniqueViolation } from "../db/errors.ts";
+import {
+  summarizationModes,
+  type SummarizationMode,
+} from "../summarization-mode.ts";
 
 const feedKindSchema = z.enum(["news", "discussion"]);
 
@@ -19,6 +23,7 @@ const publicFeedRowSchema = z.object({
   customPrompt: z.string().nullable(),
   position: z.number().nullable(),
   enabled: z.boolean(),
+  summarizationMode: z.enum(summarizationModes),
   relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]),
   deletedAt: z.number().nullable(),
   lastFetchedPeriodEndMs: z.number().nullable(),
@@ -34,6 +39,7 @@ const createFeedInputSchema = z.object({
   kind: feedKindSchema,
   customPrompt: z.string().nullable().optional(),
   position: z.number().int().nullable().optional(),
+  summarizationMode: z.enum(summarizationModes).optional(),
   relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),
 });
 
@@ -42,6 +48,7 @@ const updateFeedInputSchema = z.object({
   customPrompt: z.string().nullable().optional(),
   position: z.number().int().nullable().optional(),
   enabled: z.boolean().optional(),
+  summarizationMode: z.enum(summarizationModes).optional(),
   relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),
 });
 
@@ -55,6 +62,7 @@ export interface CreateOrReviveFeedInput {
   kind: FeedKind;
   customPrompt?: string | null;
   position?: number | null;
+  summarizationMode?: SummarizationMode;
   relevanceFilterMode?: "inherit" | "personalized" | "include_all";
 }
 
@@ -63,6 +71,7 @@ export type UpdateFeedInput = Partial<{
   customPrompt: string | null;
   position: number | null;
   enabled: boolean;
+  summarizationMode: SummarizationMode;
   relevanceFilterMode: "inherit" | "personalized" | "include_all";
 }>;
 
@@ -80,6 +89,7 @@ function publicColumns() {
     customPrompt: feeds.customPrompt,
     position: feeds.position,
     enabled: feeds.enabled,
+    summarizationMode: feeds.summarizationMode,
     relevanceFilterMode: feeds.relevanceFilterMode,
     deletedAt: feeds.deletedAt,
     lastFetchedPeriodEndMs: feeds.lastFetchedPeriodEndMs,
@@ -189,6 +199,7 @@ async function reviveFeed(
       kind: input.kind,
       customPrompt: input.customPrompt ?? null,
       position: input.position ?? null,
+      summarizationMode: input.summarizationMode ?? "basic",
       relevanceFilterMode: input.relevanceFilterMode ?? "inherit",
       enabled: true,
       deletedAt: null,
@@ -215,6 +226,7 @@ async function insertFeed(
         customPrompt: input.customPrompt ?? null,
         position: input.position ?? null,
         enabled: true,
+        summarizationMode: input.summarizationMode ?? "basic",
         relevanceFilterMode: input.relevanceFilterMode ?? "inherit",
         createdAt: now,
         updatedAt: now,

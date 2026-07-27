@@ -13,6 +13,7 @@
     "db:generate": "bun --env-file=.env.production.local drizzle-kit generate",
     "db:migrate": "bun --env-file=.env.production.local src/db/migrate.ts",
     "db:cleanup": "bun --env-file=.env.production.local src/db/cleanup.ts",
+    "db:reset": "bun --env-file=.env.production.local src/db/reset.ts && bun run db:migrate",
     "dev:api": "bun --env-file=.env.production.local --watch src/server/main.ts",
     "start": "bun --env-file=.env.production.local src/server/main.ts",
     "e2e:api": "bun --env-file=.env.production.local scripts/e2e-environment.ts start-api",

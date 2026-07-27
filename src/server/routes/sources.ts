@@ -7,7 +7,6 @@ import {
   listSourcesForUser,
   updateSource,
 } from "../../repositories/source-repository.ts";
-import { sourceSummarizationModes } from "../../summarization-mode.ts";
 import { type AuthVariables, requireAuth } from "../middleware/require-auth.ts";
 import { validate } from "../validate.ts";
 
@@ -23,7 +22,6 @@ const updateSourceBodySchema = z.object({
     .nullable().optional(),
   enabled: z.boolean().optional(),
   showPaidPostTitles: z.boolean().optional(),
-  summarizationMode: z.enum(sourceSummarizationModes).optional(),
   relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),
 }).strict();
 

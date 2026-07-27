@@ -859,6 +859,36 @@ test("classification permits zero or all results and thresholds absolute scores 
   assertEquals((await service.classify(stories, [prioritize], 50)).filter((value) => value.relevant).length, 25);
 });
 
+test("classification normalizes only null reasons while preserving indexed decisions", async () => {
+  const stories = [
+    persisted("first", analysis(item(0), "first", "report")),
+    persisted("second", analysis(item(1), "second", "report")),
+  ];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => JSON.stringify([
+        { i: 1, score: 35, matchedRuleIds: [], reason: "Below the relevance threshold." },
+        { i: 0, score: 85, matchedRuleIds: [prioritize.id], reason: null },
+      ]),
+    },
+  });
+
+  const decisions = await service.classify(stories, [prioritize], 50);
+  assertEquals(decisions.map(({ storyId, score, relevant, reason }) => ({ storyId, score, relevant, reason })), [
+    { storyId: "first", score: 85, relevant: true, reason: "No classification reason provided." },
+    { storyId: "second", score: 35, relevant: false, reason: "Below the relevance threshold." },
+  ]);
+
+  const invalidReasonService = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => JSON.stringify([
+        { i: 0, score: 85, matchedRuleIds: [prioritize.id], reason: 42 },
+      ]),
+    },
+  });
+  await assertRejects(() => invalidReasonService.classify([stories[0]!], [prioritize], 50));
+});
+
 test("classification applies free-text preference context without inventing a rule match", async () => {
   let observedPrompt = "";
   let observedInput = "";
@@ -909,6 +939,80 @@ test("classification partitions 120 candidates as 50, 50, and 20 with shared con
   assertEquals(batchSizes, [100, 20]);
   assertEquals(decisions.map((decision) => decision.storyId), stories.map((story) => story.id));
   assertEquals(decisions.map((decision) => decision.score), Array.from({ length: 120 }, (_, index) => index % 101));
+});
+
+test("classification recovers a valid 68-row response by requesting only the missing 32", async () => {
+  const stories = Array.from({ length: 100 }, (_, index) =>
+    persisted(`story-${index}`, analysis(item(index), `story-${index}`, "report"))
+  );
+  const requestedIndexes: number[][] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async (_prompt, content) => {
+        const indexes = content.split("\n").slice(1).map((line) =>
+          JSON.parse(line).i as number
+        );
+        requestedIndexes.push(indexes);
+        const returnedIndexes = requestedIndexes.length === 1
+          ? indexes.slice(0, 68)
+          : indexes;
+        return JSON.stringify(returnedIndexes.map((i) => ({
+          i,
+          score: i % 2 === 0 ? 80 : 20,
+          matchedRuleIds: i % 2 === 0 ? [prioritize.id] : [],
+          reason: i % 2 === 0 ? `Relevant ${i}` : `Not relevant ${i}`,
+        })));
+      },
+    },
+  });
+
+  const decisions = await service.classify(stories, [prioritize], 50);
+
+  assertEquals(requestedIndexes.map((indexes) => indexes.length), [100, 32]);
+  assertEquals(requestedIndexes[0], Array.from({ length: 100 }, (_, index) => index));
+  assertEquals(requestedIndexes[1], Array.from({ length: 32 }, (_, index) => index + 68));
+  assertEquals(decisions, Array.from({ length: 100 }, (_, index) => ({
+    storyId: `story-${index}`,
+    relevant: index % 2 === 0,
+    score: index % 2 === 0 ? 80 : 20,
+    matchedInterestRuleIds: index % 2 === 0 ? [prioritize.id] : [],
+    blockedByInterestRuleIds: [],
+    reason: index % 2 === 0 ? `Relevant ${index}` : `Not relevant ${index}`,
+  })));
+});
+
+test("classification bisects an empty multi-candidate response until progress resumes", async () => {
+  const stories = Array.from({ length: 4 }, (_, index) =>
+    persisted(`story-${index}`, analysis(item(index), `story-${index}`, "report"))
+  );
+  const requestedIndexes: number[][] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async (_prompt, content) => {
+        const indexes = content.split("\n").slice(1).map((line) =>
+          JSON.parse(line).i as number
+        );
+        requestedIndexes.push(indexes);
+        if (requestedIndexes.length === 1) return "[]";
+        return JSON.stringify(indexes.map((i) => ({
+          i,
+          score: 75,
+          matchedRuleIds: [prioritize.id],
+          reason: `Recovered ${i}`,
+        })));
+      },
+    },
+  });
+
+  const decisions = await service.classify(stories, [prioritize], 50);
+
+  assertEquals(requestedIndexes, [[0, 1, 2, 3], [0, 1], [2, 3]]);
+  assertEquals(decisions.map(({ storyId, relevant }) => ({ storyId, relevant })), [
+    { storyId: "story-0", relevant: true },
+    { storyId: "story-1", relevant: true },
+    { storyId: "story-2", relevant: true },
+    { storyId: "story-3", relevant: true },
+  ]);
 });
 
 test("classification request byte budget permits an exact fit and splits on one-byte overflow", async () => {
@@ -1018,10 +1122,88 @@ test("classification partitions by UTF-8 bytes rather than Unicode code units", 
   assertEquals(requestSizes.every((size) => size <= maxBytes), true);
 });
 
-test("classification rejects partial indexes and unknown rule IDs", async () => {
-  const stories = [persisted("one", analysis(item(0), "one", "report"))];
-  const partial = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => "[]" } });
-  await assertRejects(() => partial.classify(stories, [prioritize], 50), "returned 0 results for 1 inputs");
-  const unknown = new OpenAICompatibleStoryIntelligenceService({ client: { complete: async () => JSON.stringify([{ i: 0, score: 80, matchedRuleIds: ["unknown"], reason: "bad" }]) } });
-  await assertRejects(() => unknown.classify(stories, [prioritize], 50), "unknown rule IDs");
+test("classification fails when an omitted index remains missing from its singleton retry", async () => {
+  const stories = [
+    persisted("one", analysis(item(0), "one", "report")),
+    persisted("two", analysis(item(1), "two", "report")),
+  ];
+  const requestedIndexes: number[][] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async (_prompt, content) => {
+        const indexes = content.split("\n").slice(1).map((line) =>
+          JSON.parse(line).i as number
+        );
+        requestedIndexes.push(indexes);
+        if (indexes.length === 1) return "[]";
+        return JSON.stringify([{
+          i: indexes[0],
+          score: 80,
+          matchedRuleIds: [prioritize.id],
+          reason: "Preserved result",
+        }]);
+      },
+    },
+  });
+
+  await assertRejects(
+    () => service.classify(stories, [prioritize], 50),
+    "returned 0 results for 1 inputs",
+  );
+  assertEquals(requestedIndexes, [[0, 1], [1]]);
+});
+
+test("classification rejects duplicate and unknown indexes without recovery", async () => {
+  const stories = [
+    persisted("one", analysis(item(0), "one", "report")),
+    persisted("two", analysis(item(1), "two", "report")),
+  ];
+  const validRow = {
+    score: 80,
+    matchedRuleIds: [prioritize.id],
+    reason: "Valid row",
+  };
+  for (
+    const response of [
+      [{ i: 0, ...validRow }, { i: 0, ...validRow }],
+      [{ i: 0, ...validRow }, { i: 2, ...validRow }],
+    ]
+  ) {
+    let calls = 0;
+    const service = new OpenAICompatibleStoryIntelligenceService({
+      client: {
+        complete: async () => {
+          calls++;
+          return JSON.stringify(response);
+        },
+      },
+    });
+    await assertRejects(
+      () => service.classify(stories, [prioritize], 50),
+      "duplicate or unknown indexes",
+    );
+    assertEquals(calls, 1);
+  }
+});
+
+test("classification rejects invalid scores and duplicate or unknown rule IDs without recovery", async () => {
+  const story = persisted("one", analysis(item(0), "one", "report"));
+  const responses = [
+    [{ i: 0, score: 101, matchedRuleIds: [], reason: "Invalid score" }],
+    [{ i: 0, score: 80, matchedRuleIds: [prioritize.id, prioritize.id], reason: "Duplicate rule" }],
+    [{ i: 0, score: 80, matchedRuleIds: ["unknown"], reason: "Unknown rule" }],
+  ];
+  for (const response of responses) {
+    let calls = 0;
+    const service = new OpenAICompatibleStoryIntelligenceService({
+      client: {
+        complete: async () => {
+          calls++;
+          return JSON.stringify(response);
+        },
+      },
+    });
+    await assertRejects(() => service.classify([story], [prioritize], 50));
+    assertEquals(calls, 1);
+  }
 });

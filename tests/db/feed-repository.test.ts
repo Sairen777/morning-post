@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts"
+import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts";
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -31,6 +31,7 @@ import {
 } from "../../src/repositories/user-repository.ts";
 import { ConflictError, NotFoundError } from "../../src/server/errors.ts";
 import type { FeedKind } from "../../src/connectors/connector.types.ts";
+import type { SummarizationMode } from "../../src/summarization-mode.ts";
 
 const telegramCredentials = { sessionString: "telegram-session-secret-3.1" };
 
@@ -130,6 +131,7 @@ test("feed repository creates feeds and lists them by source then feed ordering"
         externalId: "rss-b",
         name: "Bravo",
         position: 2,
+        summarizationMode: "thorough",
       }),
     );
     const firstFeed = await createOrReviveFeed(
@@ -142,6 +144,8 @@ test("feed repository creates feeds and lists them by source then feed ordering"
     );
 
     assertEquals(firstFeed.enabled, true);
+    assertEquals(firstFeed.summarizationMode, "basic");
+    assertEquals(secondFeed.summarizationMode, "thorough");
     assertEquals(firstFeed.deletedAt, null);
     assertEquals(firstFeed.lastFetchedPeriodEndMs, null);
     assert(!("credentials" in firstFeed));
@@ -152,12 +156,91 @@ test("feed repository creates feeds and lists them by source then feed ordering"
       secondFeed.id,
       laterSourceFeed.id,
     ]);
+    assertEquals(forUser.map((feed) => feed.summarizationMode), [
+      "basic",
+      "thorough",
+      "basic",
+    ]);
 
     const forSource = await listFeedsForSource(database, rss.id, user.id);
     assertEquals(forSource.map((feed) => feed.id), [
       firstFeed.id,
       secondFeed.id,
     ]);
+    assertEquals(forSource.map((feed) => feed.summarizationMode), [
+      "basic",
+      "thorough",
+    ]);
+    assertEquals(
+      (await findFeedById(database, secondFeed.id, user.id))?.summarizationMode,
+      "thorough",
+    );
+  });
+});
+
+test("feed repository updates summarization mode between supported values", async () => {
+  await withTestDb(async (database) => {
+    const { user, source } = await createOwnedSource(
+      database,
+      "feed-summarization-mode@example.com",
+    );
+    const feed = await createOrReviveFeed(
+      database,
+      feedInput(user.id, source.id),
+    );
+    assertEquals(feed.summarizationMode, "basic");
+
+    const thorough = await updateFeed(database, feed.id, user.id, {
+      summarizationMode: "thorough",
+    });
+    assertEquals(thorough.summarizationMode, "thorough");
+    assertEquals(
+      (await findFeedById(database, feed.id, user.id))?.summarizationMode,
+      "thorough",
+    );
+
+    const basic = await updateFeed(database, feed.id, user.id, {
+      summarizationMode: "basic",
+    });
+    assertEquals(basic.summarizationMode, "basic");
+    assertEquals(
+      (await listFeedsForUser(database, user.id))[0].summarizationMode,
+      "basic",
+    );
+  });
+});
+
+test("feed repository rejects unsupported summarization modes without mutating the feed", async () => {
+  await withTestDb(async (database) => {
+    const { user, source } = await createOwnedSource(
+      database,
+      "feed-invalid-summarization-mode@example.com",
+    );
+
+    await assertRejects(
+      () =>
+        createOrReviveFeed(
+          database,
+          feedInput(user.id, source.id, {
+            summarizationMode: "invalid" as SummarizationMode,
+          }),
+        ),
+    );
+
+    const feed = await createOrReviveFeed(
+      database,
+      feedInput(user.id, source.id),
+    );
+    await assertRejects(
+      () =>
+        updateFeed(database, feed.id, user.id, {
+          summarizationMode: "invalid" as SummarizationMode,
+        }),
+    );
+
+    const unchanged = await findFeedById(database, feed.id, user.id);
+    assertExists(unchanged);
+    assertEquals(unchanged.summarizationMode, "basic");
   });
 });
 
@@ -169,11 +252,12 @@ test("softDeleteFeed hides feeds by default while preserving the row for history
     );
     const feed = await createOrReviveFeed(
       database,
-      feedInput(user.id, source.id),
+      feedInput(user.id, source.id, { summarizationMode: "thorough" }),
     );
 
     const deleted = await softDeleteFeed(database, feed.id, user.id);
     assertEquals(deleted.enabled, false);
+    assertEquals(deleted.summarizationMode, "thorough");
     assertExists(deleted.deletedAt);
 
     assertEquals(await listFeedsForUser(database, user.id), []);
@@ -183,6 +267,7 @@ test("softDeleteFeed hides feeds by default while preserving the row for history
     assertEquals(withDeleted.length, 1);
     assertEquals(withDeleted[0].id, feed.id);
     assertEquals(withDeleted[0].deletedAt, deleted.deletedAt);
+    assertEquals(withDeleted[0].summarizationMode, "thorough");
   });
 });
 
@@ -250,10 +335,17 @@ test("feed repository scopes reads and writes by source owner", async () => {
     );
 
     await assertRejects(
-      () => updateFeed(database, feed.id, other.user.id, { enabled: false }),
+      () => updateFeed(database, feed.id, other.user.id, {
+        enabled: false,
+        summarizationMode: "thorough",
+      }),
       NotFoundError,
       "feed not found",
     );
+    const unchanged = await findFeedById(database, feed.id, owner.user.id);
+    assertExists(unchanged);
+    assertEquals(unchanged.enabled, true);
+    assertEquals(unchanged.summarizationMode, "basic");
     await assertRejects(
       () => softDeleteFeed(database, feed.id, other.user.id),
       NotFoundError,
@@ -290,6 +382,7 @@ test("createOrReviveFeed revives a soft-deleted feed instead of creating a dupli
         customPrompt: "Old prompt",
         position: 4,
         kind: "news",
+        summarizationMode: "thorough",
       }),
     );
     await softDeleteFeed(database, feed.id, user.id);
@@ -311,6 +404,19 @@ test("createOrReviveFeed revives a soft-deleted feed instead of creating a dupli
     assertEquals(revived.position, 1);
     assertEquals(revived.enabled, true);
     assertEquals(revived.deletedAt, null);
+    assertEquals(revived.summarizationMode, "basic");
+
+    await softDeleteFeed(database, revived.id, user.id);
+    const explicitlyRevived = await createOrReviveFeed(
+      database,
+      feedInput(user.id, source.id, {
+        name: "Explicitly revived",
+        kind: "news",
+        summarizationMode: "thorough",
+      }),
+    );
+    assertEquals(explicitlyRevived.id, feed.id);
+    assertEquals(explicitlyRevived.summarizationMode, "thorough");
 
     const allRows = await listFeedsForUser(database, user.id, {
       includeDeleted: true,
@@ -420,6 +526,7 @@ test("setLastFetched advances the cursor monotonically", async () => {
     assertEquals(updated.customPrompt, feed.customPrompt);
     assertEquals(updated.position, feed.position);
     assertEquals(updated.enabled, feed.enabled);
+    assertEquals(updated.summarizationMode, feed.summarizationMode);
     assertEquals(updated.deletedAt, feed.deletedAt);
     assertEquals(updated.createdAt, feed.createdAt);
   });

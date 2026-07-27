@@ -1,5 +1,10 @@
 import { createSignal, For, Show } from "solid-js";
-import type { PublicFeed, FeedKind, RelevanceFilterOverride } from "../api/types";
+import type {
+  PublicFeed,
+  FeedKind,
+  RelevanceFilterOverride,
+  SummarizationMode,
+} from "../api/types";
 import { ApiClientError } from "../api/client";
 import FormatTime from "./FormatTime";
 
@@ -15,6 +20,7 @@ interface FeedsPanelProps {
       position?: number | null;
       enabled?: boolean;
       relevanceFilterMode?: RelevanceFilterOverride;
+      summarizationMode?: SummarizationMode;
     },
   ) => Promise<void>;
   onUnsubscribeFeed: (id: string) => Promise<void>;
@@ -31,6 +37,10 @@ export default function FeedsPanel(props: FeedsPanelProps) {
     Record<string, { kind: FeedKind; customPrompt: string; position: string }>
   >({});
   const [updatingPolicy, setUpdatingPolicy] = createSignal<Record<string, boolean>>({});
+  const [summaryModeInputs, setSummaryModeInputs] = createSignal<
+    Record<string, SummarizationMode>
+  >({});
+  const [updatingSummaryMode, setUpdatingSummaryMode] = createSignal<Record<string, boolean>>({});
 
   const feedsBySource = () => {
     const map: Record<string, PublicFeed[]> = {};
@@ -80,6 +90,35 @@ export default function FeedsPanel(props: FeedsPanelProps) {
       }
     } finally {
       setUpdatingPolicy((p) => ({ ...p, [id]: false }));
+    }
+  };
+
+  const handleSummaryModeChange = async (
+    id: string,
+    summarizationMode: SummarizationMode,
+  ) => {
+    const previousMode =
+      summaryModeInputs()[id] ??
+      props.feeds.find((feed) => feed.id === id)?.summarizationMode ??
+      "basic";
+    setSummaryModeInputs((modes) => ({ ...modes, [id]: summarizationMode }));
+    setUpdatingSummaryMode((updating) => ({ ...updating, [id]: true }));
+    setErrors((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    try {
+      await props.onUpdateFeed(id, { summarizationMode });
+    } catch (err: unknown) {
+      setSummaryModeInputs((modes) => ({ ...modes, [id]: previousMode }));
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setErrors((current) => ({ ...current, [id]: err.message }));
+      }
+    } finally {
+      setUpdatingSummaryMode((updating) => ({ ...updating, [id]: false }));
     }
   };
 
@@ -233,6 +272,33 @@ export default function FeedsPanel(props: FeedsPanelProps) {
                       </select>
                       <div class="hint">
                         Inherit follows the source override, then your profile setting.
+                      </div>
+                    </div>
+                    <div class="form-group" style="margin-top: 0.75rem;">
+                      <label for={`feed-summary-${feed.id}`}>
+                        Summary detail for {feed.name}
+                      </label>
+                      <select
+                        id={`feed-summary-${feed.id}`}
+                        aria-label={`Summary detail for ${feed.name}`}
+                        aria-describedby={`feed-summary-hint-${feed.id}`}
+                        value={summaryModeInputs()[feed.id] ?? feed.summarizationMode}
+                        disabled={updatingSummaryMode()[feed.id]}
+                        onChange={(e) =>
+                          handleSummaryModeChange(
+                            feed.id,
+                            e.currentTarget.value as SummarizationMode,
+                          )}
+                      >
+                        <option value="basic">Standard</option>
+                        <option value="thorough">Thorough</option>
+                      </select>
+                      <div id={`feed-summary-hint-${feed.id}`} class="hint">
+                        {(
+                          summaryModeInputs()[feed.id] ?? feed.summarizationMode
+                        ) === "thorough"
+                          ? "Thorough is slower but captures more themes and nuance in long discussions."
+                          : "Standard is faster and more token-efficient."}
                       </div>
                     </div>
 

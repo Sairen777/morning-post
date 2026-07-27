@@ -19,7 +19,8 @@ export interface PublicUser {
   updatedAt: number;
 }
 
-export type SourceSummarizationMode = "basic" | "thorough";
+export const summarizationModes = ["basic", "thorough"] as const;
+export type SummarizationMode = (typeof summarizationModes)[number];
 
 export interface PublicSource {
   id: string;
@@ -29,7 +30,6 @@ export interface PublicSource {
   enabled: boolean;
   showPaidPostTitles: boolean;
   relevanceFilterMode: RelevanceFilterOverride;
-  summarizationMode: SourceSummarizationMode;
   connected: boolean;
   createdAt: number;
   updatedAt: number;
@@ -52,6 +52,7 @@ export interface PublicFeed {
   customPrompt: string | null;
   position: number | null;
   enabled: boolean;
+  summarizationMode: SummarizationMode;
   relevanceFilterMode: RelevanceFilterOverride;
   deletedAt: number | null;
   lastFetchedPeriodEndMs: number | null;

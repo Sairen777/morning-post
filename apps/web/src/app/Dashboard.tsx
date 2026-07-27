@@ -40,7 +40,7 @@ import type {
   PublicSource,
   PublicUser,
   RelevanceFilterOverride,
-  SourceSummarizationMode,
+  SummarizationMode,
 } from "../api/types";
 import DigestRunnerCard from "./DigestRunnerCard";
 import SourcesPanel from "./SourcesPanel";
@@ -317,7 +317,6 @@ export default function Dashboard(props: DashboardProps) {
     id: string,
     input: {
       relevanceFilterMode?: RelevanceFilterOverride;
-      summarizationMode?: SourceSummarizationMode;
     },
   ) => {
     await updateSource(id, input);
@@ -370,6 +369,7 @@ export default function Dashboard(props: DashboardProps) {
       position?: number | null;
       enabled?: boolean;
       relevanceFilterMode?: RelevanceFilterOverride;
+      summarizationMode?: SummarizationMode;
     },
   ) => {
     const updated = await updateFeed(id, input);

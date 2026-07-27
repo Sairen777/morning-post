@@ -12,7 +12,11 @@ export type FetchFunction = (
 ) => Promise<Response>;
 
 export class ModelApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly kind: "api" | "output_limit" = "api",
+  ) {
     super(message);
     this.name = "ModelApiError";
   }
@@ -332,8 +336,13 @@ export class OpenAICompatibleChatClient {
           ? rawMessage as Record<string, unknown>
           : undefined;
         const result = message?.content;
-        if (typeof result !== "string" || result.trim() === "") {
-          const rawFinishReason = choice?.finish_reason;
+        const rawFinishReason = choice?.finish_reason;
+        const outputLimitExhausted = rawFinishReason === "length";
+        if (
+          outputLimitExhausted ||
+          typeof result !== "string" ||
+          result.trim() === ""
+        ) {
           const finishReason = typeof rawFinishReason === "string"
             ? rawFinishReason.replace(/[^\p{L}\p{N}_-]+/gu, "").slice(0, 32) ||
               "unknown"
@@ -344,14 +353,14 @@ export class OpenAICompatibleChatClient {
             ? message.tool_calls.length
             : 0;
           const malformed = typeof result !== "string";
-          const outputLimitExhausted = finishReason === "length";
           const error = new ModelApiError(
             0,
-            malformed
-              ? "Model API: malformed completion"
-              : outputLimitExhausted
+            outputLimitExhausted
               ? `Model API exhausted output token limit (finish_reason=length, max_tokens=${options.maxOutputTokens ?? "provider-default"})`
+              : malformed
+              ? "Model API: malformed completion"
               : `Model API returned empty completion (finish_reason=${finishReason}, refusal=${refusalPresent}, tool_calls=${toolCallCount})`,
+            outputLimitExhausted ? "output_limit" : "api",
           );
           const willRetry = !malformed && !outputLimitExhausted &&
             attempt < maximumAttempts - 1;

@@ -1,6 +1,10 @@
 import { test } from "bun:test";
-import { assertEquals, assertThrows } from "../assertions.ts"
+import { assertEquals, assertRejects, assertThrows } from "../assertions.ts";
 import { resolveLocalDatabaseUrl } from "../../src/db/cleanup.ts";
+import {
+  resetApplicationSchemas,
+  resetLocalDatabase,
+} from "../../src/db/reset.ts";
 
 test("local database cleanup resolves a loopback development database", () => {
   assertEquals(
@@ -75,5 +79,45 @@ test("local database cleanup rejects missing, remote, system, and test databases
       }),
     Error,
     "refuses test and E2E databases",
+  );
+});
+
+test("local database reset drops both application schemas and recreates public transactionally", async () => {
+  const operations: string[] = [];
+  let transactionCount = 0;
+  const client = {
+    async begin(
+      callback: (
+        transaction: { unsafe(operation: string): Promise<unknown> },
+      ) => Promise<void>,
+    ): Promise<void> {
+      transactionCount += 1;
+      await callback({
+        async unsafe(operation: string): Promise<unknown> {
+          operations.push(operation);
+          return [];
+        },
+      });
+    },
+  } as unknown as Parameters<typeof resetApplicationSchemas>[0];
+
+  await resetApplicationSchemas(client);
+
+  assertEquals(transactionCount, 1);
+  assertEquals(operations, [
+    "drop schema if exists public cascade",
+    "drop schema if exists drizzle cascade",
+    "create schema public",
+  ]);
+});
+
+test("local database reset applies cleanup's safety guard before connecting", async () => {
+  await assertRejects(
+    () =>
+      resetLocalDatabase(
+        "postgres://user:password@database.example.com/morningpost",
+      ),
+    Error,
+    "refuses non-loopback",
   );
 });

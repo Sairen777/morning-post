@@ -5,7 +5,6 @@ import type {
   AvailableFeed,
   DisconnectSourceResponse,
   RelevanceFilterOverride,
-  SourceSummarizationMode,
 } from "../api/types";
 import { ApiClientError } from "../api/client";
 
@@ -20,7 +19,6 @@ interface SourcesPanelProps {
     id: string,
     input: {
       relevanceFilterMode?: RelevanceFilterOverride;
-      summarizationMode?: SourceSummarizationMode;
     },
   ) => Promise<void>;
   onDisconnectSource: (id: string) => Promise<DisconnectSourceResponse>;
@@ -44,9 +42,6 @@ export default function SourcesPanel(props: SourcesPanelProps) {
   const [errors, setErrors] = createSignal<Record<string, string>>({});
   const [loading, setLoading] = createSignal<
     Record<string, Record<string, boolean>>
-  >({});
-  const [summaryModeInputs, setSummaryModeInputs] = createSignal<
-    Record<string, SourceSummarizationMode>
   >({});
   const [positionInputs, setPositionInputs] = createSignal<Record<string, string>>({});
   const [disconnectResults, setDisconnectResults] = createSignal<Record<string, DisconnectSourceResponse>>({});
@@ -95,15 +90,6 @@ export default function SourcesPanel(props: SourcesPanelProps) {
     });
   };
 
-  const initSummaryMode = (source: PublicSource) => {
-    setSummaryModeInputs((m) => {
-      if (!(source.id in m)) {
-        return { ...m, [source.id]: source.summarizationMode };
-      }
-      return m;
-    });
-  };
-
   const handlePositionChange = (sourceId: string, value: string) => {
     setPositionInputs((p) => ({ ...p, [sourceId]: value }));
   };
@@ -142,30 +128,6 @@ export default function SourcesPanel(props: SourcesPanelProps) {
       }
     } finally {
       clearLoading(sourceId, "policy");
-    }
-  };
-
-  const handleSummarizationModeChange = async (
-    sourceId: string,
-    summarizationMode: SourceSummarizationMode,
-    previousMode: SourceSummarizationMode,
-  ) => {
-    const updateSource = props.onUpdateSource;
-    if (!updateSource) return;
-    clearSourceError(sourceId);
-    setSummaryModeInputs((m) => ({ ...m, [sourceId]: summarizationMode }));
-    setLoadingKey(sourceId, "summarization");
-    try {
-      await updateSource(sourceId, { summarizationMode });
-    } catch (err: unknown) {
-      setSummaryModeInputs((m) => ({ ...m, [sourceId]: previousMode }));
-      if (is401(err)) {
-        props.onAuthError();
-      } else if (err instanceof Error) {
-        setSourceError(sourceId, err.message);
-      }
-    } finally {
-      clearLoading(sourceId, "summarization");
     }
   };
 
@@ -271,10 +233,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
         <For each={props.sources}>
           {(source) => {
             initPosition(source);
-            initSummaryMode(source);
             const posVal = () => positionInputs()[source.id] ?? "";
-            const summaryMode = () =>
-              summaryModeInputs()[source.id] ?? source.summarizationMode;
             const sourceFeedsList = () => props.sourceFeeds[source.id] ?? [];
             const availableFeedsList = () => props.availableFeeds[source.id] ?? [];
             const disconnectResult = () => disconnectResults()[source.id];
@@ -336,31 +295,6 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                   </select>
                   <div class="hint">
                     Inherit follows your profile; an override applies to every feed from this source.
-                  </div>
-                </div>
-
-                <div class="form-group" style="margin-top: 0.75rem;">
-                  <label for={`source-summary-${source.id}`}>Summary detail</label>
-                  <select
-                    id={`source-summary-${source.id}`}
-                    aria-label={`Summary detail for ${source.connectorId}`}
-                    aria-describedby={`source-summary-hint-${source.id}`}
-                    value={summaryMode()}
-                    disabled={isLoading("summarization") || !props.onUpdateSource}
-                    onChange={(e) =>
-                      handleSummarizationModeChange(
-                        source.id,
-                        e.currentTarget.value as SourceSummarizationMode,
-                        summaryMode(),
-                      )}
-                  >
-                    <option value="basic">Standard</option>
-                    <option value="thorough">Thorough</option>
-                  </select>
-                  <div id={`source-summary-hint-${source.id}`} class="hint">
-                    {summaryMode() === "thorough"
-                      ? "Thorough is slower but captures more themes and nuance in long discussions."
-                      : "Standard is faster and more token-efficient."}
                   </div>
                 </div>
 

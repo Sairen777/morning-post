@@ -103,7 +103,10 @@ const classificationSchema = z.object({
   i: z.number().int().nonnegative(),
   score: z.number().int().min(0).max(100),
   matchedRuleIds: z.array(z.string()),
-  reason: z.string().min(1),
+  reason: z.union([
+    z.string().min(1),
+    z.null().transform(() => "No classification reason provided."),
+  ]),
 }).strict();
 
 function stableJson(value: unknown): string {
@@ -392,12 +395,12 @@ function truncateUtf8(value: string, maximum: number): string {
   return new TextDecoder().decode(bytes.slice(0, maximum)).replace(/\uFFFD$/, "");
 }
 
-function parseComplete<T extends { i: number }>(
+function parseIndexedResults<Output extends { i: number }, Input>(
   raw: string,
-  schema: z.ZodType<T>,
-  expectedIndexes: number[],
+  schema: z.ZodType<Output, z.ZodTypeDef, Input>,
+  expectedIndexes: readonly number[],
   label: string,
-): T[] {
+): { values: Output[]; missingIndexes: number[] } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonrepair(raw));
@@ -405,15 +408,18 @@ function parseComplete<T extends { i: number }>(
     throw new Error(`${label} returned malformed JSON`, { cause: error });
   }
   const values = z.array(schema).parse(parsed);
-  if (values.length !== expectedIndexes.length) {
-    throw new Error(`${label} returned ${values.length} results for ${expectedIndexes.length} inputs`);
-  }
   const expected = new Set(expectedIndexes);
-  const indexes = values.map((value) => value.i);
-  if (new Set(indexes).size !== expected.size || indexes.some((index) => !expected.has(index))) {
-    throw new Error(`${label} returned duplicate, missing, or unknown indexes`);
+  const returned = new Set<number>();
+  for (const value of values) {
+    if (!expected.has(value.i) || returned.has(value.i)) {
+      throw new Error(`${label} returned duplicate or unknown indexes`);
+    }
+    returned.add(value.i);
   }
-  return values.sort((a, b) => a.i - b.i);
+  return {
+    values,
+    missingIndexes: expectedIndexes.filter((index) => !returned.has(index)),
+  };
 }
 
 function partition<T>(
@@ -883,18 +889,79 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
     if (stories.length && candidateBytes <= 1) throw new RangeError("Story classification context exceeds the request byte budget");
     const batches = partition(stories, this.classificationMaxItems, candidateBytes, encode, 1);
     const scored = new Map<number, z.infer<typeof classificationSchema>>();
-    for (const batch of batches) {
-      const budget = getSummarizerBudgetConfig();
-      const raw = await this.classificationClient.complete(buildStoryClassificationPrompt().systemPrompt, [sharedContext, ...batch.map(({ encoded }) => encoded)].join("\n"), {
-        ...options, maxOutputTokens: budget.classificationMaxOutputTokens, maxAttempts: budget.classificationMaxAttempts, jsonOutput: true,
-      } as StoryIntelligenceOptions);
-      parseComplete(raw, classificationSchema, batch.map(({ index }) => index), "Story classification").forEach((result) => {
-        const allowed = new Set(active.map((rule) => rule.id));
-        if (new Set(result.matchedRuleIds).size !== result.matchedRuleIds.length || result.matchedRuleIds.some((id) => !allowed.has(id))) throw new Error("Story classification returned duplicate or unknown rule IDs");
-        scored.set(result.i, result);
-      });
+    const allowedRuleIds = new Set(active.map((rule) => rule.id));
+    const budget = getSummarizerBudgetConfig();
+    const completionOptions = {
+      ...options,
+      maxOutputTokens: budget.classificationMaxOutputTokens,
+      maxAttempts: budget.classificationMaxAttempts,
+      jsonOutput: true,
+    };
+    const systemPrompt = buildStoryClassificationPrompt().systemPrompt;
+    type ClassificationRequestRecord = (typeof batches)[number][number];
+    const classifyBatch = async (
+      requestBatch: ClassificationRequestRecord[],
+    ): Promise<void> => {
+      const raw = await this.classificationClient.complete(
+        systemPrompt,
+        [sharedContext, ...requestBatch.map(({ encoded }) => encoded)].join("\n"),
+        completionOptions,
+      );
+      const { values, missingIndexes } = parseIndexedResults(
+        raw,
+        classificationSchema,
+        requestBatch.map(({ index }) => index),
+        "Story classification",
+      );
+      for (const result of values) {
+        if (
+          new Set(result.matchedRuleIds).size !== result.matchedRuleIds.length ||
+          result.matchedRuleIds.some((id) => !allowedRuleIds.has(id))
+        ) {
+          throw new Error(
+            "Story classification returned duplicate or unknown rule IDs",
+          );
+        }
+      }
+      for (const result of values) scored.set(result.i, result);
+      if (missingIndexes.length === 0) return;
+
+      if (values.length === 0) {
+        if (requestBatch.length === 1) {
+          throw new Error("Story classification returned 0 results for 1 inputs");
+        }
+        const middle = Math.ceil(requestBatch.length / 2);
+        await classifyBatch(requestBatch.slice(0, middle));
+        await classifyBatch(requestBatch.slice(middle));
+        return;
+      }
+
+      const missing = new Set(missingIndexes);
+      await classifyBatch(
+        requestBatch.filter(({ index }) => missing.has(index)),
+      );
+    };
+    for (const batch of batches) await classifyBatch(batch);
+    if (scored.size !== stories.length) {
+      throw new Error(
+        `Story classification returned ${scored.size} results for ${stories.length} inputs`,
+      );
     }
-    return stories.map((story, index) => { const result = scored.get(index)!; const muted = blocked[index]!; return { storyId: story.id, relevant: muted.length === 0 && result.score >= threshold, score: muted.length ? 0 : result.score, matchedInterestRuleIds: result.matchedRuleIds, blockedByInterestRuleIds: muted, reason: muted.length ? "Blocked by a mute rule." : result.reason }; });
+    return stories.map((story, index) => {
+      const result = scored.get(index);
+      if (result === undefined) {
+        throw new Error(`Story classification omitted input index ${index}`);
+      }
+      const muted = blocked[index]!;
+      return {
+        storyId: story.id,
+        relevant: muted.length === 0 && result.score >= threshold,
+        score: muted.length ? 0 : result.score,
+        matchedInterestRuleIds: result.matchedRuleIds,
+        blockedByInterestRuleIds: muted,
+        reason: muted.length ? "Blocked by a mute rule." : result.reason,
+      };
+    });
   }
 
   private matchesRule(story: PersistedStoryCandidate, rule: StoryPreferenceRule): boolean {

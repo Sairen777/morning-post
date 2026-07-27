@@ -174,6 +174,7 @@ housekeeping schedules with in-process overlap protection.
 | `bun run typecheck` | Type-check the backend and web workspace |
 | `bun run db:generate` | Generate a Drizzle migration |
 | `bun run db:migrate` | Apply pending migrations |
+| `bun run db:reset` | Drop the database schema and migration history, recreate the schema, then reapply all pending migrations |
 
 ### Frontend
 
@@ -219,6 +220,28 @@ bun run web:dev
 button that appends results without duplicates and resets the cursor after a
 new run, delete, or refresh.
 
+#### Per-feed summary detail
+
+Summary detail is configured on each individual feed: every Telegram channel,
+Substack publication, or other subscription can use **Standard**
+(`basic`) or **Thorough** (`thorough`). Feeds under the
+same connected source remain independent, so changing one channel or publication
+does not change its siblings. The web UI labels the selector with the feed name
+and saves changes through `PATCH /feeds/:id`.
+
+Standard is the default for a newly created or revived feed unless its create
+or update request explicitly supplies another mode. Feed API projections always
+include `summarizationMode`; source projections and source create/PATCH inputs do
+not. When one story combines items from multiple feeds, Thorough wins if any
+contributing item belongs to a Thorough feed. Otherwise the story uses Standard.
+
+During upgrade, the migration first adds the non-null
+`feeds.summarization_mode` column with a `basic` default and a
+`basic | thorough` check, then copies each parent source's previous setting to
+all of its existing feeds. Only after that backfill does it remove the old
+source-level check and column, preserving every existing feed's effective
+setting while making later changes independent.
+
 #### Active digest runs
 
 One running digest per user is intentional. After a Dashboard reload, the
@@ -246,6 +269,7 @@ status `complete`.
 | --- | --- |
 | `bun run test` | Full backend suite (`bun:test`, 507 tests) |
 | `bun run db:cleanup` | Destructively truncate every public table in the loopback development database from `DATABASE_URL` |
+| `bun run db:reset` | Destructively drop and recreate the database schema and migration history in the loopback development database from `DATABASE_URL`, then reapply migrations |
 | `bun run web:test` | Frontend unit/component suite (Vitest, 73 tests) |
 | `bun run web:typecheck` | Web TypeScript type checking |
 | `bun run web:build` | Production web build |
@@ -255,6 +279,13 @@ status `complete`.
 database while preserving its schema and applied migration records. It refuses
 non-loopback hosts, PostgreSQL system databases, and database names ending in
 `_test` or `_e2e`. This command is destructive and cannot be undone.
+
+`bun run db:reset` drops the entire application schema, including the `public`
+schema and Drizzle migration history, recreates the `public` schema, then
+reapplies all pending migrations. This is a full schema rebuild — unlike
+`db:cleanup`, which preserves structure and history. It uses the same guards
+that refuse non-loopback hosts, PostgreSQL system databases, and database names
+ending in `_test` or `_e2e`. This command is destructive and cannot be undone.
 
 The E2E command never reuses the development servers or databases. It serves
 the API on `127.0.0.1:3100`, the web app on `127.0.0.1:5174`, and derives a

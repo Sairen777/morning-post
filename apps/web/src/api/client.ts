@@ -15,7 +15,7 @@ import type {
   SetupStatus,
   RelevanceFilterMode,
   RelevanceFilterOverride,
-  SourceSummarizationMode,
+  SummarizationMode,
   SubstackPublicationInput,
   SubstackPublicationResponse,
   SubstackSessionInput,
@@ -180,7 +180,6 @@ export function updateSource(
     position?: number | null;
     showPaidPostTitles?: boolean;
     relevanceFilterMode?: RelevanceFilterOverride;
-    summarizationMode?: SourceSummarizationMode;
   },
 ): Promise<PublicSource> {
   return apiRequest<PublicSource>(`/sources/${id}`, {
@@ -257,6 +256,7 @@ export function updateFeed(
     position?: number | null;
     enabled?: boolean;
     relevanceFilterMode?: RelevanceFilterOverride;
+    summarizationMode?: SummarizationMode;
   },
 ): Promise<PublicFeed> {
   return apiRequest<PublicFeed>(`/feeds/${id}`, {
@@ -283,6 +283,7 @@ export function subscribeFeed(
     kind: FeedKind;
     customPrompt?: string | null;
     position?: number | null;
+    summarizationMode?: SummarizationMode;
   },
 ): Promise<PublicFeed> {
   return apiRequest<PublicFeed>(`/sources/${sourceId}/feeds`, {

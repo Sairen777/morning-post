@@ -18,7 +18,10 @@ import {
   createSource,
   updateSource,
 } from "../../src/repositories/source-repository.ts";
-import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
+import {
+  createOrReviveFeed,
+  updateFeed,
+} from "../../src/repositories/feed-repository.ts";
 import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
 import {
@@ -1352,7 +1355,7 @@ test("cached separators preserve rootless discussion unit boundaries", async () 
   });
 });
 
-test("per-story summary modes isolate thorough stories and key cache reuse by mode", async () => {
+test("same-source feed summary modes isolate thorough stories and key cache reuse", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(database, {
       name: "Summary Mode Owner",
@@ -1366,37 +1369,37 @@ test("per-story summary modes isolate thorough stories and key cache reuse by mo
     const cipher = new CredentialCipher(
       new EnvMasterKeyProvider(new Uint8Array(32).fill(8)),
     );
-    const makeSource = async (connectorId: ConnectorId) =>
-      await createSource(database, {
+    const sharedSource = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await cipher.encrypt("{}", {
         userId: user.id,
-        connectorId,
-        credentials: await cipher.encrypt("{}", {
-          userId: user.id,
-          connectorId,
-        }),
-      });
-    const basicSource = await makeSource(ConnectorId.RSS);
-    const switchingSource = await makeSource(ConnectorId.Telegram);
+        connectorId: ConnectorId.Telegram,
+      }),
+    });
     const basicFeed = await createOrReviveFeed(database, {
       userId: user.id,
-      sourceId: basicSource.id,
+      sourceId: sharedSource.id,
       externalId: "summary-mode-basic",
       name: "Basic feed",
       kind: "news",
+      summarizationMode: "basic",
     });
-    const switchingFeed = await createOrReviveFeed(database, {
+    let switchingFeed = await createOrReviveFeed(database, {
       userId: user.id,
-      sourceId: switchingSource.id,
+      sourceId: sharedSource.id,
       externalId: "summary-mode-switching",
       name: "Switching discussion",
       kind: "discussion",
+      summarizationMode: "basic",
     });
+    assertEquals(basicFeed.sourceId, switchingFeed.sourceId);
     const longDiscussionText = `Minority view with supporting detail: ${
       "material chronology and caveat ".repeat(320)
     }`;
     await upsertItems(database, basicFeed.id, [
       {
-        connectorId: ConnectorId.RSS,
+        connectorId: ConnectorId.Telegram,
         feedExternalId: basicFeed.externalId,
         externalId: "basic-only",
         date: 100,
@@ -1406,7 +1409,7 @@ test("per-story summary modes isolate thorough stories and key cache reuse by mo
         url: "https://basic.example/only",
       },
       {
-        connectorId: ConnectorId.RSS,
+        connectorId: ConnectorId.Telegram,
         feedExternalId: basicFeed.externalId,
         externalId: "mixed-basic",
         date: 120,
@@ -1469,7 +1472,7 @@ test("per-story summary modes isolate thorough stories and key cache reuse by mo
       return [
         makeStory("mode-basic", "Basic-only story", ["basic-only"]),
         makeStory("mode-switch", "Switch-only story", ["switch-only"]),
-        makeStory("mode-mixed", "Mixed-source story", [
+        makeStory("mode-mixed", "Mixed-feed story", [
           "mixed-basic",
           "mixed-thorough",
         ]),
@@ -1556,9 +1559,16 @@ test("per-story summary modes isolate thorough stories and key cache reuse by mo
     assertEquals(singleCalls.length, 0);
     let failedThoroughCalls = 0;
     let failedBasicBatchCalls = 0;
-    await updateSource(database, switchingSource.id, user.id, {
-      summarizationMode: "thorough",
-    });
+    switchingFeed = await updateFeed(
+      database,
+      switchingFeed.id,
+      user.id,
+      { summarizationMode: "thorough" },
+    );
+    assertEquals(
+      [basicFeed.summarizationMode, switchingFeed.summarizationMode],
+      ["basic", "thorough"],
+    );
     const failedModeChange = await assembleStoryDigest(
       database,
       sameModeReuse.digest.id,
@@ -1630,7 +1640,7 @@ test("per-story summary modes isolate thorough stories and key cache reuse by mo
       THOROUGH_STORY_SUMMARY_VERSION,
     );
     assertEquals(
-      thoroughByTitle.get("Mixed-source story")!.summaryVersion,
+      thoroughByTitle.get("Mixed-feed story")!.summaryVersion,
       THOROUGH_STORY_SUMMARY_VERSION,
     );
 
@@ -1646,9 +1656,12 @@ test("per-story summary modes isolate thorough stories and key cache reuse by mo
     assertEquals(batchCalls.length, 1);
     assertEquals(singleCalls.length, 2);
 
-    await updateSource(database, switchingSource.id, user.id, {
-      summarizationMode: "basic",
-    });
+    switchingFeed = await updateFeed(
+      database,
+      switchingFeed.id,
+      user.id,
+      { summarizationMode: "basic" },
+    );
     const reverted = await createAndAssemble(1_003, 500);
     assertEquals(batchCalls.length, 1);
     assertEquals(singleCalls.length, 2);

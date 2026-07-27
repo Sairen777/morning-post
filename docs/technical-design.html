@@ -691,6 +691,22 @@
               database.</td>
                     </tr>
                     <tr>
+                      <td>Local database schema reset</td>
+                      <td><code>bun run db:reset</code> drops the <code>public</code>
+              schema and the Drizzle <code>drizzle</code> migration schema,
+              recreates <code>public</code>, then reapplies all pending migrations
+              against the development database selected by
+              <code>DATABASE_URL</code>. Unlike <code>db:cleanup</code>, which
+              truncates data while preserving schema and history, this is a
+              full schema rebuild. Application guards require a loopback database
+              and reject PostgreSQL system databases plus names ending in
+              <code>_test</code> or <code>_e2e</code>.</td>
+                      <td>All schema objects and migration records are removed and
+              rebuilt, allowing a clean start equal to a fresh database without
+              allowing the destructive command to connect to a remote, test, or E2E
+              database.</td>
+                    </tr>
+                    <tr>
                       <td>Browser E2E</td>
                       <td><code>bun run web:e2e</code> starts non-reusable API and web
               processes on ports <code>3100</code> and <code>5174</code>. The
@@ -795,13 +811,13 @@
                   <tbody>
                     <tr>
                       <td>Frontend</td>
-                      <td>SolidStart SPA, setup-status check, first-run owner form, password-only sign-in, preference editors, story-mode and historical digest views, provenance links, and story/topic feedback controls.</td>
-                      <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>. The auth panel selects setup or login from <code>GET /auth/setup</code>; it never asks for a public email identity.</td>
+                      <td>SolidStart SPA, setup-status check, first-run owner form, password-only sign-in, preference editors, per-feed summary-detail controls, story-mode and historical digest views, provenance links, and story/topic feedback controls.</td>
+                      <td><code>apiRequest()</code> always sends <code>credentials: "include"</code>. The auth panel selects setup or login from <code>GET /auth/setup</code>; it never asks for a public email identity. Each feed renders a Standard/Thorough selector labeled with that channel or publication name and persists it through <code>PATCH /feeds/:id</code>, independently of sibling feeds under the same source.</td>
                     </tr>
                     <tr>
                       <td>Server routes</td>
-                      <td>Atomic owner setup, password-only owner login, session lifecycle, authenticated HTTP shape, ownership-scoped request parsing, response projection, and feedback validation.</td>
-                      <td>Auth routes expose setup, login, logout, and <code>/auth/me</code>, with no registration route or public email. Other routes remain thin and known errors pass through the centralized Hono <code>errorHandler</code>.</td>
+                      <td>Atomic owner setup, password-only owner login, session lifecycle, authenticated HTTP shape, ownership-scoped request parsing, response projection, feed-granular summary-detail updates, and feedback validation.</td>
+                      <td>Auth routes expose setup, login, logout, and <code>/auth/me</code>, with no registration route or public email. <code>PublicFeed</code> and every feed API response require <code>summarizationMode</code>. Feed POST/PATCH inputs accept it optionally and strictly validate a supplied value as <code>basic | thorough</code>; omission defaults a new or revived feed to <code>basic</code> and leaves an ordinary partial update unchanged. <code>PublicSource</code> and source create/PATCH inputs omit the field. Other routes remain thin and known errors pass through the centralized Hono <code>errorHandler</code>.</td>
                     </tr>
                     <tr>
                       <td>Services</td>
@@ -836,6 +852,7 @@
                 <div class="section-kicker">Domain model</div>
                 <h2>The story model is connector-neutral and internally user-scoped around one supported owner.</h2>
                 <p>Sources represent connector accounts and feeds represent subscriptions. Connector items are cached once, analyzed into common topics/entities/story and development keys, then linked into evolving user-owned stories. New digests persist selected story-version snapshots with every source; historical pre-story summaries remain read-only so old digests continue to render. Interest rules and feed/source policy overrides control zero-to-all relevance filtering. Feedback records the delivered digest/story/version identity and can update the same interest profile transactionally.</p>
+                <p><strong>Summary-detail boundary:</strong> detail belongs to an individual feed, not its connector source. The shared <code>summarizationModes</code> values and <code>SummarizationMode</code> type define <code>basic | thorough</code>, displayed as Standard and Thorough. Channels and publications attached to the same source may therefore select different modes. A mixed story resolves to <code>thorough</code> when any contributing item belongs to a thorough feed; otherwise it resolves to <code>basic</code>.</p>
                 <p><strong>Owner identity and legacy rows:</strong> <code>users.email</code> deliberately remains a non-null unique legacy column so upgraded databases and existing repository/schema invariants are preserved. Atomic first-run setup writes the non-routable sentinel <code>owner@morning-post.invalid</code>; email is never accepted by setup or login and is omitted from <code>PublicUser</code>. <code>findOwner()</code> deterministically selects the earliest row by <code>createdAt</code> and then <code>id</code>. Other legacy user rows are retained rather than destructively migrated, but public authentication and scheduled execution address only that owner. Existing <code>userId</code> foreign keys and filters remain security and ownership boundaries, not a supported multi-owner deployment surface.</p>
 
                 <pre class="mermaid">erDiagram
@@ -883,12 +900,14 @@
     text connector_id
     jsonb credentials
     text relevance_filter_mode
+    boolean show_paid_post_titles
   }
   feeds {
     uuid id PK
     uuid source_id FK
     text external_id
     text relevance_filter_mode
+    text summarization_mode
     bigint last_fetched_period_end_ms
   }
   items {
@@ -967,13 +986,13 @@
                     </tr>
                     <tr>
                       <td>Source</td>
-                      <td>Credentials are sensitive connector-account bearer material.</td>
-                      <td><code>credentials</code> is encrypted JSONB; public source projection exposes <code>connected</code>, not ciphertext. Substack sources also expose <code>showPaidPostTitles</code>, a per-source presentation preference that defaults to <code>false</code> and can be changed only through the authenticated owner's Substack source. Migration <code>0014_cynical_malice</code> adds the non-null <code>show_paid_post_titles</code> column with database default <code>false</code>.</td>
+                      <td>Credentials are sensitive connector-account bearer material; summary detail does not belong at this account boundary.</td>
+                      <td><code>credentials</code> is encrypted JSONB; <code>PublicSource</code> and source create/PATCH inputs expose no <code>summarizationMode</code>. Substack sources expose only the independent <code>showPaidPostTitles</code> presentation preference, which defaults to <code>false</code> and can be changed only through the authenticated owner's Substack source.</td>
                     </tr>
                     <tr>
                       <td>Feed</td>
-                      <td>External IDs are unique only within a source.</td>
-                      <td>Unique constraint on <code>(sourceId, externalId)</code>; <code>kind</code> check restricts to <code>news</code> or <code>discussion</code>.</td>
+                      <td>External IDs are unique only within a source, while summary detail is independently configurable for every channel or publication.</td>
+                      <td>Unique constraint on <code>(sourceId, externalId)</code>; <code>kind</code> check restricts to <code>news</code> or <code>discussion</code>. Non-null <code>summarization_mode</code> is checked as <code>basic | thorough</code>. <code>PublicFeed</code> and feed responses require <code>summarizationMode</code>; feed POST/PATCH inputs accept it optionally and validate it when supplied. New and revived feeds default to Standard (<code>basic</code>) when omitted.</td>
                     </tr>
                     <tr>
                       <td>Item</td>
@@ -1017,6 +1036,7 @@
                     </tr>
                   </tbody>
                 </table>
+                <p><strong>Feed-mode migration:</strong> the cutover first adds <code>feeds.summarization_mode</code> as non-null with database default <code>basic</code> and a <code>basic | thorough</code> check. It then backfills every existing feed from its parent source's former <code>sources.summarization_mode</code>. Only after the backfill does it drop the old source check and column. Existing deployments therefore retain each feed's effective detail setting at upgrade, while subsequent same-source feeds can change independently.</p>
               </section>
 
               <section id="flows">
@@ -1115,9 +1135,10 @@
     O->>I: apply deterministic hard mutes only
   end
   O->>O: suppress delivered versions; sort; apply configured cap (null defaults to 12)
-  O->>O: remove reusable cards; pack eligible text-only misses in batches of at most 5 stories
+  O->>O: resolve each story mode: thorough iff any contributing item's feed is thorough
+  O->>O: remove reusable cards; batch eligible basic text-only misses; isolate thorough stories
   par bounded summary-call workers
-    O->>G: batch text-only stories; isolate media, oversized, and chunked stories
+    O->>G: batch basic text-only stories; use detailed single-story path for thorough stories
   O->>DB: upsert same-version cards; rotate changed-version IDs; remove deselected cards
   O->>DB: set digest status; finish digest_run
   O-->>S: DigestView with stories, provenance, and paid title projections</pre>
@@ -1176,15 +1197,21 @@
 
                 <p>Summary-point reuse is independent of repeat suppression. After current relevance and cap selection, a manual rerun may reuse points from the newest completed digest card only when user, story identity, story version, interest-profile version, and <code>summary_version</code> all match. Current titles, topics, entities, sources, relevance scores, and matched rules are rebuilt rather than copied. The persisted summary-algorithm version prevents cards produced by an older prompt/model contract from being restamped and reused indefinitely; migrated cards are marked <code>legacy</code> and miss the current cache once.</p>
 
-                <p>Each source has a persisted <code>summarizationMode</code> of <code>basic</code> or <code>thorough</code>, defaulting to <code>basic</code>. The web Source card labels these Standard and Thorough and states the speed/token tradeoff. Basic stories retain compact multi-story batching. A story becomes thorough when any constituent item belongs to a thorough source; the entire cross-source story then uses an isolated single-story request over its full raw items, including the existing recursive chunk-and-merge path for long discussions. The thorough prompt preserves material themes, distinct developments, chronology, disagreements, minority perspectives, uncertainty, caveats, and supporting detail while prohibiting invention and padding. This setting changes final summarization only: ingestion, item analysis, story resolution, relevance filtering, and story caps remain shared.</p>
+                <p>Each feed has a required persisted <code>summarizationMode</code> of <code>basic</code> or <code>thorough</code>, displayed as Standard and Thorough. New and revived feeds default to Standard (<code>basic</code>) unless a feed create or update request explicitly supplies another mode. The web renders the selector on each feed, labels it with that channel or publication name, and saves it through <code>PATCH /feeds/:id</code>. Feeds under one connected source remain independent: changing one channel or publication does not alter its siblings, and source API types and mutations carry no summary-detail field.</p>
 
-                <p>Summary cache identity is mode-specific. Basic cards remain <code>story-summary-v2</code>; thorough cards use <code>story-summary-thorough-v1</code>. Switching a source therefore invalidates only affected story summaries, cannot reuse a card from the other quality mode, and can reuse a prior card again after switching back when the story/profile tuple still matches.</p>
+                <p>Basic stories retain compact multi-story batching. Story mode is resolved from item provenance: a story becomes thorough when any constituent item belongs to a thorough feed; otherwise it remains basic. Thorough therefore wins for a mixed story, including when its items cross feeds or sources. The entire story then uses an isolated single-story request over its full raw items, including the existing recursive chunk-and-merge path for long discussions. The thorough prompt preserves material themes, distinct developments, chronology, disagreements, minority perspectives, uncertainty, caveats, and supporting detail while prohibiting invention and padding.</p>
+
+                <p>Summary cache identity is mode-specific. Basic cards remain <code>story-summary-v2</code>; thorough cards use <code>story-summary-thorough-v1</code>. Switching a feed therefore invalidates only stories to which that feed contributes, cannot reuse a card from the other quality mode, and can reuse a prior card again after switching back when the story/profile tuple still matches.</p>
 
                 <p>Story analysis is checkpointed independently of later resolution and summarization. Cache misses are grouped conservatively into discussion units: an explicit thread is split at eight members or a 30-minute gap, while rootless same-author group-chat adjacency is limited to four messages within two minutes. Each requested member still receives a distinct <code>(unit, member)</code> result, trusted URLs, evidence, and semantic fingerprint; one member can never inherit another member's output. Model batches contain at most 50 members and 50 transport records by default, are additionally bounded by an output-capacity estimate, and include UTF-8 newline framing within the configured 120 kB user-content budget. Long member text is capped at 16 kB; an oversized discussion unit is split into contiguous transport windows while retaining at least 2 kB per included member or rejected before a provider call. Missing or duplicate provider members retain unaffected valid results and retry only unresolved members; an unknown or unassignable record invalidates the whole response and retries every expected member. Each recovery request contains exactly one member under provider-local <code>(0, 0)</code> transport indexes, then maps the validated result back to its original pair. Recovery runs with at most three provider requests concurrently, still requires exactly one valid result per isolated request, and never synthesizes output or assigns one member's result to another. A second integrity violation fails with content-safe diagnostics covering response shape, unknown indexes, malformed schema fields, duplicate indexes, and unassignable record count. The opt-in <code>bun run test:analysis:live</code> contract test uses the configured <code>ANALYSIS_MODEL</code>, <code>ANALYSIS_BASE_URL</code>, and <code>ANALYSIS_API_KEY</code> path against independent, threaded, Unicode, JSON-like, and nullable-metadata inputs. A checkpoint is accepted only when it contains exactly one result for every requested item ID and current fingerprint, then persisted atomically.</p>
 
                 <p>Analysis output is intentionally narrow: topics and entities are capped at five values, provider-supplied language, canonical URL, and media-description fields were removed, and each item may retain at most three verbatim evidence excerpts of at most 400 UTF-8 bytes. Extra, non-string, duplicate, or overlong evidence is discarded without failing otherwise valid member identity output; retained evidence must also be an exact substring of that member's source title or body. The repository independently enforces the same count and byte bounds. Low-text media invokes the vision path, while ordinary text-only items do not. Identical semantic item/media identities share successful or in-flight descriptions; title, body, source, and media differences receive distinct cache entries, and rejected promises are evicted so a later run can retry.</p>
 
+                <p>Relevance classification keeps a strict indexed-array contract while recovering from providers that stop generating before every candidate has a result. Each response is parsed with the same strict row schema; valid returned rows are retained, and only indexes still missing from that batch are sent again with the same shared context and completion options (including timeout and telemetry). Recovery is bounded by strict progress: a response that supplies some requested rows recurses only over the smaller missing set; a zero-row response for multiple candidates bisects that candidate set; and a singleton that is still omitted fails classification. Duplicate or unknown indexes, malformed rows, invalid scores, unknown matched-rule IDs, and invalid <code>reason</code> types fail immediately rather than entering missing-row recovery. At the provider boundary only, an observed <code>null</code> reason is normalized to the deterministic diagnostic <code>No classification reason provided.</code>; the otherwise valid score and classification result remain usable. After recovery, decisions are reassembled in original story order and must contain exactly one valid result for every original index. Thus partial provider output can trigger bounded completion calls, but an incomplete digest classification is never accepted.</p>
+
                 <p>Final summarization filters reusable cards before model packing. Eligible text-only stories are compacted without mutating stored items and packed into typed requests of at most five stories and 120 kB; long items carry their title, grounded evidence, and bounded leading/trailing context. Strict story IDs bind every returned point to its input story and reject duplicate, missing, or unknown results. A failed or malformed batch member is retried once through the established isolated single-story summarization path under the same bounded worker concurrency. Exhausted failures retain an existing valid card when available. If some selected stories remain available, the digest is marked failed while the run is partial and persists the first sanitized summary reason; if every selected story lacks a usable summary, assembly and the run fail with that exact reason instead of the generic digest failure message. Stories with media or oversized payloads keep the established isolated chunk/merge path. Both batch and single calls run through the configured bounded summary worker pool.</p>
+
+                <p><strong>Structured summary output-limit recovery:</strong> the OpenAI-compatible boundary treats a successful response whose first choice has <code>finish_reason = length</code> as a machine-readable <code>output_limit</code> failure even when <code>message.content</code> is nonempty. Truncated content is neither exposed nor parsed, and this failure is not blindly transport-retried. Single-story and recursive merge-summary completion perform exactly one semantic recovery request with the same input, original system prompt, <code>SUMMARY_MAX_OUTPUT_TOKENS = 4000</code> cap, timeout, cancellation, telemetry, and transport-retry settings, but with the centrally defined constrained summary ruleset. That ruleset requires immediate valid JSON with no preamble, at most 12 points total, each point text at most 500 characters, dense consolidation of related grounded evidence, preservation of distinct material developments, and source attribution drawn only from the input. The recovery is therefore not an identical retry and does not raise or bypass the token cap. Same-model multimodal single-story summaries use this same recovery path. Batched summaries do not make this semantic recovery request directly: story-digest isolation already falls each failed batch member back to single-story summarization, where the one-shot recovery applies. If that constrained recovery also exhausts the output limit, summarization fails and the error propagates.</p>
 
                 <p>Cross-item story resolution no longer invokes fuzzy model adjudication. Membership is deterministic and conservative: exact normalized keys group current items first, then an exact trusted canonical URL may join current items, then an exact current story key may match a recent canonical story key; otherwise a new story is created. Stored non-story identifiers are deliberately excluded because they are story-qualified and suffix matching could merge unrelated stories. This removes the quadratic fuzzy-pair provider stage and its prompt amplification at the cost of leaving semantically similar but differently keyed items as separate stories.</p>
 

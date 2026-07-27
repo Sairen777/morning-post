@@ -13,7 +13,10 @@ import {
   ModelApiError,
   OpenAICompatibleChatClient,
 } from "./openai-compatible-client.ts";
-import { buildVisionAnalysisPrompt } from "./prompts.ts";
+import {
+  buildConstrainedSummaryRecoveryPrompt,
+  buildVisionAnalysisPrompt,
+} from "./prompts.ts";
 import { serializeBatchSummaryInput } from "./summarizer.types.ts";
 import type {
   BatchSummaryInput,
@@ -361,14 +364,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       return await this.mergeChunkResults(
         chunkResults,
         rules,
-        {
-          maxTextBytesPerChunk: options.maxTextBytesPerChunk,
-          maxItemsPerChunk: options.maxItemsPerChunk,
-          signal: options.signal,
-          requestTimeoutMs: options.requestTimeoutMs,
-          onAttempt: options.onAttempt,
-          onDiagnostic: options.onDiagnostic,
-        },
+        options,
       );
     } catch (error) {
       await this.reportDiagnostic(options, {
@@ -439,8 +435,8 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
 
     if (this.models.sameModel) {
       try {
-        const raw = await this.summarizerClient.complete(
-          rules.systemPrompt,
+        const raw = await this.completeSingleSummary(
+          rules,
           content.multimodalParts,
           options,
         );
@@ -536,12 +532,35 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     options: SummarizerRequestOptions,
   ): Promise<SummaryPoint[]> {
     const content = textParts.map((part) => part.text).join("\n\n");
-    const raw = await this.summarizerClient.complete(
-      rules.systemPrompt,
-      content,
-      options,
-    );
+    const raw = await this.completeSingleSummary(rules, content, options);
     return this.parsePoints(raw, indexedItems);
+  }
+
+  private async completeSingleSummary(
+    rules: SummaryRuleset,
+    content: ContentPart[] | string,
+    options: SummarizerRequestOptions,
+  ): Promise<string> {
+    try {
+      return await this.summarizerClient.complete(
+        rules.systemPrompt,
+        content,
+        options,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof ModelApiError) ||
+        error.kind !== "output_limit"
+      ) {
+        throw error;
+      }
+      const recoveryRules = buildConstrainedSummaryRecoveryPrompt(rules);
+      return await this.summarizerClient.complete(
+        recoveryRules.systemPrompt,
+        content,
+        options,
+      );
+    }
   }
 
   private addVisionDescriptions(

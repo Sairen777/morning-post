@@ -1,6 +1,6 @@
 /** @jsxImportSource solid-js */
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import StatusBadge from "../app/StatusBadge";
 import FormatTime from "../app/FormatTime";
 import ProfilePanel from "../app/ProfilePanel";
@@ -253,7 +253,6 @@ describe("SourcesPanel", () => {
     showPaidPostTitles: false,
     connected: true,
     relevanceFilterMode: "inherit",
-    summarizationMode: "basic",
     createdAt: 0,
     updatedAt: 0,
   } as const;
@@ -280,6 +279,7 @@ describe("SourcesPanel", () => {
         onAuthError={() => {}}
       />
     ));
+    expect(screen.queryByLabelText("Summary detail for Substack")).toBeNull();
     await fireEvent.change(
       screen.getByLabelText("Relevance filtering for Substack"),
       { target: { value: "include_all" } },
@@ -287,47 +287,6 @@ describe("SourcesPanel", () => {
     expect(onUpdateSource).toHaveBeenCalledWith("source-1", {
       relevanceFilterMode: "include_all",
     });
-  });
-
-  it("displays and updates source summary detail", async () => {
-    const onUpdateSource = vi.fn(() => Promise.resolve());
-    render(() => (
-      <SourcesPanel
-        sources={[source]}
-        feeds={[]}
-        availableFeeds={{}}
-        sourceFeeds={{}}
-        onToggleSource={() => Promise.resolve()}
-        onUpdateSourcePosition={() => Promise.resolve()}
-        onUpdateSource={onUpdateSource}
-        onDisconnectSource={() =>
-          Promise.resolve({
-            source,
-            revokeTelegramSession: false,
-            message: "Disconnected",
-          })}
-        onDiscoverFeeds={() => Promise.resolve([])}
-        onLoadSourceFeeds={() => Promise.resolve([])}
-        onSubscribe={() => Promise.resolve()}
-        onAuthError={() => {}}
-      />
-    ));
-
-    const selector = screen.getByLabelText("Summary detail for Substack");
-    expect(selector).toHaveValue("basic");
-    expect(screen.getByText("Standard is faster and more token-efficient.")).toBeVisible();
-
-    await fireEvent.change(selector, { target: { value: "thorough" } });
-
-    expect(onUpdateSource).toHaveBeenCalledWith("source-1", {
-      summarizationMode: "thorough",
-    });
-    expect(selector).toHaveValue("thorough");
-    expect(
-      screen.getByText(
-        "Thorough is slower but captures more themes and nuance in long discussions.",
-      ),
-    ).toBeVisible();
   });
 
   it("hides Discover feeds for Substack but keeps it for Telegram", () => {
@@ -375,6 +334,7 @@ describe("FeedsPanel", () => {
       customPrompt: null,
       position: null,
       enabled: true,
+      summarizationMode: "basic" as const,
       relevanceFilterMode: "inherit" as const,
       deletedAt: null,
       lastFetchedPeriodEndMs: null,
@@ -398,5 +358,96 @@ describe("FeedsPanel", () => {
     expect(onUpdateFeed).toHaveBeenCalledWith("feed-1", {
       relevanceFilterMode: "personalized",
     });
+  });
+
+  it("updates summary detail independently for each feed", async () => {
+    const onUpdateFeed = vi.fn(() => Promise.resolve());
+    const firstFeed = {
+      id: "telegram-feed-1",
+      sourceId: "telegram-source",
+      externalId: "channel-1",
+      name: "Morning channel",
+      kind: "discussion" as const,
+      customPrompt: null,
+      position: null,
+      enabled: true,
+      summarizationMode: "basic" as const,
+      relevanceFilterMode: "inherit" as const,
+      deletedAt: null,
+      lastFetchedPeriodEndMs: null,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const secondFeed = {
+      ...firstFeed,
+      id: "telegram-feed-2",
+      externalId: "channel-2",
+      name: "Evening channel",
+      summarizationMode: "thorough" as const,
+    };
+    render(() => (
+      <FeedsPanel
+        feeds={[firstFeed, secondFeed]}
+        onLoadFeed={() => Promise.resolve(firstFeed)}
+        onToggleFeed={() => Promise.resolve()}
+        onUpdateFeed={onUpdateFeed}
+        onUnsubscribeFeed={() => Promise.resolve()}
+        onAuthError={() => {}}
+      />
+    ));
+
+    const firstSelector = screen.getByLabelText("Summary detail for Morning channel");
+    const secondSelector = screen.getByLabelText("Summary detail for Evening channel");
+    expect(firstSelector).toHaveValue("basic");
+    expect(secondSelector).toHaveValue("thorough");
+
+    await fireEvent.change(firstSelector, { target: { value: "thorough" } });
+    await fireEvent.change(secondSelector, { target: { value: "basic" } });
+
+    expect(onUpdateFeed).toHaveBeenNthCalledWith(1, "telegram-feed-1", {
+      summarizationMode: "thorough",
+    });
+    expect(onUpdateFeed).toHaveBeenNthCalledWith(2, "telegram-feed-2", {
+      summarizationMode: "basic",
+    });
+    expect(firstSelector).toHaveValue("thorough");
+    expect(secondSelector).toHaveValue("basic");
+  });
+
+  it("rolls summary detail back after a failed update", async () => {
+    const onUpdateFeed = vi.fn(() =>
+      Promise.reject(new Error("Summary detail could not be saved")),
+    );
+    render(() => (
+      <FeedsPanel
+        feeds={[{
+          id: "feed-1",
+          sourceId: "telegram-source",
+          externalId: "channel-1",
+          name: "Morning channel",
+          kind: "discussion",
+          customPrompt: null,
+          position: null,
+          enabled: true,
+          summarizationMode: "basic",
+          relevanceFilterMode: "inherit",
+          deletedAt: null,
+          lastFetchedPeriodEndMs: null,
+          createdAt: 0,
+          updatedAt: 0,
+        }]}
+        onLoadFeed={() => Promise.reject(new Error("not used"))}
+        onToggleFeed={() => Promise.resolve()}
+        onUpdateFeed={onUpdateFeed}
+        onUnsubscribeFeed={() => Promise.resolve()}
+        onAuthError={() => {}}
+      />
+    ));
+
+    const selector = screen.getByLabelText("Summary detail for Morning channel");
+    await fireEvent.change(selector, { target: { value: "thorough" } });
+    await waitFor(() => expect(selector).toHaveValue("basic"));
+    expect(screen.getByText("Summary detail could not be saved")).toBeVisible();
+    expect(selector).toBeEnabled();
   });
 });

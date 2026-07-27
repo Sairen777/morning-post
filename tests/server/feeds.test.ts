@@ -7,7 +7,10 @@ import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import type { AvailableFeed } from "../../src/connectors/connector.types.ts";
-import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
+import {
+  createOrReviveFeed,
+  type PublicFeed,
+} from "../../src/repositories/feed-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
@@ -172,38 +175,86 @@ test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
     const rss = await createOwnedSource(database, user.id, ConnectorId.RSS, 1);
 
     const subscribeRssResponse = await app.request(`/sources/${rss.id}/feeds`, {
-      ...jsonRequest("POST", { externalId: "rss-a", name: "RSS A", kind: "news", position: 1 }),
+      ...jsonRequest("POST", {
+        externalId: "rss-a",
+        name: "RSS A",
+        kind: "news",
+        position: 1,
+        summarizationMode: "thorough",
+      }),
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(subscribeRssResponse.status, 201);
-    const rssFeed = await subscribeRssResponse.json();
+    const rssFeed = await subscribeRssResponse.json() as PublicFeed;
 
     const subscribeTelegramResponse = await app.request(`/sources/${telegram.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "tg-a", name: "Telegram A", kind: "discussion", position: 1 }),
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(subscribeTelegramResponse.status, 201);
-    const telegramFeed = await subscribeTelegramResponse.json();
+    const telegramFeed = await subscribeTelegramResponse.json() as PublicFeed;
+    assertEquals(rssFeed.summarizationMode, "thorough");
+    assertEquals(telegramFeed.summarizationMode, "basic");
 
     const allFeedsResponse = await app.request("/feeds", { headers: { cookie } });
     assertEquals(allFeedsResponse.status, 200);
-    assertEquals((await allFeedsResponse.json()).map((feed: { id: string }) => feed.id), [rssFeed.id, telegramFeed.id]);
+    const allFeeds = await allFeedsResponse.json() as PublicFeed[];
+    assertEquals(
+      allFeeds.map((feed) => ({
+        id: feed.id,
+        summarizationMode: feed.summarizationMode,
+      })),
+      [
+        { id: rssFeed.id, summarizationMode: "thorough" },
+        { id: telegramFeed.id, summarizationMode: "basic" },
+      ],
+    );
 
     const sourceFeedsResponse = await app.request(`/sources/${telegram.id}/feeds`, { headers: { cookie } });
     assertEquals(sourceFeedsResponse.status, 200);
-    assertEquals((await sourceFeedsResponse.json()).map((feed: { id: string }) => feed.id), [telegramFeed.id]);
+    const sourceFeeds = await sourceFeedsResponse.json() as PublicFeed[];
+    assertEquals(
+      sourceFeeds.map((feed) => ({
+        id: feed.id,
+        summarizationMode: feed.summarizationMode,
+      })),
+      [{ id: telegramFeed.id, summarizationMode: "basic" }],
+    );
+
+    const findResponse = await app.request(`/feeds/${telegramFeed.id}`, {
+      headers: { cookie },
+    });
+    assertEquals(findResponse.status, 200);
+    const found = await findResponse.json() as PublicFeed;
+    assertEquals(found.summarizationMode, "basic");
 
     const patchResponse = await app.request(`/feeds/${telegramFeed.id}`, {
-      ...jsonRequest("PATCH", { customPrompt: "   ", enabled: false, kind: "news", position: 4, relevanceFilterMode: "include_all" }),
+      ...jsonRequest("PATCH", {
+        customPrompt: "   ",
+        enabled: false,
+        kind: "news",
+        position: 4,
+        summarizationMode: "thorough",
+        relevanceFilterMode: "include_all",
+      }),
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(patchResponse.status, 200);
-    const patched = await patchResponse.json();
+    const patched = await patchResponse.json() as PublicFeed;
     assertEquals(patched.customPrompt, null);
     assertEquals(patched.enabled, false);
     assertEquals(patched.kind, "news");
     assertEquals(patched.position, 4);
     assertEquals(patched.relevanceFilterMode, "include_all");
+    assertEquals(patched.summarizationMode, "thorough");
+
+    const basicPatchResponse = await app.request(`/feeds/${telegramFeed.id}`, {
+      ...jsonRequest("PATCH", { summarizationMode: "basic" }),
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(basicPatchResponse.status, 200);
+    const basicPatched = await basicPatchResponse.json() as PublicFeed;
+    assertEquals(basicPatched.summarizationMode, "basic");
 
     const invalidModeResponse = await app.request(`/feeds/${telegramFeed.id}`, {
       ...jsonRequest("PATCH", { relevanceFilterMode: "invalid" }),
@@ -217,10 +268,19 @@ test("feed routes subscribe, list, patch, and unsubscribe feeds", async () => {
       headers: { cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(deleteResponse.status, 200);
-    assertEquals((await deleteResponse.json()).deletedAt !== null, true);
+    const deleted = await deleteResponse.json() as PublicFeed;
+    assertEquals(deleted.deletedAt !== null, true);
+    assertEquals(deleted.summarizationMode, "basic");
 
     const remainingResponse = await app.request("/feeds", { headers: { cookie } });
-    assertEquals((await remainingResponse.json()).map((feed: { id: string }) => feed.id), [rssFeed.id]);
+    const remaining = await remainingResponse.json() as PublicFeed[];
+    assertEquals(
+      remaining.map((feed) => ({
+        id: feed.id,
+        summarizationMode: feed.summarizationMode,
+      })),
+      [{ id: rssFeed.id, summarizationMode: "thorough" }],
+    );
   });
 });
 
@@ -231,10 +291,16 @@ test("subscribing a soft-deleted feed revives the same row", async () => {
     const source = await createOwnedSource(database, user.id, ConnectorId.Telegram);
 
     const firstResponse = await app.request(`/sources/${source.id}/feeds`, {
-      ...jsonRequest("POST", { externalId: "same", name: "Old", kind: "news" }),
+      ...jsonRequest("POST", {
+        externalId: "same",
+        name: "Old",
+        kind: "news",
+        summarizationMode: "thorough",
+      }),
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
-    const first = await firstResponse.json();
+    const first = await firstResponse.json() as PublicFeed;
+    assertEquals(first.summarizationMode, "thorough");
     await app.request(`/feeds/${first.id}`, { method: "DELETE", headers: { cookie, Origin: "http://127.0.0.1:5173" } });
 
     const revivedResponse = await app.request(`/sources/${source.id}/feeds`, {
@@ -242,11 +308,27 @@ test("subscribing a soft-deleted feed revives the same row", async () => {
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(revivedResponse.status, 201);
-    const revived = await revivedResponse.json();
+    const revived = await revivedResponse.json() as PublicFeed;
     assertEquals(revived.id, first.id);
     assertEquals(revived.name, "New");
     assertEquals(revived.kind, "discussion");
     assertEquals(revived.deletedAt, null);
+    assertEquals(revived.summarizationMode, "basic");
+
+    await app.request(`/feeds/${revived.id}`, { method: "DELETE", headers: { cookie, Origin: "http://127.0.0.1:5173" } });
+    const explicitRevivalResponse = await app.request(`/sources/${source.id}/feeds`, {
+      ...jsonRequest("POST", {
+        externalId: "same",
+        name: "Explicit",
+        kind: "news",
+        summarizationMode: "thorough",
+      }),
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(explicitRevivalResponse.status, 201);
+    const explicitlyRevived = await explicitRevivalResponse.json() as PublicFeed;
+    assertEquals(explicitlyRevived.id, first.id);
+    assertEquals(explicitlyRevived.summarizationMode, "thorough");
   });
 });
 
@@ -312,10 +394,21 @@ test("feed routes keep users scoped to their own sources and feeds", async () =>
     assertEquals(otherSubscribeResponse.status, 404);
 
     const otherPatchResponse = await app.request(`/feeds/${feed.id}`, {
-      ...jsonRequest("PATCH", { enabled: false }),
+      ...jsonRequest("PATCH", {
+        enabled: false,
+        summarizationMode: "thorough",
+      }),
       headers: { "content-type": "application/json", cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(otherPatchResponse.status, 404);
+
+    const ownerFindResponse = await app.request(`/feeds/${feed.id}`, {
+      headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(ownerFindResponse.status, 200);
+    const unchanged = await ownerFindResponse.json() as PublicFeed;
+    assertEquals(unchanged.enabled, true);
+    assertEquals(unchanged.summarizationMode, "basic");
 
     const ownerListResponse = await app.request("/feeds", { headers: { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" } });
     assertEquals(ownerListResponse.status, 200);
@@ -342,11 +435,48 @@ test("feed routes validate bodies and parameters", async () => {
     });
     assertEquals(invalidPositionResponse.status, 422);
 
+    const invalidSummarizationModeResponse = await app.request(`/feeds/${feed.id}`, {
+      ...jsonRequest("PATCH", {
+        enabled: false,
+        summarizationMode: "verbose",
+      }),
+      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(invalidSummarizationModeResponse.status, 422);
+    await invalidSummarizationModeResponse.body?.cancel();
+
+    const unchangedResponse = await app.request(`/feeds/${feed.id}`, {
+      headers: { cookie },
+    });
+    assertEquals(unchangedResponse.status, 200);
+    const unchanged = await unchangedResponse.json() as PublicFeed;
+    assertEquals(unchanged.enabled, true);
+    assertEquals(unchanged.summarizationMode, "basic");
+
     const invalidKindResponse = await app.request(`/sources/${source.id}/feeds`, {
       ...jsonRequest("POST", { externalId: "bad", name: "Bad", kind: "chat" }),
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(invalidKindResponse.status, 422);
+
+    const invalidCreateModeResponse = await app.request(
+      `/sources/${source.id}/feeds`,
+      {
+        ...jsonRequest("POST", {
+          externalId: "bad-mode",
+          name: "Bad Mode",
+          kind: "news",
+          summarizationMode: "verbose",
+        }),
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          Origin: "http://127.0.0.1:5173",
+        },
+      },
+    );
+    assertEquals(invalidCreateModeResponse.status, 422);
+    await invalidCreateModeResponse.body?.cancel();
 
     const invalidParameterResponse = await app.request("/feeds/not-a-uuid", {
       ...jsonRequest("PATCH", { enabled: false }),

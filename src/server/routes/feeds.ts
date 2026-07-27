@@ -14,6 +14,7 @@ import {
   subscribeFeed,
   unsubscribeFeed,
 } from "../../services/feed-service.ts";
+import { summarizationModes } from "../../summarization-mode.ts";
 import {
   type AuthVariables,
   requireAuth,
@@ -41,6 +42,7 @@ const subscribeFeedBodySchema = z.object({
   kind: feedKindSchema,
   customPrompt: z.string().max(MAXIMUM_CUSTOM_PROMPT_LENGTH).nullable().optional(),
   position: z.number().int().min(POSTGRES_INTEGER_MIN).max(POSTGRES_INTEGER_MAX).nullable().optional(),
+  summarizationMode: z.enum(summarizationModes).optional(),
 }).strict();
 
 const updateFeedBodySchema = z.object({
@@ -48,6 +50,7 @@ const updateFeedBodySchema = z.object({
   customPrompt: z.string().max(MAXIMUM_CUSTOM_PROMPT_LENGTH).nullable().optional(),
   position: z.number().int().min(POSTGRES_INTEGER_MIN).max(POSTGRES_INTEGER_MAX).nullable().optional(),
   enabled: z.boolean().optional(),
+  summarizationMode: z.enum(summarizationModes).optional(),
   relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),
 }).strict();
 
@@ -100,6 +103,7 @@ export function buildFeedRoutes(
       kind: input.kind as FeedKind,
       customPrompt: normalizeCustomPrompt(input.customPrompt),
       position: input.position,
+      summarizationMode: input.summarizationMode,
     });
     return context.json(feed, 201);
   });

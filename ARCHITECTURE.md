@@ -114,6 +114,16 @@ one aggregate. Substack summarizes each article independently, preserves source
 order and metadata, then wraps the results in the tagged `SummaryContent`
 contract.
 
+Story summary detail is resolved from the contributing feeds, independently of
+connector or source. The shared `summarizationModes` values and
+`SummarizationMode` type define `basic | thorough`, presented as
+Standard and Thorough. A story uses `thorough` when any contributing item belongs
+to a thorough feed; otherwise it uses `basic`. Thorough stories are isolated
+from compact multi-story batching and use the detailed single-story path over
+the complete cross-feed story, so one thorough channel or publication takes
+precedence in a mixed story without changing sibling feeds under the same
+source.
+
 For Substack, paid access is an explicit entitlement boundary, not a body-shape
 heuristic. An authenticated `GET /api/v1/posts/by-id/:id` can return a nonempty
 teaser in `post.body_html` to a free subscriber, so neither body presence nor
@@ -228,8 +238,12 @@ using Drizzle ORM over PostgreSQL. The conceptual shape:
   presentation preference that defaults to `false`; only that authenticated
   user's owned Substack source may be updated.
 - A **Source** has many **Feed** rows — the individual subscriptions (channel,
-  dialogue, subreddit, RSS URL), each with an optional within-source `position`.
-  A **Feed** has cached **Item** rows and immutable **Summary** rows.
+  dialogue, subreddit, RSS URL), each with an optional within-source `position`
+  and a required `summarizationMode` (`basic | thorough`). Summary detail is
+  independently selectable per feed even when multiple feeds share one source.
+  Standard (`basic`) is the default for newly created or revived feeds unless
+  explicitly supplied. A **Feed** has cached **Item** rows and immutable
+  **Summary** rows.
 - A **Digest** is the user-facing morning post for a period. Its sections are
   **derived, not stored**: the period's **Summary** rows for the user's
   non-deleted feeds, ordered by `(Source.position, then Feed.position or name)`.
@@ -360,6 +374,22 @@ Migration `0014_cynical_malice` adds the non-null
 `sources.show_paid_post_titles` boolean column with database default `false`.
 The public `Source` projection exposes it as `showPaidPostTitles`; mutation is
 restricted to an owned Substack source.
+
+Summary detail is a feed contract throughout storage and HTTP. `PublicFeed` and
+feed API responses carry a required `summarizationMode`; feed POST/PATCH inputs
+accept the field optionally so omission can select the default or leave an
+existing setting unchanged. `PublicSource` and source create/PATCH inputs do
+not expose it. The web renders a
+Standard/Thorough selector labeled with each feed's name and persists it through
+`PATCH /feeds/:id`, allowing two channels or publications on one connector
+account to choose independently.
+
+The feed-granularity migration is intentionally ordered to preserve upgrades:
+add non-null `feeds.summarization_mode` with database default `basic` and a
+`basic | thorough` check, backfill every existing feed from its parent source's
+previous `sources.summarization_mode`, then remove the source check and source
+column. New and revived feeds use `basic` unless the feed request explicitly
+provides `thorough`.
 
 #### Prompt layering
 

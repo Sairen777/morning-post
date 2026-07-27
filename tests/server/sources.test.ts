@@ -19,7 +19,6 @@ import {
   createSource,
   findSourceById,
 } from "../../src/repositories/source-repository.ts";
-import type { SourceSummarizationMode } from "../../src/summarization-mode.ts";
 import { buildApp } from "../../src/server/app.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
 import { createUser } from "../../src/repositories/user-repository.ts";
@@ -110,7 +109,6 @@ async function createEncryptedSource(
   options: {
     position?: number | null;
     enabled?: boolean;
-    summarizationMode?: SourceSummarizationMode;
   } = {},
 ) {
   return await createSource(database, {
@@ -126,7 +124,6 @@ async function createEncryptedSource(
     ),
     position: options.position,
     enabled: options.enabled,
-    summarizationMode: options.summarizationMode,
   });
 }
 
@@ -156,7 +153,7 @@ test("GET /sources returns only the caller sources ordered by position then crea
       credentialCipher,
       user.id,
       ConnectorId.Substack,
-      { position: 3, summarizationMode: "thorough" },
+      { position: 3 },
     );
     await createEncryptedSource(
       database,
@@ -188,10 +185,10 @@ test("GET /sources returns only the caller sources ordered by position then crea
       trailingSource.id,
     ]);
     assertEquals(
-      json.map((
-        source: { summarizationMode: SourceSummarizationMode },
-      ) => source.summarizationMode),
-      ["basic", "basic", "thorough"],
+      json.every((source: Record<string, unknown>) =>
+        !("summarizationMode" in source)
+      ),
+      true,
     );
     assertEquals(
       json.every((source: Record<string, unknown>) =>
@@ -230,7 +227,6 @@ test("PATCH /sources/:id updates position and enabled", async () => {
       ...jsonRequest("PATCH", {
         position: 1,
         enabled: false,
-        summarizationMode: "thorough",
         relevanceFilterMode: "include_all",
       }),
       headers: {
@@ -245,7 +241,7 @@ test("PATCH /sources/:id updates position and enabled", async () => {
     assertEquals(json.position, 1);
     assertEquals(json.enabled, false);
     assertEquals(json.relevanceFilterMode, "include_all");
-    assertEquals(json.summarizationMode, "thorough");
+    assertEquals("summarizationMode" in json, false);
     assertEquals("credentials" in json, false);
 
     const stored = await findSourceById(database, source.id, user.id);
@@ -254,18 +250,7 @@ test("PATCH /sources/:id updates position and enabled", async () => {
     assertEquals(stored.enabled, false);
     assertEquals(stored.showPaidPostTitles, false);
     assertEquals(stored.relevanceFilterMode, "include_all");
-    assertEquals(stored.summarizationMode, "thorough");
-
-    const basicModeResponse = await app.request(`/sources/${source.id}`, {
-      ...jsonRequest("PATCH", { summarizationMode: "basic" }),
-      headers: {
-        "content-type": "application/json",
-        cookie,
-        Origin: "http://127.0.0.1:5173",
-      },
-    });
-    assertEquals(basicModeResponse.status, 200);
-    assertEquals((await basicModeResponse.json()).summarizationMode, "basic");
+    assert(!("summarizationMode" in stored));
 
     const invalidModeResponse = await app.request(`/sources/${source.id}`, {
       ...jsonRequest("PATCH", { relevanceFilterMode: "invalid" }),
@@ -277,23 +262,45 @@ test("PATCH /sources/:id updates position and enabled", async () => {
     });
     assertEquals(invalidModeResponse.status, 422);
     await invalidModeResponse.body?.cancel();
-    const invalidSummarizationModeResponse = await app.request(
-      `/sources/${source.id}`,
+  });
+});
+
+test("PATCH /sources/:id rejects the retired summarizationMode field without mutating source state", async () => {
+  await withTestDb(async (database: Database) => {
+    const credentialCipher = buildCredentialCipher();
+    const app = buildApp(database);
+    const { user, cookie } = await registerAndLogin(app);
+    const source = await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
       {
-        ...jsonRequest("PATCH", { summarizationMode: "Thorough" }),
-        headers: {
-          "content-type": "application/json",
-          cookie,
-          Origin: "http://127.0.0.1:5173",
-        },
+        position: 4,
+        enabled: true,
       },
     );
-    assertEquals(invalidSummarizationModeResponse.status, 422);
-    await invalidSummarizationModeResponse.body?.cancel();
-    assertEquals(
-      (await findSourceById(database, source.id, user.id))?.summarizationMode,
-      "basic",
-    );
+
+    const response = await app.request(`/sources/${source.id}`, {
+      ...jsonRequest("PATCH", {
+        summarizationMode: "thorough",
+        position: 1,
+        enabled: false,
+      }),
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        Origin: "http://127.0.0.1:5173",
+      },
+    });
+    assertEquals(response.status, 422);
+    await response.body?.cancel();
+
+    const stored = await findSourceById(database, source.id, user.id);
+    assertExists(stored);
+    assertEquals(stored.position, 4);
+    assertEquals(stored.enabled, true);
+    assert(!("summarizationMode" in stored));
   });
 });
 
@@ -406,7 +413,7 @@ test("sources routes keep users scoped to their own rows", async () => {
     assertEquals(listedSources[0].id === userBSource.id, false);
 
     const patchResponse = await app.request(`/sources/${userBSource.id}`, {
-      ...jsonRequest("PATCH", { summarizationMode: "thorough" }),
+      ...jsonRequest("PATCH", { position: 1 }),
       headers: {
         "content-type": "application/json",
         cookie,
@@ -414,11 +421,13 @@ test("sources routes keep users scoped to their own rows", async () => {
       },
     });
     assertEquals(patchResponse.status, 404);
-    assertEquals(
-      (await findSourceById(database, userBSource.id, userB.id))
-        ?.summarizationMode,
-      "basic",
+    const storedUserBSource = await findSourceById(
+      database,
+      userBSource.id,
+      userB.id,
     );
+    assertExists(storedUserBSource);
+    assertEquals(storedUserBSource.position, 2);
 
     const deleteResponse = await app.request(`/sources/${userBSource.id}`, {
       method: "DELETE",
@@ -544,7 +553,7 @@ test("DELETE /sources/:id disconnects telegram sources and preserves the row for
     assertEquals(deleteJson.source.id, source.id);
     assertEquals(deleteJson.source.connected, false);
     assertEquals(deleteJson.source.enabled, false);
-    assertEquals(deleteJson.source.summarizationMode, "basic");
+    assertEquals("summarizationMode" in deleteJson.source, false);
     assertEquals("credentials" in deleteJson.source, false);
 
     const storedRows = await database
@@ -572,7 +581,7 @@ test("DELETE /sources/:id disconnects telegram sources and preserves the row for
     assertEquals(listedSources[0].id, source.id);
     assertEquals(listedSources[0].connected, false);
     assertEquals(listedSources[0].enabled, false);
-    assertEquals(listedSources[0].summarizationMode, "basic");
+    assertEquals("summarizationMode" in listedSources[0], false);
     assertEquals("credentials" in listedSources[0], false);
   });
 });

@@ -34,6 +34,24 @@ function withTrailingRules(parts: string[], options: PromptOptions): string {
   return parts.join(" ");
 }
 
+export function buildConstrainedSummaryRecoveryPrompt(
+  rules: SummaryRuleset,
+): SummaryRuleset {
+  return {
+    ...rules,
+    systemPrompt: [
+      rules.systemPrompt,
+      'Respond immediately with a valid JSON array in the originally required {"t":"...","i":N} schema.',
+      "Include no preamble, markdown fence, reasoning, commentary, or trailing text.",
+      "Return at most 12 summary points total.",
+      'Keep each point text (the "t" value) at most 500 characters.',
+      "Densely consolidate related evidence into fewer points while preserving every distinct material development.",
+      "Use source attribution only from the supplied input: attribute every point using only a supporting input source index, and never invent, alter, or infer source attribution.",
+      "These bounded-output instructions override any looser output quantity or length guidance above; keep every other requirement.",
+    ].join(" "),
+  };
+}
+
 export function buildNewsPrompt(options: PromptOptions = {}): SummaryRuleset {
   const parts = [
     "You are a concise news summarizer.",

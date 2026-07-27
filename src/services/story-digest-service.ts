@@ -1,6 +1,6 @@
 import type { Database } from "../db/client.ts";
 import { ConnectorId, DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../constants.ts";
-import type { SourceSummarizationMode } from "../summarization-mode.ts";
+import type { SummarizationMode } from "../summarization-mode.ts";
 import { getSummarizerBudgetConfig } from "../config.ts";
 import type { PublicFeed } from "../repositories/feed-repository.ts";
 import { listActiveInterestRules } from "../repositories/interest-rule-repository.ts";
@@ -164,18 +164,18 @@ function storyHasMedia(story: PersistedStoryCandidate): boolean {
 
 function resolveStorySummarizationMode(
   story: PersistedStoryCandidate,
-  sourceById: Map<string, PublicSource>,
-): SourceSummarizationMode {
+  feedById: Map<string, PublicFeed>,
+): SummarizationMode {
   return story.candidate.developments.some((development) =>
       development.items.some((item) =>
-        sourceById.get(item.sourceId)!.summarizationMode === "thorough"
+        feedById.get(item.feedId)!.summarizationMode === "thorough"
       )
     )
     ? "thorough"
     : "basic";
 }
 
-function summaryVersionForMode(mode: SourceSummarizationMode): string {
+function summaryVersionForMode(mode: SummarizationMode): string {
   return mode === "thorough"
     ? THOROUGH_STORY_SUMMARY_VERSION
     : CURRENT_STORY_SUMMARY_VERSION;
@@ -404,7 +404,7 @@ export async function assembleStoryDigest(
   const summarizationModeByStoryId = new Map(
     selected.map((story) => [
       story.id,
-      resolveStorySummarizationMode(story, sourceById),
+      resolveStorySummarizationMode(story, feedById),
     ]),
   );
   const storyRules = buildStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
@@ -431,7 +431,7 @@ export async function assembleStoryDigest(
   type SummaryEntry = {
     index: number;
     story: PersistedStoryCandidate;
-    mode: SourceSummarizationMode;
+    mode: SummarizationMode;
   };
   const uncached: SummaryEntry[] = [];
   const makeSummary = (

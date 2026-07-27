@@ -155,11 +155,77 @@ test("OpenAICompatibleChatClient does not retry an exhausted output limit", asyn
     ModelApiError,
     "exhausted output token limit",
   );
+  assert(error instanceof ModelApiError);
+  assertEquals(error.kind, "output_limit");
   assertEquals(attemptCount, 1);
-  assertEquals(telemetry.map(({ status }) => status), ["failure"]);
+  assertEquals(telemetry, [{
+    model: "test-model",
+    attempt: 1,
+    durationMs: telemetry[0].durationMs,
+    status: "failure",
+    usage: {
+      promptTokens: 10,
+      completionTokens: 4_000,
+      totalTokens: 4_010,
+    },
+  }]);
   assertStringIncludes(error.message, "finish_reason=length");
   assertStringIncludes(error.message, "max_tokens=4000");
   assertEquals(error.message.includes("provider detail"), false);
+  assertEquals("content" in telemetry[0], false);
+});
+
+test("OpenAICompatibleChatClient rejects nonempty truncated output without retrying or exposing it", async () => {
+  const truncatedContent = '{"points":[{"text":"private truncated output';
+  const providerDetail = "private provider refusal";
+  let attemptCount = 0;
+  const telemetry: ModelAttemptTelemetry[] = [];
+  const error = await assertRejects(
+    () =>
+      createClient(() => {
+        attemptCount++;
+        return Promise.resolve(Response.json({
+          choices: [{
+            finish_reason: "length",
+            message: {
+              content: truncatedContent,
+              refusal: providerDetail,
+            },
+          }],
+          usage: {
+            prompt_tokens: 12,
+            completion_tokens: 4_000,
+            total_tokens: 4_012,
+          },
+        }));
+      }).complete("system", "content", {
+        maxAttempts: 3,
+        maxOutputTokens: 4_000,
+        onAttempt: (attempt) => {
+          telemetry.push(attempt);
+        },
+      }),
+    ModelApiError,
+    "exhausted output token limit",
+  );
+
+  assert(error instanceof ModelApiError);
+  assertEquals(error.kind, "output_limit");
+  assertEquals(attemptCount, 1);
+  assertEquals(telemetry, [{
+    model: "test-model",
+    attempt: 1,
+    durationMs: telemetry[0].durationMs,
+    status: "failure",
+    usage: {
+      promptTokens: 12,
+      completionTokens: 4_000,
+      totalTokens: 4_012,
+    },
+  }]);
+  assertEquals(error.message.includes(truncatedContent), false);
+  assertEquals(error.message.includes(providerDetail), false);
+  assertEquals("content" in telemetry[0], false);
 });
 
 test("OpenAICompatibleChatClient exhausts three transport attempts with the final error", async () => {
@@ -279,6 +345,7 @@ test("OpenAICompatibleChatClient does not retry a nonretryable HTTP status", asy
     throw new Error("Expected ModelApiError");
   }
   assertEquals(thrownError.status, 400);
+  assertEquals(thrownError.kind, "api");
   assertEquals(attemptCount, 1);
 });
 
