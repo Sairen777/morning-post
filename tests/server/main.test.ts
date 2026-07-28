@@ -11,6 +11,8 @@ import { bootServer } from "../../src/server/main.ts";
 import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import type { XLoginSessionManager } from "../../src/services/x-login-service.ts";
+import { CredentialCipher } from "../../src/crypto/credential-cipher.ts";
+import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { XBrowserRuntime } from "../../src/connectors/x/index.ts";
 import {
   createDigestRun,
@@ -37,6 +39,12 @@ class FakeScheduler implements Scheduler {
   ): void {
     this.jobs.push({ name, cron, handler });
   }
+}
+
+function testCredentialCipher(): CredentialCipher {
+  return new CredentialCipher(
+    new EnvMasterKeyProvider(new Uint8Array(32).fill(61)),
+  );
 }
 
 const MODEL_ENV_KEYS = [
@@ -66,6 +74,7 @@ test("bootServer recovers stale runs before registering jobs and serving", async
     const bootPromise = bootServer({
       serverHostname: " 192.0.2.20 ",
       database: {} as Database,
+      credentialCipher: testCredentialCipher(),
       scheduler,
       summarizer: { summarize: () => Promise.resolve([]) },
       recoverStaleRuns: (database, now, staleAfterMs) => {
@@ -174,6 +183,7 @@ test("bootServer recovers stale runs before serving registration", async () => {
       for (const key of MODEL_ENV_KEYS) delete process.env[key];
       await bootServer({
         database,
+        credentialCipher: testCredentialCipher(),
         scheduler,
         now: () => recoveryTime,
         config: {
@@ -341,6 +351,7 @@ test("bootServer aborts before attempting every cleanup exactly once", async () 
 
     const lifecycle = await bootServer({
       database,
+      credentialCipher: testCredentialCipher(),
       scheduler,
       summarizer: { summarize: () => Promise.resolve([]) },
       connectorFactory,
