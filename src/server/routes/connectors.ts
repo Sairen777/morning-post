@@ -463,6 +463,17 @@ export function buildConnectorRoutes(
     return context.json(result, 201);
   });
 
+  routes.post(
+    "/telegram/login/:id/regenerate",
+    telegramLoginRateLimiter,
+    async (context) => {
+      const { id } = validate(loginSessionParamsSchema, context.req.param());
+      const manager = await getTelegramLoginSessionManager();
+      const result = await manager.regenerateLogin(id, context.var.userId);
+      return context.json(result, 201);
+    },
+  );
+
   routes.get("/telegram/login/:id", async (context) => {
     const { id } = validate(loginSessionParamsSchema, context.req.param());
     const manager = await getTelegramLoginSessionManager();

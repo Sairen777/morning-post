@@ -1073,6 +1073,42 @@
   A-->>B: clear __Host-session</pre>
                 <p><code>GET /auth/setup</code> always returns <code>{setupRequired,passwordRequired}</code>; <code>passwordRequired</code> is true only for an existing owner with a non-null password hash. <code>POST /auth/setup</code> strictly accepts <code>{name}</code>: it checks for an owner, enters a synchronous immediate transaction, checks again, inserts the digest display name with the sentinel internal email and a null password hash, and creates the session returned with the 201 response. A concurrent or later setup attempt conflicts.</p>
 
+                <h3>Telegram login and session lifecycle</h3>
+                <pre class="mermaid">sequenceDiagram
+  participant B as Browser
+  participant A as Hono API
+  participant M as Telegram login manager
+  participant T as Telegram
+
+  B->>A: POST /connectors/telegram/login
+  A->>M: startLogin(userId)
+  M->>T: create login client and export QR token
+  M-->>A: fresh start-session payload
+  A-->>B: session id, status, qrUrl, tg:// login link
+  loop Poll active login session
+    B->>A: GET login-session status
+    A->>M: ownership-scoped status lookup
+    M-->>B: status and current qrUrl
+    opt Telegram rotates the QR token
+      B->>B: adopt changed qrUrl and regenerate QR image
+    end
+  end
+  alt Owner requests replacement while pending, errored, or expired
+    B->>B: stop polling; clear stale error, 2FA, QR, and link state
+    B->>A: POST /connectors/telegram/login/:id/regenerate
+    A->>M: regenerateLogin(id, userId)
+    M->>M: verify ownership and reject a completed session
+    M->>M: dispose old login client; remove old session entry
+    M->>T: create a fresh login client and session
+    M-->>A: fresh start-session payload
+    A-->>B: new session id, status, qrUrl, tg:// login link
+    B->>B: render returned QR/link and restart polling with new id
+  else Login completes
+    M->>M: persist credential and dispose transient login client
+  end</pre>
+                <p><code>POST /connectors/telegram/login/:id/regenerate</code> is protected by the same authentication, ownership, error-response, and rate-limit boundaries as the start-login route and returns the same start-session payload. <code>regenerateLogin(id, userId)</code> first resolves the addressed session for that owner; an unknown or foreign session is not replaceable, and a completed session is rejected. Pending, errored, and expired sessions are replaceable only by disposing their existing login client and removing their manager entry before creating a fresh session. Regeneration therefore rotates both the client and session ID: it never reuses either one.</p>
+                <p>The web client stops the old polling loop before regeneration, clears stale error, two-factor-authentication, QR-image, QR-URL, and <code>tg://</code> link state, calls the regeneration endpoint, renders the returned QR code and login link, and resumes polling with the fresh session ID. Poll responses remain authoritative while a login is active: when Telegram rotates the QR token and the returned <code>qrUrl</code> changes, the client adopts that URL and regenerates the displayed QR image rather than continuing to show the original token.</p>
+
                 <h3>Substack connection and publication flow</h3>
                 <pre class="mermaid">sequenceDiagram
   participant B as Browser

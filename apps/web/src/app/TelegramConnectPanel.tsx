@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import type { PublicSource, TelegramLoginStatus } from "../api/types";
 import {
   startTelegramLogin,
+  regenerateTelegramLogin,
   getTelegramLoginStatus,
   submitTelegramTwoFactorAuthentication,
   ApiClientError,
@@ -27,6 +28,7 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
   const [loading, setLoading] = createSignal(false);
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let sessionVersion = 0;
 
   const hasTelegramSource = () =>
     props.sources.some((s) => s.connectorId === "Telegram");
@@ -38,14 +40,43 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
     }
   };
 
+  const rebuildQrImage = async (url: string, version: number) => {
+    try {
+      const dataUrl = await QRCode.toDataURL(url, {
+        errorCorrectionLevel: "M",
+        margin: 2,
+        scale: 8,
+      });
+      if (version === sessionVersion && qrUrl() === url) {
+        setQrImageDataUrl(dataUrl);
+      }
+    } catch {
+      if (version === sessionVersion && qrUrl() === url) {
+        setQrImageDataUrl(null);
+        setError(
+          "QR code generation failed. Use the raw URL or Open Telegram link below.",
+        );
+      }
+    }
+  };
+
   const pollStatus = async () => {
     const sid = loginSessionId();
+    const version = sessionVersion;
     if (!sid) return;
 
     try {
       const result = await getTelegramLoginStatus(sid);
+      if (version !== sessionVersion || loginSessionId() !== sid) return;
+
       setStatus(result.status);
       setExpiresAt(result.expiresAt);
+
+      if (result.qrUrl && result.qrUrl !== qrUrl()) {
+        setQrUrl(result.qrUrl);
+        setQrImageDataUrl(null);
+        void rebuildQrImage(result.qrUrl, version);
+      }
 
       if (result.errorMessage) {
         setError(result.errorMessage);
@@ -62,6 +93,7 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
         }
       }
     } catch (err: unknown) {
+      if (version !== sessionVersion || loginSessionId() !== sid) return;
       if (err instanceof ApiClientError && err.status === 401) {
         props.onAuthError();
       }
@@ -77,30 +109,32 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
     stopPolling();
   });
 
+  const adoptSession = async (
+    result: {
+      loginSessionId: string;
+      qrUrl: string;
+      expiresAt: number;
+    },
+    version: number,
+  ) => {
+    if (version !== sessionVersion) return;
+    setLoginSessionId(result.loginSessionId);
+    setQrUrl(result.qrUrl);
+    setStatus("pending");
+    setExpiresAt(result.expiresAt);
+    await rebuildQrImage(result.qrUrl, version);
+    if (version === sessionVersion) startPolling();
+  };
+
   const handleStart = async () => {
+    const version = ++sessionVersion;
     setError(null);
     setLoading(true);
     try {
       const result = await startTelegramLogin();
-      setLoginSessionId(result.loginSessionId);
-      setQrUrl(result.qrUrl);
-      setStatus("pending");
-      setExpiresAt(result.expiresAt);
-
-      try {
-        const dataUrl = await QRCode.toDataURL(result.qrUrl, {
-          errorCorrectionLevel: "M",
-          margin: 2,
-          scale: 8,
-        });
-        setQrImageDataUrl(dataUrl);
-      } catch {
-        setQrImageDataUrl(null);
-        setError("QR code generation failed. Use the raw URL or Open Telegram link below.");
-      }
-
-      startPolling();
+      await adoptSession(result, version);
     } catch (err: unknown) {
+      if (version !== sessionVersion) return;
       if (err instanceof ApiClientError && err.status === 401) {
         props.onAuthError();
       } else if (err instanceof Error) {
@@ -109,7 +143,37 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
         setError("Failed to start Telegram login");
       }
     } finally {
-      setLoading(false);
+      if (version === sessionVersion) setLoading(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    const sid = loginSessionId();
+    if (!sid || status() === "complete") return;
+
+    stopPolling();
+    const version = ++sessionVersion;
+    setError(null);
+    setTwoFactorPassword("");
+    setQrUrl(null);
+    setQrImageDataUrl(null);
+    setStatus(null);
+    setExpiresAt(null);
+    setLoading(true);
+    try {
+      const result = await regenerateTelegramLogin(sid);
+      await adoptSession(result, version);
+    } catch (err: unknown) {
+      if (version !== sessionVersion) return;
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Failed to regenerate Telegram login");
+      }
+    } finally {
+      if (version === sessionVersion) setLoading(false);
     }
   };
 
@@ -126,6 +190,7 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
   const handleSubmit2FA = async (e: Event) => {
     e.preventDefault();
     const sid = loginSessionId();
+    const version = sessionVersion;
     if (!sid) return;
 
     setError(null);
@@ -134,6 +199,7 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
       const result = await submitTelegramTwoFactorAuthentication(sid, {
         password: twoFactorPassword(),
       });
+      if (version !== sessionVersion || loginSessionId() !== sid) return;
       setStatus(result.status);
       setExpiresAt(result.expiresAt);
 
@@ -148,6 +214,7 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
         stopPolling();
       }
     } catch (err: unknown) {
+      if (version !== sessionVersion || loginSessionId() !== sid) return;
       if (err instanceof ApiClientError && err.status === 401) {
         props.onAuthError();
       } else if (err instanceof Error) {
@@ -156,7 +223,7 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
         setError("2FA submission failed");
       }
     } finally {
-      setLoading(false);
+      if (version === sessionVersion) setLoading(false);
     }
   };
 
@@ -221,6 +288,16 @@ export default function TelegramConnectPanel(props: TelegramConnectPanelProps) {
               </Show>
             </div>
           </div>
+
+          <Show when={status() !== "complete"}>
+            <button
+              type="button"
+              onClick={handleRegenerate}
+              disabled={loading()}
+            >
+              {loading() ? "Regenerating…" : "Regenerate QR code and link"}
+            </button>
+          </Show>
 
           <div class="meta-row">
             <dt>Status</dt>

@@ -128,6 +128,20 @@ async function startTelegramLogin(
   return await response.json();
 }
 
+async function regenerateTelegramLogin(
+  app: Hono<ServerEnvironment>,
+  cookie: string,
+  loginSessionId: string,
+): Promise<Response> {
+  return await app.request(
+    `/connectors/telegram/login/${loginSessionId}/regenerate`,
+    {
+      method: "POST",
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    },
+  );
+}
+
 async function pollTelegramLogin(
   app: Hono<ServerEnvironment>,
   cookie: string,
@@ -665,6 +679,124 @@ test("Telegram login reserves capacity before awaiting client creation", async (
       201,
       201,
     ]);
+  });
+});
+
+test("Telegram login regeneration replaces an active session without consuming another slot", async () => {
+  await withTestDb(async (database) => {
+    const { app, manager, factory } = buildHarness(database);
+    const { user, cookie } = await registerAndLogin(app);
+
+    factory.queueClient("approval");
+    factory.queueClient("approval");
+    factory.queueClient("approval");
+    const original = await startTelegramLogin(app, cookie);
+    await startTelegramLogin(app, cookie);
+    await startTelegramLogin(app, cookie);
+    const originalSessionId = String(original.loginSessionId);
+    const originalClient = factory.clients[0];
+
+    factory.queueClient("approval");
+    const response = await regenerateTelegramLogin(
+      app,
+      cookie,
+      originalSessionId,
+    );
+    assertEquals(response.status, 201);
+    const fresh = await response.json();
+    assertEquals(typeof fresh.loginSessionId, "string");
+    assert(fresh.loginSessionId !== originalSessionId);
+    assertEquals(
+      fresh.qrUrl,
+      `tg://login?token=${factory.clients[3].token}`,
+    );
+    assertEquals(typeof fresh.expiresAt, "number");
+    assertEquals(originalClient.destroyCount, 1);
+    assertEquals(originalClient.disconnectCount, 0);
+    assertEquals(
+      manager.debugSnapshotForTesting(originalSessionId, user.id),
+      null,
+    );
+
+    const removedResponse = await app.request(
+      `/connectors/telegram/login/${originalSessionId}`,
+      { headers: { cookie } },
+    );
+    assertEquals(removedResponse.status, 404);
+    const freshStatus = await pollTelegramLogin(
+      app,
+      cookie,
+      String(fresh.loginSessionId),
+    );
+    assertEquals(freshStatus.status, "pending");
+  });
+});
+
+test("Telegram login regeneration cannot replace another user's session", async () => {
+  await withTestDb(async (database) => {
+    const { app, manager, factory } = buildHarness(database);
+    const { user, cookie: ownerCookie } = await registerAndLogin(app);
+    const otherCookie = await strangerSession(
+      database,
+      "telegram-regenerate-other@example.com",
+    );
+
+    factory.queueClient("approval");
+    const original = await startTelegramLogin(app, ownerCookie);
+    const originalSessionId = String(original.loginSessionId);
+    const response = await regenerateTelegramLogin(
+      app,
+      otherCookie,
+      originalSessionId,
+    );
+
+    assertEquals(response.status, 404);
+    assertEquals(factory.clients.length, 1);
+    assertEquals(factory.clients[0].destroyCount, 0);
+    assertEquals(
+      manager.debugSnapshotForTesting(originalSessionId, user.id)?.status,
+      "pending",
+    );
+    assertEquals(
+      (await pollTelegramLogin(app, ownerCookie, originalSessionId)).status,
+      "pending",
+    );
+  });
+});
+
+test("Telegram login regeneration rejects and preserves completed sessions", async () => {
+  await withTestDb(async (database) => {
+    const { app, manager, factory } = buildHarness(database);
+    const { user, cookie } = await registerAndLogin(app);
+
+    factory.queueClient("approval");
+    const original = await startTelegramLogin(app, cookie);
+    const originalSessionId = String(original.loginSessionId);
+    factory.clients[0].approve();
+    await waitForCompleteStatus(app, cookie, originalSessionId);
+
+    const response = await regenerateTelegramLogin(
+      app,
+      cookie,
+      originalSessionId,
+    );
+    assertEquals(response.status, 409);
+    const body = await response.json();
+    assertEquals(body.error.code, "CONFLICT");
+    assertEquals(
+      body.error.message,
+      "telegram login session is complete",
+    );
+    assertEquals(factory.clients.length, 1);
+    assertEquals(factory.clients[0].destroyCount, 1);
+    assertEquals(
+      manager.debugSnapshotForTesting(originalSessionId, user.id)?.status,
+      "complete",
+    );
+    assertEquals(
+      (await pollTelegramLogin(app, cookie, originalSessionId)).status,
+      "complete",
+    );
   });
 });
 

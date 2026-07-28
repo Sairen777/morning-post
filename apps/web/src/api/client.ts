@@ -123,6 +123,15 @@ export function startTelegramLogin(): Promise<TelegramLoginStart> {
   });
 }
 
+export function regenerateTelegramLogin(
+  loginSessionId: string,
+): Promise<TelegramLoginStart> {
+  return apiRequest<TelegramLoginStart>(
+    `/connectors/telegram/login/${encodeURIComponent(loginSessionId)}/regenerate`,
+    { method: "POST" },
+  );
+}
+
 export function getTelegramLoginStatus(
   loginSessionId: string,
 ): Promise<TelegramLoginSessionStatus> {

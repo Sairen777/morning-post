@@ -141,6 +141,20 @@ export class TelegramLoginSessionManager {
     }
   }
 
+  async regenerateLogin(
+    id: string,
+    userId: string,
+  ): Promise<{ loginSessionId: string; qrUrl: string; expiresAt: number }> {
+    const session = this.#findOwnedSession(id, userId);
+    if (session.status === "complete") {
+      throw new ConflictError("telegram login session is complete");
+    }
+
+    this.#sessions.delete(id);
+    await this.#disposeSession(session);
+    return await this.startLogin(userId);
+  }
+
   async getStatus(
     id: string,
     userId: string,

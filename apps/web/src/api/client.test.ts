@@ -20,6 +20,7 @@ import {
   loginUser,
   addXTarget,
   setupOwner,
+  regenerateTelegramLogin,
   startTelegramLogin,
   startXLogin,
   subscribeFeed,
@@ -428,6 +429,36 @@ describe("startTelegramLogin", () => {
       }) as typeof fetch;
       await startTelegramLogin();
       expect(fetchCalls[0][0]).toBe("/connectors/telegram/login");
+      expect(fetchCalls[0][1]?.method).toBe("POST");
+      expect(fetchCalls[0][1]?.body).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("regenerateTelegramLogin", () => {
+  it("sends POST /connectors/telegram/login/:id/regenerate without body", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      const fetchCalls: Array<[string, RequestInit?]> = [];
+      globalThis.fetch = ((url: string, opts?: RequestInit) => {
+        fetchCalls.push([url, opts]);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              loginSessionId: "s2",
+              qrUrl: "tg://qr-2",
+              expiresAt: 2000,
+            }),
+            { status: 200 },
+          ),
+        );
+      }) as typeof fetch;
+      await regenerateTelegramLogin("session/one");
+      expect(fetchCalls[0][0]).toBe(
+        "/connectors/telegram/login/session%2Fone/regenerate",
+      );
       expect(fetchCalls[0][1]?.method).toBe("POST");
       expect(fetchCalls[0][1]?.body).toBeUndefined();
     } finally {
