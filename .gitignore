@@ -46,6 +46,9 @@ node_modules/
 media/
 telegram_media/
 
+# local SQLite runtime data
+/data/
+
 /.x-browser-profiles/
 .test-data/
 docs/
