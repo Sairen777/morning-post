@@ -14,10 +14,7 @@ const ENV_KEYS = [
   "ALLOWED_ORIGINS",
   "TRUSTED_PROXY_COUNT",
   "MAX_REQUEST_BODY_BYTES",
-  "DB_POOL_MAX",
-  "DB_IDLE_TIMEOUT_SECONDS",
-  "DB_CONNECT_TIMEOUT_SECONDS",
-  "DB_SSL_MODE",
+  "DATABASE_PATH",
   "ALLOW_REMOTE_SUMMARIZATION",
   "CONNECTOR_TIMEOUT_MS",
   "X_BROWSER_PROFILE_ROOT",
@@ -98,10 +95,7 @@ test("config defaults cover runtime boundaries", () => {
   ]);
   assertEquals(config.trustedProxyCount, 0);
   assertEquals(config.maxRequestBodyBytes, 1_048_576);
-  assertEquals(config.databasePoolMax, 10);
-  assertEquals(config.databaseIdleTimeoutSeconds, 20);
-  assertEquals(config.databaseConnectTimeoutSeconds, 30);
-  assertEquals(config.databaseSslMode, "disable");
+  assertEquals(config.databasePath, "./data/morning-post.sqlite");
   assertEquals(config.allowRemoteSummarization, false);
   assertEquals(config.connectorTimeoutMs, 120_000);
   assertEquals(config.xBrowserProfileRoot, ".x-browser-profiles");
@@ -214,10 +208,7 @@ test("environment values override defaults and parse strictly", () => {
       ALLOWED_ORIGINS: "https://app.example, https://admin.example",
       TRUSTED_PROXY_COUNT: "2",
       MAX_REQUEST_BODY_BYTES: "2048",
-      DB_POOL_MAX: "12",
-      DB_IDLE_TIMEOUT_SECONDS: "25",
-      DB_CONNECT_TIMEOUT_SECONDS: "35",
-      DB_SSL_MODE: "verify-full",
+      DATABASE_PATH: "./data/environment.sqlite",
       ALLOW_REMOTE_SUMMARIZATION: "true",
       SUMMARIZER_MODEL: "model-a",
       SUMMARIZER_BASE_URL: "http://localhost:1234/v1",
@@ -277,10 +268,7 @@ test("environment values override defaults and parse strictly", () => {
     ]);
     assertEquals(config.trustedProxyCount, 2);
     assertEquals(config.maxRequestBodyBytes, 2048);
-    assertEquals(config.databasePoolMax, 12);
-    assertEquals(config.databaseIdleTimeoutSeconds, 25);
-    assertEquals(config.databaseConnectTimeoutSeconds, 35);
-    assertEquals(config.databaseSslMode, "verify-full");
+    assertEquals(config.databasePath, "./data/environment.sqlite");
     assertEquals(config.allowRemoteSummarization, true);
     assertEquals(config.connectorTimeoutMs, 5000);
     assertEquals(config.xBrowserProfileRoot, "/tmp/morning-post-x-profiles");
@@ -327,7 +315,7 @@ test("constructor values take precedence over environment", () => {
       "PORT",
       "ALLOWED_ORIGINS",
       "MAX_REQUEST_BODY_BYTES",
-      "DB_SSL_MODE",
+      "DATABASE_PATH",
       "ALLOW_REMOTE_SUMMARIZATION",
       "X_BROWSER_PROFILE_ROOT",
       "X_BROWSER_LOGIN_TIMEOUT_MS",
@@ -337,7 +325,7 @@ test("constructor values take precedence over environment", () => {
     process.env["PORT"] = "4310";
     process.env["ALLOWED_ORIGINS"] = "https://env.example";
     process.env["MAX_REQUEST_BODY_BYTES"] = "100";
-    process.env["DB_SSL_MODE"] = "require";
+    process.env["DATABASE_PATH"] = "./data/environment.sqlite";
     process.env["ALLOW_REMOTE_SUMMARIZATION"] = "true";
     process.env["X_BROWSER_PROFILE_ROOT"] = "./env-x-profiles";
     process.env["X_BROWSER_LOGIN_TIMEOUT_MS"] = "12345";
@@ -345,7 +333,7 @@ test("constructor values take precedence over environment", () => {
       port: 4311,
       allowedOrigins: ["https://constructor.example"],
       maxRequestBodyBytes: 200,
-      databaseSslMode: "verify-full",
+      databasePath: "./data/constructor.sqlite",
       allowRemoteSummarization: false,
       xBrowserProfileRoot: "./constructor-x-profiles",
       xBrowserLoginTimeoutMs: 54_321,
@@ -353,7 +341,7 @@ test("constructor values take precedence over environment", () => {
     assertEquals(config.port, 4311);
     assertEquals(config.allowedOrigins, ["https://constructor.example"]);
     assertEquals(config.maxRequestBodyBytes, 200);
-    assertEquals(config.databaseSslMode, "verify-full");
+    assertEquals(config.databasePath, "./data/constructor.sqlite");
     assertEquals(config.allowRemoteSummarization, false);
     assertEquals(config.xBrowserProfileRoot, "./constructor-x-profiles");
     assertEquals(config.xBrowserLoginTimeoutMs, 54_321);
@@ -375,7 +363,7 @@ test("invalid numeric and boolean values fail at startup", () => {
     try {
       if (
         key === "ALLOWED_ORIGINS" ||
-        key === "DB_SSL_MODE" ||
+        key === "DATABASE_PATH" ||
         key === "ALLOW_REMOTE_SUMMARIZATION" ||
         key === "X_BROWSER_PROFILE_ROOT" ||
         key.endsWith("_MODEL") ||
@@ -404,26 +392,6 @@ test("invalid numeric and boolean values fail at startup", () => {
   }
 });
 
-test("database SSL mode accepts only supported values", () => {
-  const previous = process.env["DB_SSL_MODE"];
-  try {
-    for (const mode of ["disable", "require", "verify-full"] as const) {
-      assertEquals(getConfig({ databaseSslMode: mode }).databaseSslMode, mode);
-      process.env["DB_SSL_MODE"] = mode;
-      assertEquals(getConfig().databaseSslMode, mode);
-    }
-    process.env["DB_SSL_MODE"] = "prefer";
-    assertThrows(() => getConfig(), Error, "Invalid DB_SSL_MODE");
-    assertThrows(
-      () => getConfig({ databaseSslMode: "prefer" as never }),
-      Error,
-      "Invalid DB_SSL_MODE",
-    );
-  } finally {
-    if (previous === undefined) delete process.env["DB_SSL_MODE"];
-    else process.env["DB_SSL_MODE"] = previous;
-  }
-});
 
 test("summarizer runtime resolver validates and normalizes provider settings", () => {
   const keys = [

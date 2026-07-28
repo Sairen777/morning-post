@@ -114,15 +114,13 @@ test("POST /connectors/substack/publications creates a canonical publication fee
   });
 });
 
-test("Substack publication route cancels its deadline before a deferred feed commit", async () => {
+test("Substack publication route cancels its deadline before a synchronous feed commit", async () => {
   await withTestDb(async (database) => {
     const mutationStarted = Promise.withResolvers<void>();
     const mutation = Promise.withResolvers<
       { source: PublicSource; feed: PublicFeed }
     >();
-    let deadlineCallback: (() => void) | undefined;
     let deadlineCancelled = false;
-    let responseSettled = false;
     const now = Date.now();
     const source: PublicSource = {
       id: "00000000-0000-4000-8000-000000000213",
@@ -153,19 +151,21 @@ test("Substack publication route cancels its deadline before a deferred feed com
       updatedAt: now,
     };
     const commitImmediately = async <Result>(
-      operation: () => Promise<Result>,
-    ): Promise<Result> => await operation();
+      operation: () => Result,
+    ): Promise<Result> => operation();
     const service: SubstackPublicationServiceLike = {
-      add: (
+      add: async (
         userId,
         _publicationUrl,
         _signal,
         commitOperation = commitImmediately,
       ) => {
         source.userId = userId;
-        return commitOperation(async () => {
-          mutationStarted.resolve();
-          return await mutation.promise;
+        mutationStarted.resolve();
+        const result = await mutation.promise;
+        return commitOperation(() => {
+          assertEquals(deadlineCancelled, true);
+          return result;
         });
       },
     };
@@ -175,12 +175,7 @@ test("Substack publication route cancels its deadline before a deferred feed com
         substackSessionRateLimiter: passRateLimit(),
         substackPublicationRateLimiter: passRateLimit(),
         connectorTimeoutMs: 10,
-        scheduleConnectorDeadline: (onDeadline) => {
-          deadlineCallback = () => {
-            if (!deadlineCancelled) {
-              onDeadline();
-            }
-          };
+        scheduleConnectorDeadline: () => {
           return () => {
             deadlineCancelled = true;
           };
@@ -191,22 +186,12 @@ test("Substack publication route cancels its deadline before a deferred feed com
     const responsePromise = Promise.resolve(app.request(
       "/connectors/substack/publications",
       jsonRequest({ publicationUrl: "https://example.substack.com" }, cookie),
-    )).then((response) => {
-      responseSettled = true;
-      return response;
-    });
+    ));
 
     await mutationStarted.promise;
-    assertExists(deadlineCallback);
-    deadlineCallback();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const responseSettledBeforeMutation = responseSettled;
-    const deadlineCancelledBeforeMutation = deadlineCancelled;
     mutation.resolve({ source, feed });
     const response = await responsePromise;
 
-    assertEquals(deadlineCancelledBeforeMutation, true);
-    assertEquals(responseSettledBeforeMutation, false);
     assertEquals(response.status, 201);
   });
 });
@@ -248,8 +233,8 @@ test("Substack publication route blocks a late feed commit after the deadline wi
       updatedAt: now,
     };
     const commitImmediately = async <Result>(
-      operation: () => Promise<Result>,
-    ): Promise<Result> => await operation();
+      operation: () => Result,
+    ): Promise<Result> => operation();
     const service: SubstackPublicationServiceLike = {
       add: async (
         userId,
@@ -263,7 +248,7 @@ test("Substack publication route blocks a late feed commit after the deadline wi
         try {
           return await commitOperation(() => {
             mutationStarted = true;
-            return Promise.resolve({ source, feed });
+            return { source, feed };
           });
         } finally {
           losingOperationSettled.resolve();

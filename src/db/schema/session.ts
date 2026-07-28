@@ -1,4 +1,4 @@
-import { bigint, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { users } from "./user.ts";
 
 /**
@@ -10,15 +10,15 @@ import { users } from "./user.ts";
  * milliseconds stored as `bigint` (mode "number"), honoring the cross-layer
  * epoch-ms boundary rule.
  */
-export const sessions = pgTable("sessions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id")
+export const sessions = sqliteTable("sessions", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
   tokenHash: text("token_hash").notNull(),
-  createdAt: bigint("created_at", { mode: "number" }).notNull(),
-  expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
-  lastSeenAt: bigint("last_seen_at", { mode: "number" }),
+  createdAt: integer("created_at", { mode: "number" }).notNull(),
+  expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+  lastSeenAt: integer("last_seen_at", { mode: "number" }),
 }, (table) => [
   uniqueIndex("sessions_token_hash_unique").on(table.tokenHash),
 ]);

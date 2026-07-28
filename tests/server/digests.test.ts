@@ -606,7 +606,7 @@ test("POST /digests/run creates a manual digest run record", async () => {
     const json = await response.json();
     assertEquals(json.digest.status, "complete");
 
-    const rows = await database.execute(
+    const rows = database.all<{ trigger: string }>(
       sql`select trigger from digest_runs where user_id = ${userId} order by started_at desc limit 1`,
     );
     assertEquals(rows.length, 1);
@@ -626,22 +626,11 @@ test("POST /digests/run conflict preserves the active run for recovery", async (
       status: "running",
     });
 
-    const rollbackConflictAttempt = new Error("rollback conflict attempt");
-    try {
-      await database.transaction(async (transaction) => {
-        const conflictApp = buildApp(transaction as Database);
-        const runResponse = await conflictApp.request("/digests/run", {
-          ...jsonRequest("POST", { periodStartMs, periodEndMs }),
-          headers: { cookie, Origin: "http://127.0.0.1:5173" },
-        });
-        assertEquals(runResponse.status, 409);
-        throw rollbackConflictAttempt;
-      });
-    } catch (error) {
-      if (error !== rollbackConflictAttempt) {
-        throw error;
-      }
-    }
+    const runResponse = await app.request("/digests/run", {
+      ...jsonRequest("POST", { periodStartMs, periodEndMs }),
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(runResponse.status, 409);
 
     const runsResponse = await app.request("/digests/runs", {
       headers: { cookie, Origin: "http://127.0.0.1:5173" },
@@ -652,7 +641,7 @@ test("POST /digests/run conflict preserves the active run for recovery", async (
     assertEquals(runsJson.data[0].id, activeRun.id);
     assertEquals(runsJson.data[0].status, "running");
 
-    const rows = await database.execute(
+    const rows = database.all<{ id: string }>(
       sql`select id from digest_runs where user_id = ${userId}`,
     );
     assertEquals(rows.length, 1);

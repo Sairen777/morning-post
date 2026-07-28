@@ -1,123 +1,82 @@
 import { test } from "bun:test";
-import { assertEquals, assertRejects, assertThrows } from "../assertions.ts";
-import { resolveLocalDatabaseUrl } from "../../src/db/cleanup.ts";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { assertEquals, assertThrows } from "../assertions.ts";
 import {
-  resetApplicationSchemas,
-  resetLocalDatabase,
-} from "../../src/db/reset.ts";
+  cleanupLocalDatabase,
+  resolveLocalDatabasePath,
+} from "../../src/db/cleanup.ts";
+import { openDatabase } from "../../src/db/sqlite.ts";
+import { resetLocalDatabase } from "../../src/db/reset.ts";
 
-test("local database cleanup resolves a loopback development database", () => {
+test("local cleanup resolves the configured development file", () => {
   assertEquals(
-    resolveLocalDatabaseUrl({
-      DATABASE_URL: "  postgres://user:password@localhost:5432/morningpost  ",
-    }),
-    "postgres://user:password@localhost:5432/morningpost",
+    resolveLocalDatabasePath({ DATABASE_PATH: " ./data/app.sqlite " }),
+    resolve("./data/app.sqlite"),
   );
 });
 
-test("local database cleanup reads only its scoped environment variable", () => {
-  const originalDatabaseUrl = process.env.DATABASE_URL;
-  try {
-    process.env.DATABASE_URL =
-      "postgres://user:password@localhost:5432/morningpost";
-    assertEquals(
-      resolveLocalDatabaseUrl(),
-      "postgres://user:password@localhost:5432/morningpost",
+test("local cleanup rejects URLs, memory, and test or E2E files", () => {
+  for (const databasePath of [
+    "https://example.test/app.sqlite",
+    ":memory:",
+    "./data/app.test.sqlite",
+    "./data/app-e2e.sqlite",
+  ]) {
+    assertThrows(
+      () => resolveLocalDatabasePath({ DATABASE_PATH: databasePath }),
+      Error,
     );
-  } finally {
-    if (originalDatabaseUrl === undefined) {
-      delete process.env.DATABASE_URL;
-    } else {
-      process.env.DATABASE_URL = originalDatabaseUrl;
+  }
+  assertThrows(
+    () =>
+      resolveLocalDatabasePath({
+        DATABASE_PATH: "./data/app.sqlite",
+        TEST_DATABASE_PATH: "./data/app.sqlite",
+      }),
+    Error,
+    "refuses test and E2E",
+  );
+});
+
+test("cleanup removes application rows while retaining migration state", () => {
+  const root = mkdtempSync(join(tmpdir(), "morning-post-cleanup-"));
+  const databasePath = join(root, "app.sqlite");
+  const connection = openDatabase(databasePath);
+  connection.sqlite.exec(
+    "CREATE TABLE app_rows (id INTEGER PRIMARY KEY); CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY); INSERT INTO app_rows VALUES (1); INSERT INTO __drizzle_migrations VALUES (1)",
+  );
+  connection.close();
+  try {
+    cleanupLocalDatabase(databasePath);
+    const reopened = openDatabase(databasePath);
+    try {
+      assertEquals(reopened.sqlite.query("SELECT * FROM app_rows").all(), []);
+      assertEquals(
+        reopened.sqlite.query("SELECT * FROM __drizzle_migrations").all(),
+        [{ id: 1 }],
+      );
+    } finally {
+      reopened.close();
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("local database cleanup rejects missing, remote, system, and test databases", () => {
-  assertThrows(
-    () => resolveLocalDatabaseUrl({ DATABASE_URL: "  " }),
-    Error,
-    "DATABASE_URL is required",
-  );
-  assertThrows(
-    () =>
-      resolveLocalDatabaseUrl({
-        DATABASE_URL:
-          "postgres://user:password@database.example.com/morningpost",
-      }),
-    Error,
-    "refuses non-loopback",
-  );
-  assertThrows(
-    () =>
-      resolveLocalDatabaseUrl({
-        DATABASE_URL: "postgres://localhost/morningpost",
-      }),
-    Error,
-    "must include a username",
-  );
-  assertThrows(
-    () =>
-      resolveLocalDatabaseUrl({
-        DATABASE_URL: "postgres://user:password@localhost/postgres",
-      }),
-    Error,
-    "refuses protected database",
-  );
-  assertThrows(
-    () =>
-      resolveLocalDatabaseUrl({
-        DATABASE_URL: "postgres://user:password@localhost/morningpost_test",
-      }),
-    Error,
-    "refuses test and E2E databases",
-  );
-  assertThrows(
-    () =>
-      resolveLocalDatabaseUrl({
-        DATABASE_URL: "postgres://user:password@localhost/morningpost_e2e",
-      }),
-    Error,
-    "refuses test and E2E databases",
-  );
-});
-
-test("local database reset drops both application schemas and recreates public transactionally", async () => {
-  const operations: string[] = [];
-  let transactionCount = 0;
-  const client = {
-    async begin(
-      callback: (
-        transaction: { unsafe(operation: string): Promise<unknown> },
-      ) => Promise<void>,
-    ): Promise<void> {
-      transactionCount += 1;
-      await callback({
-        async unsafe(operation: string): Promise<unknown> {
-          operations.push(operation);
-          return [];
-        },
-      });
-    },
-  } as unknown as Parameters<typeof resetApplicationSchemas>[0];
-
-  await resetApplicationSchemas(client);
-
-  assertEquals(transactionCount, 1);
-  assertEquals(operations, [
-    "drop schema if exists public cascade",
-    "drop schema if exists drizzle cascade",
-    "create schema public",
-  ]);
-});
-
-test("local database reset applies cleanup's safety guard before connecting", async () => {
-  await assertRejects(
-    () =>
-      resetLocalDatabase(
-        "postgres://user:password@database.example.com/morningpost",
-      ),
-    Error,
-    "refuses non-loopback",
-  );
+test("reset removes the database and its WAL companions", () => {
+  const root = mkdtempSync(join(tmpdir(), "morning-post-reset-"));
+  const databasePath = join(root, "app.sqlite");
+  for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+    writeFileSync(path, "fixture");
+  }
+  try {
+    resetLocalDatabase(databasePath);
+    assertEquals(existsSync(databasePath), false);
+    assertEquals(existsSync(`${databasePath}-wal`), false);
+    assertEquals(existsSync(`${databasePath}-shm`), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

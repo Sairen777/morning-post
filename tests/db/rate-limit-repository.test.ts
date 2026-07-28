@@ -72,7 +72,7 @@ test("consumeRateLimit cleanup removes only a bounded batch of expired buckets",
       true,
     );
 
-    const remaining = await database.execute(
+    const remaining = database.all<{ count: number }>(
       sql`select count(*) as count
           from rate_limit_buckets
           where bucket_key like 'rate-limit-repository-expired-%'`,

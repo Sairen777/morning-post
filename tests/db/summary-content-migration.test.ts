@@ -1,76 +1,70 @@
 import { test } from "bun:test";
-import { assertEquals } from "../assertions.ts"
-import { readFile } from "node:fs/promises";
-import postgres from "postgres";
+import { eq, sql } from "drizzle-orm";
+import {
+  feeds,
+  sources,
+  summaries,
+  users,
+} from "../../src/db/schema/index.ts";
+import { withTestDb } from "../../src/db/testing.ts";
+import { assertEquals } from "../assertions.ts";
 
-test("summary content migration wraps legacy point arrays without data loss", async () => {
-  const databaseUrl = process.env.TEST_DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error("TEST_DATABASE_URL environment variable is not set");
-  }
-
-  const client = postgres(databaseUrl, { max: 1 });
-  try {
-    await client.begin(async (transaction) => {
-      await transaction.unsafe(`
-        CREATE TEMPORARY TABLE summaries (
-          id integer PRIMARY KEY,
-          points jsonb NOT NULL
-        ) ON COMMIT DROP
-      `);
-      await transaction`
-        INSERT INTO summaries (id, points)
-        VALUES
-          (1, ${transaction.json([])}),
-          (2, ${
-        transaction.json([
-          { text: "First", sourceUrl: null },
-          {
-            text: "Second",
-            sourceUrl: "https://example.com/second",
-            channel: "News",
-          },
-        ])
-      })
-      `;
-
-      const migration = await readFile(
-        "drizzle/0013_wandering_silver_fox.sql",
-        "utf8",
-      );
-      await transaction.unsafe(migration);
-
-      const rows =
-        await transaction`SELECT id, content FROM summaries ORDER BY id`;
-      assertEquals(Array.from(rows), [
-        { id: 1, content: { kind: "aggregate", points: [] } },
+test("SQLite summary schema round-trips structured content without data loss", async () => {
+  await withTestDb(async (database) => {
+    const now = Date.now();
+    const user = database.insert(users).values({
+      name: "Migration fixture",
+      email: "summary-migration@example.test",
+      systemPrompt: "",
+      createdAt: now,
+      updatedAt: now,
+    }).returning().get();
+    const source = database.insert(sources).values({
+      userId: user.id,
+      connectorId: "Telegram",
+      enabled: false,
+      createdAt: now,
+      updatedAt: now,
+    }).returning().get();
+    const feed = database.insert(feeds).values({
+      sourceId: source.id,
+      externalId: "migration-feed",
+      name: "Migration feed",
+      kind: "news",
+      createdAt: now,
+      updatedAt: now,
+    }).returning().get();
+    const content = {
+      kind: "aggregate" as const,
+      points: [
+        { text: "First", sourceUrl: null },
         {
-          id: 2,
-          content: {
-            kind: "aggregate",
-            points: [
-              { text: "First", sourceUrl: null },
-              {
-                text: "Second",
-                sourceUrl: "https://example.com/second",
-                channel: "News",
-              },
-            ],
-          },
+          text: "Second",
+          sourceUrl: "https://example.com/second",
+          channel: "News",
         },
-      ]);
+      ],
+    };
+    const inserted = database.insert(summaries).values({
+      feedId: feed.id,
+      periodStartMs: 1,
+      periodEndMs: 2,
+      content,
+      feedNameSnapshot: feed.name,
+      generatedAt: now,
+    }).returning().get();
 
-      const columns = await transaction`
-        SELECT attribute.attname AS name
-        FROM pg_attribute AS attribute
-        WHERE attribute.attrelid = 'summaries'::regclass
-          AND attribute.attnum > 0
-          AND NOT attribute.attisdropped
-        ORDER BY attribute.attnum
-      `;
-      assertEquals(Array.from(columns), [{ name: "id" }, { name: "content" }]);
-    });
-  } finally {
-    await client.end();
-  }
+    const row = database.select().from(summaries)
+      .where(eq(summaries.id, inserted.id)).get();
+    assertEquals(row?.content, content);
+
+    const columns = database.all<{ name: string; type: string }>(
+      sql`PRAGMA table_info(summaries)`,
+    );
+    assertEquals(
+      columns.find(({ name }) => name === "content")?.type,
+      "TEXT",
+    );
+    assertEquals(columns.some(({ name }) => name === "points"), false);
+  });
 });

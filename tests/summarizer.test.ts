@@ -91,6 +91,7 @@ function createTestSummarizer(
 ): OpenAICompatibleSummarizerService {
   return new OpenAICompatibleSummarizerService({
     models: TEST_MODELS,
+    summaryMaxOutputTokens: 4_000,
     ...options,
   });
 }

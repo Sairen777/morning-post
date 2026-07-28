@@ -241,7 +241,7 @@ async function withConnectorDeadline<T>(
         : new Error("connector operation aborted");
     }
     cancelDeadline();
-    return await commit();
+    return commit();
   };
   try {
     const result = operation(operationSignal, commitOperation);

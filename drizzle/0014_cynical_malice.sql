@@ -1,1 +1,0 @@
-ALTER TABLE "sources" ADD COLUMN "show_paid_post_titles" boolean DEFAULT false NOT NULL;

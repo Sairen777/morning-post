@@ -44,27 +44,18 @@ directly.
 ### Prerequisites
 - [Bun](https://bun.sh/) 1.3.14
 - [Node.js](https://nodejs.org/) 22.13+ (frontend and Playwright toolchain)
-- [PostgreSQL](https://www.postgresql.org/) 16+ (or Docker)
+- [SQLite](https://sqlite.org/) is built into Bun; no separate database service is required
 - [OpenSSL](https://www.openssl.org/) (for generating the credential master key)
 - Playwright Chromium (`bun run playwright:install`) when using X or browser E2E tests
 
 ### Database
 
-The easiest way to get a local Postgres is the included Docker Compose file:
-
-```sh
-docker compose up -d
-```
-
-This starts Postgres on port 5432 with user/password/database `morningpost`
-and an additional `morningpost_test` database for tests.
-
-If you already have Postgres running, create the databases manually:
-
-```sh
-createdb morningpost
-createdb morningpost_test
-```
+Morning Post stores its data in a local SQLite file. By default it uses
+`./data/morning-post.sqlite`; set `DATABASE_PATH` to choose another local file.
+The database client creates the parent directory automatically, and
+`bun run db:migrate` applies pending migrations. Keep the database on storage
+local to the single application host, and back up the database together with
+its `-wal` and `-shm` companions while the application is stopped.
 
 ### Environment
 
@@ -75,8 +66,7 @@ contains deployment credentials. The main settings are:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string | `postgres://morningpost:morningpost@localhost:5432/morningpost` |
-| `TEST_DATABASE_URL` | Test database connection string | `postgres://morningpost:morningpost@localhost:5432/morningpost_test` |
+| `DATABASE_PATH` | Local SQLite database file | `./data/morning-post.sqlite` |
 | `CREDENTIAL_MASTER_KEY` | 32-byte base64 key for credential encryption. Generate: `openssl rand -base64 32` | (required) |
 | `TELEGRAM_API_ID` | Telegram API ID from [my.telegram.org/apps](https://my.telegram.org/apps) | (required for Telegram) |
 | `TELEGRAM_API_HASH` | Telegram API hash (same page) | (required for Telegram) |
@@ -91,10 +81,6 @@ contains deployment credentials. The main settings are:
 | `ALLOWED_ORIGINS` | Comma-separated allowed origins for Origin-guard | `http://127.0.0.1:5173,http://localhost:5173` |
 | `TRUSTED_PROXY_COUNT` | Number of trusted proxies for client IP in rate limiting | `0` |
 | `MAX_REQUEST_BODY_BYTES` | Maximum JSON request body size | `1048576` (1 MiB) |
-| `DB_POOL_MAX` | Maximum Postgres connection pool size | `10` |
-| `DB_IDLE_TIMEOUT_SECONDS` | Idle connection timeout | `20` |
-| `DB_CONNECT_TIMEOUT_SECONDS` | Connection connect timeout | `30` |
-| `DB_SSL_MODE` | Postgres SSL mode: `disable`, `require`, `verify-full` | `disable` |
 | `ALLOW_REMOTE_SUMMARIZATION` | Allow non-loopback summarizer providers | `false` |
 | `CONNECTOR_TIMEOUT_MS` | Connector call timeout in milliseconds | `120000` |
 | `X_BROWSER_PROFILE_ROOT` | Dedicated persistent Chromium profiles; restrict this path to the Morning Post process user | `.x-browser-profiles` |
@@ -150,12 +136,6 @@ Tokens are stable — concurrent SPA requests do not invalidate one another. Idl
 sessions expire after 30 days; active use extends the expiry without changing the
 token. Explicit logout revokes the token immediately.
 
-#### Production database TLS
-
-For deployments where the database is not on loopback, set `DB_SSL_MODE=require`
-or `verify-full`. The local default is `disable` (plaintext on loopback). Also
-configure `DB_POOL_MAX`, `DB_IDLE_TIMEOUT_SECONDS`, and
-`DB_CONNECT_TIMEOUT_SECONDS` for your workload.
 
 ### Migrations
 
@@ -177,7 +157,7 @@ housekeeping schedules with in-process overlap protection.
 | `bun run typecheck` | Type-check the backend and web workspace |
 | `bun run db:generate` | Generate a Drizzle migration |
 | `bun run db:migrate` | Apply pending migrations |
-| `bun run db:reset` | Drop the database schema and migration history, recreate the schema, then reapply all pending migrations |
+| `bun run db:reset` | Delete the local SQLite file and its WAL/SHM companions, then reapply all pending migrations |
 
 ### Frontend
 
@@ -200,12 +180,10 @@ Vinxi at `127.0.0.1:5173`. Its Vite proxy forwards API calls, including
    bun run playwright:install
    ```
 
-3. Postgres must be running (`docker compose up -d` or local service).
+3. Optionally set `DATABASE_PATH` in `.env.production.local`; otherwise the
+   backend uses `./data/morning-post.sqlite`.
 
-4. `.env.production.local` must include `DATABASE_URL` and `TEST_DATABASE_URL`.
-   See [Environment](#environment) above for the full variable list.
-
-5. Apply migrations:
+4. Apply migrations (the database parent directory is created automatically):
 
    ```sh
    bun run db:migrate
@@ -290,32 +268,32 @@ check.
 | `bun run test` | Full backend suite (`bun:test`) |
 | `bun run test:x:live` | Opt-in contract check against an already authenticated managed X profile and target |
 | `bun run playwright:install` | Install the pinned Chromium build used by Playwright |
-| `bun run db:cleanup` | Destructively truncate every public table in the loopback development database from `DATABASE_URL` |
-| `bun run db:reset` | Destructively drop and recreate the database schema and migration history in the loopback development database from `DATABASE_URL`, then reapply migrations |
+| `bun run db:cleanup` | Destructively delete application rows from the local SQLite database while preserving its schema and migration history |
+| `bun run db:reset` | Destructively delete the local SQLite file and its WAL/SHM companions, then reapply migrations |
 | `bun run web:test` | Frontend unit/component suite (Vitest) |
 | `bun run web:typecheck` | Web TypeScript type checking |
 | `bun run web:build` | Production web build |
 | `bun run web:e2e` | Playwright smoke tests with dedicated backend/frontend processes and an isolated database |
 
-`bun run db:cleanup` clears all application data from the local development
-database while preserving its schema and applied migration records. It refuses
-non-loopback hosts, PostgreSQL system databases, and database names ending in
-`_test` or `_e2e`. This command is destructive and cannot be undone.
+`bun run db:cleanup` clears application data from the local development SQLite
+file selected by `DATABASE_PATH` (default `./data/morning-post.sqlite`) while
+preserving the schema and applied migration records. It refuses in-memory or
+URL-style paths and refuses a path configured as the test or E2E database.
+This command is destructive and cannot be undone.
 
-`bun run db:reset` drops the entire application schema, including the `public`
-schema and Drizzle migration history, recreates the `public` schema, then
-reapplies all pending migrations. This is a full schema rebuild — unlike
-`db:cleanup`, which preserves structure and history. It uses the same guards
-that refuse non-loopback hosts, PostgreSQL system databases, and database names
-ending in `_test` or `_e2e`. This command is destructive and cannot be undone.
+`bun run db:reset` closes and deletes that local SQLite file together with its
+`-wal` and `-shm` companions; the command then reapplies all pending migrations.
+It uses the same local-file and test/E2E path guards. This is a full rebuild,
+unlike `db:cleanup`, and cannot be undone.
 
-The E2E command never reuses the development servers or databases. It serves
-the API on `127.0.0.1:3100`, the web app on `127.0.0.1:5174`, and derives a
-database ending in `_e2e` from `TEST_DATABASE_URL` (or `DATABASE_URL` when no
-test URL is configured). Set `E2E_DATABASE_URL` to override that derivation; its
-database name must end in `_e2e` and must differ from both configured backend
-databases. The runner migrates and truncates only the isolated E2E database
-before startup, then truncates it again during teardown.
+Backend database tests use a fresh in-memory SQLite database for each callback
+and close it afterward. The E2E command never reuses the development servers or
+database. It serves the API on `127.0.0.1:3100`, the web app on
+`127.0.0.1:5174`, and uses `E2E_DATABASE_PATH` (default
+`./data/morning-post-e2e.sqlite`). The path must be a local `.sqlite` file whose
+name identifies it as E2E and must differ from `DATABASE_PATH` and
+`TEST_DATABASE_PATH`. E2E setup and teardown remove the file and its `-wal` and
+`-shm` companions.
 
 **Verify in the database** after a browser smoke run:
 

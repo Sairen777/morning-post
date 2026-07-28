@@ -1,10 +1,11 @@
-const databaseUrl = process.env["DATABASE_URL"] ?? "";
+const databasePath = process.env["DATABASE_PATH"] ??
+  "./data/morning-post.sqlite";
 
 export default {
   schema: "./src/db/schema/index.ts",
   out: "./drizzle",
-  dialect: "postgresql",
+  dialect: "sqlite",
   dbCredentials: {
-    url: databaseUrl,
+    url: databasePath,
   },
 };

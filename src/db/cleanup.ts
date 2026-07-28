@@ -1,124 +1,72 @@
-import postgres from "postgres";
-
-const LOCAL_DATABASE_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-const PROTECTED_DATABASE_NAMES = new Set([
-  "postgres",
-  "template0",
-  "template1",
-]);
+import { resolve } from "node:path";
+import { getConfig } from "../config.ts";
+import { openDatabase } from "./sqlite.ts";
 
 type Environment = Record<string, string | undefined>;
 
-export function resolveLocalDatabaseUrl(
-  environment: Environment = { DATABASE_URL: process.env["DATABASE_URL"] },
+export function resolveLocalDatabasePath(
+  environment: Environment = {
+    DATABASE_PATH: process.env["DATABASE_PATH"],
+    TEST_DATABASE_PATH: process.env["TEST_DATABASE_PATH"],
+    E2E_DATABASE_PATH: process.env["E2E_DATABASE_PATH"],
+  },
 ): string {
-  const configuredUrl = environment.DATABASE_URL?.trim();
-  if (!configuredUrl) {
-    throw new Error("DATABASE_URL is required to clean the local database");
+  const configuredPath = environment.DATABASE_PATH?.trim() ||
+    "./data/morning-post.sqlite";
+  if (configuredPath === ":memory:" || /^[a-z][a-z\d+.-]*:\/\//i.test(configuredPath)) {
+    throw new Error("Local database cleanup requires a local SQLite file path");
   }
 
-  let parsedUrl: URL;
+  const databasePath = resolve(configuredPath);
+  for (const protectedPath of [
+    environment.TEST_DATABASE_PATH,
+    environment.E2E_DATABASE_PATH,
+  ]) {
+    if (protectedPath?.trim() && resolve(protectedPath.trim()) === databasePath) {
+      throw new Error("Local database cleanup refuses test and E2E database files");
+    }
+  }
+  if (/(?:^|[._-])(test|e2e)(?:[._-]|$)/i.test(databasePath.split("/").at(-1) ?? "")) {
+    throw new Error("Local database cleanup refuses test and E2E database files");
+  }
+  return databasePath;
+}
+
+export function cleanupLocalDatabase(
+  databasePath = resolveLocalDatabasePath(),
+): void {
+  const safePath = resolveLocalDatabasePath({
+    DATABASE_PATH: databasePath,
+    TEST_DATABASE_PATH: process.env["TEST_DATABASE_PATH"],
+    E2E_DATABASE_PATH: process.env["E2E_DATABASE_PATH"],
+  });
+  const connection = openDatabase(safePath);
   try {
-    parsedUrl = new URL(configuredUrl);
-  } catch {
-    throw new Error("DATABASE_URL must be a valid URL");
-  }
-  if (
-    parsedUrl.protocol !== "postgres:" && parsedUrl.protocol !== "postgresql:"
-  ) {
-    throw new Error("DATABASE_URL must use postgres or postgresql");
-  }
-
-  const hostname = parsedUrl.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (!LOCAL_DATABASE_HOSTS.has(hostname)) {
-    throw new Error(
-      "Local database cleanup refuses non-loopback DATABASE_URL hosts",
-    );
-  }
-
-  const databaseName = decodeURIComponent(
-    parsedUrl.pathname.replace(/^\/+/, ""),
-  );
-  if (!databaseName) {
-    throw new Error("DATABASE_URL must include a database name");
-  }
-  if (PROTECTED_DATABASE_NAMES.has(databaseName)) {
-    throw new Error(
-      `Local database cleanup refuses protected database ${databaseName}`,
-    );
-  }
-  if (databaseName.endsWith("_test") || databaseName.endsWith("_e2e")) {
-    throw new Error("Local database cleanup refuses test and E2E databases");
-  }
-
-  if (!parsedUrl.username) {
-    throw new Error("DATABASE_URL must include a username");
-  }
-
-  return parsedUrl.toString();
-}
-
-export function createLocalDatabaseClient(databaseUrl: string): postgres.Sql {
-  const safeDatabaseUrl = resolveLocalDatabaseUrl({ DATABASE_URL: databaseUrl });
-  const parsedUrl = new URL(safeDatabaseUrl);
-  return postgres(
-    safeDatabaseUrl,
-    {
-      host: parsedUrl.hostname,
-      port: Number(parsedUrl.port || 5432),
-      database: decodeURIComponent(parsedUrl.pathname.replace(/^\/+/, "")),
-      user: decodeURIComponent(parsedUrl.username),
-      pass: () => decodeURIComponent(parsedUrl.password),
-      max: 1,
-      ssl: false,
-      idle_timeout: 0,
-      connect_timeout: 30,
-      max_lifetime: 0,
-      max_pipeline: 100,
-      backoff: false,
-      keep_alive: 60,
-      prepare: true,
-      debug: false,
-      fetch_types: true,
-      publications: "alltables",
-      target_session_attrs: "read-write",
-    } as Parameters<typeof postgres>[1],
-  );
-}
-
-export async function truncatePublicTables(
-  client: postgres.Sql,
-): Promise<void> {
-  const tables = await client<{ tablename: string }[]>`
-    select tablename
-    from pg_tables
-    where schemaname = 'public'
-    order by tablename
-  `;
-  if (tables.length === 0) return;
-
-  const tableNames = tables.map(({ tablename }) =>
-    `"${tablename.replaceAll('"', '""')}"`
-  ).join(", ");
-  await client.unsafe(`truncate table ${tableNames} restart identity cascade`);
-}
-
-export async function cleanupLocalDatabase(
-  databaseUrl = resolveLocalDatabaseUrl(),
-): Promise<void> {
-  const client = createLocalDatabaseClient(databaseUrl);
-  try {
-    await truncatePublicTables(client);
+    const tableNames = connection.sqlite.query<
+      { name: string },
+      []
+    >("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> '__drizzle_migrations' ORDER BY name").all();
+    connection.sqlite.transaction(() => {
+      connection.sqlite.exec("PRAGMA defer_foreign_keys = ON");
+      for (const { name } of tableNames) {
+        connection.sqlite.exec(`DELETE FROM "${name.replaceAll('"', '""')}"`);
+      }
+      const hasSequence = connection.sqlite.query<{ present: number }, []>(
+        "SELECT 1 AS present FROM sqlite_schema WHERE type = 'table' AND name = 'sqlite_sequence'",
+      ).get();
+      if (hasSequence) connection.sqlite.exec("DELETE FROM sqlite_sequence");
+    }).immediate();
   } finally {
-    await client.end();
+    connection.close();
   }
 }
 
 if (import.meta.main) {
-  const databaseUrl = resolveLocalDatabaseUrl();
-  await cleanupLocalDatabase(databaseUrl);
-  const databaseName = decodeURIComponent(
-    new URL(databaseUrl).pathname.replace(/^\/+/, ""),
-  );
-  console.log(`Cleared local database ${databaseName}`);
+  const databasePath = resolveLocalDatabasePath({
+    DATABASE_PATH: getConfig().databasePath,
+    TEST_DATABASE_PATH: process.env["TEST_DATABASE_PATH"],
+    E2E_DATABASE_PATH: process.env["E2E_DATABASE_PATH"],
+  });
+  cleanupLocalDatabase(databasePath);
+  console.log(`Cleared local database ${databasePath}`);
 }

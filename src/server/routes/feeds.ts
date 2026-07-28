@@ -22,8 +22,8 @@ import {
 import { NotFoundError } from "../errors.ts";
 import { validate } from "../validate.ts";
 
-const POSTGRES_INTEGER_MIN = -2_147_483_648;
-const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const POSITION_INTEGER_MIN = -2_147_483_648;
+const POSITION_INTEGER_MAX = 2_147_483_647;
 const MAXIMUM_CUSTOM_PROMPT_LENGTH = 10_000;
 
 const idParamsSchema = z.object({
@@ -41,14 +41,14 @@ const subscribeFeedBodySchema = z.object({
   name: z.string().min(1, "name is required"),
   kind: feedKindSchema,
   customPrompt: z.string().max(MAXIMUM_CUSTOM_PROMPT_LENGTH).nullable().optional(),
-  position: z.number().int().min(POSTGRES_INTEGER_MIN).max(POSTGRES_INTEGER_MAX).nullable().optional(),
+  position: z.number().int().min(POSITION_INTEGER_MIN).max(POSITION_INTEGER_MAX).nullable().optional(),
   summarizationMode: z.enum(summarizationModes).optional(),
 }).strict();
 
 const updateFeedBodySchema = z.object({
   kind: feedKindSchema.optional(),
   customPrompt: z.string().max(MAXIMUM_CUSTOM_PROMPT_LENGTH).nullable().optional(),
-  position: z.number().int().min(POSTGRES_INTEGER_MIN).max(POSTGRES_INTEGER_MAX).nullable().optional(),
+  position: z.number().int().min(POSITION_INTEGER_MIN).max(POSITION_INTEGER_MAX).nullable().optional(),
   enabled: z.boolean().optional(),
   summarizationMode: z.enum(summarizationModes).optional(),
   relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]).optional(),

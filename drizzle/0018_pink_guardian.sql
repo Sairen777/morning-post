@@ -1,1 +1,0 @@
-ALTER TABLE "digest_runs" ADD COLUMN "model_usage" jsonb;

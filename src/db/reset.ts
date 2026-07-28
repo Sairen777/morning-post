@@ -1,41 +1,26 @@
-import type postgres from "postgres";
-import {
-  createLocalDatabaseClient,
-  resolveLocalDatabaseUrl,
-} from "./cleanup.ts";
+import { existsSync, unlinkSync } from "node:fs";
+import { getConfig } from "../config.ts";
+import { resolveLocalDatabasePath } from "./cleanup.ts";
 
-const SCHEMA_RESET_OPERATIONS = [
-  "drop schema if exists public cascade",
-  "drop schema if exists drizzle cascade",
-  "create schema public",
-] as const;
-
-export async function resetApplicationSchemas(
-  client: Pick<postgres.Sql, "begin">,
-): Promise<void> {
-  await client.begin(async (transaction) => {
-    for (const operation of SCHEMA_RESET_OPERATIONS) {
-      await transaction.unsafe(operation);
-    }
+export function resetLocalDatabase(
+  databasePath = resolveLocalDatabasePath(),
+): void {
+  const safePath = resolveLocalDatabasePath({
+    DATABASE_PATH: databasePath,
+    TEST_DATABASE_PATH: process.env["TEST_DATABASE_PATH"],
+    E2E_DATABASE_PATH: process.env["E2E_DATABASE_PATH"],
   });
-}
-
-export async function resetLocalDatabase(
-  databaseUrl = resolveLocalDatabaseUrl(),
-): Promise<void> {
-  const client = createLocalDatabaseClient(databaseUrl);
-  try {
-    await resetApplicationSchemas(client);
-  } finally {
-    await client.end();
+  for (const path of [safePath, `${safePath}-wal`, `${safePath}-shm`]) {
+    if (existsSync(path)) unlinkSync(path);
   }
 }
 
 if (import.meta.main) {
-  const databaseUrl = resolveLocalDatabaseUrl();
-  await resetLocalDatabase(databaseUrl);
-  const databaseName = decodeURIComponent(
-    new URL(databaseUrl).pathname.replace(/^\/+/, ""),
-  );
-  console.log(`Reset local database ${databaseName}`);
+  const databasePath = resolveLocalDatabasePath({
+    DATABASE_PATH: getConfig().databasePath,
+    TEST_DATABASE_PATH: process.env["TEST_DATABASE_PATH"],
+    E2E_DATABASE_PATH: process.env["E2E_DATABASE_PATH"],
+  });
+  resetLocalDatabase(databasePath);
+  console.log(`Reset local database ${databasePath}`);
 }

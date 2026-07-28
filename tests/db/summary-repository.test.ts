@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assertEquals, assertRejects } from "../assertions.ts"
+import { assertEquals, assertRejects, assertThrows } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import {
   CredentialCipher,
@@ -416,16 +416,10 @@ test("summary repository rejects invalid tagged content at the boundary", async 
         },
       });
 
-      await assertRejects(
-        () =>
-          listSummariesForUserPeriod(
-            database,
-            user.id,
-            periodStartMs,
-            periodEndMs,
-          ),
-        z.ZodError,
-      );
+      assertThrows(() => listSummariesForUserPeriod(database,
+      user.id,
+      periodStartMs,
+      periodEndMs,), z.ZodError,);
     }
     await assertRejects(
       () =>
@@ -444,15 +438,12 @@ test("summary check constraint rejects reversed period order", async () => {
       "summary-check-period@example.com",
     );
 
-    await assertRejects(
-      () =>
-        upsertSummaryForPeriod(database, {
-          feedId: feed.id,
-          periodStartMs: periodEndMs,
-          periodEndMs: periodStartMs,
-          content: { kind: "aggregate", points: [] },
-          feedNameSnapshot: feed.name,
-        }),
-    );
+    assertThrows(() => upsertSummaryForPeriod(database, {
+      feedId: feed.id,
+      periodStartMs: periodEndMs,
+      periodEndMs: periodStartMs,
+      content: { kind: "aggregate", points: [] },
+      feedNameSnapshot: feed.name,
+    }), );
   });
 });

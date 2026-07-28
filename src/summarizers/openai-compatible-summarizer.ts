@@ -38,6 +38,7 @@ export interface OpenAICompatibleSummarizerOptions {
   maxTextBytesPerChunk?: number;
   maxItemsPerChunk?: number;
   maxImageBytes?: number;
+  summaryMaxOutputTokens?: number;
   allowRemoteSummarization?: boolean;
 }
 
@@ -212,7 +213,8 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       config.summarizerMaxItemsPerChunk;
     this.maxImageBytes = options.maxImageBytes ??
       config.summarizerMaxImageBytes;
-    this.summaryMaxOutputTokens = config.summaryMaxOutputTokens;
+    this.summaryMaxOutputTokens = options.summaryMaxOutputTokens ??
+      config.summaryMaxOutputTokens;
     this.summaryBatchMaxOutputTokens = config.summaryBatchMaxOutputTokens;
     this.summaryMaxAttempts = config.summaryMaxAttempts;
     this.mediaMaxOutputTokens = config.mediaMaxOutputTokens;

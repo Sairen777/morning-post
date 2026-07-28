@@ -425,7 +425,7 @@
         <p class="eyebrow">Morning Post · Technical Design Documentation</p>
         <h1>Current architecture, self-host posture, security, and scalability review</h1>
         <p
-          class="lede">This document records the repository architecture as reviewed on 2026-07-27 and the supported v1 deployment posture of one independently operated single-owner self-host. Current implementation coverage includes name-only first-run owner setup, passwordless continuation with compatibility for existing password-backed owners, the Bun 1.3.14/Hono API, SolidStart web UI, PostgreSQL persistence and rate limiting, stale-recovery-first scheduling for zero or one owner, the connector-neutral story pipeline, Telegram and Substack connectors, the Playwright 1.61 X browser connector, and the OpenAI-compatible analysis and summarization boundary. X uses a separate persistent Chromium profile, headed manual login and unlock, and headless rendered-DOM discovery and capture. It remains an unsupported and brittle browser-automation integration that can trigger X account restrictions.</p>
+          class="lede">This document records the repository architecture as reviewed on 2026-07-28 and the supported v1 deployment posture of one independently operated single-owner self-host. Current implementation coverage includes name-only first-run owner setup, passwordless continuation with compatibility for existing password-backed owners, the Bun 1.3.14/Hono API, SolidStart web UI, Bun-native SQLite persistence and atomic rate limiting, stale-recovery-first scheduling for zero or one owner, the connector-neutral story pipeline, Telegram and Substack connectors, the Playwright 1.61 X browser connector, and the OpenAI-compatible analysis and summarization boundary.</p>
         <p
           class="diagram-note">Diagrams are embedded as Mermaid source and intentionally do not load a CDN; this keeps the file offline and self-contained. Render with a local Mermaid tool if a graphical version is needed.</p>
         <div class="meta-grid" aria-label="document metadata">
@@ -485,7 +485,7 @@
             <div class="card-title">Operational boundaries and limits</div>
             <ul>
               <li>Bun processes inherit the operating-system privileges of their account; filesystem, environment, network, subprocess, and native-module boundaries must therefore be enforced by deployment isolation and application code.</li>
-              <li>Rate limiting uses atomic PostgreSQL <code>rate_limit_buckets</code> counters. Direct socket addresses are trusted by default; forwarding headers are considered only when <code>TRUSTED_PROXY_COUNT</code> explicitly describes the proxy chain.</li>
+              <li>Rate limiting uses atomic SQLite <code>rate_limit_buckets</code> upserts. Direct socket addresses are trusted by default; forwarding headers are considered only when <code>TRUSTED_PROXY_COUNT</code> explicitly describes the proxy chain.</li>
               <li>Each digest tick recovers stale runs before selecting the earliest user row as the owner, then processes zero or one owner. Croner <code>protect: true</code> skips overlapping callbacks in the supported single API process; there is no scheduler lease or runtime leader election.</li>
               <li>Story analysis and summarization are provider boundaries with deployment-wide text and vision endpoints, deterministic text/item/image caps, and run-local media-description fallback behavior.</li>
               <li>Connector media remain local, but per-connector quotas and a weekly TTL sweep bound retention on a single host.</li>
@@ -503,23 +503,23 @@
         </div>
 
         <div class="callout warning">
-        <strong>Security decision:</strong> Self-hosting changes who holds custody; it does not make Morning Post zero-knowledge. The primary owner controls the instance, database, media, tokens, and dedicated X Chromium profile, but scheduled work still requires local decryption. Plaintext exists in the process after decryption and crosses the operator-controlled host boundary when a remote summarizer is configured. Credential encryption, owner authentication, internal <code>userId</code> ownership scoping, PostgreSQL-backed rate limits, TLS, protected backups, profile-directory access controls, and host hardening remain defense-in-depth; Morning Post v1 does not introduce a shared service, database, or centralized credential vault. X browser automation is implemented but is not official, stable, or hidden from X, and it can cause challenges or account restrictions.</div>
+        <strong>Security decision:</strong> Self-hosting changes who holds custody; it does not make Morning Post zero-knowledge. The primary owner controls the instance, SQLite database file, media, tokens, and dedicated X Chromium profile, but scheduled work still requires local decryption. Plaintext exists in the process after decryption and crosses the operator-controlled host boundary when a remote summarizer is configured. Credential encryption, owner authentication, internal <code>userId</code> ownership scoping, atomic database-backed rate limits, protected backups, file and profile-directory access controls, and host hardening remain defense-in-depth; Morning Post v1 does not introduce a shared service, database, or centralized credential vault.</div>
       </section>
 
       <section id="context">
         <div class="section-kicker">System context</div>
         <h2>Morning Post v1 supports independent, single-owner self-hosts; the code retains user-scoped boundaries.</h2>
-        <p>Morning Post is open-source software deployed and operated independently: each supported v1 instance has one primary owner and its own API process, PostgreSQL database, media directories, connector credentials, and summarizer configuration. There is no shared Morning Post control plane, hosted database, or project-operated credential store. The account surface is <code>GET /auth/setup</code>, atomic name-only first-run <code>POST /auth/setup</code>, owner <code>POST /auth/login</code> with an optional password determined by the setup-status response, <code>POST /auth/logout</code>, and authenticated <code>GET</code>/<code>PATCH /auth/me</code>; <code>/auth/register</code> is absent and email is neither a login identity nor a public profile field. Fresh owners are passwordless, while an upgraded earliest owner whose existing hash was preserved remains password-protected. Internally, tables and repositories remain <code>userId</code>-scoped as a containment boundary. The earliest <code>users</code> row by <code>(createdAt, id)</code> is the owner after an upgrade; later legacy rows remain stored but cannot use public login and are never scheduled.</p>
+        <p>Morning Post is open-source software deployed and operated independently: each supported v1 instance has one primary owner and its own API process, local SQLite database file, media directories, connector credentials, and summarizer configuration. There is no shared Morning Post control plane, hosted database, or project-operated credential store. The account surface remains name-only setup and deterministic owner continuation; public registration and email login are absent.</p>
 
         <pre class="mermaid">flowchart LR
   Browser["Primary owner's browser\nSolidStart SPA"]
 
   subgraph Instance["One operator-controlled Morning Post v1 instance"]
     API["Bun 1.3.14 + Hono API"]
-    DB[("PostgreSQL")]
+    DB[("SQLite\nlocal database file")]
     Media[("Local media dirs\nall connector dirs + media/")]
     Scheduler["Croner scheduler\nrecover stale → zero or one owner"]
-    API -->|Drizzle/postgres.js| DB
+    API -->|Drizzle bun-sqlite / bun:sqlite| DB
     API -->|read/write media| Media
     Scheduler --> API
   end
@@ -541,7 +541,7 @@
             <ul>
               <li><strong>Deployment boundary:</strong> one primary owner operates one independent instance and controls its database, media, connector tokens, encryption configuration, backups, and host. Self-hosting removes project-wide custody, not the need for least privilege, TLS where traffic leaves loopback, protected backups, patching, and host isolation.</li>
               <li><strong>Browser → API:</strong> cookie-authenticated requests. Origin guard middleware on unsafe requests validates <code>Origin</code> or <code>Referer</code> against the configured <code>ALLOWED_ORIGINS</code>. Security headers include HSTS, frame denial (<code>DENY</code>), and <code>nosniff</code>. Body size is limited by <code>MAX_REQUEST_BODY_BYTES</code>. Even with one primary owner, authentication and <code>userId</code> filters contain stale-session, route, and persistence mistakes and remain future-safe boundaries.</li>
-              <li><strong>API → PostgreSQL:</strong> persistence for sensitive metadata and encrypted credentials. <code>DB_SSL_MODE</code> configures TLS (default <code>disable</code> for local loopback; <code>require</code> or <code>verify-full</code> for remote). Pool size, idle timeout, and connect timeout are explicitly configured from env vars.</li>
+              <li><strong>API → SQLite file:</strong> Bun 1.3.14 <code>bun:sqlite</code> through Drizzle's <code>bun-sqlite</code> driver persists sensitive metadata and encrypted credentials. <code>DATABASE_PATH</code> resolves by explicit override, then environment, then <code>./data/morning-post.sqlite</code>. The connection uses strict binding mode, <code>foreign_keys=ON</code>, WAL, a 5-second busy timeout, and <code>synchronous=FULL</code>. The database and its WAL/SHM companions must remain on a local filesystem, not NFS or SMB, with directory and files readable and writable only by the dedicated process identity.</li>
               <li><strong>API → Telegram:</strong> Telegram session credentials are full-account bearer tokens. Server custody is unavoidable for scheduled digests.</li>
               <li><strong>API → Substack:</strong> users explicitly import <code>substack.sid</code> and may also provide <code>connect.sid</code> when their browser has it; Morning Post never accepts a Substack password or raw cookie header. Account-subscription discovery and paid/full post retrieval send only the provided session cookies to the fixed <code>https://substack.com</code> origin. Manual publication validation fetches public archives without cookies through the IP-pinned HTTPS boundary. The integration replays an unsupported browser session and may conflict with Substack terms; the UI discloses that risk before connection.</li>
               <li><strong>API → dedicated X Chromium profile → X:</strong> the implemented Playwright 1.61 connector uses a separate persistent Chromium profile, never the operator's daily browser. A headed window with a working display is required for the owner to perform manual X login, 2FA/challenges, and X Chat unlock; discovery and capture subsequently reuse the profile headlessly. Every headed or headless browser operation and profile deletion takes an exclusive profile lease. X cookies and local storage remain in the profile directory, while the encrypted source credential contains only its canonical profile ID. The connector does not spoof or conceal automation. It is unsupported and brittle, can break when the rendered DOM changes, and can cause X challenges, suspension, or other restrictions.</li>
@@ -596,7 +596,7 @@
 
     Collector["X browser collector\n(Playwright controller)"]
     Import["Ephemeral rendered DOM\n→ normalized posts/messages\n+ visible metrics/reactions"]
-    State[("PostgreSQL\ncaptured posts + messages\nanalyses, stories, summaries")]
+    State[("SQLite\ncaptured posts + messages\nanalyses, stories, summaries")]
     Pipeline["Existing digest pipeline"]
 
     Profile --> Collector
@@ -645,14 +645,18 @@
               <section id="runtime-startup">
                 <div class="section-kicker">Runtime and startup</div>
                 <h2>Local startup pins the Bun toolchain, listener addresses, scheduler semantics, and browser proxy path.</h2>
-                <p>The backend runtime and workspace package manager require Bun <code>1.3.14</code>; PostgreSQL and OpenSSL are service/cryptography prerequisites. Node.js <code>22.13+</code> remains a frontend and Playwright toolchain prerequisite because <code>apps/web</code> declares that engine; it is not the top-level package manager. <code>bun install</code> installs the root package and the <code>apps/web</code> workspace. Root backend scripts explicitly load <code>.env.production.local</code>, so startup does not depend on implicit environment-file discovery. Canonical operations are <code>bun run db:migrate</code>, <code>bun run dev:api</code>, <code>bun run start</code>, <code>bun run dev:cli</code>, <code>bun run test</code>, <code>bun run typecheck</code>, <code>bun run web:test</code>, and <code>bun run web:e2e</code>; generation, cleanup, fixture capture, web development, build, preview, and focused typecheck commands use the other exact scripts declared in <code>package.json</code>.</p>
+                <p>The backend runtime and workspace package manager require Bun <code>1.3.14</code>; SQLite is built into Bun and needs no separate database service. Node.js <code>22.13+</code> remains a frontend and Playwright toolchain prerequisite because <code>apps/web</code> declares that engine; it is not the top-level package manager. <code>bun install</code> installs the root package and the <code>apps/web</code> workspace. Root backend scripts explicitly load <code>.env.production.local</code>, so startup does not depend on implicit environment-file discovery.</p>
                 <p>X operation additionally requires the Chromium build pinned for Playwright <code>1.61.0</code>; install it with <code>bun run playwright:install</code>. The API can perform discovery and scheduled capture headlessly, but the first X connection cannot: manual login, 2FA or provider challenges, and X Chat unlock require a headed browser on a working display. Headless servers therefore need an operator-accessible graphical session for connection setup.</p>
-                <p>The database client dependency is pinned to postgres.js <code>3.4.9</code>. This release clamps reconnect delays before they reach the runtime timer boundary, preventing a stale idle connection from producing a negative timeout when the pool reconnects.</p>
+                <p>The active database client is Bun 1.3.14 <code>bun:sqlite</code>, adapted by Drizzle <code>bun-sqlite</code>. It is synchronous: transactions execute immediately and transaction callbacks must not contain <code>await</code>. One connection serializes writes while WAL permits concurrent readers.</p>
+                <div class="callout">
+                  <strong>SQLite baseline and lifecycle:</strong> Fresh installs apply one clean SQLite baseline migration. <code>DATABASE_PATH</code> selects the local file and defaults to <code>./data/morning-post.sqlite</code>; opening the database creates its parent directory when needed. The database file and its <code>-wal</code>/<code>-shm</code> companions belong to one application host and must not be placed on network storage. Cleanup preserves the schema and migration history while deleting application rows; reset removes all three files and reapplies migrations.
+                </div>
+                <p><strong>Testing contract:</strong> each database test callback receives a fresh in-memory SQLite database with the baseline applied and closes it afterward. File-backed and browser E2E setup and teardown remove the database plus <code>-wal</code> and <code>-shm</code> companions so state cannot leak between runs.</p>
 
                 <div class="callout ok">
                   <strong>Current runtime:</strong> Hono is served by <code>Bun.serve</code>. Croner <code>10.0.1</code> schedules retained jobs in UTC with five-part expressions, rejects duplicate job names, uses <code>protect: true</code> to skip overlapping callbacks within the process, sanitizes and logs callback errors through its <code>catch</code> handler, and stops and clears every retained job when <code>CronScheduler.stop()</code> is called. API boot recovers stale digest runs before registering jobs. Every digest tick repeats stale-run recovery, selects the earliest user by <code>(createdAt, id)</code>, and runs for that owner or returns without work when no owner exists.
                 </div>
-                <p>Migration <code>0021_large_madame_hydra.sql</code> drops <code>scheduler_leases</code>. The lease schema and repository, runtime leader election, user paging, bounded user concurrency, and <code>SCHEDULER_LEASE_MS</code> configuration have been removed because the supported deployment has one owner and one scheduler process. Croner callback protection prevents in-process overlap; it is not a distributed-scheduler claim.</p>
+                <p>The clean SQLite baseline contains no <code>scheduler_leases</code> table. Runtime leader election, user paging, bounded user concurrency, and <code>SCHEDULER_LEASE_MS</code> are absent because the supported deployment has one owner and one scheduler process. Croner callback protection prevents in-process overlap; it is not a distributed-scheduler claim.</p>
 
                 <h3>Corrected startup contract</h3>
                 <table>
@@ -678,7 +682,7 @@
                     <tr>
                       <td>Scheduler</td>
                       <td>Server boot calls <code>recoverStaleDigestRuns()</code> before registering the digest and media jobs. A digest callback recovers stale runs again, resolves the earliest user row as the owner, returns when none exists, and otherwise invokes <code>runForUser()</code> once. Croner <code>protect: true</code> skips a callback that overlaps the prior callback in the same process.</td>
-                      <td>A supported instance schedules no user when unconfigured and exactly one owner when configured; no user page, concurrency pool, PostgreSQL lease, or leader-election path is involved.</td>
+                      <td>A supported instance schedules no user when unconfigured and exactly one owner when configured; no user page, concurrency pool, database lease, or leader-election path is involved.</td>
                     </tr>
                     <tr>
                       <td>Frontend</td>
@@ -696,44 +700,18 @@
                     </tr>
                     <tr>
                       <td>Local database cleanup</td>
-                      <td><code>bun run db:cleanup</code> truncates every public table
-              in the development database selected by
-              <code>DATABASE_URL</code>, resets identities, and preserves the
-              schema and migration history. Application guards require a loopback database and reject PostgreSQL system databases plus
-              names ending in <code>_test</code> or <code>_e2e</code>; Bun itself does not restrict network access.</td>
-                      <td>All development application rows are removed without allowing
-              the destructive command to connect to a remote, test, or E2E
-              database.</td>
+                      <td><code>bun run db:cleanup</code> removes the configured development SQLite database together with its <code>-wal</code> and <code>-shm</code> companions, then recreates the clean baseline. The path guard prevents the command from targeting test, E2E, or unsafe files.</td>
+                      <td>Development state is reset to the current clean SQLite baseline without touching test or E2E files.</td>
                     </tr>
                     <tr>
                       <td>Local database schema reset</td>
-                      <td><code>bun run db:reset</code> drops the <code>public</code>
-              schema and the Drizzle <code>drizzle</code> migration schema,
-              recreates <code>public</code>, then reapplies all pending migrations
-              against the development database selected by
-              <code>DATABASE_URL</code>. Unlike <code>db:cleanup</code>, which
-              truncates data while preserving schema and history, this is a
-              full schema rebuild. Application guards require a loopback database
-              and reject PostgreSQL system databases plus names ending in
-              <code>_test</code> or <code>_e2e</code>.</td>
-                      <td>All schema objects and migration records are removed and
-              rebuilt, allowing a clean start equal to a fresh database without
-              allowing the destructive command to connect to a remote, test, or E2E
-              database.</td>
+                      <td><code>bun run db:reset</code> removes the configured development database and WAL/SHM companions and reapplies the single clean SQLite baseline migration. It is a file reset, not a remote schema operation.</td>
+                      <td>The resulting database matches a fresh install and passes startup schema checks.</td>
                     </tr>
                     <tr>
                       <td>Browser E2E</td>
-                      <td><code>bun run web:e2e</code> starts non-reusable API and web
-              processes on ports <code>3100</code> and <code>5174</code>. The
-              API derives a database ending in <code>_e2e</code> from
-              <code>TEST_DATABASE_URL</code>, unless
-              <code>E2E_DATABASE_URL</code> supplies an explicit isolated
-              database. Guards reject either configured development or backend
-              test database. The E2E database is migrated and truncated before
-              startup and truncated again in global teardown.</td>
-                      <td>The browser suite passes while development data is unchanged,
-              and the isolated E2E database contains no users after
-              teardown.</td>
+                      <td><code>bun run web:e2e</code> starts isolated API and web processes on ports <code>3100</code> and <code>5174</code> with a dedicated SQLite file. Setup removes the file and its WAL/SHM companions, applies the baseline, and teardown removes all three again.</td>
+                      <td>The browser suite leaves development data unchanged and no E2E database artifacts remain after teardown.</td>
                     </tr>
                     <tr>
                       <td>Production process isolation</td>
@@ -789,7 +767,7 @@
   subgraph Persistence["src/repositories + src/db/schema"]
     Repos["User-scoped repositories"]
     Schema["Drizzle schema"]
-    DB[("PostgreSQL")]
+    DB[("SQLite\nbun:sqlite")]
   end
 
   Client --> App
@@ -851,13 +829,13 @@
                     </tr>
                     <tr>
                       <td>Repositories</td>
-                      <td>Earliest-row owner resolution, ownership filters, PostgreSQL rate-limit counters, cached analyses, story/development versioning, stable delivered-card replacement, feedback identity, and transactional profile invalidation.</td>
-                      <td><code>userId</code> filters and user-row locks remain internal containment boundaries. The legacy non-null unique <code>users.email</code> column is persisted but is not used to choose or authenticate the owner; <code>users.passwordHash</code> is nullable so fresh owners need no credential while existing hashes remain usable.</td>
+                      <td>Earliest-row owner resolution, ownership filters, atomic SQLite rate-limit upserts, cached analyses, story/development versioning, stable delivered-card replacement, feedback identity, and transactional profile invalidation.</td>
+                      <td><code>userId</code> filters remain internal containment boundaries. Writes that require serialization use synchronous immediate transactions; the legacy unique <code>users.email</code> column is persisted but is not used to choose or authenticate the owner, and <code>users.passwordHash</code> remains nullable.</td>
                     </tr>
                     <tr>
                       <td>Scheduler</td>
                       <td>Startup and per-tick stale-run recovery, zero-or-one-owner daily digest execution, Croner callback protection, and weekly media TTL cleanup.</td>
-                      <td>The earliest user row is the owner. The supported single scheduler has no user paging/concurrency pool, PostgreSQL lease, or runtime leader election; migration <code>0021_large_madame_hydra.sql</code> removes the former lease table.</td>
+                      <td>The earliest user row is the owner. The supported single scheduler has no user paging/concurrency pool, database lease, or runtime leader election.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -868,7 +846,7 @@
                 <h2>The story model is connector-neutral and internally user-scoped around one supported owner.</h2>
                 <p>Sources represent connector accounts and feeds represent subscriptions. Connector items are cached once, analyzed into common topics/entities/story and development keys, then linked into evolving user-owned stories. New digests persist selected story-version snapshots with every source; historical pre-story summaries remain read-only so old digests continue to render. Interest rules and feed/source policy overrides control zero-to-all relevance filtering. Feedback records the delivered digest/story/version identity and can update the same interest profile transactionally.</p>
                 <p><strong>Summary-detail boundary:</strong> detail belongs to an individual feed, not its connector source. The shared <code>summarizationModes</code> values and <code>SummarizationMode</code> type define <code>basic | thorough</code>, displayed as Standard and Thorough. Channels and publications attached to the same source may therefore select different modes. A mixed story resolves to <code>thorough</code> when any contributing item belongs to a thorough feed; otherwise it resolves to <code>basic</code>.</p>
-                <p><strong>Owner identity and legacy rows:</strong> <code>users.email</code> deliberately remains a non-null unique legacy column so upgraded databases and existing repository/schema invariants are preserved. Atomic first-run setup writes the non-routable sentinel <code>owner@morning-post.invalid</code>, the name displayed in digests, and a null password hash; email is never accepted by setup or login and is omitted from the unchanged <code>PublicUser</code> shape. Migration <code>0023_thin_steve_rogers.sql</code> makes only <code>users.password_hash</code> nullable, preserving every existing non-null hash so the upgraded owner retains password sign-in and future account credentials remain representable. <code>findOwner()</code> deterministically selects the earliest row by <code>createdAt</code> and then <code>id</code>. Other legacy user rows are retained rather than destructively migrated, but public authentication and scheduled execution address only that owner. Existing <code>userId</code> foreign keys and filters remain security and ownership boundaries, not a claim of supported multi-user operation.</p>
+                <p><strong>Owner identity and existing rows:</strong> <code>users.email</code> remains a unique internal compatibility column. Atomic first-run setup writes the non-routable sentinel <code>owner@morning-post.invalid</code>, the name displayed in digests, and a null password hash; email is never accepted by setup or login and is omitted from <code>PublicUser</code>. Existing password-backed owner rows retain password login compatibility.</p>
 
                 <pre class="mermaid">erDiagram
   users ||--o{ sessions : owns
@@ -892,7 +870,7 @@
   digest_runs ||--o{ digest_run_feeds : records
 
   users {
-    uuid id PK
+    text id PK
     text name
     text password_hash "nullable"
     text email UK
@@ -903,8 +881,8 @@
     integer interest_profile_version
   }
   interest_rules {
-    uuid id PK
-    uuid user_id FK
+    text id PK
+    text user_id FK
     text kind
     text disposition
     text origin
@@ -912,72 +890,72 @@
     text normalized_label
   }
   sources {
-    uuid id PK
-    uuid user_id FK
+    text id PK
+    text user_id FK
     text connector_id
-    jsonb credentials
+    text credentials
     text relevance_filter_mode
-    boolean show_paid_post_titles
+    integer show_paid_post_titles
   }
   feeds {
-    uuid id PK
-    uuid source_id FK
+    text id PK
+    text source_id FK
     text external_id
     text relevance_filter_mode
     text summarization_mode
-    bigint last_fetched_period_end_ms
+    integer last_fetched_period_end_ms
   }
   items {
-    uuid id PK
-    uuid feed_id FK
+    text id PK
+    text feed_id FK
     text external_id
-    bigint date
-    jsonb payload
+    integer date
+    text payload
   }
   item_analyses {
-    uuid item_id PK
+    text item_id PK
     text fingerprint
     text analyzer_version
-    jsonb analysis
+    text analysis
   }
   stories {
-    uuid id PK
-    uuid user_id FK
+    text id PK
+    text user_id FK
     text canonical_key
     integer version
-    jsonb topics
-    jsonb entities
+    text topics
+    text entities
   }
   story_developments {
-    uuid id PK
-    uuid story_id FK
+    text id PK
+    text story_id FK
     text canonical_key
     integer version
-    bigint occurred_at
+    integer occurred_at
   }
   digest_stories {
-    uuid id PK
-    uuid digest_id FK
-    uuid story_id FK
+    text id PK
+    text digest_id FK
+    text story_id FK
     integer story_version
     integer profile_version
-    jsonb points
-    jsonb sources
+    text points
+    text sources
   }
   story_feedback {
-    uuid id PK
-    uuid user_id FK
-    uuid digest_id FK
-    uuid digest_story_id
-    uuid story_id FK
+    text id PK
+    text user_id FK
+    text digest_id FK
+    text digest_story_id
+    text story_id FK
     integer story_version
     text action
     text target_kind
     text target_label
   }
   digests {
-    uuid id PK
-    uuid user_id FK
+    text id PK
+    text user_id FK
     text content_mode
     text status
   }</pre>
@@ -994,7 +972,7 @@
                     <tr>
                       <td>User</td>
                       <td>The earliest row owns the supported deployment; every personalized object remains <code>userId</code>-scoped, and prompts or policy changes must invalidate generated story snapshots without exposing password or legacy identity data.</td>
-                      <td>First-run setup inserts the digest display name, null password hash, and <code>owner@morning-post.invalid</code> into the retained non-null unique email column under a table lock. Migration <code>0023_thin_steve_rogers.sql</code> preserves existing hashes while making the column nullable. The unchanged public projection enumerates safe fields and excludes both <code>email</code> and <code>passwordHash</code>. <code>interestProfileVersion</code> increments for effective filtering/summary configuration or interest-policy changes.</td>
+                      <td>First-run setup inserts the digest display name, null password hash, and <code>owner@morning-post.invalid</code> into the retained unique email column inside a synchronous immediate transaction that rechecks for an existing owner. The unchanged public projection excludes both <code>email</code> and <code>passwordHash</code>. <code>interestProfileVersion</code> increments for effective filtering/summary configuration or interest-policy changes.</td>
                     </tr>
                     <tr>
                       <td>Session</td>
@@ -1004,7 +982,7 @@
                     <tr>
                       <td>Source</td>
                       <td>Credentials are sensitive connector-account bearer material; summary detail does not belong at this account boundary.</td>
-                      <td><code>credentials</code> is encrypted JSONB; <code>PublicSource</code> and source create/PATCH inputs expose no <code>summarizationMode</code>. Substack sources expose only the independent <code>showPaidPostTitles</code> presentation preference, which defaults to <code>false</code> and can be changed only through the authenticated owner's Substack source.</td>
+                      <td><code>credentials</code> is encrypted JSON text; <code>PublicSource</code> and source create/PATCH inputs expose no <code>summarizationMode</code>. Substack sources expose only the independent <code>showPaidPostTitles</code> presentation preference, which defaults to <code>false</code> and can be changed only through the authenticated owner's Substack source.</td>
                     </tr>
                     <tr>
                       <td>Feed</td>
@@ -1024,12 +1002,12 @@
                     <tr>
                       <td>Interest rule</td>
                       <td>Explicit preferences outrank inference; dismissed inferred rules are tombstones; mute is a hard exclusion.</td>
-                      <td>Unique <code>(userId, kind, normalizedLabel)</code>. User-row locks precede rule writes so explicit edits and feedback use one deadlock-safe order.</td>
+                      <td>Unique <code>(userId, kind, normalizedLabel)</code>. Explicit edits and feedback serialize their dependent reads and writes in one synchronous immediate transaction.</td>
                     </tr>
                     <tr>
                       <td>Story and development</td>
                       <td>An item belongs to one development; an evolving story version changes when membership, fingerprints, or persisted metadata change.</td>
-                      <td>User-scoped canonical keys, first-class development rows, item fingerprints, bounded recent-story references, and batch upserts under one user advisory lock.</td>
+                      <td>User-scoped canonical keys, first-class development rows, item fingerprints, bounded recent-story references, and batch upserts inside one immediate write transaction.</td>
                     </tr>
                     <tr>
                       <td>Delivered story</td>
@@ -1053,8 +1031,7 @@
                     </tr>
                   </tbody>
                 </table>
-                <p><strong>Feed-mode migration:</strong> the cutover first adds <code>feeds.summarization_mode</code> as non-null with database default <code>basic</code> and a <code>basic | thorough</code> check. It then backfills every existing feed from its parent source's former <code>sources.summarization_mode</code>. Only after the backfill does it drop the old source check and column. Existing deployments therefore retain each feed's effective detail setting at upgrade, while subsequent same-source feeds can change independently.</p>
-                <p><strong>Owner-password migration:</strong> migration <code>0023_thin_steve_rogers.sql</code> drops the non-null requirement from <code>users.password_hash</code> without rewriting existing values. New name-only setups store <code>NULL</code>; upgraded password-backed owners retain their Argon2id hashes and password-required status. The nullable field also leaves a credential slot for a future account model without changing the current <code>PublicUser</code> contract.</p>
+                <p><strong>Baseline schema:</strong> the clean SQLite baseline defines non-null per-feed <code>summarization_mode</code> with a <code>basic | thorough</code> check and nullable owner password hashes. Fresh owners store <code>NULL</code>; an existing password-backed owner may retain its Argon2id hash.</p>
               </section>
 
               <section id="flows">
@@ -1066,7 +1043,7 @@
   participant B as Browser
   participant A as Hono API
   participant R as Owner/session repositories
-  participant D as PostgreSQL
+  participant D as SQLite
 
   B->>A: GET /auth/setup
   A->>R: findOwner()
@@ -1074,7 +1051,7 @@
   A-->>B: {setupRequired,passwordRequired}
   alt First run
     B->>A: POST /auth/setup {name}
-    A->>D: transaction: lock users; recheck empty; insert name + null password hash
+    A->>D: BEGIN IMMEDIATE; recheck empty; insert name + null password hash
   else Existing passwordless owner
     B->>A: POST /auth/login {}
     A->>R: authenticateOwner(undefined)
@@ -1094,14 +1071,14 @@
   B->>A: POST /auth/logout
   A->>D: revoke token hash
   A-->>B: clear __Host-session</pre>
-                <p><code>GET /auth/setup</code> always returns <code>{setupRequired,passwordRequired}</code>; <code>passwordRequired</code> is true only for an existing owner with a non-null password hash. <code>POST /auth/setup</code> strictly accepts <code>{name}</code>: it checks for an owner, locks the <code>users</code> table inside a transaction, checks again, inserts the digest display name with the sentinel internal email and a null password hash, and immediately creates the session returned with the 201 response. A concurrent or later setup attempt conflicts. <code>POST /auth/login</code> strictly accepts <code>{password?: string}</code>: passwordless owners continue with the password omitted, whereas a password-backed owner requires and verifies a nonempty password. There is no public email field and no <code>/auth/register</code> route. Setup and login attempts use PostgreSQL-backed rate-limit buckets.</p>
+                <p><code>GET /auth/setup</code> always returns <code>{setupRequired,passwordRequired}</code>; <code>passwordRequired</code> is true only for an existing owner with a non-null password hash. <code>POST /auth/setup</code> strictly accepts <code>{name}</code>: it checks for an owner, enters a synchronous immediate transaction, checks again, inserts the digest display name with the sentinel internal email and a null password hash, and creates the session returned with the 201 response. A concurrent or later setup attempt conflicts.</p>
 
                 <h3>Substack connection and publication flow</h3>
                 <pre class="mermaid">sequenceDiagram
   participant B as Browser
   participant A as Hono API
   participant S as Substack
-  participant D as PostgreSQL
+  participant D as SQLite
 
   B->>A: POST /connectors/substack/session {substackSessionId, connectSessionId?}
   A->>S: GET substack.com/api/v1/user-settings with provided session cookies
@@ -1127,7 +1104,7 @@
   participant C as ConnectorFactory/Connector
   participant I as Story intelligence
   participant G as Story summarizer
-  participant DB as PostgreSQL
+  participant DB as SQLite
 
   S->>O: userId + period
   O->>DB: create digest_run(status=running)
@@ -1169,11 +1146,11 @@
   participant B as Story card
   participant A as POST /stories/:storyId/feedback
   participant F as Story feedback service
-  participant DB as PostgreSQL
+  participant DB as SQLite
 
   B->>A: digestStoryId + story or topic/entity action
   A->>F: authenticated userId + validated body
-  F->>DB: lock user, then owned delivered card
+  F->>DB: BEGIN IMMEDIATE; load owned delivered card
   F->>F: validate target against persisted delivered topics/entities
   F->>DB: insert idempotent feedback keyed by digest/story/version/action/target
   alt relevant or not_relevant
@@ -1207,6 +1184,8 @@
                 <p><strong>Operational cutover:</strong> changing provider endpoints, model IDs, stage pricing, stage output/retry budgets, <code>SUMMARIZER_TIMEOUT_MS</code>, <code>DIGEST_PROGRESS_LOGGING</code>, or the deployed code requires restarting the user-operated API process. If process termination leaves an in-memory run unfinished, the next API boot calls <code>recoverStaleDigestRuns()</code>; once the row exceeds <code>DIGEST_RUN_STALE_AFTER_MS</code>, recovery marks the still-running parent and feed stages failed while preserving already-terminal feed stages. Persisted analysis checkpoints remain reusable on retry.</p>
 
                 <p>Text endpoints are stage-specific. Production configuration routes analysis and relevance classification through <code>deepseek-v4-flash</code>, while final single-story and typed multi-story summaries use <code>deepseek-v4-pro</code>; vision remains independently configurable. Constructor overrides take precedence over stage env vars, and stage env vars inherit the summarizer endpoint URL/key only when omitted. DeepSeek prefix caching is automatic: stable system instructions remain the first prompt prefix and dynamic records remain in user content. No synthetic cache-control flag is sent.</p>
+
+                <p>The final-summary output budget is injectable: <code>OpenAICompatibleSummarizerOptions.summaryMaxOutputTokens</code> takes precedence over <code>SUMMARY_MAX_OUTPUT_TOKENS</code>, which takes precedence over the hardcoded <code>4,000</code>-token default. Production callers may therefore override the environment without changing global process state, and tests pin the constructor value so a developer's local env file cannot redefine their contract.</p>
 
                 <p>Every provider attempt snapshots its model and optional uncached-input, cached-input, and output prices. Valid <code>prompt_cache_hit_tokens</code> and <code>prompt_cache_miss_tokens</code> are aggregated separately, retries remain separate attempts, and cache-aware estimated USD cost is calculated only when every required usage and pricing component is complete. Otherwise cost is <code>null</code>, never guessed. The versioned aggregate is persisted in <code>digest_runs.model_usage</code> for both successful and failed terminal runs. Prices have no production fallback; the dated values in <code>.env.example</code> are examples that operators must verify.</p>
 
@@ -1263,7 +1242,7 @@
                       <div class="section-kicker">Security review</div>
                       <h2>For an owner-operated self-host, process privilege, credential custody, plaintext provider boundaries, and edge hardening remain primary risks.</h2>
                       <div class="callout warning">
-                        <strong>Supported v1 threat model:</strong> one primary owner administers one independent instance; there is no Morning Post-operated shared API, database, or credential vault. The operator is the custodian, not an absence of custody. Host or process compromise can expose credentials and locally decrypted plaintext, and configured remote summarization sends selected content beyond the host. Name-only setup and passwordless continuation remove public email identity and open registration, but they also make network reachability sufficient to obtain an owner session on a fresh deployment; keep the app on loopback or behind an operator-controlled authenticated reverse proxy, VPN, or equivalent boundary. Existing owners with retained hashes still receive Argon2id password verification. Sessions, atomic setup, PostgreSQL-backed rate limits, <code>userId</code> ownership filters, credential encryption, database TLS where applicable, protected backups, filesystem ACLs, updates, and host isolation remain required defense-in-depth.
+                        <strong>Supported v1 threat model:</strong> one primary owner administers one independent instance; there is no Morning Post-operated shared API, database, or credential vault. The operator is the custodian, not an absence of custody. Host or process compromise can expose credentials and locally decrypted plaintext, and configured remote summarization sends selected content beyond the host. Name-only setup and passwordless continuation make network reachability sufficient to obtain an owner session on a fresh deployment; keep the app on loopback or behind an operator-controlled authenticated reverse proxy, VPN, or equivalent boundary. Existing owners with retained hashes still receive Argon2id verification. Sessions, atomic setup and rate limits, <code>userId</code> ownership filters, credential encryption, protected backups, filesystem ACLs, updates, and host isolation remain required defense-in-depth.
                       </div>
 
                       <h3>Security controls already in place</h3>
@@ -1283,7 +1262,7 @@
                           </tr>
                           <tr>
                             <td>Atomic owner setup</td>
-                            <td><code>POST /auth/setup</code> accepts only the digest display name, takes a PostgreSQL table lock, rechecks that no owner exists, inserts the internal sentinel email with a null password hash, and creates a session in the successful request.</td>
+                            <td><code>POST /auth/setup</code> accepts only the digest display name, enters a synchronous immediate transaction, rechecks that no owner exists, inserts the internal sentinel email with a null password hash, and creates a session in the successful request.</td>
                             <td>Two first-run requests cannot create two owners; no public registration, email identity, or setup password is exposed.</td>
                           </tr>
                           <tr>
@@ -1370,7 +1349,7 @@
                         <tr>
                           <td><span class="badge critical">S2</span></td>
                           <td>The X persistent browser profile is account-equivalent session material, and its automation surface is unsupported by X.</td>
-                          <td>The implemented connector keeps cookies and local storage in a dedicated profile, stores only its encrypted canonical profile ID in PostgreSQL, serializes browser use and deletion with an exclusive lease, and does not spoof or conceal automation. Rendered-DOM or authentication changes can stop discovery and capture, while automation can cause challenges, suspension, or other account restrictions.</td>
+                          <td>The implemented connector keeps cookies and local storage in a dedicated profile, stores only its encrypted canonical profile ID in SQLite, serializes browser use and deletion with an exclusive lease, and does not spoof or conceal automation. Rendered-DOM or authentication changes can stop discovery and capture, while automation can cause challenges, suspension, or other account restrictions.</td>
                           <td>Run Morning Post under a dedicated identity, restrict and encrypt <code>X_BROWSER_PROFILE_ROOT</code> and its backups, never reuse a daily browser profile, keep failures explicit rather than accepting incomplete capture, and treat X platform/account risk as irreducible. Add resilience only where it preserves bounded operation and visible failure.</td>
                           <td><strong>Implemented boundary with residual risk.</strong> Dedicated profile custody, canonical-ID-only encrypted credentials, exclusive leases, bounded capture, and disconnect cleanup ordering reduce local races and exposure. They do not make browser automation official, stable, or safe from X restrictions.</td>
                         </tr>
@@ -1384,16 +1363,16 @@
                         <tr>
                           <td><span class="badge high">S4</span></td>
                           <td>Request limits must be shared, atomic, and proxy-aware.</td>
-                          <td><code>createRateLimitMiddleware()</code> calls <code>consumeRateLimit()</code>, which stores counters in PostgreSQL <code>rate_limit_buckets</code>. The direct Bun socket address is used by default; forwarded headers are consulted only when <code>TRUSTED_PROXY_COUNT</code> is positive.</td>
-                          <td>Retain PostgreSQL-backed counters for setup, login, and other limited routes; configure the exact trusted proxy hop count and periodically delete expired buckets.</td>
-                          <td><strong>Remediated.</strong> Shared PostgreSQL counters and explicit trusted-proxy handling are implemented in <code>src/server/middleware/rate-limit.ts</code> and <code>src/repositories/rate-limit-repository.ts</code>.</td>
+                          <td><code>createRateLimitMiddleware()</code> calls <code>consumeRateLimit()</code>, which atomically upserts counters in SQLite <code>rate_limit_buckets</code>. The direct Bun socket address is used by default; forwarded headers are consulted only when <code>TRUSTED_PROXY_COUNT</code> is positive.</td>
+                          <td>Retain atomic database-backed counters for limited routes, configure the exact trusted proxy hop count, and periodically delete expired buckets.</td>
+                          <td><strong>Remediated.</strong> Atomic SQLite upserts and explicit trusted-proxy handling are implemented.</td>
                         </tr>
                         <tr>
                           <td><span class="badge high">S5</span></td>
-                          <td>Database transport policy must distinguish loopback from remote PostgreSQL.</td>
-                          <td><code>getDatabaseClientOptions()</code> accepts only <code>disable</code>, <code>require</code>, or <code>verify-full</code>; it rejects <code>disable</code> when <code>DATABASE_URL</code> is not loopback and passes the selected mode to postgres.js.</td>
-                          <td>Keep plaintext transport limited to a loopback database. Use <code>require</code> or preferably <code>verify-full</code> whenever PostgreSQL is remote.</td>
-                          <td><strong>Remediated.</strong> <code>DB_SSL_MODE</code> is validated at startup, remote databases require TLS, and explicit pool/connect/idle options share the same configuration path in <code>src/db/client.ts</code>.</td>
+                          <td>The database file and companions require a safe local filesystem boundary.</td>
+                          <td><code>DATABASE_PATH</code> resolves to one local file; strict bindings and startup pragmas enforce the SQLite runtime contract.</td>
+                          <td>Grant the dedicated process identity access only to the containing directory and database, keep the database off NFS/SMB, and protect the main, <code>-wal</code>, and <code>-shm</code> files as one unit.</td>
+                          <td><strong>Remediated.</strong> Foreign keys, WAL, 5-second busy timeout, and <code>synchronous=FULL</code> are applied at connection startup.</td>
                         </tr>
                         <tr>
                           <td><span class="badge medium">S6</span></td>
@@ -1434,7 +1413,7 @@
                     <section id="scalability">
                       <div class="section-kicker">Scalability review</div>
                       <h2>The supported scale target is one owner's workload on one host; internal scoping and bounded pipeline work provide containment and predictable pressure.</h2>
-                      <p>The runtime is intentionally single-owner. Data remains <code>userId</code>-scoped and persistence operations remain idempotent, but public authentication, owner selection, and scheduling do not expose a multi-user service. Each digest tick recovers stale runs and processes zero or one deterministic owner. The former user paging, user-concurrency pool, PostgreSQL scheduler leases, and runtime leader election were removed rather than retained as unsupported distributed complexity.</p>
+                      <p>The runtime is intentionally single-owner and single-process. Data remains <code>userId</code>-scoped and persistence operations remain idempotent. One SQLite connection serializes writers while WAL readers may proceed concurrently; this is the supported topology, not a distributed coordination claim. Multiple API writers, multiple hosts, network filesystems, sustained write contention, or a hosted multi-owner service require a future client/server database and an explicit coordination design.</p>
 
                       <h3>Scalability strengths</h3>
                       <table>
@@ -1520,7 +1499,7 @@
                             <td>The scheduler must match the supported single-process, single-owner deployment instead of implying distributed coordination.</td>
                             <td><code>CronScheduler</code> retains uniquely named UTC five-part jobs with <code>protect: true</code> and a sanitizing <code>catch</code> handler. <code>runDigestTick()</code> performs stale recovery, loads at most one owner, and runs once.</td>
                             <td>Operate one scheduler process per supported self-host. Treat Croner protection only as an in-process overlap guard; any future multi-process scheduling mode would require a new explicit design rather than an undocumented assumption.</td>
-                            <td><strong>Single-owner cutover completed.</strong> Migration <code>0021_large_madame_hydra.sql</code> drops <code>scheduler_leases</code>; the lease schema/repository, <code>SCHEDULER_LEASE_MS</code>, user paging/concurrency, and runtime leader election are removed.</td>
+                            <td><strong>Single-owner cutover completed.</strong> The clean baseline has no scheduler lease; runtime lease code, <code>SCHEDULER_LEASE_MS</code>, user paging/concurrency, and leader election are removed.</td>
                           </tr>
                           <tr>
                             <td><span class="badge high">P4</span></td>
@@ -1559,10 +1538,10 @@
                           </tr>
                           <tr>
                             <td><span class="badge medium">P9</span></td>
-                            <td>Database pool behavior is implicit.</td>
-                            <td><code>src/db/client.ts</code> calls <code>postgres(url)</code> with defaults.</td>
-                            <td>Set explicit max connections, idle timeout, connect timeout, and SSL mode per deployment. This matters once scheduler workers and API requests share the same database.</td>
-                            <td><strong>Remediated.</strong> <code>postgres(url, { max, idle_timeout, connect_timeout, ssl })</code> with values from <code>getConfig()</code>. <code>DB_SSL_MODE</code> accepts <code>disable</code> (local default), <code>require</code>, <code>verify-full</code>; invalid mode rejected at startup. Same options in <code>src/db/testing.ts</code>. See <code>src/db/client.ts</code>, <code>src/db/testing.ts</code>. Config tests prove remote settings require TLS.</td>
+                            <td>SQLite write serialization and file lifecycle must be explicit.</td>
+                            <td>The Bun-native connection is synchronous, uses one writer, and enables concurrent WAL readers; transaction callbacks cannot suspend.</td>
+                            <td>Keep write critical sections short and free of <code>await</code>; keep the database on local storage and operate on the database/WAL/SHM set together.</td>
+                            <td><strong>Remediated.</strong> Strict bindings, foreign keys, WAL, 5-second busy timeout, <code>synchronous=FULL</code>, and immediate native transactions define the active contract.</td>
                           </tr>
                           <tr>
                             <td><span class="badge info">P10</span></td>
@@ -1645,16 +1624,16 @@
                         </thead>
                         <tbody>
                           <tr>
-                            <td>PostgreSQL-backed rate limiter.</td>
+                            <td>SQLite-backed rate limiter.</td>
                             <td>Setup, login, and authenticated routes need atomic limits that survive process-local cache loss and use the correct client address behind an explicitly configured proxy.</td>
-                            <td>PostgreSQL counters enforce each bucket window; direct addresses are the default and forwarding headers are ignored unless the trusted proxy hop count is configured.</td>
-                            <td><strong>Completed.</strong> <code>rate_limit_buckets</code>, <code>consumeRateLimit()</code>, and <code>TRUSTED_PROXY_COUNT</code> implement the shared proxy-aware limiter.</td>
+                            <td>Atomic upserts enforce each bucket window; direct addresses are the default and forwarding headers are ignored unless the trusted proxy hop count is configured.</td>
+                            <td><strong>Completed.</strong> <code>rate_limit_buckets</code>, <code>consumeRateLimit()</code>, and <code>TRUSTED_PROXY_COUNT</code> implement the proxy-aware limiter.</td>
                           </tr>
                           <tr>
                             <td>Single-owner scheduler cutover.</td>
                             <td>Removing unused distributed machinery keeps runtime behavior aligned with the one-owner, one-scheduler support contract.</td>
                             <td>Ticks recover stale runs first and process zero or one owner; Croner prevents in-process overlap. No lease, leader election, user page, or user-concurrency setting remains.</td>
-                            <td><strong>Completed.</strong> Migration <code>0021_large_madame_hydra.sql</code> drops <code>scheduler_leases</code>; runtime lease code and <code>SCHEDULER_LEASE_MS</code> are removed.</td>
+                            <td><strong>Completed.</strong> The clean baseline and runtime contain no scheduler lease, paging, user-concurrency, or leader-election machinery.</td>
                           </tr>
                           <tr>
                             <td>Crash recovery for digest runs.</td>
@@ -1663,16 +1642,16 @@
                             <td><strong>Completed.</strong> <code>recoverStaleDigestRuns()</code> runs at API startup and at tick start before deterministic owner selection.</td>
                           </tr>
                           <tr>
-                            <td>Explicit database pool and TLS configuration.</td>
-                            <td>A scheduler plus web traffic can exhaust implicit defaults.</td>
-                            <td>Pool size, connect timeout, idle timeout, and SSL mode are documented and enforced per environment.</td>
-                            <td><strong>Completed.</strong> <code>DB_POOL_MAX</code>, <code>DB_IDLE_TIMEOUT_SECONDS</code>, <code>DB_CONNECT_TIMEOUT_SECONDS</code>, <code>DB_SSL_MODE</code>.</td>
+                            <td>SQLite file durability and backup operations.</td>
+                            <td>WAL mode creates companion files and one local writer must coexist safely with API and scheduler reads.</td>
+                            <td>Use an online-consistent SQLite backup operation while the API is running, or stop the process and copy the database together with WAL/SHM after checkpointing. Never copy only the main file during active writes.</td>
+                            <td><strong>Completed runtime boundary.</strong> Local-only storage, strict file permissions, WAL, full synchronous durability, and a 5-second busy timeout are documented; backup scheduling remains an operator responsibility.</td>
                           </tr>
                           <tr>
                             <td>Credential custody hardening.</td>
                             <td>Telegram session strings are full-account bearer tokens even on a single-owner host.</td>
                             <td>For higher-assurance self-hosts, move the master key off-box to KMS/Vault/secret manager, encrypt backups with a separate key, and consider MFA for operator access.</td>
-                            <td><strong>Deferred.</strong> The <code>KeyProvider</code> seam is preserved. Current credential encryption, owner authentication, ownership scoping, TLS options, backup protection, and host hardening remain defense-in-depth.</td>
+                            <td><strong>Deferred.</strong> The <code>KeyProvider</code> seam is preserved. Current credential encryption, owner authentication, ownership scoping, protected backups, and host hardening remain defense-in-depth.</td>
                           </tr>
                         </tbody>
                       </table>
@@ -1732,14 +1711,14 @@
                         <dt>Name-only owner setup, compatible passwordless/password-backed login, and session storage</dt>
                         <dd><span class="path">src/server/routes/auth.ts</span>, <span class="path">src/services/owner-setup-service.ts</span>, <span class="path">src/services/login-service.ts</span>, <span class="path">src/repositories/user-repository.ts</span>, <span class="path">src/auth/password.ts</span>, <span class="path">src/auth/session-service.ts</span>, <span class="path">src/repositories/session-repository.ts</span>, and <span class="path">apps/web/src/app/AuthPanel.tsx</span>.</dd>
 
-                        <dt>PostgreSQL-backed rate limiting and proxy identity</dt>
+                        <dt>SQLite-backed rate limiting and proxy identity</dt>
                         <dd><span class="path">src/server/middleware/rate-limit.ts</span>, <span class="path">src/repositories/rate-limit-repository.ts</span>, <span class="path">src/db/schema/rate-limit.ts</span>, and <span class="path">src/config.ts</span>.</dd>
 
                         <dt>Credential encryption and source custody</dt>
                         <dd><span class="path">src/crypto/credential-cipher.ts</span>, <span class="path">src/crypto/key-provider.ts</span>, <span class="path">src/db/schema/source.ts</span>, <span class="path">src/repositories/source-repository.ts</span>.</dd>
 
                         <dt>Digest generation and single-owner scheduler behavior</dt>
-                        <dd><span class="path">src/services/orchestrator.ts</span>, <span class="path">src/services/ingestion-service.ts</span>, <span class="path">src/services/story-digest-service.ts</span>, <span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/services/digest-service.ts</span>, <span class="path">src/scheduler/digest-job.ts</span>, <span class="path">src/scheduler/scheduler.ts</span>, <span class="path">src/repositories/user-repository.ts</span>, <span class="path">src/server/main.ts</span>, and <span class="path">drizzle/0021_large_madame_hydra.sql</span>.</dd>
+                        <dd><span class="path">src/services/orchestrator.ts</span>, <span class="path">src/services/ingestion-service.ts</span>, <span class="path">src/services/story-digest-service.ts</span>, <span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/services/digest-service.ts</span>, <span class="path">src/scheduler/digest-job.ts</span>, <span class="path">src/scheduler/scheduler.ts</span>, <span class="path">src/repositories/user-repository.ts</span>, and <span class="path">src/server/main.ts</span>.</dd>
 
                         <dt>Story analysis and summarizer boundary</dt>
                         <dd><span class="path">src/services/story-intelligence-service.ts</span>, <span class="path">src/summarizers/openai-compatible-summarizer.ts</span>, and <span class="path">src/summarizers/prompts.ts</span>.</dd>
@@ -1771,11 +1750,11 @@
                         <dt>Error handling and redaction</dt>
                         <dd><span class="path">src/server/errors.ts</span>, <span class="path">src/server/error-sanitizer.ts</span>.</dd>
 
-                        <dt>Database connectivity and idle reconnect regression</dt>
-                        <dd><span class="path">src/db/client.ts</span>, <span class="path">src/db/testing.ts</span>, <span class="path">package.json</span>, <span class="path">bun.lock</span>, and <span class="path">tests/db/client.test.ts</span>. postgres.js is pinned to <code>3.4.9</code>, which clamps reconnect delays. The live integration regression uses a real <code>TEST_DATABASE_URL</code> connection with <code>max=1</code>, forces the sole connection to close after becoming idle, then verifies that reconnect queries succeed and that no <code>TimeoutNegativeWarning</code> is emitted.</dd>
+                        <dt>SQLite runtime and testing</dt>
+                        <dd><span class="path">src/db/client.ts</span>, <span class="path">src/db/sqlite.ts</span>, <span class="path">src/db/testing.ts</span>, the clean baseline migration, and the cleanup/reset commands define strict bindings, startup pragmas, automatic parent-directory creation, fresh in-memory test databases, and the local database-file lifecycle.</dd>
 
                         <dt>Browser-to-API digest journey and test-layer boundary</dt>
-                        <dd>The Playwright <span class="path">auth-digest</span> journey verifies digest creation from the browser through the real API. It remains the full-stack UI check, while connection-pool idle close/reconnect behavior is deliberately guarded by <span class="path">tests/db/client.test.ts</span> at the live database integration layer rather than treating Playwright as the driver-lifecycle oracle.</dd>
+                        <dd>The Playwright <span class="path">auth-digest</span> journey verifies digest creation from the browser through the real API against an isolated SQLite file. Test setup and teardown remove the file and WAL/SHM companions.</dd>
 
                         <dt>Media lifecycle</dt>
                         <dd><span class="path">src/connectors/telegram/telegram-connector.ts</span>, <span class="path">src/services/media-cleanup-service.ts</span>, and <span class="path">src/scheduler/digest-job.ts</span>.</dd>
@@ -1784,9 +1763,9 @@
                         <dd><span class="path">package.json</span>, <span class="path">bun.lock</span>, and <span class="path">README.md</span>.</dd>
                       </dl>
                       <div class="callout ok">
-        <strong>Documentation status:</strong> This HTML document reflects the single-owner auth cutover, retained internal ownership scoping, PostgreSQL-backed rate limiting, stale-recovery-first zero-or-one-owner scheduler, connector-neutral story pipeline, relevance policies, durable story feedback, story-card web UI, historical legacy projection, media lifecycle, implemented X browser connector, and current production-hardening state as reviewed on 2026-07-27. X is observed implementation work with deterministic test coverage and a separate opt-in live contract; it remains unsupported browser automation rather than an official or stable X integration.</div>
+        <strong>Documentation status:</strong> This HTML document reflects the verified Bun-native SQLite cutover, single-owner auth, retained internal ownership scoping, atomic SQLite rate limiting, stale-recovery-first zero-or-one-owner scheduler, connector-neutral story pipeline, relevance policies, durable story feedback, story-card web UI, historical legacy projection, media lifecycle, implemented X browser connector, and current production-hardening state as reviewed on 2026-07-28.</div>
                       <div class="callout">
-        <strong>Explicit status and deferrals:</strong> Public email registration/login is removed. New setup stores <code>owner@morning-post.invalid</code> only to satisfy the retained internal <code>users.email</code> invariant; upgraded databases keep all legacy rows while only the earliest row can log in or be scheduled. Migration <code>0021_large_madame_hydra.sql</code> removes scheduler leases, and <code>SCHEDULER_LEASE_MS</code>, user paging/concurrency, and runtime leader election are gone. KMS/off-box master key, MFA/WebAuthn/TOTP, object storage for multi-host media, automatic feed theme classification, configurable retention cascading through items, analyses, media, summaries, stories, feedback, and digest-derived content, and future X browser resilience remain deferred. The X browser collector itself is implemented with a dedicated managed profile and explicit unsupported-platform warnings. Deployment-wide text/vision provider configuration, global story resolution, personalization, PostgreSQL rate limiting, and the single-host media lifecycle are implemented. No shared Morning Post service, database, developer app, or centralized credential custody is part of the supported v1 posture.</div>
+        <strong>Explicit status and deferrals:</strong> Public email registration/login is removed. New setup stores <code>owner@morning-post.invalid</code> only for the retained internal uniqueness invariant; existing rows remain scoped while only the earliest row can log in or be scheduled. Multiple writers, multiple hosts, network storage, or a hosted multi-owner topology require a future client/server database and explicit distributed coordination. KMS/off-box master key, MFA, object storage for multi-host media, and configurable cascading retention remain deferred.</div>
                     </section>
                     </main>
                     </body>

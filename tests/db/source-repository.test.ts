@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts"
+import { assert, assertEquals, assertExists, assertRejects, assertThrows } from "../assertions.ts"
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -249,13 +249,9 @@ test("source paid-post title preference defaults false and updates only owned Su
       true,
     );
 
-    await assertRejects(
-      () =>
-        updateSource(database, source.id, other.id, {
-          showPaidPostTitles: false,
-        }),
-      NotFoundError,
-    );
+    assertThrows(() => updateSource(database, source.id, other.id, {
+      showPaidPostTitles: false,
+    }), NotFoundError,);
     assertEquals(
       (await findSourceById(database, source.id, owner.id))
         ?.showPaidPostTitles,
@@ -282,14 +278,10 @@ test("source repository rejects paid-post title preference for non-Substack sour
       credentials: await encryptedTelegramCredentials(cipher, user.id),
     });
 
-    await assertRejects(
-      () =>
-        updateSource(database, source.id, user.id, {
-          showPaidPostTitles: true,
-        }),
-      ValidationError,
-      "only valid for Substack",
-    );
+    assertThrows(() => updateSource(database, source.id, user.id, {
+      showPaidPostTitles: true,
+    }), ValidationError,
+    "only valid for Substack",);
     assertEquals(
       (await findSourceById(database, source.id, user.id))
         ?.showPaidPostTitles,
@@ -429,10 +421,11 @@ test("source check constraint rejects enabled source with null credentials", asy
       credentials: await encryptedTelegramCredentials(cipher, user.id),
     });
 
-    await assertRejects(
+    assertThrows(
       () =>
         database.update(sources).set({ credentials: null, enabled: true })
-          .where(eq(sources.id, source.id)),
+          .where(eq(sources.id, source.id))
+          .run(),
     );
   });
 });

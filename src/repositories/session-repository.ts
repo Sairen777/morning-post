@@ -29,11 +29,11 @@ function parseSession(row: unknown): Session {
   return sessionRowSchema.parse(row);
 }
 
-export async function createSession(
+export function createSession(
   database: Database,
   input: CreateSessionInput,
-): Promise<Session> {
-  const rows = await database
+): Session {
+  const rows = database
     .insert(sessions)
     .values({
       userId: input.userId,
@@ -42,7 +42,8 @@ export async function createSession(
       expiresAt: input.expiresAt,
       lastSeenAt: null,
     })
-    .returning();
+    .returning()
+    .all();
   return parseSession(rows[0]);
 }
 
@@ -51,31 +52,32 @@ export async function createSession(
  * otherwise null. Expiry is enforced in the query so an expired row is never
  * treated as valid.
  */
-export async function findValidSessionByTokenHash(
+export function findValidSessionByTokenHash(
   database: Database,
   tokenHash: string,
   now: number,
-): Promise<Session | null> {
-  const rows = await database
+): Session | null {
+  const rows = database
     .select()
     .from(sessions)
     .where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, now)))
-    .limit(1);
+    .limit(1)
+    .all();
   return rows[0] ? parseSession(rows[0]) : null;
 }
 
-export async function deleteSession(
+export function deleteSession(
   database: Database,
   id: string,
-): Promise<void> {
-  await database.delete(sessions).where(eq(sessions.id, id));
+): void {
+  database.delete(sessions).where(eq(sessions.id, id)).run();
 }
 
-export async function deleteSessionByTokenHash(
+export function deleteSessionByTokenHash(
   database: Database,
   tokenHash: string,
-): Promise<void> {
-  await database.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
+): void {
+  database.delete(sessions).where(eq(sessions.tokenHash, tokenHash)).run();
 }
 
 /**
@@ -83,14 +85,14 @@ export async function deleteSessionByTokenHash(
  * bypass the interval, but the expiry comparison remains atomic so concurrent
  * requests cannot repeatedly extend the same session.
  */
-export async function touchSessionIfDue(
+export function touchSessionIfDue(
   database: Database,
   id: string,
   now: number,
   nextExpiresAt: number,
   touchIntervalMs: number,
-): Promise<Session | null> {
-  const rows = await database
+): Session | null {
+  const rows = database
     .update(sessions)
     .set({ lastSeenAt: now, expiresAt: nextExpiresAt })
     .where(and(
@@ -101,6 +103,7 @@ export async function touchSessionIfDue(
         lt(sessions.expiresAt, nextExpiresAt),
       ),
     ))
-    .returning();
+    .returning()
+    .all();
   return rows[0] ? parseSession(rows[0]) : null;
 }

@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { z } from "zod";
-import { assertEquals, assertRejects } from "../assertions.ts"
+import { assertEquals, assertRejects, assertThrows } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import {
@@ -47,8 +47,8 @@ function runInput(
   };
 }
 
-/** Drizzle wraps Postgres errors; the constraint name lives on the PostgresError cause. */
-function unwrapPostgresMessage(error: unknown): string {
+/** Drizzle may wrap driver errors; inspect the underlying cause when present. */
+function unwrapDatabaseMessage(error: unknown): string {
   if (error instanceof Error) {
     if ("cause" in error && error.cause instanceof Error) {
       return error.cause.message;
@@ -223,7 +223,7 @@ test("findNewestDigestRunByDigestIdForUser deterministically breaks startedAt ti
       errorMessage: "newer finish",
     }, 1_002);
     const unfinished = await createDigestRun(database, runInput(owner.id), 1_000);
-    await database.execute(sql`
+    database.run(sql`
       update digest_runs
       set digest_id = ${digest.id}
       where id = ${unfinished.id}
@@ -242,14 +242,10 @@ test("findNewestDigestRunByDigestIdForUser deterministically breaks startedAt ti
 
 test("finishDigestRun of a missing id throws", async () => {
   await withTestDb(async (database) => {
-    await assertRejects(
-      () =>
-        finishDigestRun(database, "00000000-0000-0000-0000-000000000099", {
-          status: "complete",
-        }),
-      Error,
-      "digest run not found",
-    );
+    assertThrows(() => finishDigestRun(database, "00000000-0000-0000-0000-000000000099", {
+      status: "complete",
+    }), Error,
+    "digest run not found",);
   });
 });
 
@@ -350,16 +346,10 @@ test("finishDigestRunFeed with failed status and errorMessage", async () => {
 
 test("finishDigestRunFeed of a missing id throws", async () => {
   await withTestDb(async (database) => {
-    await assertRejects(
-      () =>
-        finishDigestRunFeed(
-          database,
-          "00000000-0000-0000-0000-000000000099",
-          { status: "complete" },
-        ),
-      Error,
-      "digest run feed not found",
-    );
+    assertThrows(() => finishDigestRunFeed(database,
+    "00000000-0000-0000-0000-000000000099",
+    { status: "complete" },), Error,
+    "digest run feed not found",);
   });
 });
 
@@ -421,11 +411,8 @@ test("createDigestRun surfaces a typed conflict for an active run", async () => 
     );
     await createDigestRun(database, runInput(user.id), 1_000);
 
-    await assertRejects(
-      () => createDigestRun(database, runInput(user.id), 2_000),
-      DigestRunAlreadyRunningError,
-      "digest already running",
-    );
+    assertThrows(() => createDigestRun(database, runInput(user.id), 2_000), DigestRunAlreadyRunningError,
+    "digest already running",);
   });
 });
 
@@ -564,15 +551,15 @@ test("invalid digest run status insert is rejected at DB level", async () => {
     const user = await createUser(database, userInput());
 
     try {
-      await database.execute(sql`
+      database.run(sql`
         insert into digest_runs
-          (user_id, trigger, period_start_ms, period_end_ms, status, started_at)
+          (id, user_id, trigger, period_start_ms, period_end_ms, status, started_at)
         values
-          (${user.id}, 'manual', 1, 2, 'bogus', ${Date.now()})
+          (${crypto.randomUUID()}, ${user.id}, 'manual', 1, 2, 'bogus', ${Date.now()})
       `);
       throw new Error("expected insert to fail");
     } catch (error) {
-      const msg = unwrapPostgresMessage(error);
+      const msg = unwrapDatabaseMessage(error);
       assertEquals(
         msg.includes("digest_runs_status_check"),
         true,
@@ -587,15 +574,15 @@ test("invalid digest run trigger insert is rejected at DB level", async () => {
     const user = await createUser(database, userInput());
 
     try {
-      await database.execute(sql`
+      database.run(sql`
         insert into digest_runs
-          (user_id, trigger, period_start_ms, period_end_ms, status, started_at)
+          (id, user_id, trigger, period_start_ms, period_end_ms, status, started_at)
         values
-          (${user.id}, 'bogus_trigger', 1, 2, 'running', ${Date.now()})
+          (${crypto.randomUUID()}, ${user.id}, 'bogus_trigger', 1, 2, 'running', ${Date.now()})
       `);
       throw new Error("expected insert to fail");
     } catch (error) {
-      const msg = unwrapPostgresMessage(error);
+      const msg = unwrapDatabaseMessage(error);
       assertEquals(
         msg.includes("digest_runs_trigger_check"),
         true,
@@ -611,15 +598,15 @@ test("invalid digest run feed stage insert is rejected at DB level", async () =>
     const run = await createDigestRun(database, runInput(user.id));
 
     try {
-      await database.execute(sql`
+      database.run(sql`
         insert into digest_run_feeds
-          (run_id, connector_id, stage, status, started_at)
+          (id, run_id, connector_id, stage, status, started_at)
         values
-          (${run.id}, 'Telegram', 'bogus_stage', 'running', ${Date.now()})
+          (${crypto.randomUUID()}, ${run.id}, 'Telegram', 'bogus_stage', 'running', ${Date.now()})
       `);
       throw new Error("expected insert to fail");
     } catch (error) {
-      const msg = unwrapPostgresMessage(error);
+      const msg = unwrapDatabaseMessage(error);
       assertEquals(
         msg.includes("digest_run_feeds_stage_check"),
         true,
@@ -635,15 +622,15 @@ test("invalid digest run feed status insert is rejected at DB level", async () =
     const run = await createDigestRun(database, runInput(user.id));
 
     try {
-      await database.execute(sql`
+      database.run(sql`
         insert into digest_run_feeds
-          (run_id, connector_id, stage, status, started_at)
+          (id, run_id, connector_id, stage, status, started_at)
         values
-          (${run.id}, 'Telegram', 'ingestion', 'bogus_status', ${Date.now()})
+          (${crypto.randomUUID()}, ${run.id}, 'Telegram', 'ingestion', 'bogus_status', ${Date.now()})
       `);
       throw new Error("expected insert to fail");
     } catch (error) {
-      const msg = unwrapPostgresMessage(error);
+      const msg = unwrapDatabaseMessage(error);
       assertEquals(
         msg.includes("digest_run_feeds_status_check"),
         true,
@@ -658,15 +645,15 @@ test("period order constraint rejects start > end", async () => {
     const user = await createUser(database, userInput());
 
     try {
-      await database.execute(sql`
+      database.run(sql`
         insert into digest_runs
-          (user_id, trigger, period_start_ms, period_end_ms, status, started_at)
+          (id, user_id, trigger, period_start_ms, period_end_ms, status, started_at)
         values
-          (${user.id}, 'manual', 200, 100, 'running', ${Date.now()})
+          (${crypto.randomUUID()}, ${user.id}, 'manual', 200, 100, 'running', ${Date.now()})
       `);
       throw new Error("expected insert to fail");
     } catch (error) {
-      const msg = unwrapPostgresMessage(error);
+      const msg = unwrapDatabaseMessage(error);
       assertEquals(
         msg.includes("digest_runs_period_order_check"),
         true,

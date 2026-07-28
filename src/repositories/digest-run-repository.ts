@@ -130,266 +130,237 @@ function parsePublicDigestRunFeed(row: unknown): PublicDigestRunFeed {
   return publicDigestRunFeedSchema.parse(row);
 }
 
-export async function createDigestRun(
-  database: Database,
-  input: CreateDigestRunInput,
-  now = Date.now(),
-): Promise<PublicDigestRun> {
-  try {
-    const [row] = await database
-      .insert(digestRuns)
-      .values({
-        userId: input.userId,
-        trigger: input.trigger as DigestRunTrigger,
-        periodStartMs: input.periodStartMs,
-        periodEndMs: input.periodEndMs,
-        status: input.status as DigestRunStatus,
-        startedAt: now,
-      })
-      .returning();
-    if (!row) {
-      throw new Error("digest run insert returned no rows");
-    }
-    return parsePublicDigestRun(row);
-  } catch (error) {
-    if (input.status === "running" && isUniqueViolation(error)) {
-      throw new DigestRunAlreadyRunningError();
-    }
-    throw error;
-  }
-}
-
-export async function recoverStaleDigestRuns(
-  database: Database,
-  now: number,
-  staleAfterMs: number,
-): Promise<number> {
-  const staleBefore = now - staleAfterMs;
-  return await database.transaction(async (transaction) => {
-    const recoveredRuns = await transaction
-      .update(digestRuns)
-      .set({
-        status: "failed",
-        finishedAt: now,
-        errorMessage: "digest run lease expired",
-      })
-      .where(and(
-        eq(digestRuns.status, "running"),
-        lt(digestRuns.startedAt, staleBefore),
-      ))
-      .returning({ id: digestRuns.id });
-
-    if (recoveredRuns.length === 0) {
-      return 0;
-    }
-
-    await transaction
-      .update(digestRunFeeds)
-      .set({
-        status: "failed",
-        finishedAt: now,
-        errorMessage: "digest run lease expired",
-      })
-      .where(and(
-        eq(digestRunFeeds.status, "running"),
-        inArray(digestRunFeeds.runId, recoveredRuns.map((run) => run.id)),
-      ));
-
-    return recoveredRuns.length;
-  });
-}
-
-export async function finishDigestRun(
-  database: Database,
-  id: string,
-  input: {
-    digestId?: string | null;
-    status: DigestRunStatus;
-    errorMessage?: string | null;
-    modelUsage?: z.infer<typeof digestModelUsageSnapshotSchema> | null;
-  },
-  now = Date.now(),
-): Promise<PublicDigestRun> {
-  const setValues: Record<string, unknown> = {
-    status: input.status as DigestRunStatus,
-    finishedAt: now,
-  };
-  if ("digestId" in input) {
-    setValues.digestId = input.digestId;
-  }
-  if ("errorMessage" in input) {
-    setValues.errorMessage = input.errorMessage;
-  }
-  if ("modelUsage" in input) {
-    setValues.modelUsage = input.modelUsage;
-  }
-  const [row] = await database
-    .update(digestRuns)
-    .set(setValues)
-    .where(eq(digestRuns.id, id))
-    .returning();
-  if (!row) {
-    throw new Error("digest run not found");
-  }
-  return parsePublicDigestRun(row);
-}
-
-export async function startDigestRunFeed(
-  database: Database,
-  input: CreateDigestRunFeedInput,
-  now = Date.now(),
-): Promise<PublicDigestRunFeed> {
-  const [row] = await database
-    .insert(digestRunFeeds)
+export function createDigestRun(database: Database,
+input: CreateDigestRunInput,
+now = Date.now(),): PublicDigestRun { try {
+  const [row] = database
+    .insert(digestRuns)
     .values({
-      runId: input.runId,
-      sourceId: input.sourceId ?? null,
-      feedId: input.feedId ?? null,
-      connectorId: input.connectorId,
-      feedExternalId: input.feedExternalId ?? null,
-      feedName: input.feedName ?? null,
-      stage: input.stage as DigestRunFeedStage,
-      status: input.status as DigestRunFeedStatus,
-      itemCount: input.itemCount ?? null,
+      userId: input.userId,
+      trigger: input.trigger as DigestRunTrigger,
+      periodStartMs: input.periodStartMs,
+      periodEndMs: input.periodEndMs,
+      status: input.status as DigestRunStatus,
       startedAt: now,
     })
-    .returning();
+    .returning()
+    .all();
   if (!row) {
-    throw new Error("digest run feed insert returned no rows");
+    throw new Error("digest run insert returned no rows");
   }
-  return parsePublicDigestRunFeed(row);
-}
+  return parsePublicDigestRun(row);
+} catch (error) {
+  if (input.status === "running" && isUniqueViolation(error)) {
+    throw new DigestRunAlreadyRunningError();
+  }
+  throw error;
+} }
 
-export async function finishDigestRunFeed(
-  database: Database,
-  id: string,
-  input: {
-    status: DigestRunFeedStatus;
-    itemCount?: number | null;
-    errorMessage?: string | null;
-  },
-  now = Date.now(),
-): Promise<PublicDigestRunFeed> {
-  const setValues: Record<string, unknown> = {
-    status: input.status as DigestRunFeedStatus,
-    finishedAt: now,
-  };
-  if ("itemCount" in input) {
-    setValues.itemCount = input.itemCount;
-  }
-  if ("errorMessage" in input) {
-    setValues.errorMessage = input.errorMessage;
-  }
-  const [row] = await database
-    .update(digestRunFeeds)
-    .set(setValues)
-    .where(eq(digestRunFeeds.id, id))
-    .returning();
-  if (!row) {
-    throw new Error("digest run feed not found");
-  }
-  return parsePublicDigestRunFeed(row);
-}
-
-export async function findNewestDigestRunByDigestIdForUser(
-  database: Database,
-  userId: string,
-  digestId: string,
-): Promise<PublicDigestRun | null> {
-  const [row] = await database
-    .select()
-    .from(digestRuns)
+export function recoverStaleDigestRuns(database: Database,
+now: number,
+staleAfterMs: number,): number { const staleBefore = now - staleAfterMs;
+return database.transaction((transaction) => {
+  const recoveredRuns = transaction
+    .update(digestRuns)
+    .set({
+      status: "failed",
+      finishedAt: now,
+      errorMessage: "digest run lease expired",
+    })
     .where(and(
-      eq(digestRuns.userId, userId),
-      eq(digestRuns.digestId, digestId),
+      eq(digestRuns.status, "running"),
+      lt(digestRuns.startedAt, staleBefore),
     ))
-    .orderBy(
-      desc(digestRuns.startedAt),
-      sql`${digestRuns.finishedAt} desc nulls last`,
-      desc(digestRuns.id),
-    )
-    .limit(1);
-  return row ? parsePublicDigestRun(row) : null;
-}
+    .returning({ id: digestRuns.id })
+    .all();
 
-export async function listDigestRunsForUser(
-  database: Database,
-  userId: string,
-  options: { limit?: number } = {},
-): Promise<PublicDigestRun[]> {
-  const rows = await database
-    .select()
-    .from(digestRuns)
-    .where(eq(digestRuns.userId, userId))
-    .orderBy(desc(digestRuns.startedAt))
-    .limit(options.limit ?? 50);
-  return rows.map(parsePublicDigestRun);
-}
-
-export async function listDigestRunPageForUser(
-  database: Database,
-  userId: string,
-  options: { cursor?: string; limit?: number } = {},
-): Promise<PageResult<PublicDigestRun>> {
-  const limit = (() => {
-    const n = options.limit ?? 20;
-    if (!Number.isInteger(n) || n < 1 || n > 100) {
-      throw new TypeError("limit must be an integer between 1 and 100");
-    }
-    return n;
-  })();
-
-  const conditions = [eq(digestRuns.userId, userId)];
-  if (options.cursor) {
-    const c = decodeDigestRunCursor(options.cursor);
-    const cursorCondition = or(
-      lt(digestRuns.startedAt, c.p),
-      and(eq(digestRuns.startedAt, c.p), lt(digestRuns.id, c.i)),
-    );
-    if (cursorCondition) conditions.push(cursorCondition);
+  if (recoveredRuns.length === 0) {
+    return 0;
   }
 
-  const rows = await database
-    .select()
-    .from(digestRuns)
-    .where(and(...conditions))
-    .orderBy(desc(digestRuns.startedAt), desc(digestRuns.id))
-    .limit(limit + 1);
+  transaction
+    .update(digestRunFeeds)
+    .set({
+      status: "failed",
+      finishedAt: now,
+      errorMessage: "digest run lease expired",
+    })
+    .where(and(
+      eq(digestRunFeeds.status, "running"),
+      inArray(digestRunFeeds.runId, recoveredRuns.map((run) => run.id)),
+    ))
+    .run();
 
-  const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit).map(parsePublicDigestRun);
-  const nextCursor: string | null = hasMore
-    ? encodeDigestRunCursor(
-      data[data.length - 1].startedAt,
-      data[data.length - 1].id,
-    )
-    : null;
+  return recoveredRuns.length;
+}, { behavior: "immediate" }); }
 
-  return { data, nextCursor };
+export function finishDigestRun(database: Database,
+id: string,
+input: {
+  digestId?: string | null;
+  status: DigestRunStatus;
+  errorMessage?: string | null;
+  modelUsage?: z.infer<typeof digestModelUsageSnapshotSchema> | null;
+},
+now = Date.now(),): PublicDigestRun { const setValues: Record<string, unknown> = {
+  status: input.status as DigestRunStatus,
+  finishedAt: now,
+};
+if ("digestId" in input) {
+  setValues.digestId = input.digestId;
+}
+if ("errorMessage" in input) {
+  setValues.errorMessage = input.errorMessage;
+}
+if ("modelUsage" in input) {
+  setValues.modelUsage = input.modelUsage;
+}
+const [row] = database
+  .update(digestRuns)
+  .set(setValues)
+  .where(eq(digestRuns.id, id))
+  .returning()
+  .all();
+if (!row) {
+  throw new Error("digest run not found");
+}
+return parsePublicDigestRun(row); }
+
+export function startDigestRunFeed(database: Database,
+input: CreateDigestRunFeedInput,
+now = Date.now(),): PublicDigestRunFeed { const [row] = database
+  .insert(digestRunFeeds)
+  .values({
+    runId: input.runId,
+    sourceId: input.sourceId ?? null,
+    feedId: input.feedId ?? null,
+    connectorId: input.connectorId,
+    feedExternalId: input.feedExternalId ?? null,
+    feedName: input.feedName ?? null,
+    stage: input.stage as DigestRunFeedStage,
+    status: input.status as DigestRunFeedStatus,
+    itemCount: input.itemCount ?? null,
+    startedAt: now,
+  })
+  .returning()
+  .all();
+if (!row) {
+  throw new Error("digest run feed insert returned no rows");
+}
+return parsePublicDigestRunFeed(row); }
+
+export function finishDigestRunFeed(database: Database,
+id: string,
+input: {
+  status: DigestRunFeedStatus;
+  itemCount?: number | null;
+  errorMessage?: string | null;
+},
+now = Date.now(),): PublicDigestRunFeed { const setValues: Record<string, unknown> = {
+  status: input.status as DigestRunFeedStatus,
+  finishedAt: now,
+};
+if ("itemCount" in input) {
+  setValues.itemCount = input.itemCount;
+}
+if ("errorMessage" in input) {
+  setValues.errorMessage = input.errorMessage;
+}
+const [row] = database
+  .update(digestRunFeeds)
+  .set(setValues)
+  .where(eq(digestRunFeeds.id, id))
+  .returning()
+  .all();
+if (!row) {
+  throw new Error("digest run feed not found");
+}
+return parsePublicDigestRunFeed(row); }
+
+export function findNewestDigestRunByDigestIdForUser(database: Database,
+userId: string,
+digestId: string,): PublicDigestRun | null { const [row] = database
+  .select()
+  .from(digestRuns)
+  .where(and(
+    eq(digestRuns.userId, userId),
+    eq(digestRuns.digestId, digestId),
+  ))
+  .orderBy(
+    desc(digestRuns.startedAt),
+    sql`${digestRuns.finishedAt} desc nulls last`,
+    desc(digestRuns.id),
+  )
+  .limit(1)
+  .all();
+return row ? parsePublicDigestRun(row) : null; }
+
+export function listDigestRunsForUser(database: Database,
+userId: string,
+options: { limit?: number } = {},): PublicDigestRun[] { const rows = database
+  .select()
+  .from(digestRuns)
+  .where(eq(digestRuns.userId, userId))
+  .orderBy(desc(digestRuns.startedAt))
+  .limit(options.limit ?? 50)
+  .all();
+return rows.map(parsePublicDigestRun); }
+
+export function listDigestRunPageForUser(database: Database,
+userId: string,
+options: { cursor?: string; limit?: number } = {},): PageResult<PublicDigestRun> { const limit = (() => {
+  const n = options.limit ?? 20;
+  if (!Number.isInteger(n) || n < 1 || n > 100) {
+    throw new TypeError("limit must be an integer between 1 and 100");
+  }
+  return n;
+})();
+
+const conditions = [eq(digestRuns.userId, userId)];
+if (options.cursor) {
+  const c = decodeDigestRunCursor(options.cursor);
+  const cursorCondition = or(
+    lt(digestRuns.startedAt, c.p),
+    and(eq(digestRuns.startedAt, c.p), lt(digestRuns.id, c.i)),
+  );
+  if (cursorCondition) conditions.push(cursorCondition);
 }
 
-export async function findDigestRunForUser(
-  database: Database,
-  id: string,
-  userId: string,
-): Promise<PublicDigestRun | null> {
-  const [row] = await database
-    .select()
-    .from(digestRuns)
-    .where(and(eq(digestRuns.id, id), eq(digestRuns.userId, userId)));
-  return row ? parsePublicDigestRun(row) : null;
-}
+const rows = database
+  .select()
+  .from(digestRuns)
+  .where(and(...conditions))
+  .orderBy(desc(digestRuns.startedAt), desc(digestRuns.id))
+  .limit(limit + 1)
+  .all();
 
-export async function listDigestRunFeedsForRun(
-  database: Database,
-  runId: string,
-  userId: string,
-): Promise<PublicDigestRunFeed[]> {
-  const rows = await database
-    .select()
-    .from(digestRunFeeds)
-    .innerJoin(digestRuns, eq(digestRunFeeds.runId, digestRuns.id))
-    .where(and(eq(digestRunFeeds.runId, runId), eq(digestRuns.userId, userId)))
-    .orderBy(asc(digestRunFeeds.startedAt));
-  return rows.map((row) => parsePublicDigestRunFeed(row.digest_run_feeds));
-}
+const hasMore = rows.length > limit;
+const data = rows.slice(0, limit).map(parsePublicDigestRun);
+const nextCursor: string | null = hasMore
+  ? encodeDigestRunCursor(
+    data[data.length - 1].startedAt,
+    data[data.length - 1].id,
+  )
+  : null;
+
+return { data, nextCursor }; }
+
+export function findDigestRunForUser(database: Database,
+id: string,
+userId: string,): PublicDigestRun | null { const [row] = database
+  .select()
+  .from(digestRuns)
+  .where(and(eq(digestRuns.id, id), eq(digestRuns.userId, userId)))
+  .all();
+return row ? parsePublicDigestRun(row) : null; }
+
+export function listDigestRunFeedsForRun(database: Database,
+runId: string,
+userId: string,): PublicDigestRunFeed[] { const rows = database
+  .select()
+  .from(digestRunFeeds)
+  .innerJoin(digestRuns, eq(digestRunFeeds.runId, digestRuns.id))
+  .where(and(eq(digestRunFeeds.runId, runId), eq(digestRuns.userId, userId)))
+  .orderBy(asc(digestRunFeeds.startedAt))
+  .all();
+return rows.map((row) => parsePublicDigestRunFeed(row.digest_run_feeds)); }

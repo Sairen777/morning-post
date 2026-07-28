@@ -502,7 +502,7 @@ test("PATCH /sources/:id rejects unsupported fields", async () => {
   });
 });
 
-test("PATCH /sources/:id rejects positions outside the PostgreSQL integer range", async () => {
+test("PATCH /sources/:id rejects positions outside the signed 32-bit integer range", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
     const app = buildApp(database);

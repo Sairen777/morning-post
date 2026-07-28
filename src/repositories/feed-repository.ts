@@ -102,33 +102,31 @@ function parsePublicFeed(row: unknown): PublicFeed {
   return publicFeedRowSchema.parse(row);
 }
 
-async function assertSourceOwned(
+function assertSourceOwned(
   database: Database,
   sourceId: string,
   userId: string,
-): Promise<void> {
-  const rows = await database
+): void {
+  const row = database
     .select({ id: sources.id })
     .from(sources)
     .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
-    .limit(1);
-  if (!rows[0]) {
+    .get();
+  if (!row) {
     throw new NotFoundError("source not found");
   }
 }
 
-async function lockSourceForFeedWrite(
+function lockSourceForFeedWrite(
   database: Database,
   sourceId: string,
   userId: string,
-): Promise<void> {
-  const rows = await database
+): void {
+  const source = database
     .select({ id: sources.id, credentials: sources.credentials })
     .from(sources)
     .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
-    .limit(1)
-    .for("update");
-  const source = rows[0];
+    .get();
   if (!source) {
     throw new NotFoundError("source not found");
   }
@@ -139,17 +137,17 @@ async function lockSourceForFeedWrite(
   }
 }
 
-async function findFeedBySourceAndExternalId(
+function findFeedBySourceAndExternalId(
   database: Database,
   sourceId: string,
   externalId: string,
-): Promise<PublicFeed | null> {
-  const rows = await database
+): PublicFeed | null {
+  const row = database
     .select(publicColumns())
     .from(feeds)
     .where(and(eq(feeds.sourceId, sourceId), eq(feeds.externalId, externalId)))
-    .limit(1);
-  return rows[0] ? parsePublicFeed(rows[0]) : null;
+    .get();
+  return row ? parsePublicFeed(row) : null;
 }
 
 function ownedSourceIds(database: Database, userId: string) {
@@ -157,21 +155,21 @@ function ownedSourceIds(database: Database, userId: string) {
     eq(sources.userId, userId),
   );
 }
-export async function createOrReviveFeed(
+export function createOrReviveFeed(
   database: Database,
   input: CreateOrReviveFeedInput,
-): Promise<PublicFeed> {
+): PublicFeed {
   const parsed = createFeedInputSchema.parse(input);
 
-  return await database.transaction(async (transaction) => {
+  return database.transaction((transaction) => {
     const transactionalDatabase = transaction as Database;
-    await lockSourceForFeedWrite(
+    lockSourceForFeedWrite(
       transactionalDatabase,
       parsed.sourceId,
       parsed.userId,
     );
 
-    const existingFeed = await findFeedBySourceAndExternalId(
+    const existingFeed = findFeedBySourceAndExternalId(
       transactionalDatabase,
       parsed.sourceId,
       parsed.externalId,
@@ -180,19 +178,19 @@ export async function createOrReviveFeed(
       if (existingFeed.deletedAt === null) {
         return existingFeed;
       }
-      return await reviveFeed(transactionalDatabase, existingFeed.id, parsed);
+      return reviveFeed(transactionalDatabase, existingFeed.id, parsed);
     }
 
-    return await insertFeed(transactionalDatabase, parsed);
-  });
+    return insertFeed(transactionalDatabase, parsed);
+  }, { behavior: "immediate" });
 }
 
-async function reviveFeed(
+function reviveFeed(
   database: Database,
   id: string,
   input: z.infer<typeof createFeedInputSchema>,
-): Promise<PublicFeed> {
-  const rows = await database
+): PublicFeed {
+  const row = database
     .update(feeds)
     .set({
       name: input.name,
@@ -206,17 +204,18 @@ async function reviveFeed(
       updatedAt: Date.now(),
     })
     .where(eq(feeds.id, id))
-    .returning(publicColumns());
-  return parsePublicFeed(rows[0]);
+    .returning(publicColumns())
+    .get();
+  return parsePublicFeed(row);
 }
 
-async function insertFeed(
+function insertFeed(
   database: Database,
   input: z.infer<typeof createFeedInputSchema>,
-): Promise<PublicFeed> {
+): PublicFeed {
   const now = Date.now();
   try {
-    const rows = await database
+    const row = database
       .insert(feeds)
       .values({
         sourceId: input.sourceId,
@@ -231,13 +230,14 @@ async function insertFeed(
         createdAt: now,
         updatedAt: now,
       })
-      .returning(publicColumns());
-    return parsePublicFeed(rows[0]);
+      .returning(publicColumns())
+      .get();
+    return parsePublicFeed(row);
   } catch (error) {
     if (!isUniqueViolation(error)) {
       throw error;
     }
-    const conflictingFeed = await findFeedBySourceAndExternalId(
+    const conflictingFeed = findFeedBySourceAndExternalId(
       database,
       input.sourceId,
       input.externalId,
@@ -248,73 +248,85 @@ async function insertFeed(
     if (conflictingFeed.deletedAt === null) {
       return conflictingFeed;
     }
-    return await reviveFeed(database, conflictingFeed.id, input);
+    return reviveFeed(database, conflictingFeed.id, input);
   }
 }
 
-export async function listFeedsForUser(
+export function listFeedsForUser(
   database: Database,
   userId: string,
   options: ListFeedsForUserOptions = {},
-): Promise<PublicFeed[]> {
+): PublicFeed[] {
   const predicates = [eq(sources.userId, userId)];
   if (!options.includeDeleted) {
     predicates.push(isNull(feeds.deletedAt));
   }
 
-  const rows = await database
+  const rows = database
     .select(publicColumns())
     .from(feeds)
     .innerJoin(sources, eq(feeds.sourceId, sources.id))
     .where(and(...predicates))
-    .orderBy(asc(sources.position), asc(feeds.position), asc(feeds.name));
+    .orderBy(
+      asc(sql`${sources.position} is null`),
+      asc(sources.position),
+      asc(sql`${feeds.position} is null`),
+      asc(feeds.position),
+      asc(feeds.name),
+    )
+    .all();
   return rows.map(parsePublicFeed);
 }
 
-export async function listFeedsForSource(
+export function listFeedsForSource(
   database: Database,
   sourceId: string,
   userId: string,
   options: ListFeedsForUserOptions = {},
-): Promise<PublicFeed[]> {
-  await assertSourceOwned(database, sourceId, userId);
+): PublicFeed[] {
+  assertSourceOwned(database, sourceId, userId);
 
   const predicates = [eq(feeds.sourceId, sourceId), eq(sources.userId, userId)];
   if (!options.includeDeleted) {
     predicates.push(isNull(feeds.deletedAt));
   }
 
-  const rows = await database
+  const rows = database
     .select(publicColumns())
     .from(feeds)
     .innerJoin(sources, eq(feeds.sourceId, sources.id))
     .where(and(...predicates))
-    .orderBy(asc(feeds.position), asc(feeds.name));
+    .orderBy(
+      asc(sql`${feeds.position} is null`),
+      asc(feeds.position),
+      asc(feeds.name),
+    )
+    .all();
   return rows.map(parsePublicFeed);
 }
 
-export async function findFeedById(
+export function findFeedById(
   database: Database,
   id: string,
   userId: string,
-): Promise<PublicFeed | null> {
-  const rows = await database
+): PublicFeed | null {
+  const row = database
     .select(publicColumns())
     .from(feeds)
     .innerJoin(sources, eq(feeds.sourceId, sources.id))
     .where(and(eq(feeds.id, id), eq(sources.userId, userId)))
-    .limit(1);
-  return rows[0] ? parsePublicFeed(rows[0]) : null;
+    .get();
+  return row ? parsePublicFeed(row) : null;
 }
 
-async function updateFeedRow(
+function updateFeedRow(
   database: Database,
   id: string,
   userId: string,
   partial: UpdateFeedInput,
-): Promise<PublicFeed> {
+): PublicFeed {
   const parsed = updateFeedInputSchema.parse(partial);
-  const rows = await database
+  const row = database
     .update(feeds)
     .set({ ...parsed, updatedAt: Date.now() })
     .where(
@@ -323,45 +335,46 @@ async function updateFeedRow(
         inArray(feeds.sourceId, ownedSourceIds(database, userId)),
       ),
     )
-    .returning(publicColumns());
-  if (!rows[0]) {
+    .returning(publicColumns())
+    .get();
+  if (!row) {
     throw new NotFoundError("feed not found");
   }
-  return parsePublicFeed(rows[0]);
+  return parsePublicFeed(row);
 }
 
-export async function updateFeed(
+export function updateFeed(
   database: Database,
   id: string,
   userId: string,
   partial: UpdateFeedInput,
-): Promise<PublicFeed> {
+): PublicFeed {
   if (partial.relevanceFilterMode === undefined) {
-    return await updateFeedRow(database, id, userId, partial);
+    return updateFeedRow(database, id, userId, partial);
   }
-  return await database.transaction(async (transaction) => {
+  return database.transaction((transaction) => {
     const transactionalDatabase = transaction as Database;
-    const before = await findFeedById(transactionalDatabase, id, userId);
+    const before = findFeedById(transactionalDatabase, id, userId);
     if (!before) {
       throw new NotFoundError("feed not found");
     }
-    const updated = await updateFeedRow(transactionalDatabase, id, userId, partial);
+    const updated = updateFeedRow(transactionalDatabase, id, userId, partial);
     if (before.relevanceFilterMode !== updated.relevanceFilterMode) {
-      await transactionalDatabase.update(users).set({
+      transactionalDatabase.update(users).set({
         interestProfileVersion: sql`${users.interestProfileVersion} + 1`,
-      }).where(eq(users.id, userId));
+      }).where(eq(users.id, userId)).run();
     }
     return updated;
-  });
+  }, { behavior: "immediate" });
 }
 
-export async function softDeleteFeed(
+export function softDeleteFeed(
   database: Database,
   id: string,
   userId: string,
-): Promise<PublicFeed> {
+): PublicFeed {
   const now = Date.now();
-  const rows = await database
+  const row = database
     .update(feeds)
     .set({ deletedAt: now, enabled: false, updatedAt: now })
     .where(
@@ -370,24 +383,30 @@ export async function softDeleteFeed(
         inArray(feeds.sourceId, ownedSourceIds(database, userId)),
       ),
     )
-    .returning(publicColumns());
-  if (!rows[0]) {
+    .returning(publicColumns())
+    .get();
+  if (!row) {
     throw new NotFoundError("feed not found");
   }
-  return parsePublicFeed(rows[0]);
+  return parsePublicFeed(row);
 }
 
-export async function setLastFetched(
+export function setLastFetched(
   database: Database,
   id: string,
   userId: string,
   lastFetchedPeriodEndMs: number | null,
-): Promise<PublicFeed> {
-  const rows = await database
+): PublicFeed {
+  const row = database
     .update(feeds)
     .set({
-      lastFetchedPeriodEndMs:
-        sql`greatest(${feeds.lastFetchedPeriodEndMs}, ${lastFetchedPeriodEndMs})`,
+      lastFetchedPeriodEndMs: sql`case
+        when ${feeds.lastFetchedPeriodEndMs} is null then ${lastFetchedPeriodEndMs}
+        when ${lastFetchedPeriodEndMs} is null then ${feeds.lastFetchedPeriodEndMs}
+        when ${feeds.lastFetchedPeriodEndMs} >= ${lastFetchedPeriodEndMs}
+          then ${feeds.lastFetchedPeriodEndMs}
+        else ${lastFetchedPeriodEndMs}
+      end`,
       updatedAt: Date.now(),
     })
     .where(
@@ -396,9 +415,10 @@ export async function setLastFetched(
         inArray(feeds.sourceId, ownedSourceIds(database, userId)),
       ),
     )
-    .returning(publicColumns());
-  if (!rows[0]) {
+    .returning(publicColumns())
+    .get();
+  if (!row) {
     throw new NotFoundError("feed not found");
   }
-  return parsePublicFeed(rows[0]);
+  return parsePublicFeed(row);
 }

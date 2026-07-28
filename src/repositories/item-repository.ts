@@ -47,18 +47,18 @@ export function validateNormalizedItems(
   return normalizedItems.map((item) => normalizedItemSchema.parse(item));
 }
 
-export async function upsertItems(
+export function upsertItems(
   database: Database,
   feedId: string,
   normalizedItems: NormalizedItem[],
   fetchedAt = Date.now(),
-): Promise<StoredItem[]> {
+): StoredItem[] {
   const validItems = validateNormalizedItems(normalizedItems);
   if (validItems.length === 0) {
     return [];
   }
 
-  const rows = await database
+  const rows = database
     .insert(items)
     .values(validItems.map((item) => ({
       feedId,
@@ -76,22 +76,24 @@ export async function upsertItems(
           sql`case when ${items.payload} is distinct from excluded.payload then excluded.fetched_at else ${items.fetchedAt} end`,
       },
     })
-    .returning();
+    .returning()
+    .all();
 
   return rows.map(parseStoredItem);
 }
 
-export async function listMediaPathsForFeedWindow(
+export function listMediaPathsForFeedWindow(
   database: Database,
   feedId: string,
   from: number,
   to: number,
-): Promise<string[]> {
-  const rows = await database
+): string[] {
+  const rows = database
     .select()
     .from(items)
     .where(and(eq(items.feedId, feedId), between(items.date, from, to)))
-    .orderBy(asc(items.date), asc(items.externalId));
+    .orderBy(asc(items.date), asc(items.externalId))
+    .all();
   const paths: string[] = [];
   for (const row of rows) {
     const payload = row.payload as NormalizedItem;
@@ -103,16 +105,16 @@ export async function listMediaPathsForFeedWindow(
   }
   return paths;
 }
-export async function listFeedIdsWithPaidItems(
+export function listFeedIdsWithPaidItems(
   database: Database,
   feedIds: string[],
   from: number,
   to: number,
-): Promise<string[]> {
+): string[] {
   if (feedIds.length === 0) {
     return [];
   }
-  const rows = await database
+  const rows = database
     .selectDistinct({ feedId: items.feedId })
     .from(items)
     .where(and(
@@ -121,37 +123,40 @@ export async function listFeedIdsWithPaidItems(
       sql`${items.payload}->>'connectorId' = ${ConnectorId.Substack}`,
       sql`${items.payload}->'meta'->>'audience' = 'only_paid'`,
     ))
-    .orderBy(asc(items.feedId));
+    .orderBy(asc(items.feedId))
+    .all();
   return rows.map((row) => row.feedId);
 }
 
-export async function listItemsForFeedsInWindow(
+export function listItemsForFeedsInWindow(
   database: Database,
   feedIds: string[],
   from: number,
   to: number,
-): Promise<StoredItem[]> {
+): StoredItem[] {
   if (feedIds.length === 0) {
     return [];
   }
-  const rows = await database
+  const rows = database
     .select()
     .from(items)
     .where(and(inArray(items.feedId, feedIds), between(items.date, from, to)))
-    .orderBy(asc(items.date), asc(items.externalId));
+    .orderBy(asc(items.date), asc(items.externalId))
+    .all();
   return rows.map(parseStoredItem);
 }
 
-export async function listItemsForFeedInWindow(
+export function listItemsForFeedInWindow(
   database: Database,
   feedId: string,
   from: number,
   to: number,
-): Promise<StoredItem[]> {
-  const rows = await database
+): StoredItem[] {
+  const rows = database
     .select()
     .from(items)
     .where(and(eq(items.feedId, feedId), between(items.date, from, to)))
-    .orderBy(asc(items.date), asc(items.externalId));
+    .orderBy(asc(items.date), asc(items.externalId))
+    .all();
   return rows.map(parseStoredItem);
 }

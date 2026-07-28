@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts";
+import { assert, assertEquals, assertExists, assertThrows } from "../assertions.ts"
 import { eq } from "drizzle-orm";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -217,26 +217,18 @@ test("feed repository rejects unsupported summarization modes without mutating t
       "feed-invalid-summarization-mode@example.com",
     );
 
-    await assertRejects(
-      () =>
-        createOrReviveFeed(
-          database,
-          feedInput(user.id, source.id, {
-            summarizationMode: "invalid" as SummarizationMode,
-          }),
-        ),
-    );
+    assertThrows(() => createOrReviveFeed(database,
+    feedInput(user.id, source.id, {
+      summarizationMode: "invalid" as SummarizationMode,
+    }),), );
 
     const feed = await createOrReviveFeed(
       database,
       feedInput(user.id, source.id),
     );
-    await assertRejects(
-      () =>
-        updateFeed(database, feed.id, user.id, {
-          summarizationMode: "invalid" as SummarizationMode,
-        }),
-    );
+    assertThrows(() => updateFeed(database, feed.id, user.id, {
+      summarizationMode: "invalid" as SummarizationMode,
+    }), );
 
     const unchanged = await findFeedById(database, feed.id, user.id);
     assertExists(unchanged);
@@ -328,45 +320,27 @@ test("feed repository scopes reads and writes by source owner", async () => {
     );
 
     assertEquals(await findFeedById(database, feed.id, other.user.id), null);
-    await assertRejects(
-      () => listFeedsForSource(database, owner.source.id, other.user.id),
-      NotFoundError,
-      "source not found",
-    );
+    assertThrows(() => listFeedsForSource(database, owner.source.id, other.user.id), NotFoundError,
+    "source not found",);
 
-    await assertRejects(
-      () => updateFeed(database, feed.id, other.user.id, {
-        enabled: false,
-        summarizationMode: "thorough",
-      }),
-      NotFoundError,
-      "feed not found",
-    );
+    assertThrows(() => updateFeed(database, feed.id, other.user.id, {
+      enabled: false,
+      summarizationMode: "thorough",
+    }), NotFoundError,
+    "feed not found",);
     const unchanged = await findFeedById(database, feed.id, owner.user.id);
     assertExists(unchanged);
     assertEquals(unchanged.enabled, true);
     assertEquals(unchanged.summarizationMode, "basic");
-    await assertRejects(
-      () => softDeleteFeed(database, feed.id, other.user.id),
-      NotFoundError,
-      "feed not found",
-    );
-    await assertRejects(
-      () => setLastFetched(database, feed.id, other.user.id, 1_700_000_000_000),
-      NotFoundError,
-      "feed not found",
-    );
-    await assertRejects(
-      () =>
-        createOrReviveFeed(
-          database,
-          feedInput(other.user.id, owner.source.id, {
-            externalId: "cross-user",
-          }),
-        ),
-      NotFoundError,
-      "source not found",
-    );
+    assertThrows(() => softDeleteFeed(database, feed.id, other.user.id), NotFoundError,
+    "feed not found",);
+    assertThrows(() => setLastFetched(database, feed.id, other.user.id, 1_700_000_000_000), NotFoundError,
+    "feed not found",);
+    assertThrows(() => createOrReviveFeed(database,
+    feedInput(other.user.id, owner.source.id, {
+      externalId: "cross-user",
+    }),), NotFoundError,
+    "source not found",);
   });
 });
 
@@ -438,24 +412,12 @@ test("createOrReviveFeed rejects disconnected sources", async () => {
     );
     await deleteSourceCredentials(database, source.id, user.id);
 
-    await assertRejects(
-      () =>
-        createOrReviveFeed(
-          database,
-          feedInput(user.id, source.id, { name: "Revived" }),
-        ),
-      ConflictError,
-      "source must be reconnected before feeds can be subscribed",
-    );
-    await assertRejects(
-      () =>
-        createOrReviveFeed(
-          database,
-          feedInput(user.id, source.id, { externalId: "new-feed" }),
-        ),
-      ConflictError,
-      "source must be reconnected before feeds can be subscribed",
-    );
+    assertThrows(() => createOrReviveFeed(database,
+    feedInput(user.id, source.id, { name: "Revived" }),), ConflictError,
+    "source must be reconnected before feeds can be subscribed",);
+    assertThrows(() => createOrReviveFeed(database,
+    feedInput(user.id, source.id, { externalId: "new-feed" }),), ConflictError,
+    "source must be reconnected before feeds can be subscribed",);
 
     const historicalFeeds = await listFeedsForUser(database, user.id, {
       includeDeleted: true,
@@ -474,7 +436,7 @@ test("feed row validation rejects unknown feed kinds at repository boundary", as
     );
     const now = Date.now();
 
-    await assertRejects(
+    assertThrows(
       () =>
         database.insert(feeds).values({
           sourceId: source.id,
@@ -484,7 +446,7 @@ test("feed row validation rejects unknown feed kinds at repository boundary", as
           enabled: true,
           createdAt: now,
           updatedAt: now,
-        }),
+        }).run(),
     );
   });
 });
@@ -543,11 +505,11 @@ test("feed check constraint rejects invalid feed kind at database level", async 
       feedInput(user.id, source.id, { kind: "news" }),
     );
 
-    await assertRejects(
+    assertThrows(
       () =>
         database.update(feeds).set({ kind: "invalid" as FeedKind }).where(
           eq(feeds.id, feed.id),
-        ),
+        ).run(),
     );
   });
 });

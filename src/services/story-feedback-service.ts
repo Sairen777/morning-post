@@ -98,18 +98,19 @@ function targetedDisposition(action: (typeof targetedActions)[number]): Interest
   return "mute";
 }
 
-async function bumpInterestProfileVersion(
+function bumpInterestProfileVersion(
   database: Database,
   userId: string,
   now: number,
-): Promise<void> {
-  await database
+): void {
+  database
     .update(users)
     .set({
       interestProfileVersion: sql`${users.interestProfileVersion} + 1`,
       updatedAt: now,
     })
-    .where(eq(users.id, userId));
+    .where(eq(users.id, userId))
+    .run();
 }
 
 export async function submitStoryFeedback(
@@ -118,13 +119,13 @@ export async function submitStoryFeedback(
 ): Promise<SubmitStoryFeedbackResult> {
   const input = parseInput(rawInput);
 
-  return await database.transaction(async (transaction) => {
+  return database.transaction((transaction) => {
     const tx = transaction as Database;
-    if (!await lockFeedbackUser(tx, input.userId)) {
+    if (!lockFeedbackUser(tx, input.userId)) {
       throw new NotFoundError("delivered story not found");
     }
 
-    const delivered = await lockOwnedDeliveredStory(
+    const delivered = lockOwnedDeliveredStory(
       tx,
       input.userId,
       input.digestStoryId,
@@ -147,7 +148,7 @@ export async function submitStoryFeedback(
     }
 
     const now = Date.now();
-    const saved = await saveStoryFeedbackIdempotently(tx, {
+    const saved = saveStoryFeedbackIdempotently(tx, {
       userId: input.userId,
       digestId: delivered.digestId,
       digestStoryId: delivered.digestStoryId,
@@ -170,7 +171,7 @@ export async function submitStoryFeedback(
         const normalizedLabel = normalizeInterestLabel(label);
         if (!normalizedLabel || seen.has(normalizedLabel)) continue;
         seen.add(normalizedLabel);
-        rulesChanged = await applyFeedbackInterestRule(tx, {
+        rulesChanged = applyFeedbackInterestRule(tx, {
           userId: input.userId,
           label,
           normalizedLabel,
@@ -190,7 +191,7 @@ export async function submitStoryFeedback(
         input.action === "mute_topic"
       )
     ) {
-      rulesChanged = await applyFeedbackInterestRule(tx, {
+      rulesChanged = applyFeedbackInterestRule(tx, {
         userId: input.userId,
         label: targetLabel,
         normalizedLabel: normalizeInterestLabel(targetLabel),
@@ -202,11 +203,11 @@ export async function submitStoryFeedback(
       });
     }
 
-    if (rulesChanged) await bumpInterestProfileVersion(tx, input.userId, now);
+    if (rulesChanged) bumpInterestProfileVersion(tx, input.userId, now);
 
     return {
       feedback,
-      interestRules: await listActiveInterestRules(tx, input.userId, now),
+      interestRules: listActiveInterestRules(tx, input.userId, now),
     };
-  });
+  }, { behavior: "immediate" });
 }

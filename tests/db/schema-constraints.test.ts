@@ -1,33 +1,32 @@
 import { test } from "bun:test";
-import { assertEquals, assertRejects } from "../assertions.ts"
+import { assertEquals, assertThrows } from "../assertions.ts"
 import { sql } from "drizzle-orm";
-import type { Database } from "../../src/db/client.ts";
+import type { Database } from "../../src/db/sqlite.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 
-async function indexExists(
+function indexExists(
   database: Database,
   name: string,
-): Promise<boolean> {
-  const rows = await database.execute(
-    sql`select 1 from pg_indexes where indexname = ${name} limit 1`,
-  );
-  return rows.length === 1;
+): boolean {
+  return database.get(
+    sql`select 1 from sqlite_schema
+        where type = 'index' and name = ${name}
+        limit 1`,
+  ) !== undefined;
 }
 
-async function constraintExists(
+function constraintExists(
   database: Database,
   tableName: string,
   constraintName: string,
-): Promise<boolean> {
-  const rows = await database.execute(
-    sql`select 1
-        from pg_constraint c
-        join pg_class t on c.conrelid = t.oid
-        where c.conname = ${constraintName}
-          and t.relname = ${tableName}
+): boolean {
+  return database.get(
+    sql`select 1 from sqlite_schema
+        where type = 'table'
+          and name = ${tableName}
+          and instr(sql, ${constraintName}) > 0
         limit 1`,
-  );
-  return rows.length === 1;
+  ) !== undefined;
 }
 
 test("database schema exposes required performance indexes", async () => {
@@ -160,9 +159,9 @@ test("database schema rejects invalid persisted states", async () => {
 test("database schema rejects invalid connector id", async () => {
   await withTestDb(async (database) => {
     const now = Date.now();
-    await assertRejects(
+    assertThrows(
       () =>
-        database.execute(sql`insert into sources (user_id, connector_id, credentials, enabled, created_at, updated_at)
+        database.run(sql`insert into sources (user_id, connector_id, credentials, enabled, created_at, updated_at)
           values ('00000000-0000-0000-0000-000000000001', 'unknown', null, true, ${now}, ${now})`),
     );
   });

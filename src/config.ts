@@ -1,4 +1,3 @@
-export type DatabaseSslMode = "disable" | "require" | "verify-full";
 
 export interface ModelPricingSnapshot {
   uncachedInputUsdPerMillionTokens: number;
@@ -52,15 +51,11 @@ export interface XBrowserConfig {
 }
 
 export interface Config {
-  databaseUrl: string;
+  databasePath: string;
   port: number;
   allowedOrigins: string[];
   trustedProxyCount: number;
   maxRequestBodyBytes: number;
-  databasePoolMax: number;
-  databaseIdleTimeoutSeconds: number;
-  databaseConnectTimeoutSeconds: number;
-  databaseSslMode: DatabaseSslMode;
   allowRemoteSummarization: boolean;
   connectorTimeoutMs: number;
   summarizerTextBytesPerChunk: number;
@@ -100,9 +95,6 @@ const DEFAULT_ALLOWED_ORIGINS = [
 const DEFAULT_PORT = 3000;
 const DEFAULT_SERVER_HOSTNAME = "127.0.0.1";
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1_048_576;
-const DEFAULT_DATABASE_POOL_MAX = 10;
-const DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS = 20;
-const DEFAULT_DATABASE_CONNECT_TIMEOUT_SECONDS = 30;
 const DEFAULT_CONNECTOR_TIMEOUT_MS = 120_000;
 const DEFAULT_SUMMARIZER_TEXT_BYTES_PER_CHUNK = 120_000;
 const DEFAULT_SUMMARIZER_MAX_ITEMS_PER_CHUNK = 50;
@@ -448,18 +440,6 @@ function originsSetting(override: string[] | undefined): string[] {
   return origins;
 }
 
-function sslModeSetting(
-  override: DatabaseSslMode | undefined,
-): DatabaseSslMode {
-  const raw = override ?? process.env["DB_SSL_MODE"] ?? "disable";
-  if (raw === "disable" || raw === "require" || raw === "verify-full") {
-    return raw;
-  }
-  throw invalidConfig(
-    "DB_SSL_MODE",
-    "expected disable, require, or verify-full",
-  );
-}
 
 export function resolveServerHostname(override?: string): string {
   const serverHostname = override ?? process.env["SERVER_HOSTNAME"] ??
@@ -576,7 +556,8 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
     loginTimeoutMs: overrides.xBrowserLoginTimeoutMs,
   });
   return {
-    databaseUrl: overrides.databaseUrl ?? process.env["DATABASE_URL"] ?? "",
+    databasePath: overrides.databasePath ?? process.env["DATABASE_PATH"] ??
+      "./data/morning-post.sqlite",
     port,
     allowedOrigins: originsSetting(overrides.allowedOrigins),
     trustedProxyCount: numberSetting(
@@ -592,25 +573,6 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
       overrides.maxRequestBodyBytes,
       DEFAULT_MAX_REQUEST_BODY_BYTES,
     ),
-    databasePoolMax: numberSetting(
-      "DB_POOL_MAX",
-      "DB_POOL_MAX",
-      overrides.databasePoolMax,
-      DEFAULT_DATABASE_POOL_MAX,
-    ),
-    databaseIdleTimeoutSeconds: numberSetting(
-      "DB_IDLE_TIMEOUT_SECONDS",
-      "DB_IDLE_TIMEOUT_SECONDS",
-      overrides.databaseIdleTimeoutSeconds,
-      DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
-    ),
-    databaseConnectTimeoutSeconds: numberSetting(
-      "DB_CONNECT_TIMEOUT_SECONDS",
-      "DB_CONNECT_TIMEOUT_SECONDS",
-      overrides.databaseConnectTimeoutSeconds,
-      DEFAULT_DATABASE_CONNECT_TIMEOUT_SECONDS,
-    ),
-    databaseSslMode: sslModeSetting(overrides.databaseSslMode),
     allowRemoteSummarization: booleanSetting(
       "ALLOW_REMOTE_SUMMARIZATION",
       "ALLOW_REMOTE_SUMMARIZATION",

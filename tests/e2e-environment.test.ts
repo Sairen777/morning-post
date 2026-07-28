@@ -1,82 +1,58 @@
 import { test } from "bun:test";
+import { resolve } from "node:path";
+import { resolveE2eDatabasePath } from "../scripts/e2e-environment.ts";
 import { assertEquals, assertThrows } from "./assertions.ts";
-import { resolveE2eDatabaseUrl } from "../scripts/e2e-environment.ts";
 
-test("resolveE2eDatabaseUrl derives a dedicated database from the backend test URL", () => {
+test("resolveE2eDatabasePath uses a dedicated local SQLite file by default", () => {
   assertEquals(
-    resolveE2eDatabaseUrl({
-      DATABASE_URL: "postgres://user:password@localhost:5432/morningpost",
-      TEST_DATABASE_URL:
-        "postgres://user:password@localhost:5432/morningpost_test",
-    }),
-    "postgres://user:password@localhost:5432/morningpost_e2e",
+    resolveE2eDatabasePath({}),
+    resolve("./data/morning-post-e2e.sqlite"),
   );
 });
 
-test("resolveE2eDatabaseUrl ignores a blank explicit override", () => {
+test("resolveE2eDatabasePath accepts a dedicated explicit override", () => {
   assertEquals(
-    resolveE2eDatabaseUrl({
-      TEST_DATABASE_URL:
-        "postgres://user:password@localhost:5432/morningpost_test",
-      E2E_DATABASE_URL: "  ",
+    resolveE2eDatabasePath({
+      DATABASE_PATH: "./data/morning-post.sqlite",
+      TEST_DATABASE_PATH: "./data/morning-post-test.sqlite",
+      E2E_DATABASE_PATH: "./tmp/browser-e2e.sqlite",
     }),
-    "postgres://user:password@localhost:5432/morningpost_e2e",
+    resolve("./tmp/browser-e2e.sqlite"),
   );
 });
 
-test("resolveE2eDatabaseUrl ignores blank comparison URLs", () => {
-  assertEquals(
-    resolveE2eDatabaseUrl({
-      DATABASE_URL: "  ",
-      TEST_DATABASE_URL:
-        "postgres://user:password@localhost:5432/morningpost_test",
-    }),
-    "postgres://user:password@localhost:5432/morningpost_e2e",
-  );
-  assertEquals(
-    resolveE2eDatabaseUrl({
-      DATABASE_URL: "  ",
-      TEST_DATABASE_URL: "\t",
-      E2E_DATABASE_URL: "postgres://user:password@localhost:5432/browser_e2e",
-    }),
-    "postgres://user:password@localhost:5432/browser_e2e",
-  );
-});
-
-test("resolveE2eDatabaseUrl accepts a dedicated explicit override", () => {
-  assertEquals(
-    resolveE2eDatabaseUrl({
-      DATABASE_URL: "postgres://user:password@localhost:5432/morningpost",
-      TEST_DATABASE_URL:
-        "postgres://user:password@localhost:5432/morningpost_test",
-      E2E_DATABASE_URL: "postgres://user:password@localhost:5432/browser_e2e",
-    }),
-    "postgres://user:password@localhost:5432/browser_e2e",
-  );
-});
-
-test("resolveE2eDatabaseUrl rejects shared or ambiguously named databases", () => {
+test("resolveE2eDatabasePath rejects unsafe or shared paths", () => {
   assertThrows(
-    () =>
-      resolveE2eDatabaseUrl({
-        DATABASE_URL: "postgres://user:password@localhost:5432/morningpost_e2e",
-        E2E_DATABASE_URL:
-          "postgres://user:password@localhost:5432/morningpost_e2e",
-      }),
+    () => resolveE2eDatabasePath({ E2E_DATABASE_PATH: ":memory:" }),
     Error,
-    "must differ from DATABASE_URL",
+    "local SQLite file path",
   );
   assertThrows(
     () =>
-      resolveE2eDatabaseUrl({
-        E2E_DATABASE_URL: "postgres://user:password@localhost:5432/morningpost",
+      resolveE2eDatabasePath({
+        DATABASE_PATH: "./tmp/browser-e2e.sqlite",
+        E2E_DATABASE_PATH: "./tmp/browser-e2e.sqlite",
       }),
     Error,
-    "must end with _e2e",
+    "must differ from DATABASE_PATH",
   );
   assertThrows(
-    () => resolveE2eDatabaseUrl({}),
+    () =>
+      resolveE2eDatabasePath({
+        TEST_DATABASE_PATH: "./tmp/browser-e2e.sqlite",
+        E2E_DATABASE_PATH: "./tmp/browser-e2e.sqlite",
+      }),
     Error,
-    "TEST_DATABASE_URL or DATABASE_URL is required",
+    "must differ from TEST_DATABASE_PATH",
+  );
+  assertThrows(
+    () => resolveE2eDatabasePath({ E2E_DATABASE_PATH: "./tmp/browser.sqlite" }),
+    Error,
+    "identify an E2E database",
+  );
+  assertThrows(
+    () => resolveE2eDatabasePath({ E2E_DATABASE_PATH: "./tmp/browser-e2e.db" }),
+    Error,
+    "must end with .sqlite",
   );
 });

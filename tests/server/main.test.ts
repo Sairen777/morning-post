@@ -48,13 +48,12 @@ const MODEL_ENV_KEYS = [
   "VISION_API_KEY",
 ];
 
-test("bootServer waits for stale recovery before registering jobs and serving", async () => {
+test("bootServer recovers stale runs before registering jobs and serving", async () => {
   const scheduler = new FakeScheduler();
   let servedOptions: { hostname: string; port: number } | undefined;
   let requestHandler:
     | ((request: Request, server: Bun.Server<undefined>) => Response | Promise<Response>)
     | undefined;
-  const recoveryGate = Promise.withResolvers<number>();
   const recoveryCalls: Array<
     { database: Database; now: number; staleAfterMs: number }
   > = [];
@@ -70,20 +69,18 @@ test("bootServer waits for stale recovery before registering jobs and serving", 
       scheduler,
       summarizer: { summarize: () => Promise.resolve([]) },
       recoverStaleRuns: (database, now, staleAfterMs) => {
+        assertEquals(scheduler.jobs.length, 0);
+        assertEquals(servedOptions, undefined);
         recoveryCalls.push({ database, now, staleAfterMs });
-        return recoveryGate.promise;
+        return 1;
       },
       now: () => 1_234,
       config: {
-        databaseUrl: "postgres://unused",
+        databasePath: ":memory:",
         port: 31_001,
         allowedOrigins: ["http://127.0.0.1:5173"],
         trustedProxyCount: 0,
         maxRequestBodyBytes: 1_000,
-        databasePoolMax: 1,
-        databaseIdleTimeoutSeconds: 1,
-        databaseConnectTimeoutSeconds: 1,
-        databaseSslMode: "disable",
         allowRemoteSummarization: false,
         connectorTimeoutMs: 1,
         summarizerTextBytesPerChunk: 1,
@@ -119,9 +116,6 @@ test("bootServer waits for stale recovery before registering jobs and serving", 
       now: 1_234,
       staleAfterMs: 1,
     }]);
-    assertEquals(scheduler.jobs.length, 0);
-    assertEquals(servedOptions, undefined);
-    recoveryGate.resolve(1);
     await bootPromise;
   } finally {
     for (const [key, value] of previousModelEnvironment) {
@@ -183,15 +177,11 @@ test("bootServer recovers stale runs before serving registration", async () => {
         scheduler,
         now: () => recoveryTime,
         config: {
-          databaseUrl: "postgres://unused",
+          databasePath: ":memory:",
           port: 31_002,
           allowedOrigins: ["http://127.0.0.1:5173"],
           trustedProxyCount: 0,
           maxRequestBodyBytes: 1_000,
-          databasePoolMax: 1,
-          databaseIdleTimeoutSeconds: 1,
-          databaseConnectTimeoutSeconds: 1,
-          databaseSslMode: "disable",
           allowRemoteSummarization: false,
           connectorTimeoutMs: 1,
           summarizerTextBytesPerChunk: 1,
@@ -263,7 +253,7 @@ test("bootServer rejects invalid model configuration before serving", async () =
         bootServer({
           database: {} as Database,
           scheduler: new FakeScheduler(),
-          recoverStaleRuns: () => Promise.resolve(0),
+          recoverStaleRuns: () => 0,
           serve: () => {
             served = true;
           },
@@ -356,17 +346,13 @@ test("bootServer aborts before attempting every cleanup exactly once", async () 
       connectorFactory,
       xLoginSessionManager,
       xBrowserRuntime,
-      recoverStaleRuns: () => Promise.resolve(0),
+      recoverStaleRuns: () => 0,
       config: {
-        databaseUrl: "postgres://unused",
+        databasePath: ":memory:",
         port: 31_003,
         allowedOrigins: ["http://127.0.0.1:5173"],
         trustedProxyCount: 0,
         maxRequestBodyBytes: 1_000,
-        databasePoolMax: 1,
-        databaseIdleTimeoutSeconds: 1,
-        databaseConnectTimeoutSeconds: 1,
-        databaseSslMode: "disable",
         allowRemoteSummarization: false,
         connectorTimeoutMs: 1,
         summarizerTextBytesPerChunk: 1,

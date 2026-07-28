@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assert, assertEquals, assertExists, assertRejects } from "../assertions.ts"
+import { assert, assertEquals, assertExists, assertThrows } from "../assertions.ts"
 import { eq } from "drizzle-orm";
 import { withTestDb } from "../../src/db/testing.ts";
 import { users } from "../../src/db/schema/user.ts";
@@ -113,23 +113,16 @@ test("duplicate email insert throws ConflictError", async () => {
     await createUser(database, userInput({ email: "dup@example.com" }));
 
     // Different casing must still collide (stored lowercased).
-    await assertRejects(
-      () => createUser(database, userInput({ email: "DUP@example.com" })),
-      ConflictError,
-      "email already registered",
-    );
+    assertThrows(() => createUser(database, userInput({ email: "DUP@example.com" })), ConflictError,
+    "email already registered",);
   });
 });
 
 test("updateUser of a missing id throws NotFoundError", async () => {
   await withTestDb(async (database) => {
-    await assertRejects(
-      () =>
-        updateUser(database, "00000000-0000-0000-0000-000000000000", {
-          name: "Ghost",
-        }),
-      NotFoundError,
-    );
+    assertThrows(() => updateUser(database, "00000000-0000-0000-0000-000000000000", {
+      name: "Ghost",
+    }), NotFoundError,);
   });
 });
 

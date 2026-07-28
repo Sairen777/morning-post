@@ -55,13 +55,13 @@ function parseUser(row: unknown): User {
   return userRowSchema.parse(row);
 }
 
-export async function createUser(
+export function createUser(
   database: Database,
   input: CreateUserInput,
-): Promise<User> {
+): User {
   const now = Date.now();
   try {
-    const rows = await database
+    const rows = database
       .insert(users)
       .values({
         name: input.name,
@@ -76,7 +76,8 @@ export async function createUser(
         createdAt: now,
         updatedAt: now,
       })
-      .returning();
+      .returning()
+      .all();
     return parseUser(rows[0]);
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -86,44 +87,47 @@ export async function createUser(
   }
 }
 
-export async function findUserById(
+export function findUserById(
   database: Database,
   id: string,
-): Promise<User | null> {
-  const rows = await database
+): User | null {
+  const rows = database
     .select()
     .from(users)
     .where(eq(users.id, id))
-    .limit(1);
+    .limit(1)
+    .all();
   return rows[0] ? parseUser(rows[0]) : null;
 }
 
-export async function findOwner(database: Database): Promise<User | null> {
-  const rows = await database
+export function findOwner(database: Database): User | null {
+  const rows = database
     .select()
     .from(users)
     .orderBy(asc(users.createdAt), asc(users.id))
-    .limit(1);
+    .limit(1)
+    .all();
   return rows[0] ? parseUser(rows[0]) : null;
 }
 
 
-export async function updateUser(
+export function updateUser(
   database: Database,
   id: string,
   partial: UpdateUserInput,
   options: { incrementInterestProfileVersion?: boolean } = {},
-): Promise<User> {
+): User {
   const updates: Record<string, unknown> = { ...partial, updatedAt: Date.now() };
   if (options.incrementInterestProfileVersion) {
     updates.interestProfileVersion = sql`${users.interestProfileVersion} + 1`;
   }
 
-  const rows = await database
+  const rows = database
     .update(users)
     .set(updates)
     .where(eq(users.id, id))
-    .returning();
+    .returning()
+    .all();
   if (!rows[0]) {
     throw new NotFoundError("user not found");
   }

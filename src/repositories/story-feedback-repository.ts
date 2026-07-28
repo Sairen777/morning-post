@@ -104,26 +104,26 @@ function toPublicFeedback(
 }
 
 /** Serializes feedback writes for one user so rule upserts and version bumps are atomic. */
-export async function lockFeedbackUser(
+export function lockFeedbackUser(
   database: Database,
   userId: string,
-): Promise<boolean> {
-  const rows = await database
+): boolean {
+  const row = database
     .select({ id: users.id })
     .from(users)
     .where(eq(users.id, userId))
-    .for("update");
-  return rows.length > 0;
+    .get();
+  return row !== undefined;
 }
 
 /** Locks and returns a delivered digest-story only when it is owned by the user. */
-export async function lockOwnedDeliveredStory(
+export function lockOwnedDeliveredStory(
   database: Database,
   userId: string,
   digestStoryId: string,
   storyId: string,
-): Promise<DeliveredStoryForFeedback | null> {
-  const rows = await database
+): DeliveredStoryForFeedback | null {
+  const row = database
     .select({
       digestStoryId: digestStories.id,
       digestId: digests.id,
@@ -139,8 +139,7 @@ export async function lockOwnedDeliveredStory(
       eq(digestStories.storyId, storyId),
       eq(digests.userId, userId),
     ))
-    .for("update", { of: digestStories });
-  const row = rows[0];
+    .get();
   if (!row) return null;
   return {
     ...row,
@@ -150,12 +149,12 @@ export async function lockOwnedDeliveredStory(
 }
 
 /** Inserts once for the durable feedback identity and returns the original on retries. */
-export async function saveStoryFeedbackIdempotently(
+export function saveStoryFeedbackIdempotently(
   database: Database,
   input: SaveStoryFeedbackInput,
-): Promise<SavedStoryFeedback> {
+): SavedStoryFeedback {
   const values: NewStoryFeedbackRow = input;
-  const inserted = await database
+  const inserted = database
     .insert(storyFeedback)
     .values(values)
     .onConflictDoNothing({
@@ -169,12 +168,13 @@ export async function saveStoryFeedbackIdempotently(
         storyFeedback.targetLabel,
       ],
     })
-    .returning(feedbackColumns());
-  if (inserted[0]) {
-    return { feedback: toPublicFeedback(inserted[0]), inserted: true };
+    .returning(feedbackColumns())
+    .get();
+  if (inserted) {
+    return { feedback: toPublicFeedback(inserted), inserted: true };
   }
 
-  const existing = await database
+  const existing = database
     .select(feedbackColumns())
     .from(storyFeedback)
     .where(and(
@@ -185,9 +185,10 @@ export async function saveStoryFeedbackIdempotently(
       eq(storyFeedback.action, input.action),
       eq(storyFeedback.targetKind, input.targetKind),
       eq(storyFeedback.targetLabel, input.targetLabel),
-    ));
-  if (!existing[0]) throw new Error("story feedback conflict did not resolve");
-  return { feedback: toPublicFeedback(existing[0]), inserted: false };
+    ))
+    .get();
+  if (!existing) throw new Error("story feedback conflict did not resolve");
+  return { feedback: toPublicFeedback(existing), inserted: false };
 }
 
 function ruleAlreadyMatches(
@@ -206,11 +207,11 @@ function ruleAlreadyMatches(
  * Applies a rule without reviving inferred tombstones or overriding explicit rules
  * with inference. Returns true only when persistent rule state actually changed.
  */
-export async function applyFeedbackInterestRule(
+export function applyFeedbackInterestRule(
   database: Database,
   input: ApplyFeedbackRuleInput,
-): Promise<boolean> {
-  const rows = await database
+): boolean {
+  const existing = database
     .select()
     .from(interestRules)
     .where(and(
@@ -218,8 +219,7 @@ export async function applyFeedbackInterestRule(
       eq(interestRules.kind, input.kind),
       eq(interestRules.normalizedLabel, input.normalizedLabel),
     ))
-    .for("update");
-  const existing = rows[0];
+    .get();
 
   if (input.origin === "inferred" && existing) {
     if (existing.origin === "explicit" || existing.state === "dismissed") return false;
@@ -227,7 +227,7 @@ export async function applyFeedbackInterestRule(
   if (existing && ruleAlreadyMatches(existing, input)) return false;
 
   if (existing) {
-    await database
+    database
       .update(interestRules)
       .set({
         label: input.label,
@@ -238,11 +238,12 @@ export async function applyFeedbackInterestRule(
         expiresAt: null,
         updatedAt: input.now,
       })
-      .where(eq(interestRules.id, existing.id));
+      .where(eq(interestRules.id, existing.id))
+      .run();
     return true;
   }
 
-  await database.insert(interestRules).values({
+  database.insert(interestRules).values({
     userId: input.userId,
     label: input.label,
     normalizedLabel: input.normalizedLabel,
@@ -254,6 +255,6 @@ export async function applyFeedbackInterestRule(
     expiresAt: null,
     createdAt: input.now,
     updatedAt: input.now,
-  });
+  }).run();
   return true;
 }

@@ -1,7 +1,5 @@
-import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
-import { users } from "../db/schema/user.ts";
 import {
   createUser,
   findOwner,
@@ -29,20 +27,18 @@ export async function setupOwner(
     throw new ConflictError("owner already exists");
   }
 
-
-  return await database.transaction(async (transaction) => {
+  return database.transaction((transaction) => {
     const tx = transaction as Database;
-    await tx.execute(sql`lock table ${users} in share row exclusive mode`);
 
-    if (await findOwner(tx)) {
+    if (findOwner(tx)) {
       throw new ConflictError("owner already exists");
     }
 
-    return await createUser(tx, {
+    return createUser(tx, {
       name,
       email: OWNER_EMAIL,
       passwordHash: null,
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
     });
-  });
+  }, { behavior: "immediate" });
 }

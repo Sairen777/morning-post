@@ -5,8 +5,6 @@ import {
   assertExists,
   assertRejects,
 } from "../assertions.ts";
-import type { SQL } from "drizzle-orm";
-import { PgDialect } from "drizzle-orm/pg-core";
 import { hashPassword } from "../../src/auth/password.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
@@ -241,7 +239,7 @@ test("POST /auth/setup returns 409 once an owner exists", async () => {
   });
 });
 
-test("setup locks the users table and rechecks ownership before insert", async () => {
+test("setup serializes and rechecks ownership before insert", async () => {
   const events: string[] = [];
   const existingOwner = {
     id: "00000000-0000-0000-0000-000000000001",
@@ -259,21 +257,15 @@ test("setup locks the users table and rechecks ownership before insert", async (
     updatedAt: 1,
   };
   const transaction = {
-    execute: async (query: SQL) => {
-      const compiled = new PgDialect().sqlToQuery(query);
-      assertEquals(
-        compiled.sql,
-        'lock table "users" in share row exclusive mode',
-      );
-      events.push("table-lock");
-    },
     select: () => ({
       from: () => ({
         orderBy: () => ({
-          limit: async () => {
-            events.push("locked-recheck");
-            return [existingOwner];
-          },
+          limit: () => ({
+            all: () => {
+              events.push("serialized-recheck");
+              return [existingOwner];
+            },
+          }),
         }),
       }),
     }),
@@ -282,16 +274,23 @@ test("setup locks the users table and rechecks ownership before insert", async (
     select: () => ({
       from: () => ({
         orderBy: () => ({
-          limit: async () => {
-            events.push("initial-check");
-            return [];
-          },
+          limit: () => ({
+            all: () => {
+              events.push("initial-check");
+              return [];
+            },
+          }),
         }),
       }),
     }),
-    transaction: async (
-      callback: (tx: Database) => Promise<unknown>,
-    ) => await callback(transaction as unknown as Database),
+    transaction: (
+      callback: (tx: Database) => unknown,
+      options: { behavior: string },
+    ) => {
+      assertEquals(options, { behavior: "immediate" });
+      events.push("immediate-transaction");
+      return callback(transaction as unknown as Database);
+    },
   } as unknown as Database;
 
   await assertRejects(
@@ -299,7 +298,11 @@ test("setup locks the users table and rechecks ownership before insert", async (
     ConflictError,
     "owner already exists",
   );
-  assertEquals(events, ["initial-check", "table-lock", "locked-recheck"]);
+  assertEquals(events, [
+    "initial-check",
+    "immediate-transaction",
+    "serialized-recheck",
+  ]);
 });
 
 test("POST /auth/register no longer exists", async () => {

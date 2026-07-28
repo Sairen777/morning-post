@@ -229,7 +229,7 @@ Readable date formatting happens here.
 ### 4. Persistence layer
 
 Storage for accounts, subscriptions, cached items, and generated summaries
-using Drizzle ORM over PostgreSQL. The conceptual shape:
+using Drizzle ORM over Bun's built-in SQLite. The conceptual shape:
 
 - **User** directly owns its summarization `systemPrompt` (one editable field —
   no separate profile or tag entities) and many **Source** rows (one per
@@ -471,22 +471,20 @@ configuration and default to `127.0.0.1:3000`.
 
 ### 6. Database connectivity
 
-`src/db/client.ts` creates the Postgres connection pool with explicit options:
-`max` (pool size from `DB_POOL_MAX`, default 10), `idle_timeout`
-(`DB_IDLE_TIMEOUT_SECONDS`, default 20), `connect_timeout`
-(`DB_CONNECT_TIMEOUT_SECONDS`, default 30), and `ssl` (from `DB_SSL_MODE`,
-default `disable` for local loopback). Production deployments set
-`DB_SSL_MODE=require` or `verify-full` and tune pool sizing for the workload.
-Invalid SSL mode values are rejected at startup. See `src/db/client.ts` and
-`src/db/testing.ts`. {/* Tests: focused config tests proving remote production
-settings require TLS */}
+`src/db/client.ts` opens the local SQLite file selected by `DATABASE_PATH`
+(default `./data/morning-post.sqlite`) through Bun's native SQLite driver and
+Drizzle. Opening a file-backed database creates its parent directory as needed.
+The connection enables foreign keys, WAL, a five-second busy timeout,
+`synchronous=FULL`, and strict parameter bindings. This runtime supports one
+application host; keep the database file and its `-wal`/`-shm` companions on
+local storage rather than network storage. Database tests use fresh in-memory
+databases, while file-backed test setup and teardown remove all three files.
 
 ### 7. Rate limiting
 
-Rate limiting is backed by the `rate_limit_buckets` PostgreSQL table with an
-atomic `INSERT ... ON CONFLICT DO UPDATE WHERE resetsAt > now` statement. The
-`consumeRateLimit` repository function returns the current count after
-consumption; delete expired rows opportunistically.
+Rate limiting is backed by the SQLite `rate_limit_buckets` table with an atomic
+upsert. The `consumeRateLimit` repository function returns the current count
+after consumption; expired rows are deleted opportunistically.
 
 `createRateLimitMiddleware` receives a `Database` instance and uses stable
 literal namespaces: `auth-setup`, `auth-login`, `telegram-login`,

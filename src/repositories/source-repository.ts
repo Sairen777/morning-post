@@ -104,28 +104,29 @@ function parseSourceWithCredentials(
   });
 }
 
-async function findOwnedSourceWithCredentials(
+function findOwnedSourceWithCredentials(
   database: Database,
   id: string,
   userId: string,
-): Promise<SourceWithCredentials | null> {
-  const rows = await database
+): SourceWithCredentials | null {
+  const row = database
     .select(selectableColumns())
     .from(sources)
     .where(and(eq(sources.id, id), eq(sources.userId, userId)))
-    .limit(1);
-  return rows[0] ? parseSourceWithCredentials(rows[0]) : null;
+    .limit(1)
+    .get();
+  return row ? parseSourceWithCredentials(row) : null;
 }
 
-export async function createSource(
+export function createSource(
   database: Database,
   input: CreateSourceInput,
-): Promise<PublicSource> {
+): PublicSource {
   const now = Date.now();
   const credentials = encryptedBlobSchema.parse(input.credentials);
 
   try {
-    const rows = await database
+    const row = database
       .insert(sources)
       .values({
         userId: input.userId,
@@ -137,8 +138,9 @@ export async function createSource(
         createdAt: now,
         updatedAt: now,
       })
-      .returning(selectableColumns());
-    return parsePublicSource(rows[0]);
+      .returning(selectableColumns())
+      .get();
+    return parsePublicSource(row);
   } catch (error) {
     if (isUniqueViolation(error)) {
       throw new ConflictError("source already exists for connector");
@@ -147,53 +149,60 @@ export async function createSource(
   }
 }
 
-export async function listSourcesForUser(
+export function listSourcesForUser(
   database: Database,
   userId: string,
-): Promise<PublicSource[]> {
-  const rows = await database
+): PublicSource[] {
+  const rows = database
     .select(selectableColumns())
     .from(sources)
     .where(eq(sources.userId, userId))
-    .orderBy(asc(sources.position), asc(sources.createdAt));
+    .orderBy(
+      asc(sql`${sources.position} is null`),
+      asc(sources.position),
+      asc(sources.createdAt),
+    )
+    .all();
   return rows.map(parsePublicSource);
 }
 
-export async function findSourceById(
+export function findSourceById(
   database: Database,
   id: string,
   userId: string,
-): Promise<PublicSource | null> {
-  const rows = await database
+): PublicSource | null {
+  const row = database
     .select(selectableColumns())
     .from(sources)
     .where(and(eq(sources.id, id), eq(sources.userId, userId)))
-    .limit(1);
-  return rows[0] ? parsePublicSource(rows[0]) : null;
+    .limit(1)
+    .get();
+  return row ? parsePublicSource(row) : null;
 }
 
-export async function findSourceByConnectorId(
+export function findSourceByConnectorId(
   database: Database,
   userId: string,
   connectorId: string,
-): Promise<PublicSource | null> {
-  const rows = await database
+): PublicSource | null {
+  const row = database
     .select(selectableColumns())
     .from(sources)
     .where(
       and(eq(sources.userId, userId), eq(sources.connectorId, connectorId)),
     )
-    .limit(1);
-  return rows[0] ? parsePublicSource(rows[0]) : null;
+    .limit(1)
+    .get();
+  return row ? parsePublicSource(row) : null;
 }
 
-export async function upsertSourceCredentials(
+export function upsertSourceCredentials(
   database: Database,
   input: UpsertSourceCredentialsInput,
-): Promise<PublicSource> {
+): PublicSource {
   const now = Date.now();
   const credentials = encryptedBlobSchema.parse(input.credentials);
-  const rows = await database
+  const row = database
     .insert(sources)
     .values({
       userId: input.userId,
@@ -211,16 +220,17 @@ export async function upsertSourceCredentials(
         updatedAt: now,
       },
     })
-    .returning(selectableColumns());
-  return parsePublicSource(rows[0]);
+    .returning(selectableColumns())
+    .get();
+  return parsePublicSource(row);
 }
 
-async function updateSourceRow(
+function updateSourceRow(
   database: Database,
   id: string,
   userId: string,
   partial: UpdateSourceInput,
-): Promise<PublicSource> {
+): PublicSource {
   const updates: UpdateSourceInput & { updatedAt: number } = {
     ...partial,
     updatedAt: Date.now(),
@@ -234,7 +244,7 @@ async function updateSourceRow(
     updates.credentials = encryptedBlobSchema.parse(partial.credentials);
   }
   if (Object.hasOwn(partial, "showPaidPostTitles")) {
-    const existingSource = await findOwnedSourceWithCredentials(
+    const existingSource = findOwnedSourceWithCredentials(
       database,
       id,
       userId,
@@ -258,14 +268,15 @@ async function updateSourceRow(
     : and(eq(sources.id, id), eq(sources.userId, userId));
 
   try {
-    const rows = await database
+    const row = database
       .update(sources)
       .set(updates)
       .where(updatePredicate)
-      .returning(selectableColumns());
-    if (!rows[0]) {
+      .returning(selectableColumns())
+      .get();
+    if (!row) {
       if (partial.enabled === true) {
-        const existingSource = await findOwnedSourceWithCredentials(
+        const existingSource = findOwnedSourceWithCredentials(
           database,
           id,
           userId,
@@ -281,7 +292,7 @@ async function updateSourceRow(
       }
       throw new NotFoundError("source not found");
     }
-    return parsePublicSource(rows[0]);
+    return parsePublicSource(row);
   } catch (error) {
     if (isUniqueViolation(error)) {
       throw new ConflictError("source already exists for connector");
@@ -290,64 +301,66 @@ async function updateSourceRow(
   }
 }
 
-export async function updateSource(
+export function updateSource(
   database: Database,
   id: string,
   userId: string,
   partial: UpdateSourceInput,
-): Promise<PublicSource> {
+): PublicSource {
   if (partial.relevanceFilterMode === undefined) {
-    return await updateSourceRow(database, id, userId, partial);
+    return updateSourceRow(database, id, userId, partial);
   }
-  return await database.transaction(async (transaction) => {
+  return database.transaction((transaction) => {
     const transactionalDatabase = transaction as Database;
-    const before = await findOwnedSourceWithCredentials(transactionalDatabase, id, userId);
+    const before = findOwnedSourceWithCredentials(transactionalDatabase, id, userId);
     if (!before) {
       throw new NotFoundError("source not found");
     }
-    const updated = await updateSourceRow(transactionalDatabase, id, userId, partial);
+    const updated = updateSourceRow(transactionalDatabase, id, userId, partial);
     if (before.relevanceFilterMode !== updated.relevanceFilterMode) {
-      await transactionalDatabase.update(users).set({
+      transactionalDatabase.update(users).set({
         interestProfileVersion: sql`${users.interestProfileVersion} + 1`,
-      }).where(eq(users.id, userId));
+      }).where(eq(users.id, userId)).run();
     }
     return updated;
-  });
+  }, { behavior: "immediate" });
 }
 
-export async function deleteSourceCredentials(
+export function deleteSourceCredentials(
   database: Database,
   id: string,
   userId: string,
-): Promise<PublicSource> {
+): PublicSource {
   const now = Date.now();
-  return await database.transaction(async (transaction) => {
-    const existingRows = await transaction
+  return database.transaction((transaction) => {
+    const existingRow = transaction
       .select(selectableColumns())
       .from(sources)
       .where(and(eq(sources.id, id), eq(sources.userId, userId)))
       .limit(1)
-      .for("update");
-    if (!existingRows[0]) {
+      .get();
+    if (!existingRow) {
       throw new NotFoundError("source not found");
     }
 
-    const rows = await transaction
+    const row = transaction
       .update(sources)
       .set({ credentials: null, enabled: false, updatedAt: now })
       .where(and(eq(sources.id, id), eq(sources.userId, userId)))
-      .returning(selectableColumns());
-    if (!rows[0]) {
+      .returning(selectableColumns())
+      .get();
+    if (!row) {
       throw new NotFoundError("source not found");
     }
 
-    await transaction
+    transaction
       .update(feeds)
       .set({ deletedAt: now, enabled: false, updatedAt: now })
-      .where(and(eq(feeds.sourceId, id), isNull(feeds.deletedAt)));
+      .where(and(eq(feeds.sourceId, id), isNull(feeds.deletedAt)))
+      .run();
 
-    return parsePublicSource(rows[0]);
-  });
+    return parsePublicSource(row);
+  }, { behavior: "immediate" });
 }
 
 export async function getDecryptedCredentials(
@@ -356,7 +369,7 @@ export async function getDecryptedCredentials(
   userId: string,
   credentialCipher: CredentialCipher,
 ): Promise<ConnectorCredentials> {
-  const row = await findOwnedSourceWithCredentials(database, id, userId);
+  const row = findOwnedSourceWithCredentials(database, id, userId);
   if (!row) {
     throw new NotFoundError("source not found");
   }

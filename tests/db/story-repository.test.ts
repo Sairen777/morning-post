@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { and, eq } from "drizzle-orm";
-import { assertEquals, assertRejects } from "../assertions.ts";
+import { assertEquals, assertThrows } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
@@ -84,16 +84,13 @@ test("item analysis batch writes once and returns only exact cache hits", async 
       { itemId: f.stored[1].id, fingerprint: "fp-1", analyzerVersion: "v1", analysis, analyzedAt: 101 },
     ]);
     assertEquals(written.map((value) => value.itemId), [f.stored[0].id, f.stored[1].id]);
-    await assertRejects(
-      () => upsertItemAnalyses(database, [{
-        itemId: f.stored[0].id,
-        fingerprint: "oversized",
-        analyzerVersion: "v1",
-        analysis: { ...analysis, evidence: ["😀".repeat(101)] },
-        analyzedAt: 102,
-      }]),
-      "evidence excerpts must be at most 400 UTF-8 bytes",
-    );
+    assertThrows(() => upsertItemAnalyses(database, [{
+      itemId: f.stored[0].id,
+      fingerprint: "oversized",
+      analyzerVersion: "v1",
+      analysis: { ...analysis, evidence: ["😀".repeat(101)] },
+      analyzedAt: 102,
+    }]), "evidence excerpts must be at most 400 UTF-8 bytes",);
     const hits = await listItemAnalyses(database, [
       { itemId: f.stored[0].id, fingerprint: "fp-0" },
       { itemId: f.stored[1].id, fingerprint: "stale" },

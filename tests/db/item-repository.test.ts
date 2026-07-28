@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assertEquals, assertRejects } from "../assertions.ts"
+import { assertEquals, assertThrows } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import {
   CredentialCipher,
@@ -160,11 +160,7 @@ test("item repository preserves fetchedAt when a refresh is unchanged", async ()
 test("item repository rejects invalid normalized item payloads before writing", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(database, "items-invalid@example.com");
-    await assertRejects(
-      () =>
-        upsertItems(database, feed.id, [normalizedItem({ externalId: "" })]),
-      Error,
-    );
+    assertThrows(() => upsertItems(database, feed.id, [normalizedItem({ externalId: "" })]), Error,);
     assertEquals(
       await listItemsForFeedInWindow(database, feed.id, 0, 2_000_000_000_000),
       [],

@@ -157,7 +157,7 @@ class InjectedXTargetService implements XTargetServiceLike {
     commitOperation: ConnectorCommit = commitImmediately,
   ): Promise<PublicFeed> {
     this.calls.push({ userId, sourceId, url, signal: signal ?? null });
-    return commitOperation(() => Promise.resolve(this.result));
+    return commitOperation(() => this.result);
   }
 }
 
@@ -365,36 +365,34 @@ test("X target route validates and persists an owner-scoped target with cancella
   });
 });
 
-test("X target route cancels its deadline before a deferred feed commit", async () => {
+test("X target route cancels its deadline before a synchronous feed commit", async () => {
   await withTestDb(async (database) => {
     const mutationStarted = Promise.withResolvers<void>();
     const mutation = Promise.withResolvers<PublicFeed>();
-    let deadlineCallback: (() => void) | undefined;
     let deadlineCancelled = false;
-    let responseSettled = false;
     const feed = new InjectedXTargetService().result;
     const service: XTargetServiceLike = {
-      add: (
+      add: async (
         _userId,
         _sourceId,
         _url,
         _signal,
         commitOperation = commitImmediately,
-      ) =>
-        commitOperation(async () => {
-          mutationStarted.resolve();
-          return await mutation.promise;
-        }),
+      ) => {
+        mutationStarted.resolve();
+        const result = await mutation.promise;
+        return commitOperation(() => {
+          assertEquals(deadlineCancelled, true);
+          return result;
+        });
+      },
     };
     const app = buildApp(database, {
       connectors: {
         xLoginSessionManager: new InjectedXLoginSessionManager(),
         xTargetService: service,
         connectorTimeoutMs: 10,
-        scheduleConnectorDeadline: (onDeadline) => {
-          deadlineCallback = () => {
-            if (!deadlineCancelled) onDeadline();
-          };
+        scheduleConnectorDeadline: () => {
           return () => {
             deadlineCancelled = true;
           };
@@ -408,21 +406,12 @@ test("X target route cancels its deadline before a deferred feed commit", async 
         sourceId: feed.sourceId,
         url: "https://x.com/i/lists/123",
       }),
-    )).then((response) => {
-      responseSettled = true;
-      return response;
-    });
+    ));
 
     await mutationStarted.promise;
-    assertExists(deadlineCallback);
-    deadlineCallback();
-    const responseSettledBeforeMutation = responseSettled;
-    const deadlineCancelledBeforeMutation = deadlineCancelled;
     mutation.resolve(feed);
     const response = await responsePromise;
 
-    assertEquals(deadlineCancelledBeforeMutation, true);
-    assertEquals(responseSettledBeforeMutation, false);
     assertEquals(response.status, 201);
   });
 });
@@ -448,7 +437,7 @@ test("X target route blocks a late feed commit after its deadline wins", async (
         try {
           return await commitOperation(() => {
             mutationStarted = true;
-            return Promise.resolve(feed);
+            return feed;
           });
         } finally {
           losingOperationSettled.resolve();

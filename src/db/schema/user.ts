@@ -1,13 +1,11 @@
 import { sql } from "drizzle-orm";
 import {
-  bigint,
   check,
   index,
   integer,
-  pgTable,
+  sqliteTable,
   text,
-  uuid,
-} from "drizzle-orm/pg-core";
+} from "drizzle-orm/sqlite-core";
 import type { RelevanceFilterMode } from "../../personalization/personalization.types.ts";
 
 /**
@@ -16,8 +14,8 @@ import type { RelevanceFilterMode } from "../../personalization/personalization.
  * Timestamps are epoch milliseconds stored as `bigint` (mode "number"), never
  * `timestamptz`, to honor the cross-layer epoch-ms boundary rule.
  */
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash"),
@@ -31,8 +29,8 @@ export const users = pgTable("users", {
   relevanceThreshold: integer("relevance_threshold").notNull().default(60),
   maximumStoriesPerDigest: integer("maximum_stories_per_digest"),
   interestProfileVersion: integer("interest_profile_version").notNull().default(1),
-  createdAt: bigint("created_at", { mode: "number" }).notNull(),
-  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+  createdAt: integer("created_at", { mode: "number" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "number" }).notNull(),
 }, (table) => [
   index("users_created_at_id_idx").on(table.createdAt, table.id),
   check(

@@ -18,11 +18,11 @@ const sourceParamsSchema = z.object({
   id: z.string().uuid("id must be a valid UUID"),
 });
 
-const POSTGRES_INTEGER_MIN = -2_147_483_648;
-const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const POSITION_INTEGER_MIN = -2_147_483_648;
+const POSITION_INTEGER_MAX = 2_147_483_647;
 
 const updateSourceBodySchema = z.object({
-  position: z.number().int().min(POSTGRES_INTEGER_MIN).max(POSTGRES_INTEGER_MAX)
+  position: z.number().int().min(POSITION_INTEGER_MIN).max(POSITION_INTEGER_MAX)
     .nullable().optional(),
   enabled: z.boolean().optional(),
   showPaidPostTitles: z.boolean().optional(),

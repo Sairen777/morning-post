@@ -165,13 +165,11 @@ test("Substack session route bounds services that ignore abort", async () => {
   });
 });
 
-test("Substack session route cancels its deadline before a deferred credential commit", async () => {
+test("Substack session route cancels its deadline before a synchronous credential commit", async () => {
   await withTestDb(async (database) => {
     const mutationStarted = Promise.withResolvers<void>();
     const mutation = Promise.withResolvers<PublicSource>();
-    let deadlineCallback: (() => void) | undefined;
     let deadlineCancelled = false;
-    let responseSettled = false;
     const now = Date.now();
     const source: PublicSource = {
       id: "00000000-0000-4000-8000-000000000112",
@@ -186,19 +184,21 @@ test("Substack session route cancels its deadline before a deferred credential c
       updatedAt: now,
     };
     const commitImmediately = async <Result>(
-      operation: () => Promise<Result>,
-    ): Promise<Result> => await operation();
+      operation: () => Result,
+    ): Promise<Result> => operation();
     const service: SubstackSessionServiceLike = {
-      connect: (
+      connect: async (
         userId,
         _credentials,
         _signal,
         commitOperation = commitImmediately,
       ) => {
         source.userId = userId;
-        return commitOperation(async () => {
-          mutationStarted.resolve();
-          return await mutation.promise;
+        mutationStarted.resolve();
+        const result = await mutation.promise;
+        return commitOperation(() => {
+          assertEquals(deadlineCancelled, true);
+          return result;
         });
       },
     };
@@ -208,12 +208,7 @@ test("Substack session route cancels its deadline before a deferred credential c
         substackSessionRateLimiter: passRateLimit(),
         substackPublicationRateLimiter: passRateLimit(),
         connectorTimeoutMs: 10,
-        scheduleConnectorDeadline: (onDeadline) => {
-          deadlineCallback = () => {
-            if (!deadlineCancelled) {
-              onDeadline();
-            }
-          };
+        scheduleConnectorDeadline: () => {
           return () => {
             deadlineCancelled = true;
           };
@@ -227,22 +222,12 @@ test("Substack session route cancels its deadline before a deferred credential c
         substackSessionId: "s%3Asubstack.signature",
         connectSessionId: "s%3Aconnect.signature",
       }, cookie),
-    )).then((response) => {
-      responseSettled = true;
-      return response;
-    });
+    ));
 
     await mutationStarted.promise;
-    assertExists(deadlineCallback);
-    deadlineCallback();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const responseSettledBeforeMutation = responseSettled;
-    const deadlineCancelledBeforeMutation = deadlineCancelled;
     mutation.resolve(source);
     const response = await responsePromise;
 
-    assertEquals(deadlineCancelledBeforeMutation, true);
-    assertEquals(responseSettledBeforeMutation, false);
     assertEquals(response.status, 200);
   });
 });
@@ -268,8 +253,8 @@ test("Substack session route blocks a late credential commit after the deadline 
       updatedAt: now,
     };
     const commitImmediately = async <Result>(
-      operation: () => Promise<Result>,
-    ): Promise<Result> => await operation();
+      operation: () => Result,
+    ): Promise<Result> => operation();
     const service: SubstackSessionServiceLike = {
       connect: async (
         userId,
@@ -283,7 +268,7 @@ test("Substack session route blocks a late credential commit after the deadline 
         try {
           return await commitOperation(() => {
             mutationStarted = true;
-            return Promise.resolve(source);
+            return source;
           });
         } finally {
           losingOperationSettled.resolve();

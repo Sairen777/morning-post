@@ -524,7 +524,7 @@
       <aside class="hero-panel" aria-label="Project status">
         <div class="status-grid">
           <div class="status-pill"><strong>Runtime</strong>Bun 1.3.14 + Hono on Bun.serve</div>
-          <div class="status-pill"><strong>Database</strong>PostgreSQL + Drizzle migrations</div>
+          <div class="status-pill"><strong>Database</strong>Bun-native SQLite + Drizzle migrations</div>
           <div class="status-pill"><strong>Domain model</strong>User, Source, Feed, Item, Summary, Digest</div>
           <div class="status-pill"><strong>Auth</strong>Email/password, Argon2id, server sessions</div>
           <div class="status-pill"><strong>Credential custody</strong>Envelope encryption, owner-bound AEAD</div>
@@ -557,7 +557,7 @@
       <div class="phase-list">
         <div class="phase">
           <strong>Foundations</strong>
-          Runtime naming was cleaned up: items now carry <code>feedExternalId</code> instead of the overloaded <code>sourceId</code>. Ruleset selection accepts feed <code>kind</code>. PostgreSQL, Drizzle, migrations, the real-Postgres test harness, Hono app scaffolding, centralized errors, validation, config, and credential crypto were added.
+          Runtime naming was cleaned up: items now carry <code>feedExternalId</code> instead of the overloaded <code>sourceId</code>. Ruleset selection accepts feed <code>kind</code>. Bun-native SQLite, Drizzle, migrations, isolated in-memory database tests, Hono app scaffolding, centralized errors, validation, config, and credential crypto are in place.
         </div>
         <div class="phase">
           <strong>Identity and sessions</strong>
@@ -585,7 +585,7 @@
         </div>
         <div class="phase">
           <strong>Orchestration and scheduling</strong>
-          The orchestrator groups feeds by source, reuses one connector per source, skips already-ingested feeds, isolates source/feed failures, summarizes successful feeds, and assembles the digest. Croner runs UTC five-field schedules with in-process overlap protection; PostgreSQL leases coordinate API instances and per-user uniqueness prevents overlapping digest runs.
+          The orchestrator groups feeds by source, reuses one connector per source, skips already-ingested feeds, isolates source/feed failures, summarizes successful feeds, and assembles the digest. Croner runs UTC five-field schedules with in-process overlap protection for the supported single API process; per-user uniqueness prevents overlapping digest runs.
         </div>
         <div class="phase">
           <strong>Security audit</strong>
@@ -616,7 +616,7 @@
         <div class="card">
           <h3>Repositories</h3>
           <p>Repositories own Drizzle queries, ownership scoping, row projection, JSON shape validation, transactions, upserts, and soft-delete semantics.</p>
-          <div class="tag-row"><span class="tag">src/repositories</span><span class="tag">Postgres</span><span class="tag">Drizzle</span></div>
+          <div class="tag-row"><span class="tag">src/repositories</span><span class="tag">SQLite</span><span class="tag">Drizzle</span></div>
         </div>
       </div>
 
@@ -656,12 +656,12 @@
           <text x="843" y="240" text-anchor="middle" font-family="monospace" font-size="13" fill="#6b6256">OpenAI-compatible</text>
 
           <rect x="748" y="336" width="190" height="88" rx="18" fill="#fffaf0" stroke="#a99169" filter="url(#softShadow)"/>
-          <text x="843" y="371" text-anchor="middle" font-family="Georgia" font-size="20" font-weight="700" fill="#17130e">Postgres</text>
-          <text x="843" y="398" text-anchor="middle" font-family="monospace" font-size="13" fill="#6b6256">6 domain tables + sessions</text>
+          <text x="843" y="371" text-anchor="middle" font-family="Georgia" font-size="20" font-weight="700" fill="#17130e">SQLite</text>
+          <text x="843" y="398" text-anchor="middle" font-family="monospace" font-size="13" fill="#6b6256">local file + WAL</text>
 
           <rect x="260" y="336" width="190" height="88" rx="18" fill="#f7f0fb" stroke="#6d587e" filter="url(#softShadow)"/>
           <text x="355" y="371" text-anchor="middle" font-family="Georgia" font-size="20" font-weight="700" fill="#17130e">Scheduler</text>
-          <text x="355" y="398" text-anchor="middle" font-family="monospace" font-size="13" fill="#6b6256">Croner UTC + DB lease</text>
+          <text x="355" y="398" text-anchor="middle" font-family="monospace" font-size="13" fill="#6b6256">Croner UTC + recovery</text>
 
           <line x1="206" y1="64" x2="250" y2="64" stroke="#7e301c" stroke-width="2" marker-end="url(#arrow)"/>
           <line x1="450" y1="64" x2="494" y2="64" stroke="#7e301c" stroke-width="2" marker-end="url(#arrow)"/>
@@ -921,7 +921,7 @@
       <div class="timeline">
         <div class="step"><div class="step-body"><strong>Register.</strong> The user posts name, email, password, and profile prompt fields. Password is hashed with Argon2id before storage.</div></div>
         <div class="step"><div class="step-body"><strong>Login.</strong> The service uses a dummy hash path for unknown emails so wrong-password and unknown-user timing are closer. Both failures return the same message.</div></div>
-        <div class="step"><div class="step-body"><strong>Session.</strong> A cryptographically random token is set as a cookie; only its hash is stored in Postgres.</div></div>
+        <div class="step"><div class="step-body"><strong>Session.</strong> A cryptographically random token is set as a cookie; only its hash is stored in SQLite.</div></div>
         <div class="step"><div class="step-body"><strong>Profile.</strong> <code>GET /auth/me</code> and <code>PATCH /auth/me</code> expose/update only public user fields.</div></div>
       </div>
 
@@ -945,7 +945,7 @@
       <h3>4. Scheduled digest run</h3>
       <div class="timeline">
         <div class="step"><div class="step-body"><strong>Pick users.</strong> The scheduler lists users and skips a user if another run is already in progress for them.</div></div>
-        <div class="step"><div class="step-body"><strong>Coordinate the tick.</strong> Croner evaluates UTC five-field schedules with overlap protection in each process; an atomic PostgreSQL lease permits only one instance to execute the leader tick.</div></div>
+        <div class="step"><div class="step-body"><strong>Coordinate the tick.</strong> Croner evaluates UTC five-field schedules with in-process overlap protection in the supported single API process; startup and every tick recover stale digest runs before selecting the owner.</div></div>
         <div class="step"><div class="step-body"><strong>Compute period.</strong> If the user has a previous digest, start at <code>latestDigest.periodEndMs + 1</code>; otherwise use a one-day cadence fallback.</div></div>
         <div class="step"><div class="step-body"><strong>Group by source.</strong> The orchestrator lists enabled sources and enabled feeds, grouped by source so one connector instance can serve multiple feeds.</div></div>
         <div class="step"><div class="step-body"><strong>Ingest feed windows.</strong> Each feed fetches <code>lastFetchedPeriodEndMs + 1</code> through the period end, or a default lookback for new feeds.</div></div>
@@ -1054,7 +1054,7 @@
           <p class="kicker">Local operation</p>
           <h2>How to run it locally</h2>
         </div>
-        <p class="small">Backend-only, with Postgres and env configuration.</p>
+        <p class="small">Backend and web operation with a local SQLite file and environment configuration.</p>
       </header>
 
       <div class="grid-2">
@@ -1063,7 +1063,7 @@
           <ul>
             <li>Bun 1.3.14</li>
             <li>Node.js 22.13+ for the frontend and Playwright toolchain</li>
-            <li>PostgreSQL 16+ or Docker Compose</li>
+            <li>SQLite is built into Bun; no database service is required</li>
             <li>OpenSSL to generate a credential master key</li>
             <li>Telegram API ID/hash from <a href="https://my.telegram.org/apps">my.telegram.org/apps</a></li>
             <li>Gemini/OpenAI-compatible API key if you want real summarization</li>
@@ -1072,8 +1072,7 @@
         <div class="card">
           <h3>Environment</h3>
           <p>Repository scripts explicitly load <code>.env.production.local</code> through Bun. Keep that credential-bearing file local and configure it for the command you run.</p>
-          <pre>DATABASE_URL=postgres://morningpost:morningpost@localhost:5432/morningpost
-TEST_DATABASE_URL=postgres://morningpost:morningpost@localhost:5432/morningpost_test
+          <pre>DATABASE_PATH=./data/morning-post.sqlite
 CREDENTIAL_MASTER_KEY=&lt;openssl rand -base64 32&gt;
 TELEGRAM_API_ID=...
 TELEGRAM_API_HASH=...
@@ -1086,7 +1085,7 @@ PORT=3000</pre>
       <table>
         <thead><tr><th>Command</th><th>Meaning</th></tr></thead>
         <tbody>
-          <tr><td><code>docker compose up -d</code></td><td>Start local Postgres with app and test databases.</td></tr>
+          <tr><td><code>bun run db:reset</code></td><td>Delete the local SQLite file and WAL/SHM companions, then reapply migrations.</td></tr>
           <tr><td><code>bun install</code></td><td>Install root and web workspace dependencies.</td></tr>
           <tr><td><code>bun run db:migrate</code></td><td>Apply Drizzle migrations.</td></tr>
           <tr><td><code>bun run db:generate</code></td><td>Generate migration SQL after schema changes.</td></tr>
@@ -1103,7 +1102,7 @@ PORT=3000</pre>
         <summary>Suggested manual review path</summary>
         <div>
           <ol>
-            <li>Run Postgres and migrations.</li>
+            <li>Run <code>bun run db:migrate</code>; the SQLite parent directory is created automatically.</li>
             <li>Start <code>bun run dev:api</code>.</li>
             <li>Register a user and log in.</li>
             <li>Start Telegram QR login, scan in Telegram, and wait for completion.</li>
@@ -1131,8 +1130,8 @@ PORT=3000</pre>
           <ul>
             <li><code>src/db/schema/*.ts</code>: Drizzle table definitions.</li>
             <li><code>drizzle/*.sql</code>: generated migrations.</li>
-            <li><code>src/db/client.ts</code>: Postgres/Drizzle client.</li>
-            <li><code>src/db/testing.ts</code>: real-Postgres rollback test harness.</li>
+            <li><code>src/db/client.ts</code> and <code>src/db/sqlite.ts</code>: Bun SQLite/Drizzle client and local-file configuration.</li>
+            <li><code>src/db/testing.ts</code>: fresh in-memory SQLite database harness.</li>
           </ul>
         </div>
         <div class="card">

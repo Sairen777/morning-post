@@ -16,13 +16,13 @@ const CLEANUP_BATCH_SIZE = 100;
  * limit; the row remains recorded when the limit is exceeded so subsequent
  * callers cannot bypass the window.
  */
-export async function consumeRateLimit(
+export function consumeRateLimit(
   database: Database,
   bucketKey: string,
   limit: number,
   windowMs: number,
   now: number,
-): Promise<boolean> {
+): boolean {
   if (!bucketKey) {
     throw new Error("Rate-limit bucket key must not be empty");
   }
@@ -37,7 +37,7 @@ export async function consumeRateLimit(
   }
 
   const nextReset = now + windowMs;
-  const rows = await database
+  const rows = database
     .insert(rateLimitBuckets)
     .values({ bucketKey, count: 1, resetsAt: nextReset })
     .onConflictDoUpdate({
@@ -49,7 +49,8 @@ export async function consumeRateLimit(
           then ${rateLimitBuckets.resetsAt} else ${nextReset} end`,
       },
     })
-    .returning({ count: rateLimitBuckets.count });
+    .returning({ count: rateLimitBuckets.count })
+    .all();
 
   const count = Number(rows[0]?.count);
   if (!Number.isSafeInteger(count) || count < 1) {
@@ -61,17 +62,15 @@ export async function consumeRateLimit(
   if (!allowed) {
     return false;
   }
-  await database.execute(sql`
-    with expired as (
+  database.run(sql`
+    delete from rate_limit_buckets
+    where bucket_key in (
       select bucket_key
       from rate_limit_buckets
       where resets_at <= ${now}
       order by resets_at asc
       limit ${CLEANUP_BATCH_SIZE}
     )
-    delete from rate_limit_buckets as bucket
-    using expired
-    where bucket.bucket_key = expired.bucket_key
   `);
 
   return allowed;

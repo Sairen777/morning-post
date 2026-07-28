@@ -392,7 +392,9 @@ test("runForUser emits a failed source terminal before run failure when connecto
           new Set([setup.source.id]),
         ),
         digestRunFeedRepository: {
-          start: () => Promise.reject(persistenceError),
+          start: () => {
+            throw persistenceError;
+          },
           finish: finishDigestRunFeed,
         },
         summarizer: new FakeSummarizer([]),
@@ -447,7 +449,9 @@ test("runForUser emits a failed source terminal before run failure when connecto
         ),
         digestRunFeedRepository: {
           start: startDigestRunFeed,
-          finish: () => Promise.reject(persistenceError),
+          finish: () => {
+            throw persistenceError;
+          },
         },
         summarizer: new FakeSummarizer([]),
         intelligence: fixtureStoryIntelligence,
@@ -913,7 +917,7 @@ test("runForUser isolates source failures and marks the digest failed", async ()
     const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
     assertEquals(runs.length >= 1, true);
 
-    const feedRows: Array<Record<string, unknown>> = await database.execute(
+    const feedRows = database.all<Record<string, unknown>>(
       sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,
     );
     const failedRows = feedRows.filter(
@@ -961,7 +965,7 @@ test("runForUser fails with the exact reason when every selected summary fails",
     assertEquals(runs[0].status, "failed");
     assertEquals(runs[0].errorMessage, "summarizer crash");
 
-    const feedRows: Array<Record<string, unknown>> = await database.execute(
+    const feedRows = database.all<Record<string, unknown>>(
       sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,
     );
     assertEquals(
@@ -1126,7 +1130,7 @@ test("runForUser connector failure marks all pending feeds failed when batching"
     const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
     assertEquals(runs[0].status, "partial");
 
-    const feedRows: Array<Record<string, unknown>> = await database.execute(
+    const feedRows = database.all<Record<string, unknown>>(
       sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,
     );
     // Both feeds should have failed ingestion-stage rows

@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { assertEquals, assertRejects } from "../assertions.ts";
+import { assertEquals, assertThrows } from "../assertions.ts"
 import { withTestDb } from "../../src/db/testing.ts";
 import { users } from "../../src/db/schema/user.ts";
 import { interestRules } from "../../src/db/schema/interest-rule.ts";
@@ -94,13 +94,10 @@ test("renaming an interest rule to an existing normalized key returns conflict",
       disposition: "show_less",
       strength: 50,
     });
-    await assertRejects(
-      () => updateOwnedInterestRule(database, second.id, owner.id, {
-        label: " databases ",
-        normalizedLabel: "databases",
-      }),
-      ConflictError,
-    );
+    assertThrows(() => updateOwnedInterestRule(database, second.id, owner.id, {
+      label: " databases ",
+      normalizedLabel: "databases",
+    }), ConflictError,);
   });
 });
 
@@ -112,13 +109,7 @@ test("interest repository mutations are user scoped", async () => {
       userId: owner.id, label: "Databases", normalizedLabel: "databases",
       kind: "topic", disposition: "prioritize", strength: 100,
     });
-    await assertRejects(
-      () => updateOwnedInterestRule(database, rule.id, stranger.id, { strength: 1 }),
-      NotFoundError,
-    );
-    await assertRejects(
-      () => dismissOwnedInterestRule(database, rule.id, stranger.id),
-      NotFoundError,
-    );
+    assertThrows(() => updateOwnedInterestRule(database, rule.id, stranger.id, { strength: 1 }), NotFoundError,);
+    assertThrows(() => dismissOwnedInterestRule(database, rule.id, stranger.id), NotFoundError,);
   });
 });

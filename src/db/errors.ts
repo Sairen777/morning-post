@@ -1,25 +1,28 @@
-export const POSTGRES_UNIQUE_VIOLATION = "23505";
+const SQLITE_UNIQUE_CODES: Record<string, true> = {
+  SQLITE_CONSTRAINT_PRIMARYKEY: true,
+  SQLITE_CONSTRAINT_UNIQUE: true,
+};
+const SQLITE_UNIQUE_ERRNOS: Record<number, true> = { 1555: true, 2067: true };
 
 /**
- * Checks whether `error` (or its `.cause`) carries a specific Postgres
- * SQLSTATE code, accounting for Drizzle's error-wrapping convention.
+ * Checks Bun SQLite errors (including Drizzle-wrapped causes) for the extended
+ * result codes that specifically identify primary-key or unique constraints.
  */
-export function hasPostgresCode(error: unknown, code: string): boolean {
-  if (typeof error !== "object" || error === null) {
-    return false;
-  }
-  const top = error as Record<string, unknown>;
-  if (typeof top.code === "string" && top.code === code) {
-    return true;
-  }
-  const cause = top.cause;
-  if (typeof cause === "object" && cause !== null) {
-    const causeObj = cause as Record<string, unknown>;
-    return typeof causeObj.code === "string" && causeObj.code === code;
-  }
-  return false;
-}
-
 export function isUniqueViolation(error: unknown): boolean {
-  return hasPostgresCode(error, POSTGRES_UNIQUE_VIOLATION);
+  let current: unknown = error;
+  const seen = new Set<object>();
+
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as Record<string, unknown>;
+    if (
+      (typeof candidate.code === "string" && candidate.code in SQLITE_UNIQUE_CODES)
+      || (typeof candidate.errno === "number" && candidate.errno in SQLITE_UNIQUE_ERRNOS)
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+
+  return false;
 }

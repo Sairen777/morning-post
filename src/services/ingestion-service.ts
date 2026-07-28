@@ -93,12 +93,12 @@ export async function ingestFeed(
   }
   const fetchedAt = options.fetchedAt ?? options.now?.() ?? Date.now();
 
-  await database.transaction(async (transaction) => {
+  database.transaction((transaction) => {
     const transactionalDatabase = transaction as Database;
     if (options.signal?.aborted) {
       throw new IngestionAbortError();
     }
-    await upsertItems(
+    upsertItems(
       transactionalDatabase,
       feed.id,
       normalizedItems,
@@ -107,13 +107,13 @@ export async function ingestFeed(
     if (options.signal?.aborted) {
       throw new IngestionAbortError();
     }
-    await setLastFetched(
+    setLastFetched(
       transactionalDatabase,
       feed.id,
       userId,
       window.to,
     );
-  });
+  }, { behavior: "immediate" });
 
   return {
     feedId: feed.id,
@@ -228,12 +228,12 @@ export async function ingestFeedsForSource(
       );
       const validItems = validateFeedItems(feed, feedItems);
 
-      await database.transaction(async (transaction) => {
+      database.transaction((transaction) => {
         const transactionalDatabase = transaction as Database;
         if (options.signal?.aborted) {
           throw new IngestionAbortError();
         }
-        await upsertItems(
+        upsertItems(
           transactionalDatabase,
           feed.id,
           validItems,
@@ -242,13 +242,13 @@ export async function ingestFeedsForSource(
         if (options.signal?.aborted) {
           throw new IngestionAbortError();
         }
-        await setLastFetched(
+        setLastFetched(
           transactionalDatabase,
           feed.id,
           userId,
           window.to,
         );
-      });
+      }, { behavior: "immediate" });
 
       feedResults.push({
         feedId: feed.id,

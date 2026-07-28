@@ -56,48 +56,49 @@ function parsePublicRule(value: unknown): PublicInterestRule {
   return publicInterestRuleSchema.parse(value);
 }
 
-async function incrementProfileVersion(database: Database, userId: string): Promise<void> {
-  const rows = await database.update(users)
+function incrementProfileVersion(database: Database, userId: string): void {
+  const row = database.update(users)
     .set({ interestProfileVersion: sql`${users.interestProfileVersion} + 1`, updatedAt: Date.now() })
     .where(eq(users.id, userId))
-    .returning({ id: users.id });
-  if (!rows[0]) throw new NotFoundError("user not found");
+    .returning({ id: users.id })
+    .get();
+  if (!row) throw new NotFoundError("user not found");
 }
 
-async function lockUserForInterestMutation(
+function lockUserForInterestMutation(
   database: Database,
   userId: string,
-): Promise<void> {
-  const rows = await database
+): void {
+  const row = database
     .select({ id: users.id })
     .from(users)
     .where(eq(users.id, userId))
-    .for("update");
-  if (!rows[0]) throw new NotFoundError("user not found");
+    .get();
+  if (!row) throw new NotFoundError("user not found");
 }
 
-export async function listActiveInterestRules(
+export function listActiveInterestRules(
   database: Database,
   userId: string,
   now = Date.now(),
-): Promise<PublicInterestRule[]> {
-  const rows = await database.select(publicColumns()).from(interestRules).where(and(
+): PublicInterestRule[] {
+  const rows = database.select(publicColumns()).from(interestRules).where(and(
     eq(interestRules.userId, userId),
     eq(interestRules.state, "active"),
     or(isNull(interestRules.expiresAt), gt(interestRules.expiresAt, now)),
-  )).orderBy(asc(interestRules.kind), asc(interestRules.normalizedLabel), asc(interestRules.id));
+  )).orderBy(asc(interestRules.kind), asc(interestRules.normalizedLabel), asc(interestRules.id)).all();
   return rows.map(parsePublicRule);
 }
 
-export async function saveExplicitInterestRule(
+export function saveExplicitInterestRule(
   database: Database,
   input: SaveInterestRuleInput,
-): Promise<PublicInterestRule> {
-  return await database.transaction(async (transaction) => {
+): PublicInterestRule {
+  return database.transaction((transaction) => {
     const tx = transaction as Database;
-    await lockUserForInterestMutation(tx, input.userId);
+    lockUserForInterestMutation(tx, input.userId);
     const now = Date.now();
-    const rows = await tx.insert(interestRules).values({
+    const row = tx.insert(interestRules).values({
       ...input,
       origin: "explicit",
       state: "active",
@@ -115,33 +116,33 @@ export async function saveExplicitInterestRule(
         expiresAt: input.expiresAt ?? null,
         updatedAt: now,
       },
-    }).returning(publicColumns());
-    await incrementProfileVersion(tx, input.userId);
-    return parsePublicRule(rows[0]);
-  });
+    }).returning(publicColumns()).get();
+    incrementProfileVersion(tx, input.userId);
+    return parsePublicRule(row);
+  }, { behavior: "immediate" });
 }
 
-export async function updateOwnedInterestRule(
+export function updateOwnedInterestRule(
   database: Database,
   id: string,
   userId: string,
   input: UpdateInterestRuleInput,
-): Promise<PublicInterestRule> {
+): PublicInterestRule {
   try {
-    return await database.transaction(async (transaction) => {
+    return database.transaction((transaction) => {
       const tx = transaction as Database;
-      await lockUserForInterestMutation(tx, userId);
-      const rows = await tx.update(interestRules).set({
+      lockUserForInterestMutation(tx, userId);
+      const row = tx.update(interestRules).set({
         ...input,
         origin: "explicit",
         updatedAt: Date.now(),
       }).where(and(
         eq(interestRules.id, id), eq(interestRules.userId, userId),
-      )).returning(publicColumns());
-      if (!rows[0]) throw new NotFoundError("interest rule not found");
-      await incrementProfileVersion(tx, userId);
-      return parsePublicRule(rows[0]);
-    });
+      )).returning(publicColumns()).get();
+      if (!row) throw new NotFoundError("interest rule not found");
+      incrementProfileVersion(tx, userId);
+      return parsePublicRule(row);
+    }, { behavior: "immediate" });
   } catch (error) {
     if (isUniqueViolation(error)) {
       throw new ConflictError("an interest rule with this kind and label already exists");
@@ -150,19 +151,19 @@ export async function updateOwnedInterestRule(
   }
 }
 
-export async function dismissOwnedInterestRule(
+export function dismissOwnedInterestRule(
   database: Database,
   id: string,
   userId: string,
-): Promise<PublicInterestRule> {
-  return await database.transaction(async (transaction) => {
+): PublicInterestRule {
+  return database.transaction((transaction) => {
     const tx = transaction as Database;
-    await lockUserForInterestMutation(tx, userId);
-    const rows = await tx.update(interestRules).set({ state: "dismissed", updatedAt: Date.now() }).where(and(
+    lockUserForInterestMutation(tx, userId);
+    const row = tx.update(interestRules).set({ state: "dismissed", updatedAt: Date.now() }).where(and(
       eq(interestRules.id, id), eq(interestRules.userId, userId),
-    )).returning(publicColumns());
-    if (!rows[0]) throw new NotFoundError("interest rule not found");
-    await incrementProfileVersion(tx, userId);
-    return parsePublicRule(rows[0]);
-  });
+    )).returning(publicColumns()).get();
+    if (!row) throw new NotFoundError("interest rule not found");
+    incrementProfileVersion(tx, userId);
+    return parsePublicRule(row);
+  }, { behavior: "immediate" });
 }

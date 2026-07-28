@@ -1,5 +1,5 @@
 import { test } from "bun:test";
-import { assertEquals, assertRejects } from "../assertions.ts"
+import { assertEquals, assertThrows } from "../assertions.ts"
 import { ConnectorId } from "../../src/constants.ts";
 import { CredentialCipher, type EncryptedBlob } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
@@ -174,14 +174,12 @@ test("digest check constraint rejects invalid status at database level", async (
   await withTestDb(async (database) => {
     const user = await createUserWithSource(database, "digest-check-status@example.com");
 
-    await assertRejects(
-      () => upsertDigestForPeriod(database, {
-        userId: user.id,
-        periodStartMs,
-        periodEndMs,
-        status: "unknown" as typeof digests.$inferSelect["status"],
-      }),
-    );
+    assertThrows(() => upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs,
+      periodEndMs,
+      status: "unknown" as typeof digests.$inferSelect["status"],
+    }), );
   });
 });
 
@@ -189,14 +187,12 @@ test("digest check constraint rejects reversed period order", async () => {
   await withTestDb(async (database) => {
     const user = await createUserWithSource(database, "digest-check-period@example.com");
 
-    await assertRejects(
-      () => upsertDigestForPeriod(database, {
-        userId: user.id,
-        periodStartMs: periodEndMs,
-        periodEndMs: periodStartMs,
-        status: "pending",
-      }),
-    );
+    assertThrows(() => upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: periodEndMs,
+      periodEndMs: periodStartMs,
+      status: "pending",
+    }), );
   });
 });
 
@@ -229,10 +225,7 @@ test("deleteDigestForUser throws NotFoundError for non-owner", async () => {
       status: "complete",
     }, 100);
 
-    await assertRejects(
-      () => deleteDigestForUser(database, digest.id, secondUser.id),
-      "digest not found",
-    );
+    assertThrows(() => deleteDigestForUser(database, digest.id, secondUser.id), "digest not found",);
 
     // Verify it still exists for the owner
     const stillExists = await findDigestById(database, digest.id, firstUser.id);
