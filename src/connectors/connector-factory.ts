@@ -94,8 +94,10 @@ export type XBrowserRuntimeLoader = () => Promise<
 const loadXBrowserRuntime: XBrowserRuntimeLoader = async () => {
   // Deliberately lazy: Playwright is loaded only when an X source is requested.
   const { XBrowserRuntime } = await import("./x/index.ts");
+  const config = getXBrowserConfig();
   return new XBrowserRuntime({
-    profileRoot: getXBrowserConfig().profileRoot,
+    profileRoot: config.profileRoot,
+    browserChannel: config.browserChannel,
   });
 };
 

@@ -10,12 +10,28 @@ import {
   formatXTargetUrl,
   X_CONTROL_URLS,
 } from "./targets.ts";
-import type { XTarget } from "./x.types.ts";
+import type { XBrowserChannel, XTarget } from "./x.types.ts";
 
 const BROWSER_LAUNCH_TIMEOUT_MS = 30_000;
 const NAVIGATION_TIMEOUT_MS = 25_000;
 const DOM_ACTION_TIMEOUT_MS = 8_000;
 const TIMELINE_SWITCH_SETTLE_MS = 750;
+
+export function xBrowserLaunchOptions(
+  headless: boolean,
+  browserChannel: XBrowserChannel,
+) {
+  return {
+    headless,
+    acceptDownloads: false,
+    locale: "en-US",
+    timeout: BROWSER_LAUNCH_TIMEOUT_MS,
+    viewport: headless ? { width: 1280, height: 900 } : null,
+    ...(!headless && browserChannel === "chrome"
+      ? { channel: "chrome" as const }
+      : {}),
+  };
+}
 
 export interface XOwnedBrowserSession {
   context: BrowserContext;
@@ -31,6 +47,7 @@ export class XBrowserSessions {
   constructor(
     profileRoot: string,
     private readonly leaseTimeoutMs: number,
+    private readonly browserChannel: XBrowserChannel,
   ) {
     this.profiles = new XProfileStore(profileRoot);
   }
@@ -167,13 +184,10 @@ export class XBrowserSessions {
       const profilePath = headless
         ? await this.profiles.requireExisting(profileId, signal)
         : await this.profiles.ensure(profileId, signal);
-      context = await chromium.launchPersistentContext(profilePath, {
-        headless,
-        acceptDownloads: false,
-        locale: "en-US",
-        timeout: BROWSER_LAUNCH_TIMEOUT_MS,
-        viewport: { width: 1280, height: 900 },
-      });
+      context = await chromium.launchPersistentContext(
+        profilePath,
+        xBrowserLaunchOptions(headless, this.browserChannel),
+      );
       browser = context.browser();
       onBrowserDisconnected = () => finishClosed();
       browser?.once("disconnected", onBrowserDisconnected);

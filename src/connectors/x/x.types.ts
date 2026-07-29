@@ -9,9 +9,12 @@ export type XTarget =
 
 export type XTargetKind = XTarget["kind"];
 
+export type XBrowserChannel = "chromium" | "chrome";
+
 export interface XBrowserRuntimeOptions {
   profileRoot: string;
   leaseTimeoutMs?: number;
+  browserChannel?: XBrowserChannel;
 }
 
 export interface XHeadedLoginHandle {

@@ -4,8 +4,11 @@ import { join } from "node:path";
 import type { Browser } from "playwright";
 import { test } from "bun:test";
 
-import { XBrowserSessions } from "../src/connectors/x/browser-session.ts";
-import { assertRejects, assertStrictEquals } from "./assertions.ts";
+import {
+  xBrowserLaunchOptions,
+  XBrowserSessions,
+} from "../src/connectors/x/browser-session.ts";
+import { assertEquals, assertRejects, assertStrictEquals } from "./assertions.ts";
 
 const PROFILE_ID = "123e4567-e89b-42d3-a456-426614174000";
 
@@ -17,13 +20,39 @@ async function profileFixture(): Promise<{
   await mkdir(join(root, PROFILE_ID), { mode: 0o700 });
   return {
     root,
-    sessions: new XBrowserSessions(root, 1_000),
+    sessions: new XBrowserSessions(root, 1_000, "chromium"),
   };
 }
+
+test("X browser launch options select stable Chrome only for headed sessions", () => {
+  assertEquals(xBrowserLaunchOptions(false, "chrome"), {
+    headless: false,
+    acceptDownloads: false,
+    locale: "en-US",
+    timeout: 30_000,
+    viewport: null,
+    channel: "chrome",
+  });
+  assertEquals(xBrowserLaunchOptions(true, "chrome"), {
+    headless: true,
+    acceptDownloads: false,
+    locale: "en-US",
+    timeout: 30_000,
+    viewport: { width: 1280, height: 900 },
+  });
+  assertEquals(xBrowserLaunchOptions(false, "chromium"), {
+    headless: false,
+    acceptDownloads: false,
+    locale: "en-US",
+    timeout: 30_000,
+    viewport: null,
+  });
+});
 
 test("persistent X sessions fall back to Browser.close before releasing the profile lease", async () => {
   const fixture = await profileFixture();
   let contextCloseCalls = 0;
+
   try {
     await fixture.sessions.withHeadless(
       PROFILE_ID,

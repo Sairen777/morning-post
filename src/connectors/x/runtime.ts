@@ -33,7 +33,11 @@ export class XBrowserRuntime {
     ) {
       throw new Error(`X profile lease timeout must be between 1 and ${MAX_LEASE_TIMEOUT_MS} milliseconds`);
     }
-    this.sessions = new XBrowserSessions(options.profileRoot, leaseTimeoutMs);
+    this.sessions = new XBrowserSessions(
+      options.profileRoot,
+      leaseTimeoutMs,
+      options.browserChannel ?? "chromium",
+    );
   }
 
   public async startHeadedLogin(

@@ -7,6 +7,7 @@ export {
   parseXTargetUrl,
 } from "./targets.ts";
 export type {
+  XBrowserChannel,
   XBrowserRuntimeOptions,
   XConnectorRawData,
   XHeadedLoginHandle,

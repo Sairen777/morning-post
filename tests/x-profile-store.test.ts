@@ -86,7 +86,7 @@ test("managed profiles reject symlink substitution and unlink only the profile l
 test("disconnect preserves the profile on mutation failure and ignores abort after commit", async () => {
   const root = await temporaryProfileRoot();
   try {
-    const sessions = new XBrowserSessions(root, 1_000);
+    const sessions = new XBrowserSessions(root, 1_000, "chromium");
     const profilePath = join(root, PROFILE_ID);
     await mkdir(profilePath, { mode: 0o700 });
 

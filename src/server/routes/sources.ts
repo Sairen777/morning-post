@@ -50,10 +50,13 @@ export function buildSourceRoutes(
   > => {
     if (dependencies.xBrowserRuntime) return dependencies.xBrowserRuntime;
     defaultXBrowserRuntime ??= import("../../connectors/x/index.ts").then(
-      ({ XBrowserRuntime }) =>
-        new XBrowserRuntime({
-          profileRoot: getXBrowserConfig().profileRoot,
-        }),
+      ({ XBrowserRuntime }) => {
+        const config = getXBrowserConfig();
+        return new XBrowserRuntime({
+          profileRoot: config.profileRoot,
+          browserChannel: config.browserChannel,
+        });
+      },
     );
     return await defaultXBrowserRuntime;
   };

@@ -19,6 +19,7 @@ const ENV_KEYS = [
   "CONNECTOR_TIMEOUT_MS",
   "X_BROWSER_PROFILE_ROOT",
   "X_BROWSER_LOGIN_TIMEOUT_MS",
+  "X_BROWSER_CHANNEL",
   "SUMMARIZER_MODEL",
   "SUMMARIZER_BASE_URL",
   "SUMMARIZER_API_KEY",
@@ -100,6 +101,7 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.connectorTimeoutMs, 120_000);
   assertEquals(config.xBrowserProfileRoot, ".x-browser-profiles");
   assertEquals(config.xBrowserLoginTimeoutMs, 900_000);
+  assertEquals(config.xBrowserChannel, "chromium");
   assertEquals(config.summarizerTextBytesPerChunk, 120_000);
   assertEquals(config.summarizerMaxItemsPerChunk, 50);
   assertEquals(config.summarizerMaxImageBytes, 1_000_000);
@@ -248,6 +250,7 @@ test("environment values override supported configuration defaults", () => {
       CONNECTOR_TIMEOUT_MS: "5000",
       X_BROWSER_PROFILE_ROOT: "/tmp/morning-post-x-profiles",
       X_BROWSER_LOGIN_TIMEOUT_MS: "12345",
+      X_BROWSER_CHANNEL: "chrome",
       SUMMARIZER_TEXT_BYTES_PER_CHUNK: "9000",
       SUMMARIZER_MAX_ITEMS_PER_CHUNK: "7",
       SUMMARIZER_MAX_IMAGE_BYTES: "8000",
@@ -284,6 +287,7 @@ test("environment values override supported configuration defaults", () => {
     assertEquals(config.connectorTimeoutMs, 5000);
     assertEquals(config.xBrowserProfileRoot, "/tmp/morning-post-x-profiles");
     assertEquals(config.xBrowserLoginTimeoutMs, 12345);
+    assertEquals(config.xBrowserChannel, "chrome");
     assertEquals(config.summarizerTextBytesPerChunk, 9000);
     assertEquals(config.summarizerMaxItemsPerChunk, 7);
     assertEquals(config.summarizerMaxImageBytes, 8000);
@@ -330,6 +334,7 @@ test("constructor values take precedence over environment", () => {
       "ALLOW_REMOTE_SUMMARIZATION",
       "X_BROWSER_PROFILE_ROOT",
       "X_BROWSER_LOGIN_TIMEOUT_MS",
+      "X_BROWSER_CHANNEL",
     ].map((key) => [key, process.env[key]]),
   );
   try {
@@ -340,6 +345,7 @@ test("constructor values take precedence over environment", () => {
     process.env["ALLOW_REMOTE_SUMMARIZATION"] = "true";
     process.env["X_BROWSER_PROFILE_ROOT"] = "./env-x-profiles";
     process.env["X_BROWSER_LOGIN_TIMEOUT_MS"] = "12345";
+    process.env["X_BROWSER_CHANNEL"] = "chrome";
     const config = getConfig({
       port: 4311,
       allowedOrigins: ["https://constructor.example"],
@@ -348,6 +354,7 @@ test("constructor values take precedence over environment", () => {
       allowRemoteSummarization: false,
       xBrowserProfileRoot: "./constructor-x-profiles",
       xBrowserLoginTimeoutMs: 54_321,
+      xBrowserChannel: "chromium",
     });
     assertEquals(config.port, 4311);
     assertEquals(config.allowedOrigins, ["https://constructor.example"]);
@@ -356,6 +363,7 @@ test("constructor values take precedence over environment", () => {
     assertEquals(config.allowRemoteSummarization, false);
     assertEquals(config.xBrowserProfileRoot, "./constructor-x-profiles");
     assertEquals(config.xBrowserLoginTimeoutMs, 54_321);
+    assertEquals(config.xBrowserChannel, "chromium");
     assertEquals(resolveAppSecurityOptions({ maxRequestBodyBytes: 300 }), {
       allowedOrigins: ["https://env.example"],
       maxRequestBodyBytes: 300,
@@ -377,6 +385,7 @@ test("invalid numeric and boolean values fail at startup", () => {
         key === "DATABASE_PATH" ||
         key === "ALLOW_REMOTE_SUMMARIZATION" ||
         key === "X_BROWSER_PROFILE_ROOT" ||
+        key === "X_BROWSER_CHANNEL" ||
         key.endsWith("_MODEL") ||
         key.endsWith("_BASE_URL") ||
         key.endsWith("_API_KEY")
@@ -407,6 +416,17 @@ test("invalid numeric and boolean values fail at startup", () => {
     else process.env["ALLOW_REMOTE_SUMMARIZATION"] = previous;
   }
 });
+test("invalid X browser channels fail with the setting name", () => {
+  withClearedEnvironment(["X_BROWSER_CHANNEL"], () => {
+    process.env["X_BROWSER_CHANNEL"] = "stable";
+    assertThrows(
+      () => getConfig(),
+      Error,
+      "Invalid X_BROWSER_CHANNEL",
+    );
+  });
+});
+
 
 
 test("summarizer runtime resolver validates and normalizes provider settings", () => {

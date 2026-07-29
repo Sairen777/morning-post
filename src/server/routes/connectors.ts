@@ -335,6 +335,7 @@ export function buildConnectorRoutes(
       const xBrowserConfig = getXBrowserConfig();
       const browserRuntime = new XBrowserRuntime({
         profileRoot: xBrowserConfig.profileRoot,
+        browserChannel: xBrowserConfig.browserChannel,
       });
       const credentialCipher = new CredentialCipher(
         new EnvMasterKeyProvider(),

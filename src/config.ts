@@ -1,3 +1,5 @@
+import type { XBrowserChannel } from "./connectors/x/x.types.ts";
+
 
 export interface ModelPricingSnapshot {
   uncachedInputUsdPerMillionTokens: number;
@@ -48,6 +50,7 @@ export interface SummarizerBudgetConfig {
 export interface XBrowserConfig {
   profileRoot: string;
   loginTimeoutMs: number;
+  browserChannel: XBrowserChannel;
 }
 
 export interface Config {
@@ -81,6 +84,7 @@ export interface Config {
   digestRunStaleAfterMs: number;
   xBrowserProfileRoot?: string;
   xBrowserLoginTimeoutMs?: number;
+  xBrowserChannel?: XBrowserChannel;
 }
 
 export interface AppSecurityOptions {
@@ -118,6 +122,7 @@ const DEFAULT_MEDIA_QUOTA_BYTES = 500 * 1024 * 1024;
 const DEFAULT_DIGEST_RUN_STALE_AFTER_MS = 15 * 60 * 1_000;
 const DEFAULT_X_BROWSER_PROFILE_ROOT = ".x-browser-profiles";
 const DEFAULT_X_BROWSER_LOGIN_TIMEOUT_MS = 15 * 60 * 1_000;
+const DEFAULT_X_BROWSER_CHANNEL: XBrowserChannel = "chromium";
 const DEFAULT_SUMMARIZER_MODEL = "local-model";
 const DEFAULT_SUMMARIZER_BASE_URL = "http://127.0.0.1:1234/v1";
 
@@ -403,6 +408,20 @@ export function resolveAllowRemoteSummarization(override?: boolean): boolean {
   );
 }
 
+function xBrowserChannelSetting(
+  override: XBrowserChannel | undefined,
+): XBrowserChannel {
+  const value = override ?? process.env["X_BROWSER_CHANNEL"] ??
+    DEFAULT_X_BROWSER_CHANNEL;
+  if (value !== "chromium" && value !== "chrome") {
+    throw invalidConfig(
+      "X_BROWSER_CHANNEL",
+      'expected "chromium" or "chrome"',
+    );
+  }
+  return value;
+}
+
 export function getXBrowserConfig(
   overrides: Partial<XBrowserConfig> = {},
 ): XBrowserConfig {
@@ -418,6 +437,7 @@ export function getXBrowserConfig(
       overrides.loginTimeoutMs,
       DEFAULT_X_BROWSER_LOGIN_TIMEOUT_MS,
     ),
+    browserChannel: xBrowserChannelSetting(overrides.browserChannel),
   };
 }
 
@@ -547,6 +567,7 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
   const xBrowserConfig = getXBrowserConfig({
     profileRoot: overrides.xBrowserProfileRoot,
     loginTimeoutMs: overrides.xBrowserLoginTimeoutMs,
+    browserChannel: overrides.xBrowserChannel,
   });
   return {
     databasePath: overrides.databasePath ?? process.env["DATABASE_PATH"] ??
@@ -617,6 +638,7 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
     ),
     xBrowserProfileRoot: xBrowserConfig.profileRoot,
     xBrowserLoginTimeoutMs: xBrowserConfig.loginTimeoutMs,
+    xBrowserChannel: xBrowserConfig.browserChannel,
   };
 }
 

@@ -91,9 +91,13 @@ export async function bootServer(
   const xBrowserConfig = getXBrowserConfig({
     profileRoot: config.xBrowserProfileRoot,
     loginTimeoutMs: config.xBrowserLoginTimeoutMs,
+    browserChannel: config.xBrowserChannel,
   });
   const xBrowserRuntime = dependencies.xBrowserRuntime ??
-    new XBrowserRuntime({ profileRoot: xBrowserConfig.profileRoot });
+    new XBrowserRuntime({
+      profileRoot: xBrowserConfig.profileRoot,
+      browserChannel: xBrowserConfig.browserChannel,
+    });
   const xLoginSessionManager = dependencies.xLoginSessionManager ??
     new XLoginSessionManager({
       database,

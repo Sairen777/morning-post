@@ -33,8 +33,10 @@ liveXBrowserContract(
       "X_BROWSER_LIVE_TARGET_URL must be canonical",
     );
     const canonicalFeedId = formatXFeedExternalId(target);
+    const browserConfig = getXBrowserConfig();
     const runtime = new XBrowserRuntime({
-      profileRoot: getXBrowserConfig().profileRoot,
+      profileRoot: browserConfig.profileRoot,
+      browserChannel: browserConfig.browserChannel,
     });
 
     const resolvedFeed = await runtime.resolveTarget(profileId, targetUrl);

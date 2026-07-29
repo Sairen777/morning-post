@@ -57,8 +57,10 @@ export type XFeedDiscoveryRuntimeLoader = () => Promise<
 const loadXFeedDiscoveryRuntime: XFeedDiscoveryRuntimeLoader = async () => {
   // Deliberately lazy: feed discovery loads Playwright only for an X source.
   const { XBrowserRuntime } = await import("../connectors/x/index.ts");
+  const config = getXBrowserConfig();
   return new XBrowserRuntime({
-    profileRoot: getXBrowserConfig().profileRoot,
+    profileRoot: config.profileRoot,
+    browserChannel: config.browserChannel,
   });
 };
 
