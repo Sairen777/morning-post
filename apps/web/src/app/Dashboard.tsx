@@ -40,6 +40,7 @@ import type {
   PublicSource,
   PublicUser,
   RelevanceFilterOverride,
+  StoryDetailLevel,
   SummarizationMode,
 } from "../api/types";
 import DigestRunnerCard from "./DigestRunnerCard";
@@ -478,6 +479,7 @@ export default function Dashboard(props: DashboardProps) {
     summaryPrompt?: string;
     defaultLanguage?: string | null;
     defaultRelevanceFilterMode?: "personalized" | "include_all";
+    storyDetailLevel?: StoryDetailLevel;
     relevanceThreshold?: number;
     maximumStoriesPerDigest?: number | null;
   }): Promise<PublicUser> => {

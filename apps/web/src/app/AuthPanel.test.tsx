@@ -33,6 +33,7 @@ const owner: PublicUser = {
   summaryPrompt: "",
   defaultLanguage: null,
   defaultRelevanceFilterMode: "personalized",
+  storyDetailLevel: "balanced",
   relevanceThreshold: 60,
   maximumStoriesPerDigest: null,
   interestProfileVersion: 1,

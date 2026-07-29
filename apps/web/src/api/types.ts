@@ -1,5 +1,7 @@
 export type RelevanceFilterMode = "personalized" | "include_all";
 export type RelevanceFilterOverride = "inherit" | RelevanceFilterMode;
+export const storyDetailLevels = ["headlines", "balanced", "thorough"] as const;
+export type StoryDetailLevel = (typeof storyDetailLevels)[number];
 
 export interface SetupStatus {
   setupRequired: boolean;
@@ -13,6 +15,7 @@ export interface PublicUser {
   summaryPrompt: string;
   defaultLanguage: string | null;
   defaultRelevanceFilterMode: RelevanceFilterMode;
+  storyDetailLevel: StoryDetailLevel;
   relevanceThreshold: number;
   maximumStoriesPerDigest: number | null;
   interestProfileVersion: number;

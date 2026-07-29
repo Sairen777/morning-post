@@ -42,6 +42,7 @@ test("createUser then findUserById round-trips all fields", async () => {
     assertEquals(found.systemPrompt, "Summarize tersely.");
     assertEquals(found.summaryPrompt, "");
     assertEquals(found.defaultLanguage, "en");
+    assertEquals(found.storyDetailLevel, "balanced");
 
     assertEquals(typeof found.createdAt, "number");
     assertEquals(typeof found.updatedAt, "number");
@@ -148,6 +149,25 @@ test("partial update leaves other fields intact and bumps updatedAt", async () =
       updated.updatedAt > created.updatedAt,
       `expected updatedAt to increase (${created.updatedAt} -> ${updated.updatedAt})`,
     );
+  });
+});
+
+test("story detail level persists through create and update", async () => {
+  await withTestDb(async (database) => {
+    const created = await createUser(database, userInput({
+      email: "detail@example.com",
+      storyDetailLevel: "thorough",
+    }));
+    assertEquals(created.storyDetailLevel, "thorough");
+
+    const updated = await updateUser(database, created.id, {
+      storyDetailLevel: "headlines",
+    });
+    assertEquals(updated.storyDetailLevel, "headlines");
+
+    const reloaded = await findUserById(database, created.id);
+    assertExists(reloaded);
+    assertEquals(reloaded.storyDetailLevel, "headlines");
   });
 });
 

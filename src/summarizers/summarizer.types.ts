@@ -63,6 +63,8 @@ export interface SummarizeOptions {
   maxItemsPerChunk?: number;
   /** Max bytes for a single image payload; larger images are omitted with [IMAGE_OMITTED] */
   maxImageBytes?: number;
+  /** Internal per-request output ceiling; runtime configuration may impose a tighter limit */
+  maxOutputTokens?: number;
   /** Article mode requires one item and keeps chunk results article-local */
   summaryMode?: "aggregate" | "article";
 }

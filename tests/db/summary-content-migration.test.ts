@@ -19,6 +19,15 @@ test("SQLite summary schema round-trips structured content without data loss", a
       createdAt: now,
       updatedAt: now,
     }).returning().get();
+    assertEquals(user.storyDetailLevel, "balanced");
+    const userColumns = database.all<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>(sql`PRAGMA table_info(users)`);
+    const detailColumn = userColumns.find(({ name }) => name === "story_detail_level");
+    assertEquals(detailColumn?.notnull, 1);
+    assertEquals(detailColumn?.dflt_value, "'balanced'");
     const source = database.insert(sources).values({
       userId: user.id,
       connectorId: "Telegram",

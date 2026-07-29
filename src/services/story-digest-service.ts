@@ -1,6 +1,6 @@
 import type { Database } from "../db/client.ts";
 import { ConnectorId, DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../constants.ts";
-import type { SummarizationMode } from "../summarization-mode.ts";
+import type { StoryDetailLevel } from "../story-detail-level.ts";
 import { getSummarizerBudgetConfig } from "../config.ts";
 import type { PublicFeed } from "../repositories/feed-repository.ts";
 import { listActiveInterestRules } from "../repositories/interest-rule-repository.ts";
@@ -29,11 +29,13 @@ import type {
 import {
   DEFAULT_SYSTEM_PROMPT,
   buildBatchStorySummaryPrompt,
+  buildHeadlineBatchStorySummaryPrompt,
+  buildHeadlineStorySummaryPrompt,
   buildStorySummaryPrompt,
   buildThoroughStorySummaryPrompt,
 } from "../summarizers/prompts.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
-import { serializeBatchSummaryInput, type BatchSummaryInput, type SummarizerService, type SummaryPoint } from "../summarizers/summarizer.types.ts";
+import { serializeBatchSummaryInput, type BatchSummaryInput, type SummarizerService, type SummaryPoint, type SummaryRuleset } from "../summarizers/summarizer.types.ts";
 import {
   fingerprintStoryAnalysisMember,
   groupStoryAnalysisUnits,
@@ -51,8 +53,18 @@ import {
 } from "./digest-progress.ts";
 import type { ModelAttemptTelemetry } from "../summarizers/openai-compatible-client.ts";
 
-export const CURRENT_STORY_SUMMARY_VERSION = "story-summary-v2";
+export const HEADLINE_STORY_SUMMARY_VERSION = "story-summary-headlines-v1";
+export const CURRENT_STORY_SUMMARY_VERSION = "story-summary-balanced-v1";
 export const THOROUGH_STORY_SUMMARY_VERSION = "story-summary-thorough-v1";
+type StoryDetailPolicy = {
+  singleMaxOutputTokens: number;
+  batchMaxOutputTokens: number;
+};
+const STORY_DETAIL_POLICIES: Record<StoryDetailLevel, StoryDetailPolicy> = {
+  headlines: { singleMaxOutputTokens: 700, batchMaxOutputTokens: 3_000 },
+  balanced: { singleMaxOutputTokens: 4_000, batchMaxOutputTokens: 6_500 },
+  thorough: { singleMaxOutputTokens: 6_500, batchMaxOutputTokens: 6_500 },
+};
 
 export interface StoryDigestDependencies {
   intelligence?: StoryIntelligenceService;
@@ -162,21 +174,23 @@ function storyHasMedia(story: PersistedStoryCandidate): boolean {
   );
 }
 
-function resolveStorySummarizationMode(
+function resolveStoryDetailLevel(
   story: PersistedStoryCandidate,
   feedById: Map<string, PublicFeed>,
-): SummarizationMode {
+  profileDetailLevel: StoryDetailLevel,
+): StoryDetailLevel {
   return story.candidate.developments.some((development) =>
       development.items.some((item) =>
         feedById.get(item.feedId)!.summarizationMode === "thorough"
       )
     )
     ? "thorough"
-    : "basic";
+    : profileDetailLevel;
 }
 
-function summaryVersionForMode(mode: SummarizationMode): string {
-  return mode === "thorough"
+function summaryVersionForDetail(detail: StoryDetailLevel): string {
+  if (detail === "headlines") return HEADLINE_STORY_SUMMARY_VERSION;
+  return detail === "thorough"
     ? THOROUGH_STORY_SUMMARY_VERSION
     : CURRENT_STORY_SUMMARY_VERSION;
 }
@@ -401,18 +415,25 @@ export async function assembleStoryDigest(
     0,
     user.maximumStoriesPerDigest ?? DEFAULT_MAXIMUM_STORIES_PER_DIGEST,
   );
-  const summarizationModeByStoryId = new Map(
+  const detailByStoryId = new Map(
     selected.map((story) => [
       story.id,
-      resolveStorySummarizationMode(story, feedById),
+      resolveStoryDetailLevel(story, feedById, user.storyDetailLevel),
     ]),
   );
-  const storyRules = buildStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
-  storyRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), storyRules.systemPrompt].filter(Boolean).join("\n\n");
-  const batchRules = buildBatchStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
-  batchRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), batchRules.systemPrompt].filter(Boolean).join("\n\n");
-  const thoroughStoryRules = buildThoroughStorySummaryPrompt({ language: user.defaultLanguage ?? undefined });
-  thoroughStoryRules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), thoroughStoryRules.systemPrompt].filter(Boolean).join("\n\n");
+  const withUserPrompt = (rules: SummaryRuleset) => {
+    rules.systemPrompt = [DEFAULT_SYSTEM_PROMPT, user.summaryPrompt.trim(), rules.systemPrompt].filter(Boolean).join("\n\n");
+    return rules;
+  };
+  const singleRulesByDetail: Record<StoryDetailLevel, SummaryRuleset> = {
+    headlines: withUserPrompt(buildHeadlineStorySummaryPrompt({ language: user.defaultLanguage ?? undefined })),
+    balanced: withUserPrompt(buildStorySummaryPrompt({ language: user.defaultLanguage ?? undefined })),
+    thorough: withUserPrompt(buildThoroughStorySummaryPrompt({ language: user.defaultLanguage ?? undefined })),
+  };
+  const batchRulesByDetail: Record<Exclude<StoryDetailLevel, "thorough">, SummaryRuleset> = {
+    headlines: withUserPrompt(buildHeadlineBatchStorySummaryPrompt({ language: user.defaultLanguage ?? undefined })),
+    balanced: withUserPrompt(buildBatchStorySummaryPrompt({ language: user.defaultLanguage ?? undefined })),
+  };
   if (runId) reportDigestProgress(progress, {
     event: "summarization",
     runId,
@@ -431,7 +452,7 @@ export async function assembleStoryDigest(
   type SummaryEntry = {
     index: number;
     story: PersistedStoryCandidate;
-    mode: SummarizationMode;
+    detail: StoryDetailLevel;
   };
   const uncached: SummaryEntry[] = [];
   const makeSummary = (
@@ -441,14 +462,14 @@ export async function assembleStoryDigest(
     const items = story.candidate.developments.flatMap((development) => development.items);
     const decision = decisionById.get(story.id)!;
     const sources: StorySource[] = items.map((item) => ({ itemId: item.itemId, connectorId: connectorBySource.get(item.sourceId)!, sourceId: item.sourceId, feedId: item.feedId, feedName: item.feedName, title: item.payload.title, url: item.payload.url, publishedAt: item.payload.date }));
-    const summaryVersion = summaryVersionForMode(
-      summarizationModeByStoryId.get(story.id)!,
+    const summaryVersion = summaryVersionForDetail(
+      detailByStoryId.get(story.id)!,
     );
     return { content: { storyId: story.id, storyVersion: story.version, title: story.candidate.title, topics: story.candidate.topics, entities: story.candidate.entities, points, sources, relevanceScore: decision.score, matchedInterestRuleIds: decision.matchedInterestRuleIds }, profileVersion: user.interestProfileVersion, summaryVersion, generatedAt: now() };
   };
   const reusableInputs = selected.flatMap((story) => {
-    const summaryVersion = summaryVersionForMode(
-      summarizationModeByStoryId.get(story.id)!,
+    const summaryVersion = summaryVersionForDetail(
+      detailByStoryId.get(story.id)!,
     );
     const current = currentStoryById.get(story.id);
     return current?.storyVersion === story.version &&
@@ -470,8 +491,8 @@ export async function assembleStoryDigest(
   );
   const reusableByStoryId = new Map(reusable.map((story) => [story.storyId, story]));
   selected.forEach((story, index) => {
-    const mode = summarizationModeByStoryId.get(story.id)!;
-    const summaryVersion = summaryVersionForMode(mode);
+    const detail = detailByStoryId.get(story.id)!;
+    const summaryVersion = summaryVersionForDetail(detail);
     const current = currentStoryById.get(story.id);
     const points = current?.storyVersion === story.version &&
         current.profileVersion === user.interestProfileVersion &&
@@ -484,7 +505,7 @@ export async function assembleStoryDigest(
         value: makeSummary(story, points),
       };
     } else {
-      uncached.push({ index, story, mode });
+      uncached.push({ index, story, detail });
     }
   });
   const budget = getSummarizerBudgetConfig();
@@ -492,7 +513,7 @@ export async function assembleStoryDigest(
   const batches: Array<Array<SummaryEntry & { input: BatchSummaryInput }>> = [];
   const singles: SummaryEntry[] = [];
   for (const candidate of uncached) {
-    if (candidate.mode === "thorough") {
+    if (candidate.detail === "thorough") {
       singles.push(candidate);
       continue;
     }
@@ -503,6 +524,7 @@ export async function assembleStoryDigest(
       continue;
     }
     const input = { storyId: candidate.story.id, items: buildBatchItems(candidate.story) };
+    const batchRules = batchRulesByDetail[candidate.detail];
     const inputBytes = encoder.encode(
       serializeBatchSummaryInput([input], batchRules.showTitle ?? false),
     ).byteLength;
@@ -520,6 +542,7 @@ export async function assembleStoryDigest(
     )).byteLength;
     if (
       !batch ||
+      batch[0].detail !== candidate.detail ||
       batch.length >= batchMax ||
       candidateBytes > budget.summarizerTextBytesPerChunk
     ) {
@@ -545,11 +568,12 @@ export async function assembleStoryDigest(
       );
       const points = await summarizer.summarize(
         items.map((item) => item.payload),
-        entry.mode === "thorough" ? thoroughStoryRules : storyRules,
+        singleRulesByDetail[entry.detail],
         {
           signal: dependencies.signal,
           requestTimeoutMs: dependencies.timeoutMs,
           onAttempt: onAttempt("summarization"),
+          maxOutputTokens: STORY_DETAIL_POLICIES[entry.detail].singleMaxOutputTokens,
         },
       );
       if (items.length > 0 && points.length === 0) {
@@ -569,13 +593,15 @@ export async function assembleStoryDigest(
     async (job) => {
       if (job.kind === "batch") {
         try {
+          const detail = job.entries[0].detail as Exclude<StoryDetailLevel, "thorough">;
           const results = await summarizer.summarizeBatch!(
             job.entries.map((entry) => entry.input),
-            batchRules,
+            batchRulesByDetail[detail],
             {
               signal: dependencies.signal,
               requestTimeoutMs: dependencies.timeoutMs,
               onAttempt: onAttempt("summarization"),
+              maxOutputTokens: STORY_DETAIL_POLICIES[detail].batchMaxOutputTokens,
             },
           );
           const byId = new Map(results.map((result) => [result.storyId, result]));
@@ -614,8 +640,8 @@ export async function assembleStoryDigest(
   const replacement = summaries.flatMap((result, index) => {
     if (result.status === "fulfilled") return [result.value];
     const prior = currentStoryById.get(selected[index].id);
-    const expectedSummaryVersion = summaryVersionForMode(
-      summarizationModeByStoryId.get(selected[index].id)!,
+    const expectedSummaryVersion = summaryVersionForDetail(
+      detailByStoryId.get(selected[index].id)!,
     );
     if (!prior || prior.summaryVersion !== expectedSummaryVersion) return [];
     const { id: _id, digestId: _digestId, profileVersion, summaryVersion, generatedAt, ...content } = prior;

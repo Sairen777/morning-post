@@ -15,6 +15,7 @@ import type {
   SetupStatus,
   RelevanceFilterMode,
   RelevanceFilterOverride,
+  StoryDetailLevel,
   SummarizationMode,
   SubstackPublicationInput,
   SubstackPublicationResponse,
@@ -107,6 +108,7 @@ export function updateCurrentUser(input: {
   summaryPrompt?: string;
   defaultLanguage?: string | null;
   defaultRelevanceFilterMode?: RelevanceFilterMode;
+  storyDetailLevel?: StoryDetailLevel;
   relevanceThreshold?: number;
   maximumStoriesPerDigest?: number | null;
 }): Promise<PublicUser> {

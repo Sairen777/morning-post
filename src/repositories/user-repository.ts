@@ -4,6 +4,11 @@ import type { Database } from "../db/client.ts";
 import { users } from "../db/schema/user.ts";
 import { ConflictError, NotFoundError } from "../server/errors.ts";
 import { isUniqueViolation } from "../db/errors.ts";
+import {
+  DEFAULT_STORY_DETAIL_LEVEL,
+  STORY_DETAIL_LEVELS,
+  type StoryDetailLevel,
+} from "../story-detail-level.ts";
 
 /**
  * Shape-check applied to every row leaving the repository, so callers can rely
@@ -19,6 +24,7 @@ const userRowSchema = z.object({
   summaryPrompt: z.string(),
   defaultLanguage: z.string().nullable(),
   defaultRelevanceFilterMode: z.enum(["personalized", "include_all"]),
+  storyDetailLevel: z.enum(STORY_DETAIL_LEVELS),
   relevanceThreshold: z.number().int().min(0).max(100),
   maximumStoriesPerDigest: z.number().int().positive().nullable(),
   interestProfileVersion: z.number().int().positive(),
@@ -36,6 +42,7 @@ export interface CreateUserInput {
   summaryPrompt?: string;
   defaultLanguage?: string | null;
   defaultRelevanceFilterMode?: "personalized" | "include_all";
+  storyDetailLevel?: StoryDetailLevel;
   relevanceThreshold?: number;
   maximumStoriesPerDigest?: number | null;
 }
@@ -46,6 +53,7 @@ export type UpdateUserInput = Partial<{
   summaryPrompt: string;
   defaultLanguage: string | null;
   defaultRelevanceFilterMode: "personalized" | "include_all";
+  storyDetailLevel: StoryDetailLevel;
   relevanceThreshold: number;
   maximumStoriesPerDigest: number | null;
 }>;
@@ -71,6 +79,7 @@ export function createUser(
         summaryPrompt: input.summaryPrompt ?? "",
         defaultLanguage: input.defaultLanguage ?? null,
         defaultRelevanceFilterMode: input.defaultRelevanceFilterMode ?? "personalized",
+        storyDetailLevel: input.storyDetailLevel ?? DEFAULT_STORY_DETAIL_LEVEL,
         relevanceThreshold: input.relevanceThreshold ?? 60,
         maximumStoriesPerDigest: input.maximumStoriesPerDigest ?? null,
         createdAt: now,

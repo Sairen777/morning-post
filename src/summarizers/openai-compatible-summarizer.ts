@@ -247,7 +247,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       requestTimeoutMs: options.requestTimeoutMs,
       onAttempt: options.onAttempt,
       onDiagnostic: options.onDiagnostic,
-      maxOutputTokens: this.summaryMaxOutputTokens,
+      maxOutputTokens: Math.min(
+        options.maxOutputTokens ?? this.summaryMaxOutputTokens,
+        this.summaryMaxOutputTokens,
+      ),
       maxAttempts: this.summaryMaxAttempts,
       jsonOutput: true,
       summaryMode: options.summaryMode ?? "aggregate",
@@ -282,7 +285,10 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         signal: options.signal,
         requestTimeoutMs: options.requestTimeoutMs,
         onAttempt: options.onAttempt,
-        maxOutputTokens: this.summaryBatchMaxOutputTokens,
+        maxOutputTokens: Math.min(
+          options.maxOutputTokens ?? this.summaryBatchMaxOutputTokens,
+          this.summaryBatchMaxOutputTokens,
+        ),
         maxAttempts: this.summaryMaxAttempts,
         jsonOutput: true,
       },
@@ -474,7 +480,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       );
       const descriptions = this.parseVisionDescriptions(
         visionRaw,
-        affectedIndexes,
+        content.imageEntries,
       );
       describedTextParts = this.addVisionDescriptions(
         content.textParts,
@@ -879,7 +885,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         }
         const imageLabel = {
           type: "text" as const,
-          text: `Item [${index}], Image ${imageNumber}`,
+          text: `Image pair: i=${index}, m=${imageNumber}`,
         };
         multimodalParts.push(imagePart);
         itemVisionParts.push(imageLabel, imagePart);
@@ -1075,7 +1081,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
 
   private parseVisionDescriptions(
     raw: string,
-    expectedIndexes: number[],
+    imageEntries: ImageEntry[],
   ): Map<number, string> {
     const cleaned = this.cleanJsonResponse(raw);
     let parsed: unknown;
@@ -1084,59 +1090,96 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     } catch {
       throw new Error("vision response validation failed: unparseable JSON");
     }
-    if (!Array.isArray(parsed)) {
+
+    let results: unknown;
+    if (Array.isArray(parsed)) {
+      results = parsed;
+    } else if (
+      typeof parsed === "object" && parsed !== null &&
+      Object.keys(parsed).length === 1 &&
+      "results" in parsed
+    ) {
+      results = parsed.results;
+    } else {
+      throw new Error(
+        "vision response validation failed: expected results wrapper",
+      );
+    }
+    if (!Array.isArray(results)) {
       throw new Error("vision response validation failed: expected array");
     }
-    const expected = new Set(expectedIndexes);
-    const descriptionsByIndex = new Map<number, string[]>();
-    for (const element of parsed) {
+
+    const pairKey = (i: number, m: number): string => `${i}:${m}`;
+    const expectedPairs = new Set(
+      imageEntries.map((entry) => pairKey(entry.index, entry.imageNumber)),
+    );
+    const descriptionsByIndex = new Map<
+      number,
+      Array<{ imageNumber: number; description: string }>
+    >();
+    const receivedPairs = new Set<string>();
+    for (const element of results) {
       if (typeof element !== "object" || element === null) {
         throw new Error(
-          `vision response validation failed: invalid entry count=${parsed.length}`,
+          `vision response validation failed: invalid entry count=${results.length}`,
         );
       }
       const keys = Object.keys(element);
       if (
-        keys.length !== 2 || !keys.includes("i") ||
+        keys.length !== 3 || !keys.includes("i") || !keys.includes("m") ||
         !keys.includes("description")
       ) {
         throw new Error(
-          `vision response validation failed: unexpected fields count=${parsed.length}`,
-        );
-      }
-      const entry = element as { i: unknown; description: unknown };
-      if (
-        typeof entry.i !== "number" || !Number.isInteger(entry.i) ||
-        !expected.has(entry.i)
-      ) {
-        throw new Error(
-          `vision response validation failed: invalid index count=${parsed.length}`,
+          `vision response validation failed: unexpected fields count=${results.length}`,
         );
       }
       if (
-        typeof entry.description !== "string" || entry.description.trim() === ""
+        !("i" in element) || !("m" in element) ||
+        !("description" in element) ||
+        typeof element.i !== "number" || !Number.isInteger(element.i) ||
+        typeof element.m !== "number" || !Number.isInteger(element.m)
       ) {
         throw new Error(
-          `vision response validation failed: blank description index=${entry.i}`,
+          `vision response validation failed: invalid pair count=${results.length}`,
         );
       }
-      const description = entry.description.trim();
-      const descriptions = descriptionsByIndex.get(entry.i);
-      if (descriptions === undefined) {
-        descriptionsByIndex.set(entry.i, [description]);
-      } else if (!descriptions.includes(description)) {
-        descriptions.push(description);
+      const key = pairKey(element.i, element.m);
+      if (!expectedPairs.has(key) || receivedPairs.has(key)) {
+        throw new Error(
+          `vision response validation failed: unknown or duplicate pair (${element.i},${element.m})`,
+        );
       }
+      if (
+        typeof element.description !== "string" ||
+        element.description.trim() === ""
+      ) {
+        throw new Error(
+          `vision response validation failed: blank description pair=(${element.i},${element.m})`,
+        );
+      }
+      receivedPairs.add(key);
+      const descriptions = descriptionsByIndex.get(element.i) ?? [];
+      descriptions.push({
+        imageNumber: element.m,
+        description: element.description.trim(),
+      });
+      descriptionsByIndex.set(element.i, descriptions);
     }
-    if (descriptionsByIndex.size !== expected.size) {
+    if (
+      receivedPairs.size !== expectedPairs.size ||
+      [...expectedPairs].some((pair) => !receivedPairs.has(pair))
+    ) {
       throw new Error(
-        `vision response validation failed: expected=${expected.size} received=${descriptionsByIndex.size}`,
+        `vision response validation failed: expected=${expectedPairs.size} received=${receivedPairs.size}`,
       );
     }
     return new Map(
       [...descriptionsByIndex].map(([index, descriptions]) => [
         index,
-        descriptions.join("\n"),
+        descriptions
+          .sort((left, right) => left.imageNumber - right.imageNumber)
+          .map((entry) => `Image ${entry.imageNumber}: ${entry.description}`)
+          .join("\n"),
       ]),
     );
   }

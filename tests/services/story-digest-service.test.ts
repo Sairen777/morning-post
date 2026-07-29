@@ -31,6 +31,7 @@ import {
 } from "../../src/repositories/story-repository.ts";
 import {
   assembleStoryDigest,
+  HEADLINE_STORY_SUMMARY_VERSION,
   CURRENT_STORY_SUMMARY_VERSION,
   THOROUGH_STORY_SUMMARY_VERSION,
 } from "../../src/services/story-digest-service.ts";
@@ -234,6 +235,7 @@ test("service clusters connectors, caches analysis, preserves reruns, provenance
       summaryPrompt: "Emphasize concrete changes.",
       defaultLanguage: "en",
       relevanceThreshold: 0,
+      storyDetailLevel: "balanced",
     });
     const cipher = new CredentialCipher(
       new EnvMasterKeyProvider(new Uint8Array(32).fill(9)),
@@ -411,6 +413,7 @@ test("point reuse requires exact story, profile, and summary versions while rebu
       defaultLanguage: "en",
       systemPrompt: "",
       relevanceThreshold: 0,
+      storyDetailLevel: "balanced",
     });
     const cipher = new CredentialCipher(
       new EnvMasterKeyProvider(new Uint8Array(32).fill(4)),
@@ -667,6 +670,7 @@ test("analysis checkpoints persist before a later failure and reruns resume rema
       defaultLanguage: "en",
       systemPrompt: "",
       relevanceThreshold: 0,
+      storyDetailLevel: "balanced",
     });
     const cipher = new CredentialCipher(
       new EnvMasterKeyProvider(new Uint8Array(32).fill(7)),
@@ -862,6 +866,7 @@ test("default and explicit story caps preserve order under bounded analysis and 
       systemPrompt: "",
       relevanceThreshold: 0,
       maximumStoriesPerDigest: null,
+      storyDetailLevel: "balanced",
     });
     const cipher = new CredentialCipher(
       new EnvMasterKeyProvider(new Uint8Array(32).fill(6)),
@@ -1030,6 +1035,7 @@ test("cached story cards are skipped before batch packing and batch concurrency 
       systemPrompt: "",
       relevanceThreshold: 0,
       maximumStoriesPerDigest: 15,
+      storyDetailLevel: "balanced",
     });
     const cipher = new CredentialCipher(
       new EnvMasterKeyProvider(new Uint8Array(32).fill(5)),
@@ -1269,6 +1275,7 @@ test("cached separators preserve rootless discussion unit boundaries", async () 
       systemPrompt: "",
       summaryPrompt: "",
       relevanceThreshold: 0,
+      storyDetailLevel: "balanced",
     });
     const source = await createSource(database, {
       userId: user.id,
@@ -1365,6 +1372,7 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
       systemPrompt: "",
       summaryPrompt: "Keep concrete source distinctions.",
       relevanceThreshold: 0,
+      storyDetailLevel: "balanced",
     });
     const cipher = new CredentialCipher(
       new EnvMasterKeyProvider(new Uint8Array(32).fill(8)),
@@ -1478,19 +1486,40 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
         ]),
       ];
     };
-    const batchCalls: string[][][] = [];
+    const batchCalls: Array<{
+      externalIds: string[][];
+      systemPrompt: string;
+      maxOutputTokens: number | undefined;
+    }> = [];
     const singleCalls: Array<{
       externalIds: string[];
       texts: string[];
       systemPrompt: string;
       maxItemsPerChunk: number | undefined;
       maxTextBytesPerChunk: number | undefined;
+      maxOutputTokens: number | undefined;
     }> = [];
     const summarizer: SummarizerService = {
-      summarizeBatch: async (stories) => {
-        batchCalls.push(stories.map((story) =>
-          story.items.map((item) => item.externalId)
-        ));
+      summarizeBatch: async (stories, rules, options) => {
+        batchCalls.push({
+          externalIds: stories.map((story) =>
+            story.items.map((item) => item.externalId)
+          ),
+          systemPrompt: rules.systemPrompt,
+          maxOutputTokens: options?.maxOutputTokens,
+        });
+        if (rules.systemPrompt.includes("one concise takeaway")) {
+          return stories.map(({ storyId }) => ({
+            storyId,
+            error: new Error("headline batch unavailable"),
+          }));
+        }
+        if (rules.systemPrompt.includes("nonempty array")) {
+          return stories.map(({ storyId }) => ({
+            storyId,
+            error: new Error("balanced batch unavailable"),
+          }));
+        }
         return stories.map((story) => ({
           storyId: story.storyId,
           points: [{
@@ -1506,6 +1535,7 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
           systemPrompt: rules.systemPrompt,
           maxItemsPerChunk: options?.maxItemsPerChunk,
           maxTextBytesPerChunk: options?.maxTextBytesPerChunk,
+          maxOutputTokens: options?.maxOutputTokens,
         });
         return [{
           text: `Thorough ${items.map((item) => item.externalId).join("+")}`,
@@ -1541,13 +1571,25 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
     const seed = await createAndAssemble(1_000, 300);
     assertEquals(batchCalls.length, 1);
     assertEquals(
-      batchCalls[0]!.map((members) => members.join("+")).sort(),
+      batchCalls[0]!.externalIds.map((members) => members.join("+")).sort(),
       ["basic-only", "mixed-basic+mixed-thorough", "switch-only"],
     );
-    assertEquals(singleCalls.length, 0);
+    assertEquals(singleCalls.length, 3);
     assertEquals(
       seed.result.stories.every((story) =>
         story.summaryVersion === CURRENT_STORY_SUMMARY_VERSION
+      ),
+      true,
+    );
+    assertEquals(batchCalls[0]!.maxOutputTokens, 6_500);
+    assertStringIncludes(
+      batchCalls[0]!.systemPrompt,
+      "nonempty array",
+    );
+    assertEquals(
+      singleCalls.every((call) =>
+        call.systemPrompt.includes("Summarize the supplied source items") &&
+        call.maxOutputTokens === 4_000
       ),
       true,
     );
@@ -1556,7 +1598,32 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
     );
     const sameModeReuse = await createAndAssemble(1_001, 350);
     assertEquals(batchCalls.length, 1);
-    assertEquals(singleCalls.length, 0);
+    assertEquals(singleCalls.length, 3);
+    user.storyDetailLevel = "headlines";
+    user.interestProfileVersion++;
+    const headline = await createAndAssemble(1_002, 375);
+    assertEquals(batchCalls.length, 2);
+    assertEquals(singleCalls.length, 6);
+    assertStringIncludes(
+      batchCalls[1]!.systemPrompt,
+      "one concise takeaway",
+    );
+    assertEquals(
+      headline.result.stories.every((story) =>
+        story.summaryVersion === HEADLINE_STORY_SUMMARY_VERSION
+      ),
+      true,
+    );
+    assertEquals(
+      singleCalls.slice(3).every((call) =>
+        call.systemPrompt.includes("one concise takeaway") &&
+        call.maxOutputTokens === 700
+      ),
+      true,
+    );
+    const headlineByTitle = new Map(
+      headline.result.stories.map((story) => [story.title, story]),
+    );
     let failedThoroughCalls = 0;
     let failedBasicBatchCalls = 0;
     switchingFeed = await updateFeed(
@@ -1569,13 +1636,19 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
       [basicFeed.summarizationMode, switchingFeed.summarizationMode],
       ["basic", "thorough"],
     );
+    const failedDigest = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 1_003,
+      status: "complete",
+    }, 390);
     const failedModeChange = await assembleStoryDigest(
       database,
-      sameModeReuse.digest.id,
+      failedDigest.id,
       user,
       [basicFeed, switchingFeed],
       0,
-      1_001,
+      1_003,
       {
         ...dependencies,
         summarizer: {
@@ -1599,21 +1672,22 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
     );
     assertEquals(
       failedModeChange.stories[0]!.summaryVersion,
-      CURRENT_STORY_SUMMARY_VERSION,
+      HEADLINE_STORY_SUMMARY_VERSION,
     );
 
-    const thorough = await createAndAssemble(1_002, 400);
-    assertEquals(batchCalls.length, 1);
+    const thorough = await createAndAssemble(1_003, 400);
+    assertEquals(batchCalls.length, 2);
     assertEquals(
-      singleCalls.map((call) => call.externalIds.join("+")).sort(),
+      singleCalls.slice(6).map((call) => call.externalIds.join("+")).sort(),
       ["mixed-basic+mixed-thorough", "switch-only"],
     );
     assertEquals(
-      singleCalls.every((call) =>
+      singleCalls.slice(6).every((call) =>
         call.systemPrompt.includes("comprehensive, faithful summary") &&
         call.systemPrompt.includes("Keep concrete source distinctions.") &&
         call.maxItemsPerChunk === undefined &&
-        call.maxTextBytesPerChunk === undefined
+        call.maxTextBytesPerChunk === undefined &&
+        call.maxOutputTokens === 6_500
       ),
       true,
     );
@@ -1629,11 +1703,11 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
     );
     assertEquals(
       thoroughByTitle.get("Basic-only story")!.summaryVersion,
-      CURRENT_STORY_SUMMARY_VERSION,
+      HEADLINE_STORY_SUMMARY_VERSION,
     );
     assertEquals(
       thoroughByTitle.get("Basic-only story")!.points,
-      seedByTitle.get("Basic-only story")!.points,
+      headlineByTitle.get("Basic-only story")!.points,
     );
     assertEquals(
       thoroughByTitle.get("Switch-only story")!.summaryVersion,
@@ -1650,25 +1724,24 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
       user,
       [basicFeed, switchingFeed],
       0,
-      1_002,
+      1_003,
       dependencies,
     );
-    assertEquals(batchCalls.length, 1);
-    assertEquals(singleCalls.length, 2);
-
+    assertEquals(batchCalls.length, 2);
+    assertEquals(singleCalls.length, 8);
     switchingFeed = await updateFeed(
       database,
       switchingFeed.id,
       user.id,
       { summarizationMode: "basic" },
     );
-    const reverted = await createAndAssemble(1_003, 500);
-    assertEquals(batchCalls.length, 1);
-    assertEquals(singleCalls.length, 2);
+    const reverted = await createAndAssemble(1_004, 500);
+    assertEquals(batchCalls.length, 2);
+    assertEquals(singleCalls.length, 8);
     assertEquals(
       reverted.result.stories.every((story) =>
-        story.summaryVersion === CURRENT_STORY_SUMMARY_VERSION &&
-        story.points[0]!.text === seedByTitle.get(story.title)!.points[0]!.text
+        story.summaryVersion === HEADLINE_STORY_SUMMARY_VERSION &&
+        story.points[0]!.text === headlineByTitle.get(story.title)!.points[0]!.text
       ),
       true,
     );

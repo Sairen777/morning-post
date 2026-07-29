@@ -101,11 +101,11 @@ export function buildArticlePrompt(
 export function buildVisionAnalysisPrompt(): SummaryRuleset {
   return {
     systemPrompt: [
-      "Analyze the supplied indexed images for a digest summarizer.",
-      'Return a JSON array only. Every entry must have exactly two fields: "i" (an integer item index) and "description" (a plain string).',
-      "Include exactly one entry for every submitted item index, with no duplicates, omissions, extra indexes, or extra fields.",
+      "Analyze every supplied labeled image for a digest summarizer.",
+      'Return one top-level JSON object with exactly one field, "results", whose value is an array. Every entry must have exactly three fields: "i" (an integer item index), "m" (the one-based integer image number within that item), and "description" (a plain string of at most 40 words).',
+      "Include exactly one entry for every supplied (i,m) image pair, with no duplicates, omissions, unknown pairs, or extra fields.",
       "Describe visible facts and any readable OCR. State uncertainty instead of inventing details.",
-      "For albums, preserve input order and label observations as Image 1, Image 2, and so on.",
+      "Treat each label's i and m values as the image identity and preserve them exactly in the corresponding result.",
     ].join(" "),
     includeMedia: true,
   };
@@ -115,7 +115,7 @@ export function buildStoryAnalysisPrompt(): SummaryRuleset {
   return {
     systemPrompt: [
       "Analyze every member of every indexed discussion unit for story and development identity. Units provide bounded thread context only: members of one unit can describe different stories or developments.",
-      'Return a JSON array only. Every entry must have exactly these fields: "i" (integer unit index), "m" (integer member index), "topics" (string array), "entities" (string array), "storyKey" (stable concise string), "storyTitle" (string), "developmentKey" (stable concise string), "developmentType" (string), "developmentTitle" (string), and "evidence" (array of at most 3 short verbatim excerpts from that member, each at most 400 UTF-8 bytes).',
+      'Return one top-level JSON object with exactly one field, "results", whose value is an array. Every entry in "results" must have exactly these fields: "i" (integer unit index), "m" (integer member index), "topics" (string array), "entities" (string array), "storyKey" (stable concise string), "storyTitle" (string), "developmentKey" (stable concise string), "developmentType" (string), "developmentTitle" (string), and "evidence" (array of at most 3 short verbatim excerpts from that member, each at most 400 UTF-8 bytes).',
       "Include exactly one entry for every submitted (i,m) member pair, with no duplicates, omissions, unknown pairs, or extra fields.",
       "Use surrounding members as discussion context, not as proof that all members share an identity. Use the same storyKey only for members about the same underlying story, and a distinct developmentKey for each stable event or release within it (for example teaser, poster, and trailer are separate developments).",
       "Do not invent URLs or facts. Evidence must be copied from the member's title or text. Keep topics and entities short, deduplicated, and limited to at most 5 each.",
@@ -145,6 +145,23 @@ export function buildStoryMediaAnalysisPrompt(): SummaryRuleset {
       "State uncertainty rather than inventing details.",
       INDEX_INSTRUCTION,
     ].join(" "),
+    includeMedia: true,
+    showTitle: true,
+  };
+}
+
+export function buildHeadlineStorySummaryPrompt(
+  options: PromptOptions = {},
+): SummaryRuleset {
+  return {
+    systemPrompt: withTrailingRules([
+      "Summarize the supplied source items as one already-selected story in one concise takeaway.",
+      "Do not omit the story or re-evaluate whether the reader wants it.",
+      "Lead with the most important concrete change and include only essential context needed to understand it.",
+      "Consolidate repeated coverage and do not repeat source titles.",
+      INDEX_INSTRUCTION,
+    ], options),
+    showAuthors: false,
     includeMedia: true,
     showTitle: true,
   };
@@ -182,6 +199,24 @@ export function buildThoroughStorySummaryPrompt(
     ], options),
     showAuthors: true,
     includeMedia: true,
+    showTitle: true,
+  };
+}
+
+export function buildHeadlineBatchStorySummaryPrompt(
+  options: PromptOptions = {},
+): SummaryRuleset {
+  return {
+    systemPrompt: withTrailingRules([
+      "Summarize each supplied, already-selected story independently in one concise takeaway.",
+      'The user message is a JSON array of {"story_id":"opaque ID","sources":[{"i":0,"title":"optional source title","text":"source text"}]} records.',
+      'Return a JSON array only, with exactly one object per story: {"story_id":"the exact input ID","points":[{"t":"one concise takeaway","i":0}]}.',
+      "Return every input story ID exactly once and no unknown IDs. Each points value must contain exactly one point.",
+      "Every point index is local to its story. Never use facts or source indexes from another story.",
+      "Lead with the most important concrete change, include only essential context, and consolidate repeated coverage.",
+    ], options),
+    showAuthors: false,
+    includeMedia: false,
     showTitle: true,
   };
 }

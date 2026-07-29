@@ -7,6 +7,7 @@ import {
 } from "../repositories/user-repository.ts";
 import { NotFoundError, ValidationError } from "../server/errors.ts";
 import { validate } from "../server/validate.ts";
+import { STORY_DETAIL_LEVELS } from "../story-detail-level.ts";
 
 export const SYSTEM_PROMPT_MAX_LENGTH = 8 * 1024;
 
@@ -26,6 +27,7 @@ const updateProfileSchema = z.object({
   ).optional(),
   defaultLanguage: nullableTrimmedString.optional(),
   defaultRelevanceFilterMode: z.enum(["personalized", "include_all"]).optional(),
+  storyDetailLevel: z.enum(STORY_DETAIL_LEVELS).optional(),
   relevanceThreshold: z.number().int().min(0).max(100).optional(),
   maximumStoriesPerDigest: z.number().int().positive().nullable().optional(),
 }).strict();
@@ -66,7 +68,8 @@ export async function updateProfile(
     updates.summaryPrompt !== undefined ||
     updates.defaultLanguage !== undefined ||
     updates.defaultRelevanceFilterMode !== undefined ||
-    updates.relevanceThreshold !== undefined;
+    updates.relevanceThreshold !== undefined ||
+    updates.storyDetailLevel !== undefined;
   return await updateUser(database, userId, updates, {
     incrementInterestProfileVersion: affectsFiltering,
   });

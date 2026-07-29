@@ -4,6 +4,7 @@ import type {
   InterestRuleKind,
   PublicInterestRule,
   PublicUser,
+  StoryDetailLevel,
 } from "../api/types";
 import { DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../../../../src/constants";
 import { ApiClientError } from "../api/client";
@@ -20,6 +21,7 @@ interface ProfilePanelProps {
     summaryPrompt?: string;
     defaultLanguage?: string | null;
     defaultRelevanceFilterMode?: "personalized" | "include_all";
+    storyDetailLevel?: StoryDetailLevel;
     relevanceThreshold?: number;
     maximumStoriesPerDigest?: number | null;
   }) => Promise<PublicUser>;
@@ -79,6 +81,12 @@ const dispositionLabel: Record<InterestRuleDisposition, string> = {
   mute: "Muted",
 };
 
+const storyDetailDescription: Record<StoryDetailLevel, string> = {
+  headlines: "A quick scan with the essential point and context.",
+  balanced: "A clear explanation of the key points and why they matter.",
+  thorough: "More context, nuance, and connections between sources.",
+};
+
 function dateInputValue(expiresAt: number | null): string {
   return expiresAt === null ? "" : new Date(expiresAt).toISOString().slice(0, 10);
 }
@@ -92,6 +100,9 @@ export default function ProfilePanel(props: ProfilePanelProps) {
   );
   const [defaultRelevanceFilterMode, setDefaultRelevanceFilterMode] =
     createSignal(props.user.defaultRelevanceFilterMode);
+  const [storyDetailLevel, setStoryDetailLevel] = createSignal<StoryDetailLevel>(
+    props.user.storyDetailLevel,
+  );
   const [relevanceThreshold, setRelevanceThreshold] = createSignal(
     String(props.user.relevanceThreshold),
   );
@@ -160,6 +171,7 @@ export default function ProfilePanel(props: ProfilePanelProps) {
           ? null
           : defaultLanguage(),
         defaultRelevanceFilterMode: defaultRelevanceFilterMode(),
+        storyDetailLevel: storyDetailLevel(),
         relevanceThreshold: threshold,
         maximumStoriesPerDigest: maximum,
       });
@@ -417,6 +429,29 @@ export default function ProfilePanel(props: ProfilePanelProps) {
             Guide tone, detail, and format without changing relevance filtering.
           </div>
         </div>
+        <section class="section-title" aria-labelledby="profile-story-detail-heading">
+          <h3 id="profile-story-detail-heading">Story detail</h3>
+          <p class="hint">
+            Set the level of explanation used across your digests. Individual feeds can opt up to Thorough.
+          </p>
+          <div class="form-group">
+            <label for="profile-story-detail">Default story detail</label>
+            <select
+              id="profile-story-detail"
+              aria-describedby="profile-story-detail-hint"
+              value={storyDetailLevel()}
+              onChange={(e) =>
+                setStoryDetailLevel(e.currentTarget.value as StoryDetailLevel)}
+            >
+              <option value="headlines">Headlines — scan the essentials</option>
+              <option value="balanced">Balanced — understand the key points</option>
+              <option value="thorough">Thorough — explore more context and nuance</option>
+            </select>
+            <div id="profile-story-detail-hint" class="hint">
+              {storyDetailDescription[storyDetailLevel()]}
+            </div>
+          </div>
+        </section>
         <section class="section-title" aria-labelledby="profile-filter-heading">
           <h3 id="profile-filter-heading">Relevance and digest size</h3>
           <p class="hint">Choose how broadly stories are filtered before your digest is built.</p>

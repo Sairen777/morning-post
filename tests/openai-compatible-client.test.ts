@@ -72,6 +72,92 @@ test("OpenAICompatibleChatClient retries a fetch TypeError and succeeds", async 
   assertEquals(attemptCount, 2);
 });
 
+test("OpenAICompatibleChatClient retries ECONNRESET and records attempt telemetry", async () => {
+  const resetError = Object.assign(new Error("transport reset"), {
+    code: "ECONNRESET",
+  });
+  const telemetry: ModelAttemptTelemetry[] = [];
+  let attemptCount = 0;
+  const result = await createClient(() => {
+    attemptCount++;
+    return attemptCount === 1
+      ? Promise.reject(resetError)
+      : Promise.resolve(completionResponse("recovered from reset"));
+  }).complete("system", "content", {
+    maxAttempts: 2,
+    onAttempt: (attempt) => {
+      telemetry.push(attempt);
+    },
+  });
+
+  assertEquals(result, "recovered from reset");
+  assertEquals(attemptCount, 2);
+  assertEquals(
+    telemetry.map(({ attempt, status }) => ({ attempt, status })),
+    [
+      { attempt: 1, status: "retry" },
+      { attempt: 2, status: "success" },
+    ],
+  );
+});
+
+test("OpenAICompatibleChatClient exhausts bounded ECONNRESET attempts with the final error", async () => {
+  const resetErrors = [
+    Object.assign(new Error("first reset"), { code: "ECONNRESET" }),
+    Object.assign(new Error("final reset"), { code: "ECONNRESET" }),
+  ];
+  const telemetry: ModelAttemptTelemetry[] = [];
+  let attemptCount = 0;
+  const thrownError = await assertRejects(() =>
+    createClient(() => Promise.reject(resetErrors[attemptCount++])).complete(
+      "system",
+      "content",
+      {
+        maxAttempts: 2,
+        onAttempt: (attempt) => {
+          telemetry.push(attempt);
+        },
+      },
+    )
+  );
+
+  assertStrictEquals(thrownError, resetErrors[1]);
+  assertEquals(attemptCount, 2);
+  assertEquals(
+    telemetry.map(({ attempt, status }) => ({ attempt, status })),
+    [
+      { attempt: 1, status: "retry" },
+      { attempt: 2, status: "failure" },
+    ],
+  );
+});
+
+test("OpenAICompatibleChatClient does not retry a non-reset Error", async () => {
+  const nonResetError = Object.assign(new Error("transport failed"), {
+    code: "EOTHER",
+  });
+  const telemetry: ModelAttemptTelemetry[] = [];
+  let attemptCount = 0;
+  const thrownError = await assertRejects(() =>
+    createClient(() => {
+      attemptCount++;
+      return Promise.reject(nonResetError);
+    }).complete("system", "content", {
+      maxAttempts: 3,
+      onAttempt: (attempt) => {
+        telemetry.push(attempt);
+      },
+    })
+  );
+
+  assertStrictEquals(thrownError, nonResetError);
+  assertEquals(attemptCount, 1);
+  assertEquals(
+    telemetry.map(({ attempt, status }) => ({ attempt, status })),
+    [{ attempt: 1, status: "failure" }],
+  );
+});
+
 test("OpenAICompatibleChatClient retries a response body TypeError and succeeds", async () => {
   let attemptCount = 0;
   const mockFetch: FetchFunction = () => {

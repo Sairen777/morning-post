@@ -7,6 +7,7 @@ import {
   text,
 } from "drizzle-orm/sqlite-core";
 import type { RelevanceFilterMode } from "../../personalization/personalization.types.ts";
+import type { StoryDetailLevel } from "../../story-detail-level.ts";
 
 /**
  * Domain entity: a person who owns sources, feeds, and digests.
@@ -26,6 +27,10 @@ export const users = sqliteTable("users", {
     .$type<RelevanceFilterMode>()
     .notNull()
     .default("personalized"),
+  storyDetailLevel: text("story_detail_level")
+    .$type<StoryDetailLevel>()
+    .notNull()
+    .default("balanced"),
   relevanceThreshold: integer("relevance_threshold").notNull().default(60),
   maximumStoriesPerDigest: integer("maximum_stories_per_digest"),
   interestProfileVersion: integer("interest_profile_version").notNull().default(1),
@@ -36,6 +41,10 @@ export const users = sqliteTable("users", {
   check(
     "users_default_relevance_filter_mode_check",
     sql`${table.defaultRelevanceFilterMode} in ('personalized', 'include_all')`,
+  ),
+  check(
+    "users_story_detail_level_check",
+    sql`${table.storyDetailLevel} in ('headlines', 'balanced', 'thorough')`,
   ),
   check(
     "users_relevance_threshold_check",

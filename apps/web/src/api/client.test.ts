@@ -179,13 +179,18 @@ describe("updateCurrentUser", () => {
           ),
         );
       }) as typeof fetch;
-      await updateCurrentUser({ name: "New Name", defaultLanguage: null });
+      await updateCurrentUser({
+        name: "New Name",
+        defaultLanguage: null,
+        storyDetailLevel: "thorough",
+      });
       expect(fetchCalls[0][0]).toBe("/auth/me");
       const opts = fetchCalls[0][1];
       expect(opts?.method).toBe("PATCH");
       expect(JSON.parse(opts?.body as string)).toEqual({
         name: "New Name",
         defaultLanguage: null,
+        storyDetailLevel: "thorough",
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -348,6 +353,7 @@ describe("profile and feed policy payloads", () => {
       await updateCurrentUser({
         summaryPrompt: "Use concise bullets.",
         defaultRelevanceFilterMode: "include_all",
+        storyDetailLevel: "headlines",
         relevanceThreshold: 75,
         maximumStoriesPerDigest: 12,
       });
@@ -356,6 +362,7 @@ describe("profile and feed policy payloads", () => {
       expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
         summaryPrompt: "Use concise bullets.",
         defaultRelevanceFilterMode: "include_all",
+        storyDetailLevel: "headlines",
         relevanceThreshold: 75,
         maximumStoriesPerDigest: 12,
       });

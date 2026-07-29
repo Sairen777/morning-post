@@ -124,6 +124,7 @@ test("setup and passwordless login return sessions without exposing private user
     const setupJson = await setup.json();
     assertEquals("email" in setupJson, false);
     assertEquals("passwordHash" in setupJson, false);
+    assertEquals(setupJson.storyDetailLevel, "balanced");
 
     const setCookie = setup.headers.get("set-cookie");
     assertExists(setCookie);
@@ -138,6 +139,7 @@ test("setup and passwordless login return sessions without exposing private user
     assertEquals(meJson.id, setupJson.id);
     assertEquals("email" in meJson, false);
     assertEquals("passwordHash" in meJson, false);
+    assertEquals(meJson.storyDetailLevel, "balanced");
 
     const login = await app.request("/auth/login", jsonRequest({}));
     assertEquals(login.status, 200);
@@ -146,6 +148,7 @@ test("setup and passwordless login return sessions without exposing private user
     assertEquals(loginJson.id, setupJson.id);
     assertEquals("email" in loginJson, false);
     assertEquals("passwordHash" in loginJson, false);
+    assertEquals(loginJson.storyDetailLevel, "balanced");
   });
 });
 
@@ -250,6 +253,7 @@ test("setup serializes and rechecks ownership before insert", async () => {
     summaryPrompt: "",
     defaultLanguage: null,
     defaultRelevanceFilterMode: "personalized",
+    storyDetailLevel: "balanced",
     relevanceThreshold: 60,
     maximumStoriesPerDigest: null,
     interestProfileVersion: 1,

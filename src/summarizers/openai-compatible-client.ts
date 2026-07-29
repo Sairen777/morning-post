@@ -89,6 +89,17 @@ interface RequestDeadline {
   dispose: () => void;
 }
 
+function isConnectionResetError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  try {
+    return "code" in error &&
+      typeof error.code === "string" &&
+      error.code === "ECONNRESET";
+  } catch {
+    return false;
+  }
+}
+
 function createRequestDeadline(options: CompletionOptions): RequestDeadline {
   if (options.requestTimeoutMs === undefined) {
     return { signal: options.signal, dispose: () => {} };
@@ -295,7 +306,8 @@ export class OpenAICompatibleChatClient {
         const internalTimeout = deadline.signal?.aborted &&
           deadline.signal.reason instanceof DOMException &&
           deadline.signal.reason.name === "TimeoutError";
-        const retryable = internalTimeout || requestError instanceof TypeError;
+        const retryable = internalTimeout || requestError instanceof TypeError ||
+          isConnectionResetError(requestError);
         const willRetry = retryable && attempt < maximumAttempts - 1;
         reportAttempt(attemptCallback, {
           attempt: attempt + 1,

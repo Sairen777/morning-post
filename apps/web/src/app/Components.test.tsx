@@ -49,6 +49,7 @@ describe("ProfilePanel", () => {
       summaryPrompt: "",
       defaultLanguage: null,
       defaultRelevanceFilterMode: "personalized" as const,
+      storyDetailLevel: "balanced" as const,
       relevanceThreshold: 60,
       maximumStoriesPerDigest: null,
       interestProfileVersion: 1,
@@ -77,6 +78,63 @@ describe("ProfilePanel", () => {
     expect(container.querySelector("#profile-summary-prompt")).not.toBeNull();
   });
 
+  it("renders balanced story detail, explains outcomes, and saves each detail level", async () => {
+    const user = {
+      id: "user-1",
+      name: "Ada",
+      systemPrompt: "Summarize plainly.",
+      summaryPrompt: "",
+      defaultLanguage: null,
+      defaultRelevanceFilterMode: "personalized" as const,
+      storyDetailLevel: "balanced" as const,
+      relevanceThreshold: 60,
+      maximumStoriesPerDigest: null,
+      interestProfileVersion: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const onSave = vi.fn(() => Promise.resolve(user));
+    render(() => (
+      <ProfilePanel
+        user={user}
+        interests={[]}
+        interestsLoading={false}
+        interestMutationId={null}
+        interestsError={null}
+        onCreateInterest={() => Promise.resolve()}
+        onUpdateInterest={() => Promise.resolve()}
+        onDeleteInterest={() => Promise.resolve()}
+        onSave={onSave}
+        onSaved={() => {}}
+        onAuthError={() => {}}
+      />
+    ));
+
+    const detail = screen.getByRole("combobox", { name: "Default story detail" });
+    expect(detail).toHaveValue("balanced");
+    expect(
+      screen.getByText("A clear explanation of the key points and why they matter."),
+    ).toBeVisible();
+
+    await fireEvent.change(detail, { target: { value: "headlines" } });
+    expect(
+      screen.getByText("A quick scan with the essential point and context."),
+    ).toBeVisible();
+    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
+      storyDetailLevel: "headlines",
+    }));
+
+    await fireEvent.change(detail, { target: { value: "thorough" } });
+    expect(
+      screen.getByText("More context, nuance, and connections between sources."),
+    ).toBeVisible();
+    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
+      storyDetailLevel: "thorough",
+    }));
+  });
+
   it("renders the default story cap and preserves null when saved blank", async () => {
     const user = {
       id: "user-1",
@@ -85,6 +143,7 @@ describe("ProfilePanel", () => {
       summaryPrompt: "",
       defaultLanguage: null,
       defaultRelevanceFilterMode: "personalized" as const,
+      storyDetailLevel: "balanced" as const,
       relevanceThreshold: 60,
       maximumStoriesPerDigest: null,
       interestProfileVersion: 1,
@@ -128,6 +187,7 @@ describe("ProfilePanel", () => {
       summaryPrompt: "",
       defaultLanguage: null,
       defaultRelevanceFilterMode: "personalized" as const,
+      storyDetailLevel: "balanced" as const,
       relevanceThreshold: 60,
       maximumStoriesPerDigest: null,
       interestProfileVersion: 1,
@@ -190,6 +250,7 @@ describe("ProfilePanel", () => {
       summaryPrompt: "",
       defaultLanguage: null,
       defaultRelevanceFilterMode: "personalized" as const,
+      storyDetailLevel: "balanced" as const,
       relevanceThreshold: 60,
       maximumStoriesPerDigest: null,
       interestProfileVersion: 1,
@@ -360,7 +421,7 @@ describe("FeedsPanel", () => {
     });
   });
 
-  it("updates summary detail independently for each feed", async () => {
+  it("updates story detail independently for each feed", async () => {
     const onUpdateFeed = vi.fn(() => Promise.resolve());
     const firstFeed = {
       id: "telegram-feed-1",
@@ -396,10 +457,16 @@ describe("FeedsPanel", () => {
       />
     ));
 
-    const firstSelector = screen.getByLabelText("Summary detail for Morning channel");
-    const secondSelector = screen.getByLabelText("Summary detail for Evening channel");
+    const firstSelector = screen.getByLabelText("Story detail for Morning channel");
+    const secondSelector = screen.getByLabelText("Story detail for Evening channel");
     expect(firstSelector).toHaveValue("basic");
     expect(secondSelector).toHaveValue("thorough");
+    expect(screen.getByText(
+      "Standard follows your profile story-detail setting. Change the profile level in the Profile tab.",
+    )).toBeVisible();
+    expect(screen.getByText(
+      "Thorough overrides your profile story-detail setting for this feed, adding more context and nuance.",
+    )).toBeVisible();
 
     await fireEvent.change(firstSelector, { target: { value: "thorough" } });
     await fireEvent.change(secondSelector, { target: { value: "basic" } });
@@ -414,9 +481,9 @@ describe("FeedsPanel", () => {
     expect(secondSelector).toHaveValue("basic");
   });
 
-  it("rolls summary detail back after a failed update", async () => {
+  it("rolls story detail back after a failed update", async () => {
     const onUpdateFeed = vi.fn(() =>
-      Promise.reject(new Error("Summary detail could not be saved")),
+      Promise.reject(new Error("Story detail could not be saved")),
     );
     render(() => (
       <FeedsPanel
@@ -444,10 +511,10 @@ describe("FeedsPanel", () => {
       />
     ));
 
-    const selector = screen.getByLabelText("Summary detail for Morning channel");
+    const selector = screen.getByLabelText("Story detail for Morning channel");
     await fireEvent.change(selector, { target: { value: "thorough" } });
     await waitFor(() => expect(selector).toHaveValue("basic"));
-    expect(screen.getByText("Summary detail could not be saved")).toBeVisible();
+    expect(screen.getByText("Story detail could not be saved")).toBeVisible();
     expect(selector).toBeEnabled();
   });
 });

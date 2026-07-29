@@ -31,28 +31,43 @@ test("root package pins Bun as its runtime and package manager", async () => {
   assertEquals(packageJson.engines?.bun, "1.3.14");
 });
 
-test("operational scripts use Bun and load the production environment explicitly", async () => {
+test("operational scripts validate and load the production environment", async () => {
   const scripts = (await readRootPackage()).scripts;
   assert(scripts, "root package must define scripts");
 
   for (
     const scriptName of [
-      "start",
+      "dev:cli",
       "db:generate",
       "db:migrate",
       "db:cleanup",
-      "test",
+      "db:reset",
+      "dev:api",
+      "start",
+      "e2e:api",
+      "e2e:db:cleanup",
+      "test:analysis:live",
+      "test:x:live",
+      "capture-fixtures",
     ]
   ) {
     const command = scripts[scriptName];
     assert(command, `root package must define the ${scriptName} script`);
-    const arguments_ = command.split(/\s+/);
-    assertEquals(arguments_[0], "bun", `${scriptName} must run with Bun`);
     assert(
-      arguments_.includes("--env-file=.env.production.local"),
+      command.startsWith("bun run env:check && "),
+      `${scriptName} must validate .env.production.local first`,
+    );
+    assert(
+      command.split(/\s+/).includes("--env-file=.env.production.local"),
       `${scriptName} must load .env.production.local explicitly`,
     );
   }
+});
+
+test("ordinary unit tests do not depend on production environment files", async () => {
+  const scripts = (await readRootPackage()).scripts;
+  assert(scripts, "root package must define scripts");
+  assertEquals(scripts.test, "bun test tests");
 });
 
 test("runtime scheduler and HTTP server dependencies are production dependencies", async () => {

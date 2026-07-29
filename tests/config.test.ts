@@ -114,60 +114,71 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.summaryBatchMaxStories, 5);
   assertEquals(config.analysisMaxOutputTokens, 30_000);
   assertEquals(config.classificationMaxOutputTokens, 6_000);
-  assertEquals(config.summaryMaxOutputTokens, 4_000);
+  assertEquals(config.summaryMaxOutputTokens, 6_500);
   assertEquals(config.summaryBatchMaxOutputTokens, 6_500);
-  assertEquals(config.mediaMaxOutputTokens, 300);
+  assertEquals(config.mediaMaxOutputTokens, 1_200);
   assertEquals(config.analysisMaxAttempts, 3);
   assertEquals(config.classificationMaxAttempts, 3);
   assertEquals(config.summaryMaxAttempts, 2);
   assertEquals(config.mediaMaxAttempts, 2);
 });
 
-test("summarizer budget resolver reads only scoped limit settings", () => {
-  const budget = withClearedEnvironment(
-    [
-      "ALLOWED_ORIGINS",
-      "ANALYSIS_MAX_ITEMS_PER_REQUEST",
-      "CLASSIFICATION_MAX_ITEMS_PER_REQUEST",
-      "SUMMARY_BATCH_MAX_STORIES",
-      "ANALYSIS_MAX_OUTPUT_TOKENS",
-      "CLASSIFICATION_MAX_OUTPUT_TOKENS",
-      "SUMMARY_MAX_OUTPUT_TOKENS",
-      "SUMMARY_BATCH_MAX_OUTPUT_TOKENS",
-      "MEDIA_MAX_OUTPUT_TOKENS",
-      "ANALYSIS_MAX_ATTEMPTS",
-      "CLASSIFICATION_MAX_ATTEMPTS",
-      "SUMMARY_MAX_ATTEMPTS",
-      "MEDIA_MAX_ATTEMPTS",
-      "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
-      "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
-      "SUMMARIZER_MAX_IMAGE_BYTES",
-    ],
-    () => {
-      process.env["ALLOWED_ORIGINS"] = "not a valid origin list";
-      process.env["SUMMARIZER_TEXT_BYTES_PER_CHUNK"] = "9000";
-      process.env["SUMMARIZER_MAX_ITEMS_PER_CHUNK"] = "7";
-      process.env["SUMMARIZER_MAX_IMAGE_BYTES"] = "8000";
-      return getSummarizerBudgetConfig();
-    },
-  );
+test("summarizer budgets use constructor, environment, then default precedence", () => {
+  const budgetKeys = [
+    "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
+    "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
+    "SUMMARIZER_MAX_IMAGE_BYTES",
+    "ANALYSIS_MAX_ITEMS_PER_REQUEST",
+    "CLASSIFICATION_MAX_ITEMS_PER_REQUEST",
+    "SUMMARY_BATCH_MAX_STORIES",
+    "ANALYSIS_MAX_OUTPUT_TOKENS",
+    "CLASSIFICATION_MAX_OUTPUT_TOKENS",
+    "SUMMARY_MAX_OUTPUT_TOKENS",
+    "SUMMARY_BATCH_MAX_OUTPUT_TOKENS",
+    "MEDIA_MAX_OUTPUT_TOKENS",
+    "ANALYSIS_MAX_ATTEMPTS",
+    "CLASSIFICATION_MAX_ATTEMPTS",
+    "SUMMARY_MAX_ATTEMPTS",
+    "MEDIA_MAX_ATTEMPTS",
+  ] as const;
 
-  assertEquals(budget, {
-    summarizerTextBytesPerChunk: 9000,
-    summarizerMaxItemsPerChunk: 7,
-    summarizerMaxImageBytes: 8000,
-    analysisMaxItemsPerRequest: 50,
-    classificationMaxItemsPerRequest: 100,
-    summaryBatchMaxStories: 5,
-    analysisMaxOutputTokens: 30_000,
-    classificationMaxOutputTokens: 6_000,
-    summaryMaxOutputTokens: 4_000,
-    summaryBatchMaxOutputTokens: 6_500,
-    mediaMaxOutputTokens: 300,
-    analysisMaxAttempts: 3,
-    classificationMaxAttempts: 3,
-    summaryMaxAttempts: 2,
-    mediaMaxAttempts: 2,
+  withClearedEnvironment(budgetKeys, () => {
+    for (const key of budgetKeys) process.env[key] = "1";
+
+    assertEquals(getSummarizerBudgetConfig(), {
+      summarizerTextBytesPerChunk: 1,
+      summarizerMaxItemsPerChunk: 1,
+      summarizerMaxImageBytes: 1,
+      analysisMaxItemsPerRequest: 1,
+      classificationMaxItemsPerRequest: 1,
+      summaryBatchMaxStories: 1,
+      analysisMaxOutputTokens: 1,
+      classificationMaxOutputTokens: 1,
+      summaryMaxOutputTokens: 1,
+      summaryBatchMaxOutputTokens: 1,
+      mediaMaxOutputTokens: 1,
+      analysisMaxAttempts: 1,
+      classificationMaxAttempts: 1,
+      summaryMaxAttempts: 1,
+      mediaMaxAttempts: 1,
+    });
+
+    const overridden = getSummarizerBudgetConfig({
+      summaryMaxOutputTokens: 4_000,
+      mediaMaxOutputTokens: 600,
+    });
+    assertEquals(overridden.summaryMaxOutputTokens, 4_000);
+    assertEquals(overridden.mediaMaxOutputTokens, 600);
+    assertThrows(
+      () => getSummarizerBudgetConfig({ summaryMaxOutputTokens: 0 }),
+      Error,
+      "Invalid SUMMARY_MAX_OUTPUT_TOKENS",
+    );
+    assertThrows(
+      () => getSummarizerBudgetConfig({ mediaMaxOutputTokens: -1 }),
+      Error,
+      "Invalid MEDIA_MAX_OUTPUT_TOKENS",
+    );
   });
 });
 
@@ -200,7 +211,7 @@ test("server hostname resolver uses loopback and strict precedence", () => {
   assertEquals(process.env["SERVER_HOSTNAME"], previous);
 });
 
-test("environment values override defaults and parse strictly", () => {
+test("environment values override supported configuration defaults", () => {
   const previous = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
   try {
     const values: Record<EnvKey, string> = {
@@ -368,11 +379,16 @@ test("invalid numeric and boolean values fail at startup", () => {
         key === "X_BROWSER_PROFILE_ROOT" ||
         key.endsWith("_MODEL") ||
         key.endsWith("_BASE_URL") ||
-        key.endsWith("_API_KEY") ||
-        key.includes("_USD_PER_MILLION_TOKENS")
+        key.endsWith("_API_KEY")
       ) continue;
       process.env[key] = "not-a-number";
-      assertThrows(() => getConfig(), Error, `Invalid ${key}`);
+      assertThrows(
+        () => key.includes("_USD_PER_MILLION_TOKENS")
+          ? getSummarizerRuntimeConfig()
+          : getConfig(),
+        Error,
+        `Invalid ${key}`,
+      );
     } finally {
       if (previous === undefined) delete process.env[key];
       else process.env[key] = previous;

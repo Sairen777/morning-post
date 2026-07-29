@@ -16,8 +16,8 @@ import {
   buildConstrainedSummaryRecoveryPrompt,
   buildDiscussionPrompt,
   buildNewsPrompt,
+  buildHeadlineStorySummaryPrompt,
   buildThoroughStorySummaryPrompt,
-  buildVisionAnalysisPrompt,
   selectRuleset,
 } from "../src/summarizers/prompts.ts";
 import type { OpenAICompatibleSummarizerOptions } from "../src/summarizers/openai-compatible-summarizer.ts";
@@ -163,6 +163,16 @@ test("buildDiscussionPrompt — requires topic, arguments, and conclusion status
   assertStringIncludes(systemPrompt, "no shared conclusion");
 });
 
+test("buildHeadlineStorySummaryPrompt — requests one concrete takeaway", () => {
+  const rules = buildHeadlineStorySummaryPrompt({ language: "English" });
+  assertStringIncludes(rules.systemPrompt, "one concise takeaway");
+  assertStringIncludes(rules.systemPrompt, "most important concrete change");
+  assertStringIncludes(rules.systemPrompt, "English");
+  assertEquals(rules.showAuthors, false);
+  assertEquals(rules.showTitle, true);
+  assertEquals(rules.includeMedia, true);
+});
+
 test("buildThoroughStorySummaryPrompt — preserves nuance without invention or padding", () => {
   const rules = buildThoroughStorySummaryPrompt({ language: "English" });
   for (const requiredInstruction of [
@@ -228,17 +238,6 @@ test("buildNewsPrompt — explicit language overrides default", () => {
   assertStringIncludes(systemPrompt, "Ukrainian");
 });
 
-test("buildVisionAnalysisPrompt — enforces indexed OCR and album uncertainty contract", () => {
-  const { systemPrompt } = buildVisionAnalysisPrompt();
-  assertStringIncludes(systemPrompt, "exactly two fields");
-  assertStringIncludes(systemPrompt, '"i"');
-  assertStringIncludes(systemPrompt, '"description"');
-  assertStringIncludes(systemPrompt, "visible facts");
-  assertStringIncludes(systemPrompt, "OCR");
-  assertStringIncludes(systemPrompt, "uncertainty");
-  assertStringIncludes(systemPrompt, "Image 1");
-  assertStringIncludes(systemPrompt, "Image 2");
-});
 
 // --- selectRuleset ---
 
@@ -282,6 +281,37 @@ test("summarize — sends configured system prompt to model", async () => {
   await svc.summarize([item()], buildNewsPrompt());
   assertStringIncludes(captured.body!.messages[0].content as string, '"t"');
   restore();
+});
+
+test("summarize — constructor ceiling can tighten per-request detail policy", async () => {
+  const { captured, restore } = captureFetchSequence([
+    {
+      status: 200,
+      body: modelResponse('[{"t":"thorough result","i":0}]'),
+    },
+    {
+      status: 200,
+      body: modelResponse('[{"t":"headline result","i":0}]'),
+    },
+  ]);
+  try {
+    const service = createTestSummarizer({ summaryMaxOutputTokens: 1_000 });
+    const thorough = await service.summarize(
+      [item()],
+      buildThoroughStorySummaryPrompt(),
+      { maxOutputTokens: 6_500 },
+    );
+    const headline = await service.summarize(
+      [item()],
+      buildNewsPrompt(),
+      { maxOutputTokens: 700 },
+    );
+    assertEquals(captured.map(({ body }) => body.max_tokens), [1_000, 700]);
+    assertEquals(thorough[0]!.text, "thorough result");
+    assertEquals(headline[0]!.text, "headline result");
+  } finally {
+    restore();
+  }
 });
 
 test("summarize — forwards retry attempt telemetry without request content", async () => {
@@ -362,7 +392,7 @@ test("summarize — forwards vision and media-description attempt telemetry", as
     {
       status: 200,
       body: modelResponse(
-        '[{"i":0,"description":"private visual description"}]',
+        '{"results":[{"i":0,"m":1,"description":"private visual description"}]}',
       ),
     },
     { status: 200, body: modelResponse('[{"t":"summary","i":0}]') },
@@ -1611,9 +1641,7 @@ test("summarize — rejects an empty intermediate merge through merge_failed", a
   }
 });
 
-test("summarize — constructor uses the scoped item limit configuration", async () => {
-  const previousValue = process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK;
-  process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK = "1";
+test("summarize — constructor item limit override partitions chunks", async () => {
   const { callCount, restore } = stubFetchSequence([
     { status: 200, body: modelResponse('[{"t":"first","i":0}]') },
     { status: 200, body: modelResponse('[{"t":"second","i":0}]') },
@@ -1621,7 +1649,10 @@ test("summarize — constructor uses the scoped item limit configuration", async
   ]);
 
   try {
-    const service = createTestSummarizer({ retryBaseDelayMs: 0 });
+    const service = createTestSummarizer({
+      maxItemsPerChunk: 1,
+      retryBaseDelayMs: 0,
+    });
     await service.summarize(
       [
         item({ externalId: "first", text: "first" }),
@@ -1631,11 +1662,6 @@ test("summarize — constructor uses the scoped item limit configuration", async
     );
     assertEquals(callCount(), 3);
   } finally {
-    if (previousValue === undefined) {
-      delete process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK;
-    } else {
-      process.env.SUMMARIZER_MAX_ITEMS_PER_CHUNK = previousValue;
-    }
     restore();
   }
 });
@@ -2129,7 +2155,7 @@ test("summarize — distinct vision model analyzes images before text summarizat
     {
       status: 200,
       body: modelResponse(
-        '[{"i":0,"description":"visible OCR text, uncertain context"}]',
+        '{"results":[{"i":0,"m":1,"description":"visible OCR text, uncertain context"}]}',
       ),
     },
     {
@@ -2149,13 +2175,15 @@ test("summarize — distinct vision model analyzes images before text summarizat
     assertEquals(results[0].text, "described image summary");
     assertEquals(captured.length, 2);
     assertEquals(captured[0].body.model, "vision-model");
+    assertEquals(captured[0].body.max_tokens, 1_200);
+    assertEquals(captured[0].body.response_format, { type: "json_object" });
     assertStringIncludes(
       captured[0].url,
       "http://localhost:9000/v1/chat/completions",
     );
     assertStringIncludes(
       JSON.stringify(captured[0].body.messages[1].content),
-      "Item [0], Image 1",
+      "Image pair: i=0, m=1",
     );
     assertStringIncludes(
       JSON.stringify(captured[0].body.messages[1].content),
@@ -2169,6 +2197,10 @@ test("summarize — distinct vision model analyzes images before text summarizat
     const summaryContent = captured[1].body.messages[1].content;
     assertEquals(typeof summaryContent, "string");
     assertStringIncludes(String(summaryContent), "[IMAGE_ANALYSIS]");
+    assertStringIncludes(
+      String(summaryContent),
+      "Image 1: visible OCR text, uncertain context",
+    );
     assertEquals(String(summaryContent).includes("image_url"), false);
   } finally {
     restore();
@@ -2184,7 +2216,9 @@ test("summarize — separate vision preserves omitted album images without decor
   const { captured, restore } = captureFetchSequence([
     {
       status: 200,
-      body: modelResponse('[{"i":0,"description":"one visible album image"}]'),
+      body: modelResponse(
+        '{"results":[{"i":0,"m":2,"description":"one visible album image"}]}',
+      ),
     },
     { status: 200, body: modelResponse('[{"t":"album summary","i":0}]') },
   ]);
@@ -2204,8 +2238,8 @@ test("summarize — separate vision preserves omitted album images without decor
       buildNewsPrompt(),
     );
     const visionContent = JSON.stringify(captured[0].body.messages[1].content);
-    assertStringIncludes(visionContent, "Item [0], Image 2");
-    assertEquals(visionContent.includes("Image 1"), false);
+    assertStringIncludes(visionContent, "Image pair: i=0, m=2");
+    assertEquals(visionContent.includes("Image pair: i=0, m=1"), false);
     const summaryContent = captured[1].body.messages[1].content;
     assertEquals(typeof summaryContent, "string");
     const summaryText = String(summaryContent);
@@ -2360,9 +2394,9 @@ test("summarize — vision failure is logged once per run and retried on the nex
   }
 });
 
-test("summarize — duplicate vision indexes merge distinct album descriptions", async () => {
+test("summarize — legacy pair arrays preserve exact album identity and image order", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
-    "vision-duplicate-index",
+    "vision-pair-order",
   );
   const firstImagePath = `${temporaryDirectory}/first.jpg`;
   const secondImagePath = `${temporaryDirectory}/second.jpg`;
@@ -2372,7 +2406,7 @@ test("summarize — duplicate vision indexes merge distinct album descriptions",
     {
       status: 200,
       body: modelResponse(
-        '[{"i":0,"description":" first image "},{"i":0,"description":"second image"},{"i":0,"description":"first image"}]',
+        '[{"i":0,"m":2,"description":" second image "},{"i":0,"m":1,"description":"first image"}]',
       ),
     },
     { status: 200, body: modelResponse('[{"t":"album summary","i":0}]') },
@@ -2406,15 +2440,12 @@ test("summarize — duplicate vision indexes merge distinct album descriptions",
 
     assertEquals(callCount(), 2);
     assertEquals(result[0].text, "album summary");
+    const visionContent = JSON.stringify(captured[0].body.messages[1].content);
+    assertStringIncludes(visionContent, "Image pair: i=0, m=1");
+    assertStringIncludes(visionContent, "Image pair: i=0, m=2");
     assertEquals(
       captured[1].body.messages[1].content,
-      "[0]\nSome news post\n[IMAGE_ANALYSIS]\nfirst image\nsecond image\n[/IMAGE_ANALYSIS]",
-    );
-    assertEquals(
-      String(captured[1].body.messages[1].content).includes(
-        "[IMAGE_ANALYSIS_UNAVAILABLE]",
-      ),
-      false,
+      "[0]\nSome news post\n[IMAGE_ANALYSIS]\nImage 1: first image\nImage 2: second image\n[/IMAGE_ANALYSIS]",
     );
     assertEquals(warnings, []);
     assertEquals(diagnostics, []);
@@ -2425,23 +2456,27 @@ test("summarize — duplicate vision indexes merge distinct album descriptions",
   }
 });
 
-test("summarize — duplicate vision indexes do not mask a missing expected index", async () => {
+test("summarize — unknown, duplicate, and missing vision pairs use text fallback", async () => {
   const temporaryDirectory = await createRoutingTestDirectory(
-    "vision-duplicate-missing-index",
+    "vision-invalid-pairs",
   );
   const firstImagePath = `${temporaryDirectory}/first.jpg`;
   const secondImagePath = `${temporaryDirectory}/second.jpg`;
   await writeFile(firstImagePath, new Uint8Array([1, 2, 3]));
   await writeFile(secondImagePath, new Uint8Array([4, 5, 6]));
-  const { captured, callCount, restore } = captureFetchSequence([
+  const invalidResponses = [
+    '{"results":[{"i":0,"m":1,"description":"first"},{"i":0,"m":3,"description":"unknown"}]}',
+    '{"results":[{"i":0,"m":1,"description":"first"},{"i":0,"m":1,"description":"duplicate"}]}',
+    '{"results":[{"i":0,"m":1,"description":"first"}]}',
+  ];
+  const fetchResponses = invalidResponses.flatMap((response, index) => [
+    { status: 200, body: modelResponse(response) },
     {
       status: 200,
-      body: modelResponse(
-        '[{"i":0,"description":"first"},{"i":0,"description":"second"}]',
-      ),
+      body: modelResponse(`[{"t":"text fallback ${index + 1}","i":0}]`),
     },
-    { status: 200, body: modelResponse('[{"t":"text fallback","i":0}]') },
   ]);
+  const { captured, callCount, restore } = captureFetchSequence(fetchResponses);
   const originalWarning = console.warn;
   const diagnostics: SummarizationDiagnostic[] = [];
   console.warn = () => {};
@@ -2451,38 +2486,37 @@ test("summarize — duplicate vision indexes do not mask a missing expected inde
       models: DISTINCT_TEST_MODELS,
       retryBaseDelayMs: 0,
     });
-    const result = await service.summarize(
-      [
-        item({
-          externalId: "1",
-          media: { type: "photo", localPath: firstImagePath },
-        }),
-        item({
-          externalId: "2",
-          media: { type: "photo", localPath: secondImagePath },
-        }),
-      ],
-      buildNewsPrompt(),
-      {
-        onDiagnostic: (diagnostic) => {
-          diagnostics.push(diagnostic);
+    for (let index = 0; index < invalidResponses.length; index++) {
+      const result = await service.summarize(
+        [item({
+          media: {
+            type: "album",
+            localPaths: [firstImagePath, secondImagePath],
+          },
+        })],
+        buildNewsPrompt(),
+        {
+          onDiagnostic: (diagnostic) => {
+            diagnostics.push(diagnostic);
+          },
         },
-      },
-    );
+      );
+      assertEquals(result[0].text, `text fallback ${index + 1}`);
+      assertStringIncludes(
+        String(captured[index * 2 + 1].body.messages[1].content),
+        "[IMAGE_ANALYSIS_UNAVAILABLE]",
+      );
+    }
 
-    assertEquals(callCount(), 2);
-    assertEquals(result[0].text, "text fallback");
-    assertStringIncludes(
-      String(captured[1].body.messages[1].content),
-      "[IMAGE_ANALYSIS_UNAVAILABLE]",
+    assertEquals(callCount(), 6);
+    assertEquals(diagnostics.length, 3);
+    assertEquals(
+      diagnostics.every((diagnostic) =>
+        diagnostic.event === "vision_unavailable" &&
+        diagnostic.model === "vision-model"
+      ),
+      true,
     );
-    assertEquals(diagnostics, [{
-      event: "vision_unavailable",
-      chunkIndex: 1,
-      chunkCount: 1,
-      model: "vision-model",
-      errorMessage: "vision response validation failed: expected=2 received=1",
-    }]);
   } finally {
     console.warn = originalWarning;
     restore();
@@ -2508,7 +2542,9 @@ test("summarize — text timeout after valid vision is not retried as vision fal
     if (callCount === 1) {
       return Promise.resolve(
         new Response(
-          modelResponse('[{"i":0,"description":"visible image"}]'),
+          modelResponse(
+            '{"results":[{"i":0,"m":1,"description":"visible image"}]}',
+          ),
           {
             status: 200,
             headers: { "Content-Type": "application/json" },

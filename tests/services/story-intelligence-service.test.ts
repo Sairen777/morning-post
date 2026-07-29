@@ -1,5 +1,11 @@
 import { test } from "bun:test";
-import { assertEquals, assertRejects, assertStringIncludes, assertThrows } from "../assertions.ts";
+import {
+  assertEquals,
+  assertRejects,
+  assertStrictEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "../assertions.ts";
 import { ConnectorId } from "../../src/constants.ts";
 import type {
   AnalyzedStoryItem,
@@ -12,6 +18,8 @@ import {
   OpenAICompatibleStoryIntelligenceService,
   resolveStoryAnalysisMaxItems,
 } from "../../src/services/story-intelligence-service.ts";
+import { buildStoryAnalysisPrompt } from "../../src/summarizers/prompts.ts";
+import { ModelApiError } from "../../src/summarizers/openai-compatible-client.ts";
 
 function item(index: number, overrides: Partial<StoryItemInput["payload"]> = {}): StoryItemInput {
   return {
@@ -614,6 +622,213 @@ test("analysis accepts provider metadata omissions and canalUrls typo with deter
   });
 });
 
+test("story analysis prompt requests the JSON-object results envelope", () => {
+  const prompt = buildStoryAnalysisPrompt().systemPrompt;
+  assertStringIncludes(prompt, 'top-level JSON object with exactly one field, "results"');
+  assertStringIncludes(prompt, 'Every entry in "results"');
+});
+
+test("analysis normalizes wrapped results and retains legacy top-level arrays", async () => {
+  const record = {
+    i: 0,
+    m: 0,
+    storyKey: "normalized-story",
+    developmentKey: "normalized-development",
+    evidence: [],
+  };
+  for (const response of [
+    JSON.stringify({ results: [record] }),
+    JSON.stringify([record]),
+  ]) {
+    const service = new OpenAICompatibleStoryIntelligenceService({
+      client: { complete: async () => response },
+    });
+    const [result] = await service.analyze([item(0)]);
+    assertEquals(result!.analysis.storyKey, "normalized-story");
+  }
+});
+
+test("analysis recovers an output-limited batch spanning multiple records by exact member coverage", async () => {
+  const calls: Array<Array<[number, number]>> = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 10,
+    maxTextBytesPerChunk: 100_000,
+    client: {
+      complete: async (_prompt, content) => {
+        const records = content.split("\n").map((line) => JSON.parse(line) as {
+          i: number;
+          members: Array<{ m: number }>;
+        });
+        const members = records.flatMap(({ i, members }) =>
+          members.map(({ m }) => [i, m] as [number, number])
+        );
+        calls.push(members);
+        if (members.length > 2) {
+          throw new ModelApiError(0, "limited multi-record batch", "output_limit");
+        }
+        return JSON.stringify(members.map(([i, m]) => ({
+          i,
+          m,
+          storyKey: `story-${i}-${m}`,
+          developmentKey: `development-${i}-${m}`,
+          evidence: [],
+        })));
+      },
+    },
+  });
+
+  const results = await service.analyze(Array.from({ length: 4 }, (_, index) => item(index)));
+  assertEquals(calls, [
+    [[0, 0], [1, 0], [2, 0], [3, 0]],
+    [[0, 0], [1, 0]],
+    [[2, 0], [3, 0]],
+  ]);
+  assertEquals(
+    results.map(({ analysis }) => analysis.storyKey),
+    ["story-0-0", "story-1-0", "story-2-0", "story-3-0"],
+  );
+});
+
+test("analysis recovers output limits by splitting members within one record", async () => {
+  const calls: Array<Array<[number, number]>> = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    maxItemsPerChunk: 10,
+    maxTextBytesPerChunk: 100_000,
+    client: {
+      complete: async (_prompt, content) => {
+        const records = content.split("\n").map((line) => JSON.parse(line) as {
+          i: number;
+          members: Array<{ m: number }>;
+        });
+        const members = records.flatMap(({ i, members }) =>
+          members.map(({ m }) => [i, m] as [number, number])
+        );
+        calls.push(members);
+        if (members.length > 2) {
+          throw new ModelApiError(0, "limited grouped record", "output_limit");
+        }
+        return JSON.stringify(members.map(([i, m]) => ({
+          i,
+          m,
+          storyKey: `thread-${m}`,
+          developmentKey: `development-${m}`,
+          evidence: [],
+        })));
+      },
+    },
+  });
+  const inputs = Array.from({ length: 4 }, (_, index) =>
+    item(index, { meta: { threadRootId: "shared-thread" } })
+  );
+
+  const results = await service.analyze(inputs);
+  assertEquals(calls, [
+    [[0, 0], [0, 1], [0, 2], [0, 3]],
+    [[0, 0], [0, 1]],
+    [[0, 2], [0, 3]],
+  ]);
+  assertEquals(
+    results.map(({ analysis }) => analysis.storyKey),
+    ["thread-0", "thread-1", "thread-2", "thread-3"],
+  );
+});
+
+test("analysis propagates a singleton output-limit failure without retrying", async () => {
+  const outputLimit = new ModelApiError(0, "singleton exhausted", "output_limit");
+  let calls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => {
+        calls++;
+        throw outputLimit;
+      },
+    },
+  });
+
+  const error = await assertRejects(() => service.analyze([item(0)]));
+  assertEquals(error, outputLimit);
+  assertEquals(calls, 1);
+});
+
+test("analysis propagates non-output ModelApiError without semantic retry", async () => {
+  const apiError = new ModelApiError(503, "provider unavailable");
+  let calls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => {
+        calls++;
+        throw apiError;
+      },
+    },
+  });
+
+  const error = await assertRejects(() =>
+    service.analyze(Array.from({ length: 4 }, (_, index) => item(index)))
+  );
+  assertEquals(error, apiError);
+  assertEquals(calls, 1);
+});
+
+test("analysis accepts a direct valid singleton record during isolated recovery", async () => {
+  let calls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => {
+        calls++;
+        if (calls === 1) return JSON.stringify([]);
+        return JSON.stringify({
+          i: 0,
+          m: 0,
+          storyKey: "recovered-singleton",
+          developmentKey: "recovered-singleton",
+          evidence: [],
+        });
+      },
+    },
+  });
+
+  const [result] = await service.analyze([item(0)]);
+  assertEquals(calls, 2);
+  assertEquals(result!.analysis.storyKey, "recovered-singleton");
+});
+
+test("analysis rejects unrelated objects and results envelopes with extra fields as non-array", async () => {
+  for (const response of [
+    { unrelated: [] },
+    { results: [], unrelated: true },
+  ]) {
+    const service = new OpenAICompatibleStoryIntelligenceService({
+      client: { complete: async () => JSON.stringify(response) },
+    });
+    const error = await assertRejects(
+      () => service.analyze([item(0)]),
+      "could not recover exact member coverage",
+    );
+    assertStringIncludes(error.message, "response=non-array");
+    assertStringIncludes(error.message, "unresolved=1");
+  }
+});
+
+test("wrapped analysis results retain malformed, duplicate, and unknown rejection", async () => {
+  const responses = [
+    [{ i: 0, m: 0, storyKey: "malformed", developmentKey: "malformed", evidence: [], extra: true }],
+    [
+      { i: 0, m: 0, storyKey: "duplicate", developmentKey: "duplicate", evidence: [] },
+      { i: 0, m: 0, storyKey: "duplicate", developmentKey: "duplicate", evidence: [] },
+    ],
+    [{ i: 99, m: 0, storyKey: "unknown", developmentKey: "unknown", evidence: [] }],
+  ];
+  for (const results of responses) {
+    const service = new OpenAICompatibleStoryIntelligenceService({
+      client: { complete: async () => JSON.stringify({ results }) },
+    });
+    await assertRejects(
+      () => service.analyze([item(0)]),
+      "could not recover exact member coverage",
+    );
+  }
+});
+
 test("analysis rejects unknown keys and malformed optional metadata", async () => {
   const analyzeRecord = (record: Record<string, unknown>) =>
     new OpenAICompatibleStoryIntelligenceService({
@@ -1013,6 +1228,97 @@ test("classification bisects an empty multi-candidate response until progress re
     { storyId: "story-2", relevant: true },
     { storyId: "story-3", relevant: true },
   ]);
+});
+
+test("classification recursively bisects output-limited batches and returns every original decision", async () => {
+  const stories = Array.from({ length: 4 }, (_, index) =>
+    persisted(`story-${index}`, analysis(item(index), `story-${index}`, "report"))
+  );
+  const requestedIndexes: number[][] = [];
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async (_prompt, content) => {
+        const indexes = content.split("\n").slice(1).map((line) =>
+          JSON.parse(line).i as number
+        );
+        requestedIndexes.push(indexes);
+        if (indexes.length > 1) {
+          throw new ModelApiError(0, "classification output exhausted", "output_limit");
+        }
+        return JSON.stringify(indexes.map((i) => ({
+          i,
+          score: i % 2 === 0 ? 80 : 20,
+          matchedRuleIds: i % 2 === 0 ? [prioritize.id] : [],
+          reason: `Decision ${i}`,
+        })));
+      },
+    },
+  });
+
+  const decisions = await service.classify(stories, [prioritize], 50);
+
+  assertEquals(requestedIndexes, [
+    [0, 1, 2, 3],
+    [0, 1],
+    [0],
+    [1],
+    [2, 3],
+    [2],
+    [3],
+  ]);
+  assertEquals(decisions, Array.from({ length: 4 }, (_, index) => ({
+    storyId: `story-${index}`,
+    relevant: index % 2 === 0,
+    score: index % 2 === 0 ? 80 : 20,
+    matchedInterestRuleIds: index % 2 === 0 ? [prioritize.id] : [],
+    blockedByInterestRuleIds: [],
+    reason: `Decision ${index}`,
+  })));
+});
+
+test("classification propagates a singleton output-limit failure unchanged with one call", async () => {
+  const outputLimit = new ModelApiError(0, "singleton classification exhausted", "output_limit");
+  let calls = 0;
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => {
+        calls++;
+        throw outputLimit;
+      },
+    },
+  });
+
+  const thrown = await assertRejects(() =>
+    service.classify(
+      [persisted("story-0", analysis(item(0), "story-0", "report"))],
+      [prioritize],
+      50,
+    )
+  );
+
+  assertStrictEquals(thrown, outputLimit);
+  assertEquals(calls, 1);
+});
+
+test("classification propagates non-output ModelApiError unchanged without semantic retry", async () => {
+  const apiError = new ModelApiError(503, "classification provider unavailable");
+  let calls = 0;
+  const stories = Array.from({ length: 4 }, (_, index) =>
+    persisted(`story-${index}`, analysis(item(index), `story-${index}`, "report"))
+  );
+  const service = new OpenAICompatibleStoryIntelligenceService({
+    client: {
+      complete: async () => {
+        calls++;
+        throw apiError;
+      },
+    },
+  });
+
+  const thrown = await assertRejects(() => service.classify(stories, [prioritize], 50));
+
+  assertStrictEquals(thrown, apiError);
+  assertEquals(calls, 1);
 });
 
 test("classification request byte budget permits an exact fit and splits on one-byte overflow", async () => {

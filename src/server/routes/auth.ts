@@ -20,6 +20,7 @@ import {
 import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
 import { AuthError } from "../errors.ts";
 import { validate } from "../validate.ts";
+import type { StoryDetailLevel } from "../../story-detail-level.ts";
 
 export interface PublicUser {
   id: string;
@@ -28,6 +29,7 @@ export interface PublicUser {
   summaryPrompt: string;
   defaultLanguage: string | null;
   defaultRelevanceFilterMode: "personalized" | "include_all";
+  storyDetailLevel: StoryDetailLevel;
   relevanceThreshold: number;
   maximumStoriesPerDigest: number | null;
   interestProfileVersion: number;
@@ -46,6 +48,7 @@ export function toPublicUser(user: User): PublicUser {
     summaryPrompt: user.summaryPrompt,
     defaultLanguage: user.defaultLanguage,
     defaultRelevanceFilterMode: user.defaultRelevanceFilterMode,
+    storyDetailLevel: user.storyDetailLevel,
     relevanceThreshold: user.relevanceThreshold,
     maximumStoriesPerDigest: user.maximumStoriesPerDigest,
     interestProfileVersion: user.interestProfileVersion,

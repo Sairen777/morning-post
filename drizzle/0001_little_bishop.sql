@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD COLUMN `story_detail_level` text DEFAULT 'balanced' NOT NULL CHECK (`story_detail_level` in ('headlines', 'balanced', 'thorough'));

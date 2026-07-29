@@ -104,9 +104,9 @@ const DEFAULT_CLASSIFICATION_MAX_ITEMS_PER_REQUEST = 100;
 const DEFAULT_SUMMARY_BATCH_MAX_STORIES = 5;
 const DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS = 30_000;
 const DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS = 6_000;
-const DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 4_000;
+const DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 6_500;
 const DEFAULT_SUMMARY_BATCH_MAX_OUTPUT_TOKENS = 6_500;
-const DEFAULT_MEDIA_MAX_OUTPUT_TOKENS = 300;
+const DEFAULT_MEDIA_MAX_OUTPUT_TOKENS = 1_200;
 const DEFAULT_ANALYSIS_MAX_ATTEMPTS = 3;
 const DEFAULT_CLASSIFICATION_MAX_ATTEMPTS = 3;
 const DEFAULT_SUMMARY_MAX_ATTEMPTS = 2;
@@ -166,6 +166,14 @@ function numberSetting(
   return allowZero
     ? parseNonNegativeInteger(name, raw)
     : parsePositiveInteger(name, raw);
+}
+
+function budgetSetting(
+  name: string,
+  override: number | undefined,
+  fallback: number,
+): number {
+  return numberSetting(name, name, override, fallback);
 }
 
 function optionalPriceSetting(
@@ -455,92 +463,77 @@ export function getSummarizerBudgetConfig(
   overrides: Partial<SummarizerBudgetConfig> = {},
 ): SummarizerBudgetConfig {
   return {
-    summarizerTextBytesPerChunk: numberSetting(
-      "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
+    summarizerTextBytesPerChunk: budgetSetting(
       "SUMMARIZER_TEXT_BYTES_PER_CHUNK",
       overrides.summarizerTextBytesPerChunk,
       DEFAULT_SUMMARIZER_TEXT_BYTES_PER_CHUNK,
     ),
-    summarizerMaxItemsPerChunk: numberSetting(
-      "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
+    summarizerMaxItemsPerChunk: budgetSetting(
       "SUMMARIZER_MAX_ITEMS_PER_CHUNK",
       overrides.summarizerMaxItemsPerChunk,
       DEFAULT_SUMMARIZER_MAX_ITEMS_PER_CHUNK,
     ),
-    summarizerMaxImageBytes: numberSetting(
-      "SUMMARIZER_MAX_IMAGE_BYTES",
+    summarizerMaxImageBytes: budgetSetting(
       "SUMMARIZER_MAX_IMAGE_BYTES",
       overrides.summarizerMaxImageBytes,
       DEFAULT_SUMMARIZER_MAX_IMAGE_BYTES,
     ),
-    analysisMaxItemsPerRequest: numberSetting(
-      "ANALYSIS_MAX_ITEMS_PER_REQUEST",
+    analysisMaxItemsPerRequest: budgetSetting(
       "ANALYSIS_MAX_ITEMS_PER_REQUEST",
       overrides.analysisMaxItemsPerRequest,
       DEFAULT_ANALYSIS_MAX_ITEMS_PER_REQUEST,
     ),
-    classificationMaxItemsPerRequest: numberSetting(
-      "CLASSIFICATION_MAX_ITEMS_PER_REQUEST",
+    classificationMaxItemsPerRequest: budgetSetting(
       "CLASSIFICATION_MAX_ITEMS_PER_REQUEST",
       overrides.classificationMaxItemsPerRequest,
       DEFAULT_CLASSIFICATION_MAX_ITEMS_PER_REQUEST,
     ),
-    summaryBatchMaxStories: numberSetting(
-      "SUMMARY_BATCH_MAX_STORIES",
+    summaryBatchMaxStories: budgetSetting(
       "SUMMARY_BATCH_MAX_STORIES",
       overrides.summaryBatchMaxStories,
       DEFAULT_SUMMARY_BATCH_MAX_STORIES,
     ),
-    analysisMaxOutputTokens: numberSetting(
-      "ANALYSIS_MAX_OUTPUT_TOKENS",
+    analysisMaxOutputTokens: budgetSetting(
       "ANALYSIS_MAX_OUTPUT_TOKENS",
       overrides.analysisMaxOutputTokens,
       DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
     ),
-    classificationMaxOutputTokens: numberSetting(
-      "CLASSIFICATION_MAX_OUTPUT_TOKENS",
+    classificationMaxOutputTokens: budgetSetting(
       "CLASSIFICATION_MAX_OUTPUT_TOKENS",
       overrides.classificationMaxOutputTokens,
       DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS,
     ),
-    summaryMaxOutputTokens: numberSetting(
-      "SUMMARY_MAX_OUTPUT_TOKENS",
+    summaryMaxOutputTokens: budgetSetting(
       "SUMMARY_MAX_OUTPUT_TOKENS",
       overrides.summaryMaxOutputTokens,
       DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS,
     ),
-    summaryBatchMaxOutputTokens: numberSetting(
-      "SUMMARY_BATCH_MAX_OUTPUT_TOKENS",
+    summaryBatchMaxOutputTokens: budgetSetting(
       "SUMMARY_BATCH_MAX_OUTPUT_TOKENS",
       overrides.summaryBatchMaxOutputTokens,
       DEFAULT_SUMMARY_BATCH_MAX_OUTPUT_TOKENS,
     ),
-    mediaMaxOutputTokens: numberSetting(
-      "MEDIA_MAX_OUTPUT_TOKENS",
+    mediaMaxOutputTokens: budgetSetting(
       "MEDIA_MAX_OUTPUT_TOKENS",
       overrides.mediaMaxOutputTokens,
       DEFAULT_MEDIA_MAX_OUTPUT_TOKENS,
     ),
-    analysisMaxAttempts: numberSetting(
-      "ANALYSIS_MAX_ATTEMPTS",
+    analysisMaxAttempts: budgetSetting(
       "ANALYSIS_MAX_ATTEMPTS",
       overrides.analysisMaxAttempts,
       DEFAULT_ANALYSIS_MAX_ATTEMPTS,
     ),
-    classificationMaxAttempts: numberSetting(
-      "CLASSIFICATION_MAX_ATTEMPTS",
+    classificationMaxAttempts: budgetSetting(
       "CLASSIFICATION_MAX_ATTEMPTS",
       overrides.classificationMaxAttempts,
       DEFAULT_CLASSIFICATION_MAX_ATTEMPTS,
     ),
-    summaryMaxAttempts: numberSetting(
-      "SUMMARY_MAX_ATTEMPTS",
+    summaryMaxAttempts: budgetSetting(
       "SUMMARY_MAX_ATTEMPTS",
       overrides.summaryMaxAttempts,
       DEFAULT_SUMMARY_MAX_ATTEMPTS,
     ),
-    mediaMaxAttempts: numberSetting(
-      "MEDIA_MAX_ATTEMPTS",
+    mediaMaxAttempts: budgetSetting(
       "MEDIA_MAX_ATTEMPTS",
       overrides.mediaMaxAttempts,
       DEFAULT_MEDIA_MAX_ATTEMPTS,

@@ -276,11 +276,11 @@ export default function FeedsPanel(props: FeedsPanelProps) {
                     </div>
                     <div class="form-group" style="margin-top: 0.75rem;">
                       <label for={`feed-summary-${feed.id}`}>
-                        Summary detail for {feed.name}
+                        Story detail for {feed.name}
                       </label>
                       <select
                         id={`feed-summary-${feed.id}`}
-                        aria-label={`Summary detail for ${feed.name}`}
+                        aria-label={`Story detail for ${feed.name}`}
                         aria-describedby={`feed-summary-hint-${feed.id}`}
                         value={summaryModeInputs()[feed.id] ?? feed.summarizationMode}
                         disabled={updatingSummaryMode()[feed.id]}
@@ -290,15 +290,15 @@ export default function FeedsPanel(props: FeedsPanelProps) {
                             e.currentTarget.value as SummarizationMode,
                           )}
                       >
-                        <option value="basic">Standard</option>
-                        <option value="thorough">Thorough</option>
+                        <option value="basic">Standard — follow profile setting</option>
+                        <option value="thorough">Thorough — add more context</option>
                       </select>
                       <div id={`feed-summary-hint-${feed.id}`} class="hint">
                         {(
                           summaryModeInputs()[feed.id] ?? feed.summarizationMode
                         ) === "thorough"
-                          ? "Thorough is slower but captures more themes and nuance in long discussions."
-                          : "Standard is faster and more token-efficient."}
+                          ? "Thorough overrides your profile story-detail setting for this feed, adding more context and nuance."
+                          : "Standard follows your profile story-detail setting. Change the profile level in the Profile tab."}
                       </div>
                     </div>
 

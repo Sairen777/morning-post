@@ -20,8 +20,11 @@ import type {
   StoryRelevanceDecision,
 } from "../personalization/story.types.ts";
 import { personalizationLabelsSchema } from "../personalization/personalization-label.ts";
-import { OpenAICompatibleChatClient } from "../summarizers/openai-compatible-client.ts";
-import type { FetchFunction } from "../summarizers/openai-compatible-client.ts";
+import {
+  ModelApiError,
+  OpenAICompatibleChatClient,
+  type FetchFunction,
+} from "../summarizers/openai-compatible-client.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
 import type {
   SummarizeOptions,
@@ -255,7 +258,20 @@ function parseMemberResults(
       diagnostics,
     };
   }
-  if (!Array.isArray(parsed)) {
+  let candidates: unknown[];
+  if (Array.isArray(parsed)) {
+    candidates = parsed;
+  } else if (
+    parsed !== null &&
+    typeof parsed === "object" &&
+    Object.keys(parsed).length === 1 &&
+    "results" in parsed &&
+    Array.isArray(parsed.results)
+  ) {
+    candidates = parsed.results;
+  } else if (expected.length === 1 && analysisSchema.safeParse(parsed).success) {
+    candidates = [parsed];
+  } else {
     diagnostics.responseKind = "non-array";
     return {
       resolved: [],
@@ -269,7 +285,7 @@ function parseMemberResults(
     string,
     Array<z.infer<typeof analysisSchema>>
   >();
-  for (const candidate of parsed) {
+  for (const candidate of candidates) {
     const result = analysisSchema.safeParse(candidate);
     if (!result.success) {
       if (
@@ -697,14 +713,66 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
     const completeAnalysisBatch = async (
       requestBatch: AnalysisRequestRecord[],
     ): Promise<Array<z.infer<typeof analysisSchema>>> => {
-      const raw = await this.analysisClient.complete(
-        buildStoryAnalysisPrompt().systemPrompt,
-        requestBatch.map(({ encoded }) => encoded).join("\n"),
-        completionOptions,
+      const expectedMembers = requestBatch.flatMap((record, requestIndex) =>
+        record.memberIndexes.map((m) => ({
+          requestIndex,
+          i: record.index,
+          m,
+        }))
       );
-      const expected = requestBatch.flatMap(({ memberIndexes, index }) =>
-        memberIndexes.map((m) => ({ i: index, m }))
-      );
+      const expected = expectedMembers.map(({ i, m }) => ({ i, m }));
+      let raw: string;
+      try {
+        raw = await this.analysisClient.complete(
+          buildStoryAnalysisPrompt().systemPrompt,
+          requestBatch.map(({ encoded }) => encoded).join("\n"),
+          completionOptions,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof ModelApiError) ||
+          error.kind !== "output_limit" ||
+          expected.length === 1
+        ) {
+          throw error;
+        }
+        const splitAt = Math.ceil(expectedMembers.length / 2);
+        const splitBatch = (
+          members: Array<{ requestIndex: number; i: number; m: number }>,
+        ): AnalysisRequestRecord[] => {
+          const records: AnalysisRequestRecord[] = [];
+          let previousRequestIndex = -1;
+          for (const { requestIndex, i, m } of members) {
+            const source = requestBatch[requestIndex]!;
+            const previous = records.at(-1)!;
+            if (previousRequestIndex === requestIndex) {
+              previous.memberIndexes.push(m);
+              previous.encoded = encodeRecord(
+                previous.value,
+                i,
+                previous.memberIndexes,
+              )!;
+              previousRequestIndex = requestIndex;
+              continue;
+            }
+            records.push({
+              value: source.value,
+              index: i,
+              memberIndexes: [m],
+              encoded: encodeRecord(source.value, i, [m])!,
+            });
+            previousRequestIndex = requestIndex;
+          }
+          return records;
+        };
+        const first = await completeAnalysisBatch(
+          splitBatch(expectedMembers.slice(0, splitAt)),
+        );
+        const second = await completeAnalysisBatch(
+          splitBatch(expectedMembers.slice(splitAt)),
+        );
+        return [...first, ...second];
+      }
       const parsed = parseMemberResults(raw, expected);
       if (parsed.unresolved.length === 0 && !parsed.unexpected) {
         return parsed.resolved;
@@ -902,11 +970,26 @@ export class OpenAICompatibleStoryIntelligenceService implements StoryIntelligen
     const classifyBatch = async (
       requestBatch: ClassificationRequestRecord[],
     ): Promise<void> => {
-      const raw = await this.classificationClient.complete(
-        systemPrompt,
-        [sharedContext, ...requestBatch.map(({ encoded }) => encoded)].join("\n"),
-        completionOptions,
-      );
+      let raw: string;
+      try {
+        raw = await this.classificationClient.complete(
+          systemPrompt,
+          [sharedContext, ...requestBatch.map(({ encoded }) => encoded)].join("\n"),
+          completionOptions,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof ModelApiError) ||
+          error.kind !== "output_limit" ||
+          requestBatch.length === 1
+        ) {
+          throw error;
+        }
+        const middle = Math.ceil(requestBatch.length / 2);
+        await classifyBatch(requestBatch.slice(0, middle));
+        await classifyBatch(requestBatch.slice(middle));
+        return;
+      }
       const { values, missingIndexes } = parseIndexedResults(
         raw,
         classificationSchema,

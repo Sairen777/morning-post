@@ -11,6 +11,7 @@ const PASSWORD = "analytical-engine-1843";
 interface RegisteredUser {
   id: string;
   systemPrompt: string;
+  storyDetailLevel: string;
 }
 
 function jsonRequest(method: "POST" | "PATCH", body: unknown): RequestInit {
@@ -34,7 +35,11 @@ async function register(app: Hono<ServerEnvironment>): Promise<RegisteredUser> {
   );
   assertEquals(response.status, 201);
   const json = await response.json();
-  return { id: json.id, systemPrompt: json.systemPrompt };
+  return {
+    id: json.id,
+    systemPrompt: json.systemPrompt,
+    storyDetailLevel: json.storyDetailLevel,
+  };
 }
 
 async function login(app: Hono<ServerEnvironment>): Promise<string> {
@@ -95,6 +100,39 @@ test("partial profile patch leaves unspecified fields intact", async () => {
     assertEquals(json.defaultLanguage, "fr");
     assertEquals(json.systemPrompt, user.systemPrompt);
     assertEquals(json.name, "Ada Lovelace");
+  });
+});
+
+test("profile defaults to balanced and PATCH round-trips detail while invalidating summaries", async () => {
+  await withTestDb(async (database: Database) => {
+    const { app, cookie, user } = await authenticatedApp(database);
+    assertEquals(user.storyDetailLevel, "balanced");
+
+    const initialResponse = await app.request("/auth/me", { headers: { cookie } });
+    assertEquals(initialResponse.status, 200);
+    const initial = await initialResponse.json();
+    assertEquals(initial.storyDetailLevel, "balanced");
+
+    const patchResponse = await patchProfile(app, cookie, { storyDetailLevel: "thorough" });
+    assertEquals(patchResponse.status, 200);
+    const patched = await patchResponse.json();
+    assertEquals(patched.storyDetailLevel, "thorough");
+    assertEquals(patched.interestProfileVersion, initial.interestProfileVersion + 1);
+
+    const getResponse = await app.request("/auth/me", { headers: { cookie } });
+    assertEquals(getResponse.status, 200);
+    const reloaded = await getResponse.json();
+    assertEquals(reloaded.storyDetailLevel, "thorough");
+    assertEquals(reloaded.interestProfileVersion, patched.interestProfileVersion);
+
+    const invalidResponse = await patchProfile(app, cookie, { storyDetailLevel: "verbose" });
+    assertEquals(invalidResponse.status, 422);
+    await invalidResponse.body?.cancel();
+
+    const unchangedResponse = await app.request("/auth/me", { headers: { cookie } });
+    const unchanged = await unchangedResponse.json();
+    assertEquals(unchanged.storyDetailLevel, "thorough");
+    assertEquals(unchanged.interestProfileVersion, patched.interestProfileVersion);
   });
 });
 test("unauthenticated PATCH /auth/me is rejected", async () => {
