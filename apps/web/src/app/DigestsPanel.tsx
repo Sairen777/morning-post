@@ -1,6 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
 import type {
   DigestSection,
+  DigestSort,
   DigestStory,
   DigestView,
   PublicDigest,
@@ -9,9 +10,13 @@ import type {
   StoryFeedbackTarget,
   StoryFeedbackTargetAction,
 } from "../api/types";
+import { digestSorts } from "../api/types";
+import { digestItemMediaUrl } from "../api/client";
 import StatusBadge from "./StatusBadge";
 import FormatTime from "./FormatTime";
+import ServiceIcon from "./ServiceIcon";
 import { formatDuration } from "./duration";
+
 function safeHttpUrl(value: string | null): string | undefined {
   if (!value) {
     return undefined;
@@ -25,6 +30,28 @@ function safeHttpUrl(value: string | null): string | undefined {
     return undefined;
   }
 }
+
+function connectorLabel(connectorId: string): string {
+  const normalized = connectorId.trim().toLowerCase();
+  if (normalized === "x" || normalized === "twitter") return "X";
+  if (normalized === "rss") return "RSS";
+  if (normalized === "youtube") return "YouTube";
+  if (normalized === "substack") return "Substack";
+  if (normalized === "telegram") return "Telegram";
+  if (normalized === "reddit") return "Reddit";
+  return connectorId.trim() || "Source";
+}
+
+function ServiceIdentity(props: { connectorId: string }) {
+  const label = () => connectorLabel(props.connectorId);
+  return (
+    <span class="service-identity">
+      <ServiceIcon connectorId={props.connectorId} title={label()} />
+      <span>{label()}</span>
+    </span>
+  );
+}
+
 type PaidPost = DigestView["paidPosts"][number];
 
 interface PaidPostGroup {
@@ -268,6 +295,7 @@ interface StoryCardProps {
   story: DigestStory;
   displayedSources: DigestStorySource[];
   instanceKey: string;
+  mediaDigestId?: string;
   feedbackAvailable: boolean;
   feedbackState: (input: StoryFeedbackInput) => StoryFeedbackState | undefined;
   isPending: (input: StoryFeedbackInput) => boolean;
@@ -281,6 +309,10 @@ function StoryCard(props: StoryCardProps) {
   ];
   const instanceId = `story-${props.story.id}-${props.instanceKey}`;
   const headingId = `${instanceId}-title`;
+  const [mediaIndex, setMediaIndex] = createSignal(0);
+  const mediaSources = () =>
+    props.mediaDigestId ? props.story.sources.filter((source) => source.itemId) : [];
+  const mediaSource = () => mediaSources()[mediaIndex()];
   const feedbackInputs: StoryFeedbackInput[] = [
     ...storyActions.map(({ action }) => ({
       digestStoryId: props.story.id,
@@ -302,7 +334,18 @@ function StoryCard(props: StoryCardProps) {
 
   return (
     <article class="story-card" aria-labelledby={headingId}>
-      <h6 class="story-heading" id={headingId}>{props.story.title}</h6>
+      <Show when={mediaSource()}>
+        {(source) => (
+          <img
+            class="story-media"
+            src={digestItemMediaUrl(props.mediaDigestId!, source().itemId)}
+            alt=""
+            loading="lazy"
+            onError={() => setMediaIndex((index) => index + 1)}
+          />
+        )}
+      </Show>
+      <h3 class="story-heading" id={headingId}>{props.story.title}</h3>
 
       <Show
         when={props.story.points.length > 0}
@@ -331,6 +374,36 @@ function StoryCard(props: StoryCardProps) {
             )}
           </For>
         </ul>
+      </Show>
+      <Show when={props.displayedSources.length > 0}>
+        <div class="story-sources" aria-label="Story byline">
+          <span class="story-byline-label">From</span>
+          <div class="story-source-list">
+            <For each={props.displayedSources}>
+              {(source) => (
+                <Show
+                  when={safeHttpUrl(source.url)}
+                  fallback={
+                    <span class="story-source">
+                      {source.title ?? source.feedName}
+                    </span>
+                  }
+                >
+                  {(sourceUrl) => (
+                    <a
+                      class="story-source"
+                      href={sourceUrl()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {source.title ?? source.feedName}
+                    </a>
+                  )}
+                </Show>
+              )}
+            </For>
+          </div>
+        </div>
       </Show>
 
 
@@ -408,7 +481,7 @@ function StoryCard(props: StoryCardProps) {
                         </div>
                         <div>
                           <dt>Connector</dt>
-                          <dd>{source.connectorId}</dd>
+                          <dd><ServiceIdentity connectorId={source.connectorId} /></dd>
                         </div>
                         <div>
                           <dt>Published</dt>
@@ -510,86 +583,27 @@ function StoryCard(props: StoryCardProps) {
   );
 }
 
-interface DigestsPanelProps {
-  digests: PublicDigest[];
-  onSelectDigest: (id: string) => Promise<DigestView>;
-  onDeleteDigest: (id: string) => Promise<void>;
-  onAuthError: () => void;
-  nextCursor?: string;
+interface DigestFeedbackProps {
   onSubmitFeedback?: (
     storyId: string,
     input: StoryFeedbackInput,
   ) => Promise<unknown>;
   onFeedbackSuccess?: () => void | Promise<void>;
-  loadingMore?: boolean;
-  onLoadMore?: () => Promise<void>;
+  onAuthError: () => void;
 }
 
-export default function DigestsPanel(props: DigestsPanelProps) {
-  const [selectedId, setSelectedId] = createSignal<string | null>(null);
-  const [digestView, setDigestView] = createSignal<DigestView | null>(null);
-  const [loading, setLoading] = createSignal(false);
-  const [deletingId, setDeletingId] = createSignal<string | null>(null);
-  const [error, setError] = createSignal<string | null>(null);
+export interface DigestViewContentProps extends DigestFeedbackProps {
+  view: DigestView;
+  reader?: boolean;
+}
+
+export function DigestViewContent(props: DigestViewContentProps) {
   const [pendingFeedback, setPendingFeedback] = createSignal<
     Record<string, true>
   >({});
   const [feedbackStates, setFeedbackStates] = createSignal<
     Record<string, StoryFeedbackState>
   >({});
-
-  const handleSelect = async (id: string) => {
-    setSelectedId(id);
-    setDigestView(null);
-    setError(null);
-    setLoading(true);
-
-    try {
-      const view = await props.onSelectDigest(id);
-      setDigestView(view);
-    } catch (err: unknown) {
-      if (
-        err instanceof Error &&
-        "status" in err &&
-        (err as { status: number }).status === 401
-      ) {
-        props.onAuthError();
-      } else if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("An unexpected error occurred");
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm("Delete this digest?")) return;
-
-    const wasSelected = selectedId() === id;
-    setDeletingId(id);
-    setError(null);
-
-    try {
-      await props.onDeleteDigest(id);
-      if (wasSelected) {
-        setSelectedId(null);
-        setDigestView(null);
-      }
-    } catch (err: unknown) {
-      if (err instanceof Error && "status" in err) {
-        const status = (err as { status: number }).status;
-        if (status === 401) {
-          props.onAuthError();
-        }
-      }
-      const message = err instanceof Error ? err.message : "Delete failed";
-      setError(message);
-    } finally {
-      setDeletingId(null);
-    }
-  };
 
   const handleStoryFeedback = async (
     story: DigestStory,
@@ -645,275 +659,329 @@ export default function DigestsPanel(props: DigestsPanelProps) {
     }
   };
 
+  const view = () => props.view;
+  const storyMode = () =>
+    view().digest.contentMode === "stories" || (view().stories?.length ?? 0) > 0;
+
   return (
-    <div class="card">
-      <div class="card-header">
-        <h2>Digests</h2>
+    <div class={`digest-view-content${props.reader ? " digest-reader-content" : ""}`}>
+      <Show
+        when={view().digest.status === "failed" && view().failureReason !== null}
+      >
+        <div class="error" role="alert">
+          <strong>Failure reason:</strong>{" "}
+          {view().failureReason}
+        </div>
+      </Show>
+      <Show
+        when={storyMode()}
+        fallback={
+          <Show
+            when={view().groups.some((group) =>
+              group.sections.some(hasVisibleDigestSection)
+            )}
+            fallback={
+              <p class="hint digest-empty" role="status">
+                No coverage was available for this period.
+              </p>
+            }
+          >
+            <div class="legacy-digest-groups">
+              <For
+                each={view().groups.filter((group) =>
+                  group.sections.some(hasVisibleDigestSection)
+                )}
+              >
+                {(group) => (
+                  <section class="digest-group">
+                    <div class="digest-group-heading">
+                      <ServiceIdentity connectorId={group.connectorId} />
+                    </div>
+                    <For each={group.sections.filter(hasVisibleDigestSection)}>
+                      {(section) => <DigestSectionView section={section} />}
+                    </For>
+                  </section>
+                )}
+              </For>
+            </div>
+          </Show>
+        }
+      >
+        <Show
+          when={(view().stories?.length ?? 0) > 0}
+          fallback={
+            <p class="hint digest-empty" role="status">
+              No stories met this digest's delivery criteria.
+            </p>
+          }
+        >
+          <div class="story-source-groups">
+            <For each={groupStoriesBySource(view().stories ?? [])}>
+              {(connector, connectorIndex) => (
+                <section class="story-connector-group">
+                  <h2 class="story-connector-heading">
+                    <ServiceIdentity connectorId={connector.connectorId} />
+                  </h2>
+                  <For each={connector.feeds}>
+                    {(feed, feedIndex) => (
+                      <section class="story-feed-group">
+                        <h3 class="story-feed-heading">{feed.feedName}</h3>
+                        <div class="story-list">
+                          <For each={feed.stories}>
+                            {(entry, storyIndex) => (
+                              <StoryCard
+                                story={entry.story}
+                                displayedSources={entry.sources}
+                                instanceKey={`${connectorIndex()}-${feedIndex()}-${storyIndex()}`}
+                                mediaDigestId={props.reader ? view().digest.id : undefined}
+                                feedbackAvailable={props.onSubmitFeedback !== undefined}
+                                feedbackState={(input) =>
+                                  feedbackStates()[storyFeedbackKey(entry.story.id, input)]}
+                                isPending={(input) =>
+                                  pendingFeedback()[storyFeedbackKey(entry.story.id, input)] === true}
+                                onSubmit={(input) =>
+                                  void handleStoryFeedback(entry.story, input)}
+                              />
+                            )}
+                          </For>
+                        </div>
+                      </section>
+                    )}
+                  </For>
+                </section>
+              )}
+            </For>
+          </div>
+        </Show>
+      </Show>
+      <Show when={view().paidPosts.length > 0}>
+        <section class="paid-posts" aria-labelledby="paid-posts-title">
+          <h2 id="paid-posts-title">Paid posts</h2>
+          <p class="hint">
+            Inaccessible paid posts are never summarized. Linked titles remain
+            readable here so you can decide whether to subscribe.
+          </p>
+          <For each={groupPaidPosts(view().paidPosts)}>
+            {(group, index) => (
+              <div class="paid-post-group">
+                <h3
+                  class="paid-post-newsletter"
+                  id={`paid-post-newsletter-${index()}`}
+                >
+                  {group.newsletterName}
+                </h3>
+                <ul
+                  class="paid-post-list"
+                  aria-labelledby={`paid-post-newsletter-${index()}`}
+                >
+                  <For each={group.posts}>
+                    {(post) => (
+                      <li>
+                        <Show
+                          when={safeHttpUrl(post.sourceUrl)}
+                          fallback={post.title}
+                        >
+                          {(sourceUrl) => (
+                            <a
+                              href={sourceUrl()}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              {post.title}
+                            </a>
+                          )}
+                        </Show>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </div>
+            )}
+          </For>
+        </section>
+      </Show>
+    </div>
+  );
+}
+
+interface DigestsPanelProps {
+  digests: PublicDigest[];
+  /** Retained for callers that still own digest fetching; rows no longer expand inline. */
+  onSelectDigest?: (id: string) => Promise<DigestView>;
+  onDeleteDigest: (id: string) => Promise<void>;
+  onAuthError: () => void;
+  nextCursor?: string;
+  onSubmitFeedback?: (
+    storyId: string,
+    input: StoryFeedbackInput,
+  ) => Promise<unknown>;
+  onFeedbackSuccess?: () => void | Promise<void>;
+  loadingMore?: boolean;
+  onLoadMore?: () => Promise<void>;
+  sort?: DigestSort;
+  onSortChange?: (sort: DigestSort) => void;
+}
+
+const digestSortLabels: Record<DigestSort, string> = {
+  requested_desc: "Newest requested",
+  requested_asc: "Oldest requested",
+  period_desc: "Latest coverage",
+  period_asc: "Earliest coverage",
+};
+
+export default function DigestsPanel(props: DigestsPanelProps) {
+  const [deletingId, setDeletingId] = createSignal<string | null>(null);
+  const [error, setError] = createSignal<string | null>(null);
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this digest? This cannot be undone.")) return;
+
+    setDeletingId(id);
+    setError(null);
+    try {
+      await props.onDeleteDigest(id);
+    } catch (err: unknown) {
+      if (err instanceof Error && "status" in err) {
+        const status = (err as { status: number }).status;
+        if (status === 401) props.onAuthError();
+      }
+      setError(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <section class="card digest-index" aria-labelledby="digest-index-title">
+      <div class="digest-index-header">
+        <div>
+          <p class="app-content-kicker">The archive</p>
+          <h2 id="digest-index-title">Digests</h2>
+          <p class="digest-index-deck">
+            A running record of the briefings prepared for your reading desk.
+            Open a completed issue to read its full coverage.
+          </p>
+        </div>
+        <Show when={props.onSortChange}>
+          <div class="digest-sort">
+            <label for="digest-sort">Order by</label>
+            <select
+              id="digest-sort"
+              value={props.sort ?? "requested_desc"}
+              onChange={(event) =>
+                props.onSortChange?.(
+                  event.currentTarget.value as DigestSort,
+                )}
+            >
+              <For each={digestSorts}>
+                {(sort) => <option value={sort}>{digestSortLabels[sort]}</option>}
+              </For>
+            </select>
+          </div>
+        </Show>
       </div>
+
       <Show
         when={props.digests.length > 0}
         fallback={
-          <p class="hint">No digests yet. Run your first digest above.</p>
+          <p class="digest-index-empty" role="status">
+            No digests yet. Run your first briefing above to begin the archive.
+          </p>
         }
       >
-        <ul class="bullet-list">
+        <div class="digest-index-list">
           <For each={props.digests}>
             {(digest, index) => (
-              <li>
-                <div
-                  style={{
-                    display: "flex",
-                    "align-items": "center",
-                    "justify-content": "space-between",
-                    gap: "0.5rem",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => handleSelect(digest.id)}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      padding: "0.5rem 0",
-                      cursor: "pointer",
-                      color: selectedId() === digest.id
-                        ? "var(--accent)"
-                        : "inherit",
-                      flex: "1",
-                      "text-align": "left",
-                    }}
-                  >
-                    <span
-                      style={{
-                        display: "flex",
-                        gap: "0.5rem",
-                        "align-items": "center",
-                        "flex-wrap": "wrap",
-                      }}
+              <article class="digest-index-row">
+                <div class="digest-index-row-main">
+                  <div class="digest-index-row-kicker">
+                    <span class="digest-ordinal">Issue {index() + 1}</span>
+                    <StatusBadge status={digest.status} />
+                  </div>
+                  <h3 class="digest-index-period">
+                    <Show
+                      when={digest.status === "complete"}
+                      fallback={
+                        <span>
+                          <FormatTime ms={digest.periodStartMs} />{" "}
+                          <span aria-hidden="true">—</span>{" "}
+                          <FormatTime ms={digest.periodEndMs} />
+                        </span>
+                      }
                     >
-                      <span class="digest-ordinal">#{index() + 1}</span>
-                      <FormatTime ms={digest.periodStartMs} />
-                      <span>–</span>
-                      <FormatTime ms={digest.periodEndMs} />
-                      <StatusBadge status={digest.status} />
-                    </span>
-                    <span
-                      style={{
-                        display: "flex",
-                        gap: "0.35rem",
-                        "align-items": "center",
-                        "flex-wrap": "wrap",
-                        color: "var(--muted)",
-                        "font-size": "0.82rem",
-                        "margin-top": "0.15rem",
-                      }}
-                    >
-                      <Show
-                        when={digest.latestRunStartedAt !== null &&
-                          digest.latestRunStartedAt !== undefined}
-                        fallback={
-                          <>
-                            <span>Created</span>
-                            <FormatTime ms={digest.createdAt} />
-                          </>
-                        }
-                      >
-                        <span>Started</span>
-                        <FormatTime ms={digest.latestRunStartedAt!} />
-                        <Show
-                          when={digest.latestRunFinishedAt !== null &&
-                            digest.latestRunFinishedAt !== undefined}
-                        >
-                          <span>· Run time</span>
-                          <span>
-                            {formatDuration(
-                              digest.latestRunFinishedAt! -
-                                digest.latestRunStartedAt!,
-                            )}
-                          </span>
-                        </Show>
-                      </Show>
-                    </span>
-                  </button>
+                      <a href={`/issues/${encodeURIComponent(digest.id)}`}>
+                        <FormatTime ms={digest.periodStartMs} />{" "}
+                        <span aria-hidden="true">—</span>{" "}
+                        <FormatTime ms={digest.periodEndMs} />
+                        <span class="sr-only">, read digest</span>
+                      </a>
+                    </Show>
+                  </h3>
+                  <dl class="digest-index-meta">
+                    <div>
+                      <dt>Latest request</dt>
+                      <dd class="digest-index-request">
+                        <FormatTime
+                          ms={digest.latestRunStartedAt ?? digest.createdAt}
+                        />
+                      </dd>
+                    </div>
+                    <Show when={digest.latestRunStartedAt && digest.latestRunFinishedAt}>
+                      <div>
+                        <dt>Preparation</dt>
+                        <dd>
+                          {formatDuration(
+                            digest.latestRunFinishedAt! - digest.latestRunStartedAt!,
+                          )}
+                        </dd>
+                      </div>
+                    </Show>
+                  </dl>
+                  <Show when={digest.status === "pending"}>
+                    <p class="digest-index-note" role="status">
+                      This briefing is being prepared. It will appear here when
+                      the run finishes.
+                    </p>
+                  </Show>
+                  <Show when={digest.status === "failed"}>
+                    <p class="digest-index-note digest-index-note-error" role="status">
+                      The latest request did not finish. Review runs in Profile
+                      for technical details, then try again when ready.
+                    </p>
+                  </Show>
+                </div>
+                <details class="digest-row-actions">
+                  <summary>Issue actions</summary>
                   <button
                     type="button"
                     class="danger"
-                    onClick={() => handleDelete(digest.id)}
+                    onClick={() => void handleDelete(digest.id)}
                     disabled={deletingId() === digest.id}
                   >
                     {deletingId() === digest.id ? "Deleting…" : "Delete digest"}
                   </button>
-                </div>
-              </li>
+                </details>
+              </article>
             )}
           </For>
-        </ul>
-      </Show>
-
-      <Show when={props.nextCursor}>
-        <div style="text-align: center; margin-top: 1rem;">
-          <button
-            type="button"
-            onClick={() => props.onLoadMore?.()}
-            disabled={props.loadingMore}
-          >
-            {props.loadingMore ? "Loading…" : "Load more"}
-          </button>
         </div>
       </Show>
 
-      {/* Selected digest detail */}
-      <Show when={loading()}>
-        <p style="padding: 1rem;">Loading digest…</p>
-      </Show>
       <Show when={error()}>
-        <div class="error">{error()}</div>
+        <div class="error" role="alert">{error()}</div>
       </Show>
-      <Show when={digestView()}>
-        {(view) => (
-          <div style="margin-top: 1.5rem;">
-            <div class="section-title">
-              <h3>Digest detail</h3>
-              <a
-                href={`/digests/${view().digest.id}.md`}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                View markdown
-              </a>
-            </div>
-            <Show
-              when={view().digest.status === "failed" &&
-                view().failureReason !== null}
-            >
-              <div class="error" role="alert">
-                <strong>Failure reason:</strong>{" "}
-                {view().failureReason}
-              </div>
-            </Show>
-            <Show
-              when={view().digest.contentMode === "stories" ||
-                (view().stories?.length ?? 0) > 0}
-              fallback={
-                <For
-                  each={view().groups.filter((group) =>
-                    group.sections.some(hasVisibleDigestSection)
-                  )}
-                >
-                  {(group) => (
-                    <section class="digest-group">
-                      <div class="meta-row">
-                        <dt>Source</dt>
-                        <dd>{group.sourceId}</dd>
-                      </div>
-                      <div class="meta-row">
-                        <dt>Connector</dt>
-                        <dd>{group.connectorId}</dd>
-                      </div>
-                      <For each={group.sections.filter(hasVisibleDigestSection)}>
-                        {(section) => <DigestSectionView section={section} />}
-                      </For>
-                    </section>
-                  )}
-                </For>
-              }
-            >
-              <Show
-                when={(view().stories?.length ?? 0) > 0}
-                fallback={
-                  <p class="hint digest-empty" role="status">
-                    No stories met this digest's delivery criteria.
-                  </p>
-                }
-              >
-                <div class="story-source-groups">
-                  <For each={groupStoriesBySource(view().stories ?? [])}>
-                    {(connector, connectorIndex) => (
-                      <section class="story-connector-group">
-                        <h4 class="story-connector-heading">
-                          {connector.connectorId}
-                        </h4>
-                        <For each={connector.feeds}>
-                          {(feed, feedIndex) => (
-                            <section class="story-feed-group">
-                              <h5 class="story-feed-heading">{feed.feedName}</h5>
-                              <div class="story-list">
-                                <For each={feed.stories}>
-                                  {(entry, storyIndex) => (
-                                    <StoryCard
-                                      story={entry.story}
-                                      displayedSources={entry.sources}
-                                      instanceKey={`${connectorIndex()}-${feedIndex()}-${storyIndex()}`}
-                                      feedbackAvailable={props.onSubmitFeedback !== undefined}
-                                      feedbackState={(input) =>
-                                        feedbackStates()[storyFeedbackKey(entry.story.id, input)]}
-                                      isPending={(input) =>
-                                        pendingFeedback()[storyFeedbackKey(entry.story.id, input)] === true}
-                                      onSubmit={(input) =>
-                                        void handleStoryFeedback(entry.story, input)}
-                                    />
-                                  )}
-                                </For>
-                              </div>
-                            </section>
-                          )}
-                        </For>
-                      </section>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </Show>
-            <Show when={view().paidPosts.length > 0}>
-              <section class="paid-posts" aria-labelledby="paid-posts-title">
-                <h3 id="paid-posts-title">Paid posts</h3>
-                <p class="hint">
-                  Inaccessible paid posts are never summarized. When enabled,
-                  linked titles appear at the end of each digest so the reader
-                  can decide whether to subscribe.
-                </p>
-                <For each={groupPaidPosts(view().paidPosts)}>
-                  {(group, index) => (
-                    <div class="paid-post-group">
-                      <h4
-                        class="paid-post-newsletter"
-                        id={`paid-post-newsletter-${index()}`}
-                      >
-                        {group.newsletterName}
-                      </h4>
-                      <ul
-                        class="paid-post-list"
-                        aria-labelledby={`paid-post-newsletter-${index()}`}
-                      >
-                        <For each={group.posts}>
-                          {(post) => (
-                            <li>
-                              <Show
-                                when={safeHttpUrl(post.sourceUrl)}
-                                fallback={post.title}
-                              >
-                                {(sourceUrl) => (
-                                  <a
-                                    href={sourceUrl()}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  >
-                                    {post.title}
-                                  </a>
-                                )}
-                              </Show>
-                            </li>
-                          )}
-                        </For>
-                      </ul>
-                    </div>
-                  )}
-                </For>
-              </section>
-            </Show>
-          </div>
-        )}
+
+      <Show when={props.nextCursor}>
+        <div class="digest-index-more">
+          <button
+            type="button"
+            onClick={() => void props.onLoadMore?.()}
+            disabled={props.loadingMore}
+          >
+            {props.loadingMore ? "Loading archive…" : "Load more issues"}
+          </button>
+        </div>
       </Show>
-    </div>
+    </section>
   );
 }

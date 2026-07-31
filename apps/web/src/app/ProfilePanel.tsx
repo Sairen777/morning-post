@@ -1,13 +1,16 @@
 import { createSignal, For, Show } from "solid-js";
 import type {
+  DigestRunDetail,
   InterestRuleDisposition,
   InterestRuleKind,
+  PublicDigestRun,
   PublicInterestRule,
   PublicUser,
   StoryDetailLevel,
 } from "../api/types";
 import { DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../../../../src/constants";
 import { ApiClientError } from "../api/client";
+import DigestRunsPanel from "./DigestRunsPanel";
 
 interface ProfilePanelProps {
   user: PublicUser;
@@ -43,6 +46,12 @@ interface ProfilePanelProps {
   onDeleteInterest: (id: string) => Promise<void>;
   onSaved: (user: PublicUser) => void;
   onAuthError: () => void;
+  runs?: PublicDigestRun[];
+  onSelectRun?: (id: string) => Promise<DigestRunDetail>;
+  onRefreshRuns?: () => Promise<void>;
+  nextRunCursor?: string;
+  loadingMoreRuns?: boolean;
+  onLoadMoreRuns?: () => Promise<void>;
 }
 
 type RuleDraft = {
@@ -53,6 +62,7 @@ type RuleDraft = {
 };
 
 type StoryCapPreset = "concise" | "standard" | "comprehensive" | "custom";
+type ProfileView = "preferences" | "interests" | "activity";
 
 function storyCapPresetFor(value: number | null): StoryCapPreset {
   if (value === null) return "standard";
@@ -78,7 +88,13 @@ const kindLabel: Record<InterestRuleKind, string> = {
 const dispositionLabel: Record<InterestRuleDisposition, string> = {
   prioritize: "Prioritize",
   show_less: "Show less",
-  mute: "Muted",
+  mute: "Mute",
+};
+
+const dispositionDescription: Record<InterestRuleDisposition, string> = {
+  prioritize: "Bring strong matches forward in your digest.",
+  show_less: "Keep matches available, but lower their prominence.",
+  mute: "Leave matching stories out of your digest.",
 };
 
 const storyDetailDescription: Record<StoryDetailLevel, string> = {
@@ -87,11 +103,30 @@ const storyDetailDescription: Record<StoryDetailLevel, string> = {
   thorough: "More context, nuance, and connections between sources.",
 };
 
+const profileViews: Array<{ id: ProfileView; label: string; description: string }> = [
+  {
+    id: "preferences",
+    label: "Preferences",
+    description: "Shape how each digest reads.",
+  },
+  {
+    id: "interests",
+    label: "Interests",
+    description: "Tune the subjects you see.",
+  },
+  {
+    id: "activity",
+    label: "Activity",
+    description: "Review recent digest runs.",
+  },
+];
+
 function dateInputValue(expiresAt: number | null): string {
   return expiresAt === null ? "" : new Date(expiresAt).toISOString().slice(0, 10);
 }
 
 export default function ProfilePanel(props: ProfilePanelProps) {
+  const [activeView, setActiveView] = createSignal<ProfileView>("preferences");
   const [name, setName] = createSignal(props.user.name);
   const [systemPrompt, setSystemPrompt] = createSignal(props.user.systemPrompt);
   const [summaryPrompt, setSummaryPrompt] = createSignal(props.user.summaryPrompt);
@@ -154,10 +189,7 @@ export default function ProfilePanel(props: ProfilePanelProps) {
     const maximum = maximumStoriesPerDigest().trim() === ""
       ? null
       : Number(maximumStoriesPerDigest());
-    if (
-      maximum !== null &&
-      (!Number.isInteger(maximum) || maximum <= 0)
-    ) {
+    if (maximum !== null && (!Number.isInteger(maximum) || maximum <= 0)) {
       setError("Maximum stories must be a positive whole number or blank.");
       return;
     }
@@ -167,9 +199,7 @@ export default function ProfilePanel(props: ProfilePanelProps) {
         name: name(),
         systemPrompt: systemPrompt(),
         summaryPrompt: summaryPrompt(),
-        defaultLanguage: defaultLanguage().trim() === ""
-          ? null
-          : defaultLanguage(),
+        defaultLanguage: defaultLanguage().trim() === "" ? null : defaultLanguage(),
         defaultRelevanceFilterMode: defaultRelevanceFilterMode(),
         storyDetailLevel: storyDetailLevel(),
         relevanceThreshold: threshold,
@@ -274,360 +304,381 @@ export default function ProfilePanel(props: ProfilePanelProps) {
   const renderRules = (rules: PublicInterestRule[]) => (
     <Show
       when={rules.length > 0}
-      fallback={<p class="hint">No active rules in this section.</p>}
+      fallback={<p class="profile-empty">No active rules in this section yet.</p>}
     >
-      <For each={rules}>
-        {(rule) => {
-          const draft = () => draftFor(rule);
-          const isMutating = () => props.interestMutationId === rule.id;
-          return (
-            <div class="card" style="margin-bottom: 0.75rem;">
-              <div style="display: flex; justify-content: space-between; gap: 1rem; align-items: baseline;">
-                <strong>{rule.label}</strong>
-                <span class="badge">
-                  {rule.origin === "inferred" ? "Inferred" : "Explicit"}
-                </span>
-              </div>
-              <div class="hint" style="margin: 0.25rem 0 0.75rem;">
-                {kindLabel[rule.kind]} · {dispositionLabel[rule.disposition]}
-                <Show when={rule.expiresAt !== null}>
-                  {" "}· Expires {new Date(rule.expiresAt!).toLocaleDateString()}
-                </Show>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label for={`interest-label-${rule.id}`}>Label</label>
-                  <input
-                    id={`interest-label-${rule.id}`}
-                    value={draft().label}
-                    onInput={(e) => updateDraft(rule, { label: e.currentTarget.value })}
-                  />
-                </div>
-                <div class="form-group">
-                  <label for={`interest-kind-${rule.id}`}>Type</label>
-                  <select
-                    id={`interest-kind-${rule.id}`}
-                    value={draft().kind}
-                    onChange={(e) =>
-                      updateDraft(rule, { kind: e.currentTarget.value as InterestRuleKind })}
-                  >
-                    <option value="topic">Topic</option>
-                    <option value="entity">Entity</option>
-                    <option value="phrase">Phrase</option>
-                    <option value="story_type">Story type</option>
-                  </select>
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label for={`interest-disposition-${rule.id}`}>Disposition</label>
-                  <select
-                    id={`interest-disposition-${rule.id}`}
-                    value={draft().disposition}
-                    onChange={(e) => {
-                      const disposition = e.currentTarget.value as InterestRuleDisposition;
-                      updateDraft(rule, {
-                        disposition,
-                        expiresAt: disposition === "mute" ? draft().expiresAt : "",
-                      });
-                    }}
-                  >
-                    <option value="prioritize">Prioritize</option>
-                    <option value="show_less">Show less</option>
-                    <option value="mute">Muted</option>
-                  </select>
-                </div>
-                <Show when={draft().disposition === "mute"}>
-                  <div class="form-group">
-                    <label for={`interest-expiry-${rule.id}`}>Mute expires (optional)</label>
-                    <input
-                      id={`interest-expiry-${rule.id}`}
-                      type="date"
-                      value={draft().expiresAt}
-                      onInput={(e) =>
-                        updateDraft(rule, { expiresAt: e.currentTarget.value })}
-                    />
+      <div class="interest-rule-list">
+        <For each={rules}>
+          {(rule) => {
+            const draft = () => draftFor(rule);
+            const isMutating = () => props.interestMutationId === rule.id;
+            return (
+              <article class="interest-rule" aria-busy={isMutating()}>
+                <div class="interest-rule-summary">
+                  <div>
+                    <h4>{rule.label}</h4>
+                    <p class="interest-rule-meta">
+                      {kindLabel[rule.kind]} · {rule.origin === "inferred" ? "Inferred from reading" : "Added by you"}
+                      <Show when={rule.expiresAt !== null}>
+                        {" · Expires "}{new Date(rule.expiresAt!).toLocaleDateString()}
+                      </Show>
+                    </p>
                   </div>
-                </Show>
-              </div>
-              <div class="form-row" style="gap: 0.5rem;">
-                <button
-                  type="button"
-                  class="primary"
-                  disabled={isMutating()}
-                  onClick={() => saveRule(rule)}
-                >
-                  {isMutating() ? "Saving…" : "Save rule"}
-                </button>
-                <button
-                  type="button"
-                  disabled={isMutating()}
-                  onClick={() => removeInterest(rule)}
-                >
-                  {rule.disposition === "mute" ? "Unmute" : "Remove"}
-                </button>
-              </div>
-            </div>
-          );
-        }}
-      </For>
+                  <span class={`badge interest-badge interest-badge-${rule.disposition}`}>
+                    {dispositionLabel[rule.disposition]}
+                  </span>
+                </div>
+                <p class="hint interest-rule-description">{dispositionDescription[rule.disposition]}</p>
+                <details class="interest-rule-edit">
+                  <summary>Edit rule</summary>
+                  <div class="interest-rule-fields">
+                    <div class="form-group">
+                      <label for={`interest-label-${rule.id}`}>Rule label</label>
+                      <input
+                        id={`interest-label-${rule.id}`}
+                        value={draft().label}
+                        onInput={(e) => updateDraft(rule, { label: e.currentTarget.value })}
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label for={`interest-kind-${rule.id}`}>What kind of interest is this?</label>
+                      <select
+                        id={`interest-kind-${rule.id}`}
+                        value={draft().kind}
+                        onChange={(e) => updateDraft(rule, { kind: e.currentTarget.value as InterestRuleKind })}
+                      >
+                        <option value="topic">Topic</option>
+                        <option value="entity">Person or organization</option>
+                        <option value="phrase">Exact phrase</option>
+                        <option value="story_type">Story type</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for={`interest-disposition-${rule.id}`}>How should it affect your digest?</label>
+                      <select
+                        id={`interest-disposition-${rule.id}`}
+                        value={draft().disposition}
+                        onChange={(e) => {
+                          const disposition = e.currentTarget.value as InterestRuleDisposition;
+                          updateDraft(rule, {
+                            disposition,
+                            expiresAt: disposition === "mute" ? draft().expiresAt : "",
+                          });
+                        }}
+                      >
+                        <option value="prioritize">Prioritize</option>
+                        <option value="show_less">Show less</option>
+                        <option value="mute">Mute</option>
+                      </select>
+                    </div>
+                    <Show when={draft().disposition === "mute"}>
+                      <div class="form-group">
+                        <label for={`interest-expiry-${rule.id}`}>Stop muting on (optional)</label>
+                        <input
+                          id={`interest-expiry-${rule.id}`}
+                          type="date"
+                          value={draft().expiresAt}
+                          onInput={(e) => updateDraft(rule, { expiresAt: e.currentTarget.value })}
+                        />
+                      </div>
+                    </Show>
+                  </div>
+                  <div class="profile-inline-actions">
+                    <button type="button" class="primary" disabled={isMutating()} onClick={() => saveRule(rule)}>
+                      {isMutating() ? "Saving…" : "Save rule"}
+                    </button>
+                    <button
+                      type="button"
+                      class="danger"
+                      disabled={isMutating()}
+                      onClick={() => removeInterest(rule)}
+                      aria-label={`Delete rule ${rule.label}`}
+                    >
+                      Delete rule
+                    </button>
+                  </div>
+                </details>
+              </article>
+            );
+          }}
+        </For>
+      </div>
     </Show>
   );
 
   const rulesFor = (disposition: InterestRuleDisposition) =>
     props.interests.filter((rule) => rule.disposition === disposition && rule.state === "active");
 
-  return (
-    <div class="card">
-      <div class="card-header">
-        <h2>Profile</h2>
-      </div>
-      <form onSubmit={handleSubmit}>
-        <div class="form-group">
-          <label for="profile-name">Name</label>
-          <input
-            id="profile-name"
-            type="text"
-            required
-            value={name()}
-            onInput={(e) => setName(e.currentTarget.value)}
-          />
+  const renderPreferences = () => (
+    <form class="profile-preferences" onSubmit={handleSubmit}>
+      <section class="profile-section" aria-labelledby="profile-reading-heading">
+        <div class="profile-section-heading">
+          <h2 id="profile-reading-heading">Reading defaults</h2>
+          <p>Set the baseline voice and depth for every digest. You can still tune individual feeds later.</p>
         </div>
-        <div class="form-row">
+        <div class="profile-form-grid">
           <div class="form-group">
-            <label for="profile-language">Default language</label>
+            <label for="profile-name">Your name</label>
+            <input id="profile-name" type="text" required value={name()} onInput={(e) => setName(e.currentTarget.value)} />
+            <p class="hint">Used to personalize your briefing and account.</p>
+          </div>
+          <div class="form-group">
+            <label for="profile-language">Digest language</label>
             <input
               id="profile-language"
               type="text"
               value={defaultLanguage()}
               onInput={(e) => setDefaultLanguage(e.currentTarget.value)}
+              placeholder="Auto-detect"
             />
-            <div class="hint">e.g. English, Spanish. Leave blank for auto-detection.</div>
+            <p class="hint">Leave blank to let Morning Post detect the language of your sources.</p>
           </div>
         </div>
         <div class="form-group">
-          <label for="profile-prompt">Interest instructions</label>
-          <textarea
-            id="profile-prompt"
-            rows={4}
-            value={systemPrompt()}
-            onInput={(e) => setSystemPrompt(e.currentTarget.value)}
-          />
-          <div class="hint">
-            Advanced context for deciding which stories match your interests.
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="profile-summary-prompt">Summary writing instructions</label>
-          <textarea
-            id="profile-summary-prompt"
-            rows={4}
-            value={summaryPrompt()}
-            onInput={(e) => setSummaryPrompt(e.currentTarget.value)}
-          />
-          <div class="hint">
-            Guide tone, detail, and format without changing relevance filtering.
-          </div>
-        </div>
-        <section class="section-title" aria-labelledby="profile-story-detail-heading">
-          <h3 id="profile-story-detail-heading">Story detail</h3>
-          <p class="hint">
-            Set the level of explanation used across your digests. Individual feeds can opt up to Thorough.
-          </p>
-          <div class="form-group">
-            <label for="profile-story-detail">Default story detail</label>
-            <select
-              id="profile-story-detail"
-              aria-describedby="profile-story-detail-hint"
-              value={storyDetailLevel()}
-              onChange={(e) =>
-                setStoryDetailLevel(e.currentTarget.value as StoryDetailLevel)}
-            >
-              <option value="headlines">Headlines — scan the essentials</option>
-              <option value="balanced">Balanced — understand the key points</option>
-              <option value="thorough">Thorough — explore more context and nuance</option>
-            </select>
-            <div id="profile-story-detail-hint" class="hint">
-              {storyDetailDescription[storyDetailLevel()]}
-            </div>
-          </div>
-        </section>
-        <section class="section-title" aria-labelledby="profile-filter-heading">
-          <h3 id="profile-filter-heading">Relevance and digest size</h3>
-          <p class="hint">Choose how broadly stories are filtered before your digest is built.</p>
-          <div class="form-group">
-            <label for="profile-relevance-mode">Default filtering mode</label>
-            <select
-              id="profile-relevance-mode"
-              value={defaultRelevanceFilterMode()}
-              onChange={(e) =>
-                setDefaultRelevanceFilterMode(e.currentTarget.value as "personalized" | "include_all")}
-            >
-              <option value="personalized">Personalized — use my interests</option>
-              <option value="include_all">Include all — do not filter by relevance</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="profile-threshold">Relevance threshold: {relevanceThreshold()}</label>
-            <input
-              id="profile-threshold"
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              value={relevanceThreshold()}
-              onInput={(e) => setRelevanceThreshold(e.currentTarget.value)}
-            />
-            <div class="hint">{thresholdDescription()}</div>
-          </div>
-          <div class="form-group">
-            <label for="profile-story-cap-preset">Digest size preset</label>
-            <select
-              id="profile-story-cap-preset"
-              value={storyCapPreset()}
-              onChange={(e) =>
-                handleStoryCapPresetChange(e.currentTarget.value as StoryCapPreset)}
-            >
-              <option value="concise">Concise — 8 stories</option>
-              <option value="standard">
-                Standard — {DEFAULT_MAXIMUM_STORIES_PER_DIGEST} stories (default)
-              </option>
-              <option value="comprehensive">Comprehensive — 20 stories</option>
-              <option value="custom">Custom</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label for="profile-max-stories">
-              Maximum stories per digest (Default: {DEFAULT_MAXIMUM_STORIES_PER_DIGEST})
-            </label>
-            <input
-              id="profile-max-stories"
-              type="number"
-              min="1"
-              step="1"
-              placeholder={`Default (${DEFAULT_MAXIMUM_STORIES_PER_DIGEST})`}
-              aria-describedby="profile-max-stories-hint"
-              value={maximumStoriesPerDigest()}
-              onInput={(e) => {
-                const value = e.currentTarget.value;
-                setMaximumStoriesPerDigest(value);
-                setStoryCapPreset(value.trim() === "" ? "standard" : "custom");
-              }}
-            />
-            <div id="profile-max-stories-hint" class="hint">
-              Choose a preset or enter a positive whole number. Standard uses the default{" "}
-              {DEFAULT_MAXIMUM_STORIES_PER_DIGEST}-story cap.
-            </div>
-          </div>
-        </section>
-        <Show when={error()}>
-          <div class="error">{error()}</div>
-        </Show>
-        <Show when={saved()}>
-          <div class="hint">Profile saved</div>
-        </Show>
-        <div class="form-actions">
-          <button type="submit" class="primary" disabled={saving()}>
-            {saving() ? "Saving…" : "Save profile"}
-          </button>
-        </div>
-      </form>
-
-      <section class="section-title" aria-labelledby="interests-heading">
-        <h3 id="interests-heading">Interest profile</h3>
-        <p class="hint">Rules shape relevance. Inferred rules come from your reading patterns; explicit rules are yours.</p>
-        <Show when={props.interestsError}>
-          <div class="error">{props.interestsError}</div>
-        </Show>
-        <Show
-          when={!props.interestsLoading}
-          fallback={<p class="hint">Loading interest profile…</p>}
-        >
-          <section aria-labelledby="prioritize-heading">
-            <h4 id="prioritize-heading">Prioritize</h4>
-            {renderRules(rulesFor("prioritize"))}
-          </section>
-          <section aria-labelledby="show-less-heading">
-            <h4 id="show-less-heading">Show less</h4>
-            {renderRules(rulesFor("show_less"))}
-          </section>
-          <section
-            aria-labelledby="muted-heading"
-            style="padding: 0.75rem; border: 1px solid var(--border); border-radius: var(--radius);"
+          <label for="profile-story-detail">How much context should stories include?</label>
+          <select
+            id="profile-story-detail"
+            aria-describedby="profile-story-detail-hint"
+            value={storyDetailLevel()}
+            onChange={(e) => setStoryDetailLevel(e.currentTarget.value as StoryDetailLevel)}
           >
-            <h4 id="muted-heading">Muted</h4>
-            <p class="hint">Muted rules are hard exclusions and are kept separate from ranking preferences.</p>
-            {renderRules(rulesFor("mute"))}
-          </section>
+            <option value="headlines">Headlines — scan the essentials</option>
+            <option value="balanced">Balanced — understand the key points</option>
+            <option value="thorough">Thorough — explore more context and nuance</option>
+          </select>
+          <p id="profile-story-detail-hint" class="hint">{storyDetailDescription[storyDetailLevel()]}</p>
+        </div>
+      </section>
+
+      <section class="profile-section" aria-labelledby="profile-digest-heading">
+        <div class="profile-section-heading">
+          <h2 id="profile-digest-heading">Digest shape</h2>
+          <p>Choose how much reading fits comfortably into one sitting.</p>
+        </div>
+        <div class="form-group">
+          <label for="profile-story-cap-preset">Digest size</label>
+          <select
+            id="profile-story-cap-preset"
+            value={storyCapPreset()}
+            onChange={(e) => handleStoryCapPresetChange(e.currentTarget.value as StoryCapPreset)}
+          >
+            <option value="concise">Concise — 8 stories</option>
+            <option value="standard">Standard — {DEFAULT_MAXIMUM_STORIES_PER_DIGEST} stories (default)</option>
+            <option value="comprehensive">Comprehensive — 20 stories</option>
+            <option value="custom">Custom</option>
+          </select>
+          <p class="hint">Presets keep the rhythm consistent; custom lets you choose your own ceiling.</p>
+        </div>
+        <div class="form-group">
+          <label for="profile-max-stories">Maximum stories per digest</label>
+          <input
+            id="profile-max-stories"
+            type="number"
+            min="1"
+            step="1"
+            placeholder={`Default (${DEFAULT_MAXIMUM_STORIES_PER_DIGEST})`}
+            aria-describedby="profile-max-stories-hint"
+            value={maximumStoriesPerDigest()}
+            onInput={(e) => {
+              const value = e.currentTarget.value;
+              setMaximumStoriesPerDigest(value);
+              setStoryCapPreset(value.trim() === "" ? "standard" : "custom");
+            }}
+          />
+          <p id="profile-max-stories-hint" class="hint">Standard uses the default {DEFAULT_MAXIMUM_STORIES_PER_DIGEST}-story cap.</p>
+        </div>
+      </section>
+
+      <section class="profile-section" aria-labelledby="profile-relevance-heading">
+        <div class="profile-section-heading">
+          <h2 id="profile-relevance-heading">Relevance</h2>
+          <p>Decide how strongly Morning Post should filter stories against your interests.</p>
+        </div>
+        <div class="form-group">
+          <label for="profile-relevance-mode">Default filtering mode</label>
+          <select
+            id="profile-relevance-mode"
+            value={defaultRelevanceFilterMode()}
+            onChange={(e) => setDefaultRelevanceFilterMode(e.currentTarget.value as "personalized" | "include_all")}
+          >
+            <option value="personalized">Personalized — use my interests</option>
+            <option value="include_all">Include all — do not filter by relevance</option>
+          </select>
+          <p class="hint">Personalized keeps your reading focused; include all is useful when exploring a new source.</p>
+        </div>
+        <div class="form-group profile-range-group">
+          <label for="profile-threshold">Relevance threshold <output for="profile-threshold">{relevanceThreshold()}</output></label>
+          <input
+            id="profile-threshold"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={relevanceThreshold()}
+            onInput={(e) => setRelevanceThreshold(e.currentTarget.value)}
+          />
+          <p class="hint">{thresholdDescription()}. Higher values make the digest more selective.</p>
+        </div>
+      </section>
+
+      <section class="profile-section" aria-labelledby="profile-advanced-heading">
+        <details class="profile-advanced">
+          <summary id="profile-advanced-heading">Advanced instructions</summary>
+          <p class="hint">Use these prompts only when the defaults do not capture your editorial voice. Raw prompt editing is optional.</p>
+          <div class="form-group">
+            <label for="profile-prompt">Interest instructions</label>
+            <textarea id="profile-prompt" rows={5} value={systemPrompt()} onInput={(e) => setSystemPrompt(e.currentTarget.value)} />
+            <p class="hint">Additional context for deciding which stories match your interests.</p>
+          </div>
+          <div class="form-group">
+            <label for="profile-summary-prompt">Summary writing instructions</label>
+            <textarea id="profile-summary-prompt" rows={5} value={summaryPrompt()} onInput={(e) => setSummaryPrompt(e.currentTarget.value)} />
+            <p class="hint">Guide tone, detail, and format without changing relevance filtering.</p>
+          </div>
+        </details>
+      </section>
+
+      <div class="profile-save-bar" role="group" aria-label="Save profile preferences">
+        <div>
+          <strong>Keep your desk tuned</strong>
+          <p class="hint" aria-live="polite">{saving() ? "Saving your preferences…" : saved() ? "Preferences saved." : "Changes stay here until you save."}</p>
+        </div>
+        <button type="submit" class="primary" disabled={saving()}>{saving() ? "Saving…" : "Save preferences"}</button>
+      </div>
+      <Show when={error()}>
+        <div class="error profile-form-error" role="alert">{error()}</div>
+      </Show>
+    </form>
+  );
+
+  const renderInterests = () => (
+    <div class="profile-interests">
+      <section class="profile-section" aria-labelledby="interests-heading">
+        <div class="profile-section-heading">
+          <h2 id="interests-heading">Interests</h2>
+          <p>Rules shape relevance without hiding the source. Explicit rules are yours; inferred rules come from your reading patterns.</p>
+        </div>
+        <Show when={props.interestsError}>
+          <div class="error" role="alert">{props.interestsError}</div>
+        </Show>
+        <Show when={!props.interestsLoading} fallback={<p class="profile-loading" role="status">Loading your interest profile…</p>}>
+          <div class="interest-groups">
+            <section class="interest-group" aria-labelledby="prioritize-heading">
+              <div class="interest-group-heading"><h3 id="prioritize-heading">Prioritize</h3><p>Bring these subjects forward.</p></div>
+              {renderRules(rulesFor("prioritize"))}
+            </section>
+            <section class="interest-group" aria-labelledby="show-less-heading">
+              <div class="interest-group-heading"><h3 id="show-less-heading">Show less</h3><p>Keep these subjects, with less emphasis.</p></div>
+              {renderRules(rulesFor("show_less"))}
+            </section>
+            <section class="interest-group interest-group-muted" aria-labelledby="muted-heading">
+              <div class="interest-group-heading"><h3 id="muted-heading">Mute</h3><p>Matching stories stay out until a rule expires or you delete it.</p></div>
+              {renderRules(rulesFor("mute"))}
+            </section>
+          </div>
         </Show>
       </section>
 
-      <section class="section-title" aria-labelledby="add-interest-heading">
-        <h3 id="add-interest-heading">Add a rule</h3>
-        <p class="hint">Add a topic, entity, phrase, or story type to your profile.</p>
-        <form onSubmit={addInterest}>
-          <div class="form-row">
-            <div class="form-group">
-              <label for="interest-label">Topic, entity, phrase, or story type</label>
-              <input
-                id="interest-label"
-                required
-                value={newLabel()}
-                onInput={(e) => setNewLabel(e.currentTarget.value)}
-              />
-            </div>
-            <div class="form-group">
-              <label for="interest-kind">Type</label>
-              <select
-                id="interest-kind"
-                value={newKind()}
-                onChange={(e) => setNewKind(e.currentTarget.value as InterestRuleKind)}
-              >
-                <option value="topic">Topic</option>
-                <option value="entity">Entity</option>
-                <option value="phrase">Phrase</option>
-                <option value="story_type">Story type</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label for="interest-disposition">Disposition</label>
-              <select
-                id="interest-disposition"
-                value={newDisposition()}
-                onChange={(e) =>
-                  setNewDisposition(e.currentTarget.value as InterestRuleDisposition)}
-              >
-                <option value="prioritize">Prioritize</option>
-                <option value="show_less">Show less</option>
-                <option value="mute">Muted</option>
-              </select>
-            </div>
-            <Show when={newDisposition() === "mute"}>
+      <section class="profile-section profile-add-interest" aria-labelledby="add-interest-heading">
+        <details open>
+          <summary id="add-interest-heading">Add an interest rule</summary>
+          <p class="hint">Start with one clear topic, person, phrase, or story type.</p>
+          <form onSubmit={addInterest}>
+            <div class="profile-form-grid">
               <div class="form-group">
-                <label for="interest-expiry">Mute expires (optional)</label>
-                <input
-                  id="interest-expiry"
-                  type="date"
-                  value={newExpiresAt()}
-                  onInput={(e) => setNewExpiresAt(e.currentTarget.value)}
-                />
+                <label for="interest-label">What should Morning Post notice?</label>
+                <input id="interest-label" required value={newLabel()} onInput={(e) => setNewLabel(e.currentTarget.value)} placeholder="e.g. urban planning" />
               </div>
+              <div class="form-group">
+                <label for="interest-kind">Interest type</label>
+                <select id="interest-kind" value={newKind()} onChange={(e) => setNewKind(e.currentTarget.value as InterestRuleKind)}>
+                  <option value="topic">Topic</option>
+                  <option value="entity">Person or organization</option>
+                  <option value="phrase">Exact phrase</option>
+                  <option value="story_type">Story type</option>
+                </select>
+              </div>
+            </div>
+            <div class="profile-form-grid">
+              <div class="form-group">
+                <label for="interest-disposition">How should it affect your digest?</label>
+                <select id="interest-disposition" value={newDisposition()} onChange={(e) => setNewDisposition(e.currentTarget.value as InterestRuleDisposition)}>
+                  <option value="prioritize">Prioritize</option>
+                  <option value="show_less">Show less</option>
+                  <option value="mute">Mute</option>
+                </select>
+              </div>
+              <Show when={newDisposition() === "mute"}>
+                <div class="form-group">
+                  <label for="interest-expiry">Stop muting on (optional)</label>
+                  <input id="interest-expiry" type="date" value={newExpiresAt()} onInput={(e) => setNewExpiresAt(e.currentTarget.value)} />
+                </div>
+              </Show>
+            </div>
+            <Show when={interestFormError()}>
+              <div class="error" role="alert">{interestFormError()}</div>
             </Show>
-          </div>
-          <Show when={interestFormError()}>
-            <div class="error">{interestFormError()}</div>
-          </Show>
-          <button
-            type="submit"
-            class="primary"
-            disabled={props.interestMutationId === "new"}
-          >
-            {props.interestMutationId === "new" ? "Adding…" : "Add rule"}
-          </button>
-        </form>
+            <button type="submit" class="primary" disabled={props.interestMutationId === "new"}>
+              {props.interestMutationId === "new" ? "Adding…" : "Add rule"}
+            </button>
+          </form>
+        </details>
       </section>
     </div>
+  );
+
+  const renderActivity = () => (
+    <section class="profile-activity" aria-labelledby="profile-activity-title">
+      <div class="profile-section-heading profile-activity-intro">
+        <h2 id="profile-activity-title">Activity</h2>
+        <p>See what Morning Post prepared recently. Open a digest to read it; technical feed steps stay tucked away until you need them.</p>
+      </div>
+      <Show
+        when={props.runs && props.onSelectRun && props.onRefreshRuns}
+        fallback={<p class="profile-empty">Run a digest to start building your activity history.</p>}
+      >
+        <DigestRunsPanel
+          runs={props.runs!}
+          onSelectRun={props.onSelectRun!}
+          onRefresh={props.onRefreshRuns!}
+          onAuthError={props.onAuthError}
+          nextCursor={props.nextRunCursor}
+          loadingMore={props.loadingMoreRuns}
+          onLoadMore={props.onLoadMoreRuns}
+        />
+      </Show>
+    </section>
+  );
+
+  return (
+    <section class="profile-workspace" aria-labelledby="profile-title">
+      <header class="profile-workspace-header">
+        <p class="app-content-kicker">Your desk</p>
+        <h1 id="profile-title">Profile</h1>
+        <p>Set the editorial defaults that make Morning Post feel like your own newspaper.</p>
+      </header>
+      <nav class="profile-tabs" role="tablist" aria-label="Profile workspace views">
+        <For each={profileViews}>
+          {(view) => (
+            <button
+              type="button"
+              role="tab"
+              class="profile-tab"
+              aria-selected={activeView() === view.id}
+              aria-controls={`profile-view-${view.id}`}
+              id={`profile-tab-${view.id}`}
+              onClick={() => setActiveView(view.id)}
+            >
+              <span>{view.label}</span>
+              <small>{view.description}</small>
+            </button>
+          )}
+        </For>
+      </nav>
+      <div id={`profile-view-${activeView()}`} role="tabpanel" aria-labelledby={`profile-tab-${activeView()}`} class="profile-view">
+        <Show when={activeView() === "preferences"}>{renderPreferences()}</Show>
+        <Show when={activeView() === "interests"}>{renderInterests()}</Show>
+        <Show when={activeView() === "activity"}>{renderActivity()}</Show>
+      </div>
+    </section>
   );
 }

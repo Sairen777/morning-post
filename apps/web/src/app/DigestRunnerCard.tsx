@@ -1,8 +1,22 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import type { DigestView, PublicDigestRun } from "../api/types";
 import FormatTime from "./FormatTime";
 import { validateDigestPeriod } from "./period";
 
+function dateTimeLocal(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  ].join("T");
+}
+
+const periodPresets = [
+  { label: "Last 24 hours", hours: 24 },
+  { label: "Last 3 days", hours: 72 },
+  { label: "Last 7 days", hours: 168 },
+] as const;
 interface DigestRunnerCardProps {
   onRun: (body: { periodStartMs?: number; periodEndMs?: number }) => Promise<DigestView>;
   onAuthError: () => void;
@@ -27,6 +41,12 @@ export default function DigestRunnerCard(props: DigestRunnerCardProps) {
     props.runStatusError !== null ||
     props.activeRun?.status === "running";
 
+  const applyPreset = (hours: number) => {
+    const endMs = Date.now();
+    setEnd(dateTimeLocal(endMs));
+    setStart(dateTimeLocal(endMs - hours * 60 * 60 * 1000));
+    setError(null);
+  };
   const handleRefreshRunStatus = async () => {
     setIsRefreshingRunStatus(true);
     try {
@@ -78,9 +98,15 @@ export default function DigestRunnerCard(props: DigestRunnerCardProps) {
   };
 
   return (
-    <div class="card">
+    <section class="card digest-runner" aria-labelledby="digest-runner-title">
       <div class="card-header">
-        <h2>Run Digest</h2>
+        <div>
+          <p class="app-content-kicker">Make an issue</p>
+          <h2 id="digest-runner-title">Run Digest</h2>
+          <p class="digest-runner-deck">
+            Set a coverage window, then send a new briefing to the archive.
+          </p>
+        </div>
       </div>
       <Show when={props.isCheckingRunStatus}>
         <p role="status" aria-live="polite">
@@ -112,6 +138,23 @@ export default function DigestRunnerCard(props: DigestRunnerCardProps) {
           </button>
         </div>
       </Show>
+      <fieldset class="digest-runner-presets">
+        <legend>Quick coverage windows</legend>
+        <div class="control-row">
+          <For each={periodPresets}>
+            {(preset) => (
+              <button
+                type="button"
+                onClick={() => applyPreset(preset.hours)}
+                disabled={isRunBlocked()}
+              >
+                {preset.label}
+              </button>
+            )}
+          </For>
+        </div>
+        <p class="hint">Presets fill the fields; you can adjust them before running.</p>
+      </fieldset>
       <form onSubmit={handleRun}>
         <div class="form-row">
           <div class="form-group">
@@ -146,7 +189,7 @@ export default function DigestRunnerCard(props: DigestRunnerCardProps) {
           </button>
         </div>
       </form>
-    </div>
+    </section>
   );
 }
 

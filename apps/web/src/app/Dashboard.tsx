@@ -29,6 +29,7 @@ import {
 import type {
   AvailableFeed,
   DigestRunDetail,
+  DigestSort,
   DigestView,
   DisconnectSourceResponse,
   InterestRuleDisposition,
@@ -48,11 +49,24 @@ import DigestRunnerCard from "./DigestRunnerCard";
 import SourcesPanel from "./SourcesPanel";
 import FeedsPanel from "./FeedsPanel";
 import DigestsPanel from "./DigestsPanel";
-import DigestRunsPanel from "./DigestRunsPanel";
-import TelegramConnectPanel from "./TelegramConnectPanel";
-import SubstackConnectPanel from "./SubstackConnectPanel";
-import XConnectPanel from "./XConnectPanel";
+import ConnectionsPanel from "./ConnectionsPanel";
 import ProfilePanel from "./ProfilePanel";
+
+const dashboardSections: readonly AppSection[] = [
+  "digests",
+  "connections",
+  "sources",
+  "feeds",
+  "profile",
+];
+
+function sectionFromLocation(): AppSection {
+  if (typeof window === "undefined") return "digests";
+  const value = new URLSearchParams(window.location.search).get("section");
+  return value !== null && dashboardSections.includes(value as AppSection)
+    ? value as AppSection
+    : "digests";
+}
 
 interface DashboardProps {
   user: PublicUser;
@@ -62,11 +76,14 @@ interface DashboardProps {
 }
 
 export default function Dashboard(props: DashboardProps) {
-  const [activeSection, setActiveSection] = createSignal<AppSection>("digests");
+  const [activeSection, setActiveSection] = createSignal<AppSection>(
+    sectionFromLocation(),
+  );
 
   // Data signals
   const [sources, setSources] = createSignal<PublicSource[]>([]);
   const [feeds, setFeeds] = createSignal<PublicFeed[]>([]);
+  const [digestSort, setDigestSort] = createSignal<DigestSort>("requested_desc");
   const [digests, setDigests] = createSignal<PublicDigest[]>([]);
   const [digestRuns, setDigestRuns] = createSignal<PublicDigestRun[]>([]);
   const [availableFeeds, setAvailableFeeds] = createSignal<
@@ -102,6 +119,7 @@ export default function Dashboard(props: DashboardProps) {
   let digestRunRefreshInFlight = false;
   const digestRunStatusCheckError =
     "We couldn't confirm whether a digest is already running. Retry the status check before starting another digest.";
+  let digestRequestGeneration = 0;
   let feedRefreshGeneration = 0;
 
   // Fetch helpers
@@ -148,12 +166,19 @@ export default function Dashboard(props: DashboardProps) {
     }
   };
 
-  const refreshDigests = async () => {
+  const refreshDigests = async (sort = digestSort()) => {
+    const requestGeneration = ++digestRequestGeneration;
     try {
-      const page = await listDigests();
+      const page = await listDigests({ sort });
+      if (requestGeneration !== digestRequestGeneration || sort !== digestSort()) {
+        return;
+      }
       setDigests(page.data);
       setDigestCursor(page.nextCursor);
     } catch (err: unknown) {
+      if (requestGeneration !== digestRequestGeneration || sort !== digestSort()) {
+        return;
+      }
       if (err instanceof ApiClientError && err.status === 401) {
         props.onAuthError();
       }
@@ -217,10 +242,15 @@ export default function Dashboard(props: DashboardProps) {
 
   const handleLoadMoreDigests = async () => {
     const cursor = digestCursor();
+    const sort = digestSort();
+    const requestGeneration = digestRequestGeneration;
     if (!cursor || loadingMoreDigests()) return;
     setLoadingMoreDigests(true);
     try {
-      const page = await listDigests({ cursor });
+      const page = await listDigests({ cursor, sort });
+      if (requestGeneration !== digestRequestGeneration || sort !== digestSort()) {
+        return;
+      }
       setDigests((prev) => {
         const existingIds = new Set(prev.map((d) => d.id));
         const newItems = page.data.filter((d) => !existingIds.has(d.id));
@@ -228,12 +258,25 @@ export default function Dashboard(props: DashboardProps) {
       });
       setDigestCursor(page.nextCursor);
     } catch (err: unknown) {
+      if (requestGeneration !== digestRequestGeneration || sort !== digestSort()) {
+        return;
+      }
       if (err instanceof ApiClientError && err.status === 401) {
         props.onAuthError();
       }
     } finally {
-      setLoadingMoreDigests(false);
+      if (requestGeneration === digestRequestGeneration) {
+        setLoadingMoreDigests(false);
+      }
     }
+  };
+  const handleDigestSortChange = (sort: DigestSort) => {
+    if (sort === digestSort()) return;
+    setDigestSort(sort);
+    setDigests([]);
+    setDigestCursor(undefined);
+    setLoadingMoreDigests(false);
+    void refreshDigests(sort);
   };
 
   const handleLoadMoreRuns = async () => {
@@ -270,7 +313,14 @@ export default function Dashboard(props: DashboardProps) {
       }
     }
   };
+
   onMount(() => {
+    const syncSection = () => setActiveSection(sectionFromLocation());
+    syncSection();
+    if (typeof window !== "undefined") {
+      window.addEventListener("popstate", syncSection);
+      onCleanup(() => window.removeEventListener("popstate", syncSection));
+    }
     refreshSources();
     refreshFeeds();
     refreshDigests();
@@ -522,12 +572,27 @@ export default function Dashboard(props: DashboardProps) {
     await refreshFeeds();
     await refreshSourceFeedsIfLoaded(sourceId);
   };
+  const handleSectionChange = (section: AppSection) => {
+    setActiveSection(section);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (section === "digests") {
+      url.searchParams.delete("section");
+    } else {
+      url.searchParams.set("section", section);
+    }
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  };
 
   return (
     <AppShell
       user={props.user}
       activeSection={activeSection()}
-      onSectionChange={(section) => setActiveSection(section)}
+      onSectionChange={handleSectionChange}
       onLogout={handleLogout}
       wide
     >
@@ -542,7 +607,7 @@ export default function Dashboard(props: DashboardProps) {
             onRefreshRunStatus={async () => {
               await refreshDigestRuns();
             }}
-            onOpenRuns={() => setActiveSection("profile")}
+            onOpenRuns={() => handleSectionChange("profile")}
           />
           <DigestsPanel
             digests={digests()}
@@ -554,33 +619,25 @@ export default function Dashboard(props: DashboardProps) {
             nextCursor={digestCursor()}
             loadingMore={loadingMoreDigests()}
             onLoadMore={handleLoadMoreDigests}
+            sort={digestSort()}
+            onSortChange={handleDigestSortChange}
           />
         </div>
       </Show>
 
       <Show when={activeSection() === "connections"}>
-        <div class="panel-stack">
-          <TelegramConnectPanel
-            sources={sources()}
-            onConnected={handleTelegramConnected}
-            onAuthError={props.onAuthError}
-          />
-          <SubstackConnectPanel
-            sources={sources()}
-            feeds={feeds()}
-            onConnected={handleSubstackConnected}
-            onPublicationAdded={handleSubstackPublicationAdded}
-            onSourceUpdated={handleSubstackSourceUpdated}
-            onAuthError={props.onAuthError}
-          />
-          <XConnectPanel
-            sources={sources()}
-            feeds={feeds()}
-            onConnected={handleXConnected}
-            onTargetAdded={handleXTargetAdded}
-            onAuthError={props.onAuthError}
-          />
-        </div>
+        <ConnectionsPanel
+          sources={sources()}
+          feeds={feeds()}
+          onTelegramConnected={handleTelegramConnected}
+          onSubstackConnected={handleSubstackConnected}
+          onSubstackPublicationAdded={handleSubstackPublicationAdded}
+          onSubstackSourceUpdated={handleSubstackSourceUpdated}
+          onXConnected={handleXConnected}
+          onXTargetAdded={handleXTargetAdded}
+          onDisconnectSource={handleDisconnectSource}
+          onAuthError={props.onAuthError}
+        />
       </Show>
 
       <Show when={activeSection() === "sources"}>
@@ -596,6 +653,7 @@ export default function Dashboard(props: DashboardProps) {
           onDiscoverFeeds={handleDiscoverFeeds}
           onLoadSourceFeeds={handleLoadSourceFeeds}
           onSubscribe={handleSubscribeFeed}
+          onNavigateToConnections={() => handleSectionChange("connections")}
           onAuthError={props.onAuthError}
         />
       </Show>
@@ -603,6 +661,8 @@ export default function Dashboard(props: DashboardProps) {
       <Show when={activeSection() === "feeds"}>
         <FeedsPanel
           feeds={feeds()}
+          sources={sources()}
+          onOpenSources={() => handleSectionChange("sources")}
           onLoadFeed={handleLoadFeed}
           onToggleFeed={handleToggleFeed}
           onUpdateFeed={handleUpdateFeed}
@@ -624,27 +684,15 @@ export default function Dashboard(props: DashboardProps) {
           onDeleteInterest={handleDeleteInterest}
           onSaved={props.onUserUpdate}
           onAuthError={props.onAuthError}
+          runs={digestRuns()}
+          onSelectRun={handleSelectRun}
+          onRefreshRuns={async () => {
+            await refreshDigestRuns();
+          }}
+          nextRunCursor={digestRunCursor()}
+          loadingMoreRuns={loadingMoreRuns()}
+          onLoadMoreRuns={handleLoadMoreRuns}
         />
-        <section class="profile-activity" aria-labelledby="profile-activity-title">
-          <div class="profile-activity-heading">
-            <div>
-              <p class="app-content-kicker">Activity</p>
-              <h2 id="profile-activity-title">Digest runs</h2>
-            </div>
-            <p class="hint">A history of briefings prepared for your desk.</p>
-          </div>
-          <DigestRunsPanel
-            runs={digestRuns()}
-            onSelectRun={handleSelectRun}
-            onRefresh={async () => {
-              await refreshDigestRuns();
-            }}
-            onAuthError={props.onAuthError}
-            nextCursor={digestRunCursor()}
-            loadingMore={loadingMoreRuns()}
-            onLoadMore={handleLoadMoreRuns}
-          />
-        </section>
       </Show>
     </AppShell>
   );
