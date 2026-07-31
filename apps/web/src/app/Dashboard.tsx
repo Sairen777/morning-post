@@ -43,6 +43,7 @@ import type {
   StoryDetailLevel,
   SummarizationMode,
 } from "../api/types";
+import AppShell, { type AppSection } from "./AppShell";
 import DigestRunnerCard from "./DigestRunnerCard";
 import SourcesPanel from "./SourcesPanel";
 import FeedsPanel from "./FeedsPanel";
@@ -60,16 +61,8 @@ interface DashboardProps {
   onUserUpdate: (user: PublicUser) => void;
 }
 
-type TabId =
-  | "digests"
-  | "runs"
-  | "connections"
-  | "sources"
-  | "feeds"
-  | "profile";
-
 export default function Dashboard(props: DashboardProps) {
-  const [activeTab, setActiveTab] = createSignal<TabId>("digests");
+  const [activeSection, setActiveSection] = createSignal<AppSection>("digests");
 
   // Data signals
   const [sources, setSources] = createSignal<PublicSource[]>([]);
@@ -530,48 +523,27 @@ export default function Dashboard(props: DashboardProps) {
     await refreshSourceFeedsIfLoaded(sourceId);
   };
 
-  const tabLabel = (tab: TabId, label: string) => (
-    <button
-      type="button"
-      onClick={() => setActiveTab(tab)}
-      class={activeTab() === tab ? "primary" : ""}
-      style={{ "margin-right": "0.5rem" }}
-    >
-      {label}
-    </button>
-  );
   return (
-    <div class="app-container">
-      <header class="app-header">
-        <h1>Morning Post</h1>
-        <div class="user-info">
-          <span>{props.user.name}</span>
-          <button type="button" onClick={handleLogout}>Log out</button>
-        </div>
-      </header>
-
-      <nav style="margin-bottom: 1.5rem;">
-        {tabLabel("digests", "Digests")}
-        {tabLabel("runs", "Runs")}
-        {tabLabel("connections", "Connections")}
-        {tabLabel("sources", "Sources")}
-        {tabLabel("feeds", "Feeds")}
-        {tabLabel("profile", "Profile")}
-      </nav>
-
-      <Show when={activeTab() === "digests"}>
-        <DigestRunnerCard
-          onRun={handleRunDigest}
-          onAuthError={props.onAuthError}
-          activeRun={activeDigestRun()}
-          isCheckingRunStatus={isCheckingDigestRunStatus()}
-          runStatusError={digestRunStatusError()}
-          onRefreshRunStatus={async () => {
-            await refreshDigestRuns();
-          }}
-          onOpenRuns={() => setActiveTab("runs")}
-        />
-        <div style="margin-top: 1rem;">
+    <AppShell
+      user={props.user}
+      activeSection={activeSection()}
+      onSectionChange={(section) => setActiveSection(section)}
+      onLogout={handleLogout}
+      wide
+    >
+      <Show when={activeSection() === "digests"}>
+        <div class="panel-stack">
+          <DigestRunnerCard
+            onRun={handleRunDigest}
+            onAuthError={props.onAuthError}
+            activeRun={activeDigestRun()}
+            isCheckingRunStatus={isCheckingDigestRunStatus()}
+            runStatusError={digestRunStatusError()}
+            onRefreshRunStatus={async () => {
+              await refreshDigestRuns();
+            }}
+            onOpenRuns={() => setActiveSection("profile")}
+          />
           <DigestsPanel
             digests={digests()}
             onSelectDigest={handleSelectDigest}
@@ -586,44 +558,32 @@ export default function Dashboard(props: DashboardProps) {
         </div>
       </Show>
 
-      <Show when={activeTab() === "runs"}>
-        <DigestRunsPanel
-          runs={digestRuns()}
-          onSelectRun={handleSelectRun}
-          onRefresh={async () => {
-            await refreshDigestRuns();
-          }}
-          onAuthError={props.onAuthError}
-          nextCursor={digestRunCursor()}
-          loadingMore={loadingMoreRuns()}
-          onLoadMore={handleLoadMoreRuns}
-        />
+      <Show when={activeSection() === "connections"}>
+        <div class="panel-stack">
+          <TelegramConnectPanel
+            sources={sources()}
+            onConnected={handleTelegramConnected}
+            onAuthError={props.onAuthError}
+          />
+          <SubstackConnectPanel
+            sources={sources()}
+            feeds={feeds()}
+            onConnected={handleSubstackConnected}
+            onPublicationAdded={handleSubstackPublicationAdded}
+            onSourceUpdated={handleSubstackSourceUpdated}
+            onAuthError={props.onAuthError}
+          />
+          <XConnectPanel
+            sources={sources()}
+            feeds={feeds()}
+            onConnected={handleXConnected}
+            onTargetAdded={handleXTargetAdded}
+            onAuthError={props.onAuthError}
+          />
+        </div>
       </Show>
 
-      <Show when={activeTab() === "connections"}>
-        <TelegramConnectPanel
-          sources={sources()}
-          onConnected={handleTelegramConnected}
-          onAuthError={props.onAuthError}
-        />
-        <SubstackConnectPanel
-          sources={sources()}
-          feeds={feeds()}
-          onConnected={handleSubstackConnected}
-          onPublicationAdded={handleSubstackPublicationAdded}
-          onSourceUpdated={handleSubstackSourceUpdated}
-          onAuthError={props.onAuthError}
-        />
-        <XConnectPanel
-          sources={sources()}
-          feeds={feeds()}
-          onConnected={handleXConnected}
-          onTargetAdded={handleXTargetAdded}
-          onAuthError={props.onAuthError}
-        />
-      </Show>
-
-      <Show when={activeTab() === "sources"}>
+      <Show when={activeSection() === "sources"}>
         <SourcesPanel
           sources={sources()}
           feeds={feeds()}
@@ -640,7 +600,7 @@ export default function Dashboard(props: DashboardProps) {
         />
       </Show>
 
-      <Show when={activeTab() === "feeds"}>
+      <Show when={activeSection() === "feeds"}>
         <FeedsPanel
           feeds={feeds()}
           onLoadFeed={handleLoadFeed}
@@ -651,7 +611,7 @@ export default function Dashboard(props: DashboardProps) {
         />
       </Show>
 
-      <Show when={activeTab() === "profile"}>
+      <Show when={activeSection() === "profile"}>
         <ProfilePanel
           user={props.user}
           onSave={handleSaveProfile}
@@ -665,7 +625,27 @@ export default function Dashboard(props: DashboardProps) {
           onSaved={props.onUserUpdate}
           onAuthError={props.onAuthError}
         />
+        <section class="profile-activity" aria-labelledby="profile-activity-title">
+          <div class="profile-activity-heading">
+            <div>
+              <p class="app-content-kicker">Activity</p>
+              <h2 id="profile-activity-title">Digest runs</h2>
+            </div>
+            <p class="hint">A history of briefings prepared for your desk.</p>
+          </div>
+          <DigestRunsPanel
+            runs={digestRuns()}
+            onSelectRun={handleSelectRun}
+            onRefresh={async () => {
+              await refreshDigestRuns();
+            }}
+            onAuthError={props.onAuthError}
+            nextCursor={digestRunCursor()}
+            loadingMore={loadingMoreRuns()}
+            onLoadMore={handleLoadMoreRuns}
+          />
+        </section>
       </Show>
-    </div>
+    </AppShell>
   );
 }
