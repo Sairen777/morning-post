@@ -1,4 +1,5 @@
 import { createSignal, For, Match, Show, Switch } from "solid-js";
+import { ApiClientError } from "../api/client";
 import type {
   DisconnectSourceResponse,
   PublicFeed,
@@ -88,6 +89,15 @@ export default function ConnectionsPanel(props: ConnectionsPanelProps) {
     const source = sourceFor(connectorId);
     if (!source || !source.connected) return;
 
+    const service = selectedService();
+    if (
+      !globalThis.confirm(
+        `Disconnect ${service?.label ?? connectorId}? Your saved ${service?.label ?? "service"} connection credentials will be removed. Existing subscriptions will no longer contribute to future digests until you reconnect.`,
+      )
+    ) {
+      return;
+    }
+
     setDisconnecting(true);
     setDisconnectError(null);
     setDisconnectNotice(null);
@@ -95,6 +105,10 @@ export default function ConnectionsPanel(props: ConnectionsPanelProps) {
       const result = await props.onDisconnectSource(source.id);
       setDisconnectNotice(result.message);
     } catch (error: unknown) {
+      if (error instanceof ApiClientError && error.status === 401) {
+        props.onAuthError();
+        return;
+      }
       if (error instanceof Error) {
         setDisconnectError(error.message);
       } else {

@@ -52,6 +52,7 @@ interface ProfilePanelProps {
   nextRunCursor?: string;
   loadingMoreRuns?: boolean;
   onLoadMoreRuns?: () => Promise<void>;
+  initialView?: ProfileView;
 }
 
 type RuleDraft = {
@@ -62,7 +63,7 @@ type RuleDraft = {
 };
 
 type StoryCapPreset = "concise" | "standard" | "comprehensive" | "custom";
-type ProfileView = "preferences" | "interests" | "activity";
+export type ProfileView = "preferences" | "interests" | "activity";
 
 function storyCapPresetFor(value: number | null): StoryCapPreset {
   if (value === null) return "standard";
@@ -126,7 +127,9 @@ function dateInputValue(expiresAt: number | null): string {
 }
 
 export default function ProfilePanel(props: ProfilePanelProps) {
-  const [activeView, setActiveView] = createSignal<ProfileView>("preferences");
+  const [activeView, setActiveView] = createSignal<ProfileView>(
+    props.initialView ?? "preferences",
+  );
   const [name, setName] = createSignal(props.user.name);
   const [systemPrompt, setSystemPrompt] = createSignal(props.user.systemPrompt);
   const [summaryPrompt, setSummaryPrompt] = createSignal(props.user.summaryPrompt);
@@ -648,6 +651,27 @@ export default function ProfilePanel(props: ProfilePanelProps) {
       </Show>
     </section>
   );
+  const handleProfileTabKeyDown = (
+    event: KeyboardEvent,
+    currentView: ProfileView,
+  ) => {
+    const currentIndex = profileViews.findIndex((view) => view.id === currentView);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % profileViews.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + profileViews.length) % profileViews.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = profileViews.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextView = profileViews[nextIndex].id;
+    setActiveView(nextView);
+    document.getElementById(`profile-tab-${nextView}`)?.focus();
+  };
 
   return (
     <section class="profile-workspace" aria-labelledby="profile-title">
@@ -664,9 +688,11 @@ export default function ProfilePanel(props: ProfilePanelProps) {
               role="tab"
               class="profile-tab"
               aria-selected={activeView() === view.id}
+              tabIndex={activeView() === view.id ? 0 : -1}
               aria-controls={`profile-view-${view.id}`}
               id={`profile-tab-${view.id}`}
               onClick={() => setActiveView(view.id)}
+              onKeyDown={(event) => handleProfileTabKeyDown(event, view.id)}
             >
               <span>{view.label}</span>
               <small>{view.description}</small>

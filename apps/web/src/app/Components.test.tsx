@@ -349,6 +349,56 @@ describe("ProfilePanel", () => {
     });
     expect(labelInput).toHaveValue("");
   });
+  it("supports roving profile tabs with keyboard navigation", async () => {
+    const user = {
+      id: "user-1",
+      name: "Ada",
+      systemPrompt: "",
+      summaryPrompt: "",
+      defaultLanguage: null,
+      defaultRelevanceFilterMode: "personalized" as const,
+      storyDetailLevel: "balanced" as const,
+      relevanceThreshold: 60,
+      maximumStoriesPerDigest: null,
+      interestProfileVersion: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    render(() => (
+      <ProfilePanel
+        user={user}
+        interests={[]}
+        interestsLoading={false}
+        interestMutationId={null}
+        interestsError={null}
+        onCreateInterest={() => Promise.resolve()}
+        onUpdateInterest={() => Promise.resolve()}
+        onDeleteInterest={() => Promise.resolve()}
+        onSave={() => Promise.resolve(user)}
+        onSaved={() => {}}
+        onAuthError={() => {}}
+      />
+    ));
+
+    const preferences = screen.getByRole("tab", { name: /^Preferences/ });
+    const interests = screen.getByRole("tab", { name: /^Interests/ });
+    const activity = screen.getByRole("tab", { name: /^Activity/ });
+    expect(preferences).toHaveAttribute("tabindex", "0");
+    expect(interests).toHaveAttribute("tabindex", "-1");
+    preferences.focus();
+
+    await fireEvent.keyDown(preferences, { key: "ArrowRight" });
+    expect(interests).toHaveAttribute("aria-selected", "true");
+    expect(document.activeElement).toBe(interests);
+
+    await fireEvent.keyDown(interests, { key: "End" });
+    expect(activity).toHaveAttribute("aria-selected", "true");
+    expect(document.activeElement).toBe(activity);
+
+    await fireEvent.keyDown(activity, { key: "Home" });
+    expect(preferences).toHaveAttribute("aria-selected", "true");
+    expect(document.activeElement).toBe(preferences);
+  });
 });
 
 describe("SourcesPanel", () => {

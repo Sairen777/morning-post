@@ -50,7 +50,7 @@ import SourcesPanel from "./SourcesPanel";
 import FeedsPanel from "./FeedsPanel";
 import DigestsPanel from "./DigestsPanel";
 import ConnectionsPanel from "./ConnectionsPanel";
-import ProfilePanel from "./ProfilePanel";
+import ProfilePanel, { type ProfileView } from "./ProfilePanel";
 
 const dashboardSections: readonly AppSection[] = [
   "digests",
@@ -79,6 +79,7 @@ export default function Dashboard(props: DashboardProps) {
   const [activeSection, setActiveSection] = createSignal<AppSection>(
     sectionFromLocation(),
   );
+  const [profileInitialView, setProfileInitialView] = createSignal<ProfileView>("preferences");
 
   // Data signals
   const [sources, setSources] = createSignal<PublicSource[]>([]);
@@ -572,7 +573,13 @@ export default function Dashboard(props: DashboardProps) {
     await refreshFeeds();
     await refreshSourceFeedsIfLoaded(sourceId);
   };
-  const handleSectionChange = (section: AppSection) => {
+  const handleSectionChange = (
+    section: AppSection,
+    profileView: ProfileView = "preferences",
+  ) => {
+    if (section === "profile") {
+      setProfileInitialView(profileView);
+    }
     setActiveSection(section);
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -607,7 +614,7 @@ export default function Dashboard(props: DashboardProps) {
             onRefreshRunStatus={async () => {
               await refreshDigestRuns();
             }}
-            onOpenRuns={() => handleSectionChange("profile")}
+            onOpenRuns={() => handleSectionChange("profile", "activity")}
           />
           <DigestsPanel
             digests={digests()}
@@ -684,6 +691,7 @@ export default function Dashboard(props: DashboardProps) {
           onDeleteInterest={handleDeleteInterest}
           onSaved={props.onUserUpdate}
           onAuthError={props.onAuthError}
+          initialView={profileInitialView()}
           runs={digestRuns()}
           onSelectRun={handleSelectRun}
           onRefreshRuns={async () => {

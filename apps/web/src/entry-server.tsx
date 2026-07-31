@@ -7,6 +7,7 @@ function Document(props: { assets?: JSX.Element; children?: JSX.Element; scripts
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Morning Post</title>
         {props.assets}
       </head>
       <body>

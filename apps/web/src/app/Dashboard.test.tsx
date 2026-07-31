@@ -319,6 +319,15 @@ describe("Dashboard digest run recovery", () => {
       expect(screen.getByRole("button", { name: "Run digest" })).toBeDisabled();
     });
     expect(screen.getByRole("button", { name: "Open Runs tab" })).toBeVisible();
+    await fireEvent.click(screen.getByRole("button", { name: "Open Runs tab" }));
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: /^Activity/ })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      )
+    );
+    expect(screen.getByRole("heading", { name: "Activity" })).toBeVisible();
+    expect(screen.queryByLabelText("Your name")).toBeNull();
   });
 
   it("shows a retryable status error instead of enabling an unchecked run", async () => {
