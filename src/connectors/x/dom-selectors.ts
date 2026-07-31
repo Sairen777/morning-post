@@ -6,8 +6,8 @@ export const X_DOM = Object.freeze({
   controlState: 'main[role="dialog"], main [role="dialog"], main form',
   authenticatedAccount: '[data-testid="SideNav_AccountSwitcher_Button"]',
   authenticatedHomeLink: 'a[data-testid="AppTabBar_Home_Link"], a[href="/home"]',
-  loginIdentifier: 'input[autocomplete="username"]',
-  loginPassword: 'input[autocomplete="current-password"]',
+  loginIdentifier: 'input[autocomplete~="username"], input[name="username_or_email"], input[data-testid="ocfEnterTextTextInput"]',
+  loginPassword: 'input[autocomplete="current-password"], input[name="password"]',
   loginLink: 'a[href="/login"], a[data-testid="loginButton"]',
   followingTab: '[role="tab"]',
   timelinePost: 'article[data-testid="tweet"]',
@@ -20,7 +20,7 @@ export const X_DOM = Object.freeze({
   likeMetric: '[data-testid="like"], [data-testid="unlike"]',
   viewMetric: 'a[href*="/analytics"], [aria-label*="View" i]',
   listLink: 'a[href^="/i/lists/"], a[href^="https://x.com/i/lists/"]',
-  conversationLink: 'a[href^="/messages/"], a[href^="https://x.com/messages/"]',
+  conversationLink: 'a[href^="/i/chat/"], a[href^="https://x.com/i/chat/"]',
   pageHeading: 'main h1, main h2, [role="main"] [role="heading"]',
   chatMessage: [
     'main [data-testid="messageEntry"]',
@@ -51,7 +51,8 @@ export const X_DOM = Object.freeze({
     'main input[inputmode="numeric"]',
   ].join(", "),
   chatShell: [
-    'main a[href^="/messages/"]:not([href="/messages/compose"]):not([href="/messages/requests"]):not([href="/messages/settings"])',
+    'main a[href^="/i/chat/"]',
+    'main a[href^="https://x.com/i/chat/"]',
     'main [data-testid="messageEntry"]',
     'main [data-message-id]',
     'main [data-event-id]',
@@ -63,6 +64,7 @@ export const X_DOM = Object.freeze({
 export const X_ACCESSIBLE_NAMES = Object.freeze({
   followingTab: /^Following$/i,
   login: /^(?:log in|sign in)$/i,
+  newChat: /^New chat$/i,
   chatUnlock: /(?:unlock|set up|enable|restore|continue).*(?:chat|message)|(?:chat|message).*(?:passcode|password|unlock)/i,
 });
 

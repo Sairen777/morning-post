@@ -41,12 +41,12 @@ const CANONICAL_TARGETS: CanonicalTargetCase[] = [
     target: { kind: "list", listId: "12345678901234567890123456789012" },
   },
   {
-    url: "https://x.com/messages/a",
+    url: "https://x.com/i/chat/a",
     externalId: "x:chat:a",
     target: { kind: "chat", conversationId: "a" },
   },
   {
-    url: "https://x.com/messages/Team_chat-01",
+    url: "https://x.com/i/chat/Team_chat-01",
     externalId: "x:chat:Team_chat-01",
     target: { kind: "chat", conversationId: "Team_chat-01" },
   },
@@ -71,16 +71,19 @@ const REJECTED_TARGET_URLS = [
   "https://x.com/i/lists/123?show=posts",
   "https://x.com/i/lists/123#posts",
   "https://x.com/i/lists/123456789012345678901234567890123",
-  "https://x.com/messages/",
-  "https://x.com/messages/_chat",
-  "https://x.com/messages/-chat",
-  "https://x.com/messages/chat.name",
-  "https://x.com/messages/chat/extra",
-  "https://x.com/messages/chat?via=inbox",
-  "https://x.com/messages/chat#latest",
-  "https://x.com/messages/compose",
-  "https://x.com/messages/REQUESTS",
-  `https://x.com/messages/${"a".repeat(129)}`,
+  "https://x.com/i/chat/",
+  "https://x.com/i/chat/_chat",
+  "https://x.com/i/chat/-chat",
+  "https://x.com/i/chat/chat.name",
+  "https://x.com/i/chat/chat/extra",
+  "https://x.com/i/chat/chat?via=inbox",
+  "https://x.com/i/chat/chat#latest",
+  "https://x.com/i/chat/compose",
+  "https://x.com/i/chat/new",
+  "https://x.com/i/chat/REQUESTS",
+  `https://x.com/i/chat/${"a".repeat(129)}`,
+  "https://x.com/messages/a",
+  "https://x.com/messages/Team_chat-01",
   "https://x.com/home\n",
 ];
 
@@ -101,8 +104,8 @@ const REJECTED_EXTERNAL_IDS = [
   "x:chat:chat.name",
   "x:chat:chat/extra",
   "x:chat:compose",
+  "x:chat:new",
   "x:chat:Settings",
-  `x:chat:${"a".repeat(129)}`,
   " x:following",
   "x:following ",
   "x:following\n",
@@ -208,6 +211,51 @@ function fakePage(movements: readonly boolean[]): FakePage {
     advancementCount: () => advancementCount,
   };
 }
+
+test("virtual scrolling advances by half a viewport with instant behavior after a 750 ms settle", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const scrollCalls: ScrollToOptions[] = [];
+  let scrollY = 0;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      innerHeight: 800,
+      get scrollY() {
+        return scrollY;
+      },
+      scrollBy(options: ScrollToOptions) {
+        scrollCalls.push(options);
+        scrollY += Number(options.top ?? 0);
+      },
+    },
+  });
+
+  try {
+    const page = {
+      locator: () => ({ count: () => Promise.resolve(0) }),
+      evaluate: <T>(callback: (sign: number) => T, sign: number) =>
+        Promise.resolve(callback(sign)),
+    } as unknown as Page;
+    const startedAt = performance.now();
+
+    const result = await collectVirtualizedItems(page, {
+      itemSelector: "[data-item]",
+      extractRound: () => Promise.resolve([]),
+      identityOf: (item: string) => item,
+      maxRounds: 1,
+    });
+
+    assertEquals(result, { items: [], stopReason: "max_rounds" });
+    assertEquals(scrollCalls, [{ top: 400, behavior: "instant" }]);
+    assertStrictEquals(performance.now() - startedAt >= 700, true);
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, "window", originalWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
 
 test("virtual scrolling reports a reached condition even when the item cap is reached in that round", async () => {
   const fake = fakePage([]);

@@ -11,6 +11,7 @@ import type {
   XHeadedLoginHandle,
   XLoginState,
 } from "../../src/connectors/x/index.ts";
+import { XVerificationRecoveryError } from "../../src/connectors/x/runtime.ts";
 import {
   CredentialCipher,
   type EncryptedBlob,
@@ -395,11 +396,11 @@ test("an expired fresh X login becomes terminal and removes its profile", async 
   });
 });
 
-test("a fresh X verification failure is sanitized and cleans up its profile", async () => {
+test("fresh X verification and reopen failures preserve the profile for retry", async () => {
   await withTestDb(async (database) => {
     const user = await fixtureUser(database, "x-verify-error@example.com");
     const runtime = new FakeXBrowserRuntime();
-    const handle = new FakeXHeadedLoginHandle();
+    const handle = new FakeXHeadedLoginHandle(["complete"]);
     handle.verificationError = new Error(
       "secret cookie from /Users/example/browser-profile",
     );
@@ -411,16 +412,85 @@ test("a fresh X verification failure is sanitized and cleans up its profile", as
 
     assertEquals(status, {
       sessionId: started.sessionId,
+      status: "awaiting_login",
+      expiresAtMs: started.expiresAtMs,
+      error:
+        "X login verification failed; your dedicated browser profile was preserved, but no recovery window opened. Retry Verify to reopen it. Cancel only if you want to abandon this login and delete the uncommitted profile.",
+    });
+    assertEquals(status.error?.includes("secret cookie"), false);
+    assertEquals(handle.closeCount, 0);
+    assertEquals(runtime.deletedProfileIds, []);
+    assertEquals(await findSourceByConnectorId(database, user.id, ConnectorId.X), null);
+
+    handle.verificationError = new XVerificationRecoveryError("home", {
+      cause: new Error("secret recovery details"),
+    });
+    const reopened = await manager.verify(started.sessionId, user.id);
+    assertEquals(reopened, {
+      sessionId: started.sessionId,
+      status: "awaiting_login",
+      expiresAtMs: started.expiresAtMs,
+      error:
+        "X authentication evidence could not be inspected; your dedicated Chrome profile was preserved and Chrome was reopened at X Home. Confirm the authenticated timeline is visible, fully quit Chrome (Cmd-Q on macOS), then Verify again or cancel this login.",
+    });
+    assertEquals(reopened.error?.includes("secret recovery details"), false);
+    assertEquals(runtime.deletedProfileIds, []);
+
+    handle.verificationError = new XVerificationRecoveryError("messages", {
+      cause: new Error("chat setup timeout"),
+    });
+    const messagesRecovery = await manager.verify(started.sessionId, user.id);
+    assertEquals(messagesRecovery, {
+      sessionId: started.sessionId,
+      status: "awaiting_login",
+      expiresAtMs: started.expiresAtMs,
+      error:
+        "X Chat readiness could not be inspected; your dedicated Chrome profile was preserved and Chrome was reopened at X Messages. Complete any visible Chat setup or unlock, fully quit Chrome (Cmd-Q on macOS), then Verify again or cancel this login.",
+    });
+    assertEquals(messagesRecovery.error?.includes("chat setup timeout"), false);
+    assertEquals(runtime.deletedProfileIds, []);
+
+    handle.verificationError = null;
+    const retried = await manager.verify(started.sessionId, user.id);
+
+    assertEquals(retried.status, "complete");
+    assertEquals(handle.verifyCount, 4);
+    assertEquals(handle.closeCount, 1);
+    assertEquals(runtime.deletedProfileIds, []);
+    assertExists(await findSourceByConnectorId(database, user.id, ConnectorId.X));
+  });
+});
+
+test("credential commit failure remains terminal and cleans a fresh profile", async () => {
+  await withTestDb(async (database) => {
+    const user = await fixtureUser(database, "x-commit-error@example.com");
+    const runtime = new FakeXBrowserRuntime();
+    const handle = new FakeXHeadedLoginHandle(["complete"]);
+    runtime.queueHandle(handle);
+    const cipher = credentialCipher();
+    Object.defineProperty(cipher, "encrypt", {
+      configurable: true,
+      value: async () => {
+        throw new Error("secret credential commit failure");
+      },
+    });
+    const { manager } = loginManager(database, runtime, cipher);
+    const started = await manager.startLogin(user.id);
+
+    const status = await manager.verify(started.sessionId, user.id);
+
+    assertEquals(status, {
+      sessionId: started.sessionId,
       status: "error",
       expiresAtMs: started.expiresAtMs,
       error: "X login verification failed",
     });
-    assertEquals(status.error?.includes("secret cookie"), false);
+    assertEquals(status.error?.includes("secret credential"), false);
     assertEquals(handle.closeCount, 1);
+    assertEquals(handle.verifyCount, 1);
     assertEquals(runtime.deletedProfileIds, [user.id]);
     assertEquals(await findSourceByConnectorId(database, user.id, ConnectorId.X), null);
     assertEquals(await manager.verify(started.sessionId, user.id), status);
-    assertEquals(handle.verifyCount, 1);
   });
 });
 
@@ -648,7 +718,7 @@ test("expiry preserves the profile and credentials of an already-connected X sou
   });
 });
 
-test("verification failure preserves an already-connected X profile and credentials", async () => {
+test("verification failure leaves an already-connected X profile retryable", async () => {
   await withTestDb(async (database) => {
     const user = await fixtureUser(database, "x-preserve-error@example.com");
     const cipher = credentialCipher();
@@ -663,9 +733,12 @@ test("verification failure preserves an already-connected X profile and credenti
 
     const status = await manager.verify(started.sessionId, user.id);
 
-    assertEquals(status.status, "error");
-    assertEquals(status.error, "X login verification failed");
-    assertEquals(handle.closeCount, 1);
+    assertEquals(status.status, "awaiting_login");
+    assertEquals(
+      status.error,
+      "X login verification failed; your dedicated browser profile was preserved, but no recovery window opened. Retry Verify to reopen it. Cancel only if you want to abandon this login and delete the uncommitted profile.",
+    );
+    assertEquals(handle.closeCount, 0);
     assertEquals(runtime.deletedProfileIds, []);
     const preserved = await findSourceByConnectorId(
       database,

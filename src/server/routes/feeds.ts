@@ -21,10 +21,16 @@ import {
 } from "../middleware/require-auth.ts";
 import { NotFoundError } from "../errors.ts";
 import { validate } from "../validate.ts";
+import { extendLongRequestTimeout } from "../request-timeout.ts";
 
 const POSITION_INTEGER_MIN = -2_147_483_648;
 const POSITION_INTEGER_MAX = 2_147_483_647;
 const MAXIMUM_CUSTOM_PROMPT_LENGTH = 10_000;
+
+type FeedRouteEnvironment = {
+  Bindings: { server?: Bun.Server<undefined> };
+  Variables: AuthVariables;
+};
 
 const idParamsSchema = z.object({
   id: z.string().uuid("id must be a valid UUID"),
@@ -69,8 +75,8 @@ function normalizeCustomPrompt(value: string | null | undefined): string | null 
 export function buildFeedRoutes(
   database: Database,
   dependencies: FeedRouteDependencies = {},
-): Hono<{ Variables: AuthVariables }> {
-  const routes = new Hono<{ Variables: AuthVariables }>();
+): Hono<FeedRouteEnvironment> {
+  const routes = new Hono<FeedRouteEnvironment>();
 
   routes.use("*", requireAuth(database));
 
@@ -87,6 +93,7 @@ export function buildFeedRoutes(
 
   routes.get("/sources/:sourceId/available-feeds", async (context) => {
     const { sourceId } = validate(sourceIdParamsSchema, context.req.param());
+    extendLongRequestTimeout(context.env?.server, context.req.raw);
     const feeds = await discoverFeeds(
       database,
       context.var.userId,

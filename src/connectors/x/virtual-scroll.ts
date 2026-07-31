@@ -5,7 +5,7 @@ import { abortableDelay, throwIfAborted } from "./abort.ts";
 const MAX_SCROLL_ROUNDS = 72;
 const MAX_NO_PROGRESS_ROUNDS = 4;
 const MAX_COLLECTED_ITEMS = 5_000;
-const SCROLL_SETTLE_MS = 350;
+const SCROLL_SETTLE_MS = 750;
 const SCROLL_ACTION_TIMEOUT_MS = 5_000;
 
 export interface XVirtualScrollOptions<T> {
@@ -192,7 +192,7 @@ async function advanceVirtualScroller(
         ) {
           const before = ancestor.scrollTop;
           ancestor.scrollBy({
-            top: scrollSign * Math.max(ancestor.clientHeight * 0.8, 320),
+            top: scrollSign * Math.max(ancestor.clientHeight * 0.5, 240),
             behavior: "instant",
           });
           return Math.abs(ancestor.scrollTop - before) > 1;
@@ -201,7 +201,7 @@ async function advanceVirtualScroller(
       }
       const before = window.scrollY;
       window.scrollBy({
-        top: scrollSign * Math.max(window.innerHeight * 0.8, 480),
+        top: scrollSign * Math.max(window.innerHeight * 0.5, 320),
         behavior: "instant",
       });
       return Math.abs(window.scrollY - before) > 1;
@@ -212,7 +212,7 @@ async function advanceVirtualScroller(
   const moved = await page.evaluate((scrollSign) => {
     const before = window.scrollY;
     window.scrollBy({
-      top: scrollSign * Math.max(window.innerHeight * 0.8, 480),
+      top: scrollSign * Math.max(window.innerHeight * 0.5, 320),
       behavior: "instant",
     });
     return Math.abs(window.scrollY - before) > 1;

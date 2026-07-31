@@ -1,4 +1,5 @@
 import type { AvailableFeed } from "../connector.types.ts";
+import type { XChromeProcessLauncher } from "./chrome-process.ts";
 
 export type XLoginState = "awaiting_login" | "awaiting_chat_unlock" | "complete";
 
@@ -11,10 +12,13 @@ export type XTargetKind = XTarget["kind"];
 
 export type XBrowserChannel = "chromium" | "chrome";
 
+
 export interface XBrowserRuntimeOptions {
   profileRoot: string;
   leaseTimeoutMs?: number;
   browserChannel?: XBrowserChannel;
+  chromeExecutable?: string;
+  chromeProcessLauncher?: XChromeProcessLauncher;
 }
 
 export interface XHeadedLoginHandle {

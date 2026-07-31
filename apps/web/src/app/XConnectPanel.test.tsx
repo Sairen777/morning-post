@@ -98,13 +98,19 @@ afterEach(() => {
 });
 
 describe("XConnectPanel", () => {
-  it("explains the same-desktop managed-browser risk and indefinite retention before connecting", () => {
+  it("explains the dedicated installed-Chrome workflow and indefinite retention before connecting", () => {
     const { container } = renderPanel();
 
-    expect(screen.getByRole("heading", { name: "X Connection" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Connect X" })).toBeEnabled();
+    expect(
+      screen.getByRole("heading", { name: "X Connection" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    ).toBeEnabled();
     expect(container).toHaveTextContent(
-      "separate Morning Post-managed Chromium profile",
+      "separate profile dedicated to Morning Post, not your daily Chrome profile",
     );
     expect(container).toHaveTextContent(
       "never give Morning Post an X password, 2FA code, cookie, or session credential here",
@@ -118,7 +124,7 @@ describe("XConnectPanel", () => {
       "a remote or headless server cannot display this window for you",
     );
     expect(guidance).toHaveTextContent(
-      "scheduled captures run headlessly from the managed profile",
+      "scheduled captures run headlessly from Morning Post's dedicated profile",
     );
     expect(guidance).toHaveTextContent(
       "Captured disappearing messages are retained indefinitely",
@@ -126,7 +132,7 @@ describe("XConnectPanel", () => {
     expect(container.querySelector('input[type="password"]')).toBeNull();
   });
 
-  it("starts a headed login and makes each polled login status visible", async () => {
+  it("starts a dedicated Chrome login and makes each polled login status visible", async () => {
     vi.useFakeTimers();
     const startResponse = createDeferred<Response>();
     const calls: Array<[string, RequestInit | undefined]> = [];
@@ -146,11 +152,15 @@ describe("XConnectPanel", () => {
     }) as typeof fetch;
 
     const view = renderPanel();
-    const connect = screen.getByRole("button", { name: "Connect X" });
+    const connect = screen.getByRole("button", {
+      name: "Connect X with Morning Post's dedicated Chrome profile",
+    });
     await fireEvent.click(connect);
 
     expect(connect).toBeDisabled();
-    expect(connect).toHaveTextContent("Starting headed login");
+    expect(connect).toHaveTextContent(
+      "Starting Morning Post's dedicated Chrome profile",
+    );
     expect(calls).toHaveLength(1);
     expect(calls[0][0]).toBe("/connectors/x/login");
     expect(calls[0][1]?.method).toBe("POST");
@@ -161,12 +171,21 @@ describe("XConnectPanel", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(screen.getByText("Awaiting X login")).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "complete any 2FA in the managed Chromium window",
+    const loginStatusMessage = screen.getByRole("status");
+    expect(loginStatusMessage).toHaveTextContent("installed Chrome");
+    expect(loginStatusMessage).toHaveTextContent("complete any 2FA");
+    expect(loginStatusMessage).toHaveTextContent(
+      "dedicated profile, not your daily Chrome profile",
+    );
+    expect(loginStatusMessage).toHaveTextContent("fully quit Chrome");
+    expect(loginStatusMessage).toHaveTextContent("Verify after Chrome quits");
+    expect(loginStatusMessage).toHaveTextContent("On macOS, press Cmd-Q");
+    expect(loginStatusMessage).toHaveTextContent(
+      "closing a tab or window is not enough",
     );
     expect(screen.getByRole("button", { name: "Refresh status" })).toBeEnabled();
     expect(
-      screen.getByRole("button", { name: "Verify login and Chat unlock" }),
+      screen.getByRole("button", { name: "Verify after quitting Chrome" }),
     ).toBeEnabled();
 
     await vi.advanceTimersByTimeAsync(1_999);
@@ -178,15 +197,25 @@ describe("XConnectPanel", () => {
     expect(calls[1][1]?.method).toBeUndefined();
     expect(calls[1][1]?.credentials).toBe("include");
     expect(screen.getByText("Awaiting Chat unlock")).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "In the same managed window, open Chat",
+    const chatUnlockStatusMessage = screen.getByRole("status");
+    expect(chatUnlockStatusMessage).toHaveTextContent(
+      "Chrome has reopened at X Messages",
+    );
+    expect(chatUnlockStatusMessage).toHaveTextContent("Unlock Chat");
+    expect(chatUnlockStatusMessage).toHaveTextContent("fully quit Chrome");
+    expect(chatUnlockStatusMessage).toHaveTextContent(
+      "Verify after Chrome quits",
+    );
+    expect(chatUnlockStatusMessage).toHaveTextContent("On macOS, press Cmd-Q");
+    expect(chatUnlockStatusMessage).toHaveTextContent(
+      "closing a tab or window is not enough",
     );
 
     view.unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("resumes an active headed login after the panel is remounted", async () => {
+  it("resumes an active dedicated Chrome login after the panel is remounted", async () => {
     const calls: Array<[string, RequestInit | undefined]> = [];
     globalThis.fetch = vi.fn((input, init) => {
       const path = String(input);
@@ -204,7 +233,11 @@ describe("XConnectPanel", () => {
     }) as typeof fetch;
 
     const firstView = renderPanel();
-    await fireEvent.click(screen.getByRole("button", { name: "Connect X" }));
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    );
     await waitFor(() =>
       expect(screen.getByText("Awaiting X login")).toBeVisible()
     );
@@ -246,7 +279,11 @@ describe("XConnectPanel", () => {
         "The previous X login session is no longer active",
       )
     );
-    expect(screen.getByRole("button", { name: "Connect X" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    ).toBeEnabled();
     expect(globalThis.sessionStorage.getItem("morning-post.x-login-session-id"))
       .toBeNull();
     view.unmount();
@@ -272,10 +309,14 @@ describe("XConnectPanel", () => {
     }) as typeof fetch;
 
     const view = renderPanel({ onConnected });
-    await fireEvent.click(screen.getByRole("button", { name: "Connect X" }));
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    );
     await vi.advanceTimersByTimeAsync(0);
     await fireEvent.click(
-      screen.getByRole("button", { name: "Verify login and Chat unlock" }),
+      screen.getByRole("button", { name: "Verify after quitting Chrome" }),
     );
     await vi.advanceTimersByTimeAsync(0);
 
@@ -292,6 +333,61 @@ describe("XConnectPanel", () => {
     expect(vi.getTimerCount()).toBe(0);
 
     view.unmount();
+  });
+
+  it("shows a recovery error and keeps Verify enabled when verification returns awaiting_login", async () => {
+    vi.useFakeTimers();
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    const recoveryError =
+      "X authentication evidence could not be inspected; your dedicated Chrome profile was preserved and Chrome was reopened at X Home. Confirm the authenticated timeline is visible, fully quit Chrome (Cmd-Q on macOS), then Verify again or cancel this login.";
+    globalThis.fetch = vi.fn((input, init) => {
+      const path = String(input);
+      calls.push([path, init]);
+      if (path === "/connectors/x/login" && init?.method === "POST") {
+        return Promise.resolve(jsonResponse(loginStatus("awaiting_login")));
+      }
+      if (
+        path === "/connectors/x/login/session-1/verify" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          jsonResponse({
+            ...loginStatus("awaiting_login"),
+            error: recoveryError,
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+    }) as typeof fetch;
+
+    const view = renderPanel();
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.getByText("Awaiting X login")).toBeVisible();
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Verify after quitting Chrome" }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(calls.map(([path, init]) => [path, init?.method])).toEqual([
+      ["/connectors/x/login", "POST"],
+      ["/connectors/x/login/session-1/verify", "POST"],
+    ]);
+    expect(screen.getByText("Awaiting X login")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent(recoveryError);
+    expect(
+      screen.getByRole("button", { name: "Verify after quitting Chrome" }),
+    ).toBeEnabled();
+    expect(vi.getTimerCount()).toBe(1);
+
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("cancels an in-progress login and removes its polling status", async () => {
@@ -313,7 +409,11 @@ describe("XConnectPanel", () => {
     }) as typeof fetch;
 
     const view = renderPanel();
-    await fireEvent.click(screen.getByRole("button", { name: "Connect X" }));
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    );
     await vi.advanceTimersByTimeAsync(0);
     await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await vi.advanceTimersByTimeAsync(0);
@@ -327,7 +427,11 @@ describe("XConnectPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "The X login session was canceled",
     );
-    expect(screen.getByRole("button", { name: "Connect X" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    ).toBeEnabled();
     expect(vi.getTimerCount()).toBe(0);
 
     view.unmount();
@@ -349,11 +453,15 @@ describe("XConnectPanel", () => {
     }) as typeof fetch;
 
     const view = renderPanel({ onAuthError });
-    await fireEvent.click(screen.getByRole("button", { name: "Connect X" }));
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    );
     await vi.advanceTimersByTimeAsync(0);
 
     await fireEvent.click(
-      screen.getByRole("button", { name: "Verify login and Chat unlock" }),
+      screen.getByRole("button", { name: "Verify after quitting Chrome" }),
     );
     await vi.advanceTimersByTimeAsync(0);
     expect(onAuthError).toHaveBeenCalledTimes(1);
@@ -389,7 +497,170 @@ describe("XConnectPanel", () => {
     expect(screen.getByLabelText("X target URL")).toBeRequired();
     expect(screen.getByText("https://x.com/home")).toBeVisible();
     expect(screen.getByText(/https:\/\/x\.com\/i\/lists/)).toBeVisible();
-    expect(screen.getByText(/https:\/\/x\.com\/messages/)).toBeVisible();
+    expect(screen.getByText(/https:\/\/x\.com\/i\/chat/)).toBeVisible();
+  });
+
+  it("discovers every safe X feed kind and adds each canonical target independently", async () => {
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    const existingFeed: PublicFeed = {
+      ...existingXFeed,
+      id: "feed-existing-chat",
+      externalId: "x:chat:already_1",
+      name: "Already added chat",
+      kind: "discussion",
+    };
+    const discoveredFeeds = [
+      {
+        externalId: "x:following",
+        name: "Following",
+        kind: "news",
+      },
+      {
+        externalId: "x:list:123",
+        name: "Engineering list",
+        kind: "news",
+      },
+      {
+        externalId: "x:chat:team-room_42",
+        name: "Team room",
+        kind: "discussion",
+      },
+      {
+        externalId: existingFeed.externalId,
+        name: existingFeed.name,
+        kind: "discussion",
+      },
+      {
+        externalId: "x:list:0",
+        name: "Zero list",
+        kind: "news",
+      },
+      {
+        externalId: "x:list:-1",
+        name: "Negative list",
+        kind: "news",
+      },
+      {
+        externalId: "x:list:not-numeric",
+        name: "Malformed list",
+        kind: "news",
+      },
+      {
+        externalId: "x:chat:bad/id",
+        name: "Malformed chat",
+        kind: "discussion",
+      },
+      {
+        externalId: "x:chat:_leading",
+        name: "Leading separator chat",
+        kind: "discussion",
+      },
+      {
+        externalId: "x:other",
+        name: "Unknown X feed",
+        kind: "news",
+      },
+    ];
+    const addedByUrl: Record<string, PublicFeed> = {
+      "https://x.com/home": {
+        ...existingXFeed,
+        id: "feed-following",
+        externalId: "x:following",
+        name: "Following",
+      },
+      "https://x.com/i/lists/123": {
+        ...existingXFeed,
+        id: "feed-list",
+        externalId: "x:list:123",
+        name: "Engineering list",
+      },
+      "https://x.com/i/chat/team-room_42": {
+        ...existingXFeed,
+        id: "feed-chat",
+        externalId: "x:chat:team-room_42",
+        name: "Team room",
+        kind: "discussion",
+      },
+    };
+    const onTargetAdded = vi.fn(() => Promise.resolve());
+    globalThis.fetch = vi.fn((input, init) => {
+      const path = String(input);
+      calls.push([path, init]);
+      if (
+        path === "/sources/source-x/available-feeds" &&
+        init?.method === undefined
+      ) {
+        return Promise.resolve(jsonResponse(discoveredFeeds));
+      }
+      if (path === "/connectors/x/targets" && init?.method === "POST") {
+        const body = JSON.parse(init.body as string) as {
+          sourceId: string;
+          url: string;
+        };
+        const addedFeed = addedByUrl[body.url];
+        if (addedFeed) return Promise.resolve(jsonResponse(addedFeed, 201));
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+    }) as typeof fetch;
+
+    renderPanel({
+      sources: [connectedXSource],
+      feeds: [existingFeed],
+      onTargetAdded,
+    });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Discover X feeds" }),
+    );
+
+    await waitFor(() => expect(screen.getByText("Following")).toBeVisible());
+    expect(screen.getByText("Engineering list")).toBeVisible();
+    expect(screen.getByText("Team room")).toBeVisible();
+    expect(screen.getByText("Following · https://x.com/home")).toBeVisible();
+    expect(
+      screen.getByText("List · https://x.com/i/lists/123"),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Chat · https://x.com/i/chat/team-room_42"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", {
+      name: "Added Already added chat",
+    })).toBeDisabled();
+    for (
+      const hiddenName of [
+        "Zero list",
+        "Negative list",
+        "Malformed list",
+        "Malformed chat",
+        "Leading separator chat",
+        "Unknown X feed",
+      ]
+    ) {
+      expect(screen.queryByText(hiddenName)).toBeNull();
+    }
+
+    for (const name of ["Following", "Engineering list", "Team room"]) {
+      await fireEvent.click(screen.getByRole("button", { name: `Add ${name}` }));
+      await waitFor(() =>
+        expect(onTargetAdded).toHaveBeenCalledTimes(
+          ["Following", "Engineering list", "Team room"].indexOf(name) + 1,
+        )
+      );
+      expect(screen.getByRole("button", { name: `Add ${name}` })).toBeEnabled();
+    }
+
+    expect(calls.map(([path, init]) => [path, init?.method])).toEqual([
+      ["/sources/source-x/available-feeds", undefined],
+      ["/connectors/x/targets", "POST"],
+      ["/connectors/x/targets", "POST"],
+      ["/connectors/x/targets", "POST"],
+    ]);
+    expect(calls.slice(1).map(([, init]) =>
+      JSON.parse(init?.body as string)
+    )).toEqual([
+      { sourceId: "source-x", url: "https://x.com/home" },
+      { sourceId: "source-x", url: "https://x.com/i/lists/123" },
+      { sourceId: "source-x", url: "https://x.com/i/chat/team-room_42" },
+    ]);
   });
 
   it("rejects non-canonical X target URLs before making an API request", async () => {
@@ -406,14 +677,17 @@ describe("XConnectPanel", () => {
       "https://x.com/home?view=latest",
       "https://x.com/i/lists/not-numeric",
       "https://x.com/messages/chat.id",
-      "https://x.com/messages/chat-1#latest",
+      "https://x.com/messages/conversation_1",
+      "https://x.com/i/chat/_leading",
+      "https://x.com/i/chat/team.room",
+      "https://x.com/i/chat/team-room#latest",
     ];
 
     for (const value of invalidUrls) {
       await fireEvent.input(input, { target: { value } });
       await fireEvent.click(submit);
       expect(screen.getByRole("alert")).toHaveTextContent(
-        "Use one canonical URL: https://x.com/home",
+        "Use one canonical URL: https://x.com/home, https://x.com/i/lists/<numeric-id>, or https://x.com/i/chat/<safe-id>.",
       );
     }
     expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -471,9 +745,11 @@ describe("XConnectPanel", () => {
       name: "Project chat",
       kind: "discussion",
     };
+    const calls: Array<[string, RequestInit | undefined]> = [];
     const onTargetAdded = vi.fn(() => Promise.resolve());
     globalThis.fetch = vi.fn((input, init) => {
       const path = String(input);
+      calls.push([path, init]);
       if (path === "/connectors/x/targets" && init?.method === "POST") {
         return Promise.resolve(jsonResponse(existingChatFeed, 201));
       }
@@ -486,7 +762,7 @@ describe("XConnectPanel", () => {
       onTargetAdded,
     });
     await fireEvent.input(screen.getByLabelText("X target URL"), {
-      target: { value: "https://x.com/messages/conversation_1" },
+      target: { value: "https://x.com/i/chat/conversation_1" },
     });
     await fireEvent.click(screen.getByRole("button", { name: "Add X feed" }));
 
@@ -496,6 +772,10 @@ describe("XConnectPanel", () => {
       )
     );
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      sourceId: "source-x",
+      url: "https://x.com/i/chat/conversation_1",
+    });
     expect(onTargetAdded).not.toHaveBeenCalled();
   });
 
@@ -508,7 +788,11 @@ describe("XConnectPanel", () => {
       }, 401))
     ) as typeof fetch;
     const loginView = renderPanel({ onAuthError: onLoginAuthError });
-    await fireEvent.click(screen.getByRole("button", { name: "Connect X" }));
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: "Connect X with Morning Post's dedicated Chrome profile",
+      }),
+    );
     await waitFor(() => expect(onLoginAuthError).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("alert")).toBeNull();
     loginView.unmount();

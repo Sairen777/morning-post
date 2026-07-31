@@ -8,7 +8,7 @@ const liveXBrowserContract = test.skipIf(
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
 liveXBrowserContract(
-  "managed Chromium resolves and collects the configured X target",
+  "configured managed browser resolves and collects the configured X target",
   async () => {
     const { profileId, targetUrl } = requireLiveConfiguration();
     const [
@@ -88,9 +88,37 @@ liveXBrowserContract(
         assertChatReactionMetadata(item.meta);
       }
     }
+    const minimumChatAuthors = optionalMinimumChatAuthors();
+    if (minimumChatAuthors !== null) {
+      assert(
+        target.kind === "chat",
+        "X_BROWSER_LIVE_MIN_CHAT_AUTHORS is valid only for an X Chat target",
+      );
+      const distinctAuthors = new Set(
+        items
+          .map((item) => item.author?.trim())
+          .filter((author): author is string => Boolean(author)),
+      );
+      assert(
+        distinctAuthors.size >= minimumChatAuthors,
+        `Live X Chat exposed ${distinctAuthors.size} distinct rendered authors; expected at least ${minimumChatAuthors}`,
+      );
+    }
   },
   600_000,
 );
+
+function optionalMinimumChatAuthors(): number | null {
+  const raw = process.env["X_BROWSER_LIVE_MIN_CHAT_AUTHORS"]?.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      "X_BROWSER_LIVE_MIN_CHAT_AUTHORS must be a positive safe integer",
+    );
+  }
+  return value;
+}
 
 function requireLiveConfiguration(): { profileId: string; targetUrl: string } {
   const profileId = process.env["X_BROWSER_LIVE_PROFILE_ID"]?.trim();

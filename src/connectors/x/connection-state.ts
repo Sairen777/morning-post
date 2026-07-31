@@ -12,7 +12,7 @@ import { X_DOM } from "./dom-selectors.ts";
 import { assertXOrigin } from "./targets.ts";
 import type { XLoginState } from "./x.types.ts";
 
-const STATE_ATTEMPTS = 24;
+const STATE_ATTEMPTS = 80;
 const STATE_POLL_INTERVAL_MS = 250;
 
 export async function inspectXConnectionState(

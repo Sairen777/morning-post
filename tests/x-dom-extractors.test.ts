@@ -4,6 +4,7 @@ import { chromium } from "playwright";
 import { requireXTargetEvidence } from "../src/connectors/x/collection.ts";
 import {
   extractChatMessages,
+  extractLinks,
   extractTimelineItems,
   isAuthenticatedMarkerVisible,
   isChatShellVisible,
@@ -41,6 +42,12 @@ test("X rendered-DOM extraction preserves canonical posts, metrics, chat timesta
         <section data-event-id="message-2" data-author="Bob" data-timestamp="1700000000">
           <p role="paragraph">Second chat message</p>
         </section>
+
+        <a class="discovered-link" href="/i/chat/team-chat" aria-label="ARIA conversation name">
+          <div>Rendered conversation name</div>
+          <div>@team</div>
+        </a>
+        <a class="discovered-link" href="/i/chat/aria-only" aria-label="ARIA only name"></a>
       </main>
     `);
 
@@ -75,6 +82,17 @@ test("X rendered-DOM extraction preserves canonical posts, metrics, chat timesta
         text: "Second chat message",
         author: "Bob",
         reactions: [],
+      },
+    ]);
+
+    assertEquals(await extractLinks(page, ".discovered-link"), [
+      {
+        href: "/i/chat/team-chat",
+        name: "Rendered conversation name",
+      },
+      {
+        href: "/i/chat/aria-only",
+        name: "ARIA only name",
       },
     ]);
   } finally {
@@ -114,10 +132,77 @@ test("X state detection ignores post and message prose that resembles control te
 
     await page.setContent(`
       <main role="main">
+        <form>
+          <input autocomplete="username webauthn">
+        </form>
+      </main>
+    `);
+    assertEquals(await isLoginVisible(page), true);
+
+    await page.setContent(`
+      <main role="main">
+        <form>
+          <input name="username_or_email">
+        </form>
+      </main>
+    `);
+    assertEquals(await isLoginVisible(page), true);
+
+    await page.setContent(`
+      <main role="main">
         <form><h1>Unlock your messages</h1></form>
       </main>
     `);
     assertEquals(await isChatUnlockVisible(page), true);
+  } finally {
+    await browser.close();
+  }
+}, 15_000);
+
+test("X authentication accepts a rendered Home timeline post without navigation markers", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`
+      <main role="main">
+        <article data-testid="tweet">
+          <div data-testid="tweetText">A rendered Home timeline post</div>
+        </article>
+      </main>
+    `);
+
+    assertEquals(await isAuthenticatedMarkerVisible(page), true);
+
+    await page.setContent(`
+      <main role="main">
+        <p>A rendered Home timeline post</p>
+      </main>
+    `);
+    assertEquals(await isAuthenticatedMarkerVisible(page), false);
+  } finally {
+    await browser.close();
+  }
+}, 15_000);
+
+test("X authentication recognizes the rendered new Chat shell", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`
+      <main role="main">
+        <button aria-label="New chat">Compose</button>
+      </main>
+    `);
+    assertEquals(await isAuthenticatedMarkerVisible(page), true);
+    assertEquals(await isChatShellVisible(page), true);
+
+    await page.setContent(`
+      <main role="main">
+        <a href="/i/chat/team-chat">Conversation</a>
+      </main>
+    `);
+    assertEquals(await isAuthenticatedMarkerVisible(page), true);
+    assertEquals(await isChatShellVisible(page), true);
   } finally {
     await browser.close();
   }

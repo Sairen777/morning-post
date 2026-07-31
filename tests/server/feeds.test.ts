@@ -29,9 +29,13 @@ class FakeFeedDiscoveryFactory implements FeedDiscoveryFactory {
   readonly createdFor: Array<{ sourceId: string; userId: string }> = [];
   disposeCount = 0;
 
-  constructor(readonly feeds: AvailableFeed[]) {}
+  constructor(
+    readonly feeds: AvailableFeed[],
+    private readonly onCreate: () => void = () => {},
+  ) {}
 
   create(source: { id: string }, userId: string): Promise<FeedDiscoveryHandle> {
+    this.onCreate();
     this.createdFor.push({ sourceId: source.id, userId });
     return Promise.resolve({
       connector: {
@@ -134,6 +138,40 @@ test("GET /sources/:id/available-feeds returns discovery results and disposes co
     assertEquals(response.status, 200);
     assertEquals(await response.json(), discoveryFactory.feeds);
     assertEquals(discoveryFactory.createdFor, [{ sourceId: source.id, userId: user.id }]);
+    assertEquals(discoveryFactory.disposeCount, 1);
+  });
+});
+
+test("GET X available feeds extends the bound request timeout before discovery", async () => {
+  await withTestDb(async (database) => {
+    const events: string[] = [];
+    const discoveryFactory = new FakeFeedDiscoveryFactory(
+      [{ externalId: "x:following", name: "Following", kind: "news" }],
+      () => events.push("discover"),
+    );
+    const app = buildApp(database, { feeds: { discoveryFactory } });
+    const { user, cookie } = await registerAndLogin(app);
+    const source = await createOwnedSource(database, user.id, ConnectorId.X);
+    const request = new Request(
+      `http://localhost/sources/${source.id}/available-feeds`,
+      { headers: { cookie } },
+    );
+
+    const response = await app.fetch(request, {
+      server: {
+        timeout(boundRequest: Request, seconds: number) {
+          events.push(`timeout:${boundRequest.url}:${seconds}`);
+        },
+      } as unknown as Bun.Server<undefined>,
+    });
+
+    assertEquals(response.status, 200);
+    assertEquals(await response.json(), discoveryFactory.feeds);
+    assertEquals(events, [`timeout:${request.url}:255`, "discover"]);
+    assertEquals(discoveryFactory.createdFor, [{
+      sourceId: source.id,
+      userId: user.id,
+    }]);
     assertEquals(discoveryFactory.disposeCount, 1);
   });
 });

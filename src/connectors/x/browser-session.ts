@@ -2,6 +2,11 @@ import { chromium } from "playwright";
 import type { Browser, BrowserContext, Page } from "playwright";
 
 import { abortableDelay, abortReason, throwIfAborted } from "./abort.ts";
+import type { XChromeProcess, XChromeProcessLauncher } from "./chrome-process.ts";
+import {
+  launchChromeProcess,
+  resolveStableChromeExecutable,
+} from "./chrome-process.ts";
 import { X_ACCESSIBLE_NAMES } from "./dom-selectors.ts";
 import { XProfileStore } from "./profile-store.ts";
 import { acquireProfileLease } from "./profile-lease.ts";
@@ -20,16 +25,25 @@ const TIMELINE_SWITCH_SETTLE_MS = 750;
 export function xBrowserLaunchOptions(
   headless: boolean,
   browserChannel: XBrowserChannel,
+  platform: NodeJS.Platform = process.platform,
 ) {
+  const credentialStoreOverride = browserChannel === "chrome"
+    ? platform === "darwin"
+      ? "--use-mock-keychain"
+      : platform === "linux"
+      ? "--password-store=basic"
+      : undefined
+    : undefined;
   return {
     headless,
     acceptDownloads: false,
     locale: "en-US",
     timeout: BROWSER_LAUNCH_TIMEOUT_MS,
     viewport: headless ? { width: 1280, height: 900 } : null,
-    ...(!headless && browserChannel === "chrome"
-      ? { channel: "chrome" as const }
-      : {}),
+    ...(browserChannel === "chrome" ? { channel: "chrome" as const } : {}),
+    ...(credentialStoreOverride === undefined
+      ? {}
+      : { ignoreDefaultArgs: [credentialStoreOverride] }),
   };
 }
 
@@ -39,7 +53,14 @@ export interface XOwnedBrowserSession {
   close: () => Promise<void>;
 }
 
+export interface XUnmanagedBrowserSession {
+  readonly running: boolean;
+  waitForExit(): Promise<void>;
+  close(): Promise<void>;
+}
+
 type XControlPage = keyof typeof X_CONTROL_URLS;
+type XUnmanagedControlPage = "home" | "messages";
 
 export class XBrowserSessions {
   private readonly profiles: XProfileStore;
@@ -48,6 +69,8 @@ export class XBrowserSessions {
     profileRoot: string,
     private readonly leaseTimeoutMs: number,
     private readonly browserChannel: XBrowserChannel,
+    private readonly chromeExecutable?: string,
+    private readonly chromeProcessLauncher: XChromeProcessLauncher = launchChromeProcess,
   ) {
     this.profiles = new XProfileStore(profileRoot);
   }
@@ -77,6 +100,76 @@ export class XBrowserSessions {
     signal?: AbortSignal,
   ): Promise<XOwnedBrowserSession> {
     return await this.open(profileId, false, signal);
+  }
+
+  public async openUnmanaged(
+    profileId: string,
+    control: XUnmanagedControlPage,
+    signal?: AbortSignal,
+  ): Promise<XUnmanagedBrowserSession> {
+    throwIfAborted(signal);
+    const profileKey = this.profiles.pathFor(profileId);
+    const release = await acquireProfileLease(profileKey, this.leaseTimeoutMs, signal);
+    let process: XChromeProcess | undefined;
+    let closePromise: Promise<void> | undefined;
+    let released = false;
+    let onAbort: (() => void) | undefined;
+    const releaseOnce = () => {
+      if (released) return;
+      released = true;
+      signal?.removeEventListener("abort", onAbort!);
+      release();
+    };
+    const waitForExit = async () => {
+      try {
+        await process?.exited;
+      } finally {
+        releaseOnce();
+      }
+    };
+    const close = () => {
+      closePromise ??= (async () => {
+        try {
+          await process?.terminate();
+          await process?.exited;
+        } finally {
+          releaseOnce();
+        }
+      })();
+      return closePromise;
+    };
+
+    try {
+      const profilePath = await this.profiles.ensure(profileId, signal);
+      const executable = this.chromeExecutable ??
+        await resolveStableChromeExecutable();
+      process = await this.chromeProcessLauncher(executable, [
+        `--user-data-dir=${profilePath}`,
+        "--no-first-run",
+        "--no-default-browser-check",
+        X_CONTROL_URLS[control],
+      ]);
+      onAbort = () => {
+        void close().catch(() => undefined);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        await close();
+        throw abortReason(signal);
+      }
+      void waitForExit().catch(() => undefined);
+      return {
+        get running() {
+          return process?.running === true;
+        },
+        waitForExit,
+        close,
+      };
+    } catch (error) {
+      await close().catch(() => undefined);
+      if (signal?.aborted) throw abortReason(signal);
+      throw error;
+    }
   }
 
   public async removeProfile(profileId: string, signal?: AbortSignal): Promise<void> {

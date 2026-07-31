@@ -2,6 +2,7 @@ import type {
   XHeadedLoginHandle,
   XLoginState,
 } from "../connectors/x/index.ts";
+import { XVerificationRecoveryError } from "../connectors/x/runtime.ts";
 import { ConnectorId } from "../constants.ts";
 import { CredentialCipher } from "../crypto/credential-cipher.ts";
 import type { Database } from "../db/client.ts";
@@ -13,6 +14,12 @@ import { ConflictError, NotFoundError } from "../server/errors.ts";
 
 const SAFE_START_ERROR = "X browser login failed";
 const SAFE_VERIFICATION_ERROR = "X login verification failed";
+const SAFE_RETRYABLE_VERIFICATION_ERROR =
+  "X login verification failed; your dedicated browser profile was preserved, but no recovery window opened. Retry Verify to reopen it. Cancel only if you want to abandon this login and delete the uncommitted profile.";
+const SAFE_HOME_RECOVERY_ERROR =
+  "X authentication evidence could not be inspected; your dedicated Chrome profile was preserved and Chrome was reopened at X Home. Confirm the authenticated timeline is visible, fully quit Chrome (Cmd-Q on macOS), then Verify again or cancel this login.";
+const SAFE_MESSAGES_RECOVERY_ERROR =
+  "X Chat readiness could not be inspected; your dedicated Chrome profile was preserved and Chrome was reopened at X Messages. Complete any visible Chat setup or unlock, fully quit Chrome (Cmd-Q on macOS), then Verify again or cancel this login.";
 const SAFE_PROFILE_CLEANUP_ERROR = "X browser profile cleanup failed";
 const SAFE_BROWSER_CLOSE_ERROR = "X connected, but the login window could not be closed";
 
@@ -280,18 +287,37 @@ export class XLoginSessionManager {
       return this.#toStatus(session);
     }
 
+    let state: XLoginState;
     try {
-      const state: XLoginState = await handle.verify(signal);
-      if (signal?.aborted) throw abortReason(signal);
-      if (this.#now() >= session.expiresAtMs) {
-        await this.#expire(session);
-        return this.#toStatus(session);
+      state = await handle.verify(signal);
+    } catch (error) {
+      if (signal?.aborted) {
+        if (session.status === "expired") return this.#toStatus(session);
+        throw abortReason(signal);
       }
-      if (state !== "complete") {
-        session.status = state;
-        return this.#toStatus(session);
-      }
+      session.error = error instanceof XVerificationRecoveryError
+        ? error.control === "messages"
+          ? SAFE_MESSAGES_RECOVERY_ERROR
+          : SAFE_HOME_RECOVERY_ERROR
+        : SAFE_RETRYABLE_VERIFICATION_ERROR;
+      return this.#toStatus(session);
+    }
 
+    if (signal?.aborted) {
+      if (session.status === "expired") return this.#toStatus(session);
+      throw abortReason(signal);
+    }
+    session.error = null;
+    if (this.#now() >= session.expiresAtMs) {
+      await this.#expire(session);
+      return this.#toStatus(session);
+    }
+    if (state !== "complete") {
+      session.status = state;
+      return this.#toStatus(session);
+    }
+
+    try {
       if (
         signal?.aborted ||
         this.#sessions.get(session.id) !== session ||

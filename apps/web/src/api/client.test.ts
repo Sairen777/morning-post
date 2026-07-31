@@ -783,7 +783,7 @@ describe("X connector API", () => {
 
     const feed = await addXTarget({
       sourceId: "source-x",
-      url: "https://x.com/messages/conversation_1",
+      url: "https://x.com/i/chat/conversation_1",
     });
 
     expect(calls.map(([path, options]) => [path, options?.method])).toEqual([
@@ -791,7 +791,7 @@ describe("X connector API", () => {
     ]);
     expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
       sourceId: "source-x",
-      url: "https://x.com/messages/conversation_1",
+      url: "https://x.com/i/chat/conversation_1",
     });
     expect(calls[0][1]?.credentials).toBe("include");
     expect(calls[0][1]?.headers).toEqual({

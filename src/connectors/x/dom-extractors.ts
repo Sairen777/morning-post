@@ -209,10 +209,19 @@ export async function extractChatMessages(page: Page): Promise<XDomChatMessage[]
 export async function extractLinks(page: Page, selector: string): Promise<XDomLink[]> {
   const values = await page.locator(selector).evaluateAll((elements) => {
     return elements.map((element) => {
-      const text = element instanceof HTMLElement ? element.innerText : element.textContent;
+      const text = element instanceof HTMLElement
+        ? element.innerText
+        : element.textContent;
+      const firstTextLine = (text ?? "")
+        .split(/\r?\n/)
+        .map((line) => line.replace(/\s+/g, " ").trim())
+        .find(Boolean) ?? "";
+      const accessibleName = (element.getAttribute("aria-label") ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
       return {
         href: element.getAttribute("href") ?? "",
-        name: (element.getAttribute("aria-label") ?? text ?? "").replace(/\s+/g, " ").trim(),
+        name: firstTextLine || accessibleName,
       };
     });
   });
@@ -233,7 +242,9 @@ export async function extractPageHeading(page: Page): Promise<string | null> {
 
 export async function isAuthenticatedMarkerVisible(page: Page): Promise<boolean> {
   return await hasVisible(page, X_DOM.authenticatedAccount) ||
-    await hasVisible(page, X_DOM.authenticatedHomeLink);
+    await hasVisible(page, X_DOM.authenticatedHomeLink) ||
+    await hasVisible(page, X_DOM.timelinePost) ||
+    await isChatShellVisible(page);
 }
 
 export async function isLoginVisible(page: Page): Promise<boolean> {
@@ -251,7 +262,8 @@ export async function isChatUnlockVisible(page: Page): Promise<boolean> {
 }
 
 export async function isChatShellVisible(page: Page): Promise<boolean> {
-  return await hasVisible(page, X_DOM.chatShell);
+  return await hasVisible(page, X_DOM.chatShell) ||
+    await hasAccessibleButton(page, X_ACCESSIBLE_NAMES.newChat);
 }
 
 async function hasAccessibleButton(page: Page, name: RegExp): Promise<boolean> {

@@ -28,7 +28,7 @@ function chatMessage(
     date,
     text: `chat ${externalId}`,
     author: "Chat Author",
-    url: "https://x.com/messages/team-chat",
+    url: "https://x.com/i/chat/team-chat",
     reactions,
   };
 }
@@ -136,7 +136,7 @@ test("XConnector normalizes chat reactions and post metrics within an inclusive 
         title: null,
         text: "chat chat-at-start",
         author: "Chat Author",
-        url: "https://x.com/messages/team-chat",
+        url: "https://x.com/i/chat/team-chat",
         meta: {
           messageKind: "chat",
           reactions,
@@ -152,7 +152,7 @@ test("XConnector normalizes chat reactions and post metrics within an inclusive 
         title: null,
         text: "chat chat-at-end",
         author: "Chat Author",
-        url: "https://x.com/messages/team-chat",
+        url: "https://x.com/i/chat/team-chat",
         meta: {
           messageKind: "chat",
           reactions: [],

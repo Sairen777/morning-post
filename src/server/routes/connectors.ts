@@ -29,6 +29,12 @@ import { XTargetService } from "../../services/x-target-service.ts";
 import { type AuthVariables, requireAuth } from "../middleware/require-auth.ts";
 import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
 import { validate } from "../validate.ts";
+import { extendLongRequestTimeout } from "../request-timeout.ts";
+
+type ConnectorRouteEnvironment = {
+  Bindings: { server?: Bun.Server<undefined> };
+  Variables: AuthVariables;
+};
 
 const loginSessionParamsSchema = z.object({
   id: z.string().uuid("id must be a valid UUID"),
@@ -254,8 +260,8 @@ async function withConnectorDeadline<T>(
 export function buildConnectorRoutes(
   database: Database,
   dependencies: ConnectorRouteDependencies = {},
-): Hono<{ Variables: AuthVariables }> {
-  const routes = new Hono<{ Variables: AuthVariables }>();
+): Hono<ConnectorRouteEnvironment> {
+  const routes = new Hono<ConnectorRouteEnvironment>();
   routes.use("*", requireAuth(database));
   let telegramLoginSessionManager = dependencies.telegramLoginSessionManager;
   let telegramLoginSessionManagerLoader:
@@ -415,6 +421,7 @@ export function buildConnectorRoutes(
         xLoginSessionParamsSchema,
         context.req.param(),
       );
+      extendLongRequestTimeout(context.env?.server, context.req.raw);
       const manager = await getXLoginSessionManager();
       const status = await manager.verify(
         sessionId,
@@ -440,6 +447,7 @@ export function buildConnectorRoutes(
       xTargetBodySchema,
       await context.req.json(),
     );
+    extendLongRequestTimeout(context.env?.server, context.req.raw);
     const feed = await withConnectorDeadline(
       context.req.raw.signal,
       connectorTimeoutMs,

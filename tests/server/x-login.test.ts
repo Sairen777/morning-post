@@ -149,6 +149,8 @@ class InjectedXTargetService implements XTargetServiceLike {
     updatedAt: 100,
   };
 
+  constructor(private readonly onAdd: () => void = () => {}) {}
+
   add(
     userId: string,
     sourceId: string,
@@ -156,6 +158,7 @@ class InjectedXTargetService implements XTargetServiceLike {
     signal?: AbortSignal,
     commitOperation: ConnectorCommit = commitImmediately,
   ): Promise<PublicFeed> {
+    this.onAdd();
     this.calls.push({ userId, sourceId, url, signal: signal ?? null });
     return commitOperation(() => this.result);
   }
@@ -218,16 +221,31 @@ test("the injected X login routes expose the lifecycle schema and authenticated 
     });
     assertEquals(manager.statusCalls, [{ sessionId: SESSION_ID, userId }]);
 
-    const verifyResponse = await app.request(
-      `/connectors/x/login/${SESSION_ID}/verify`,
+    const timeoutCalls: Array<{ request: Request; seconds: number }> = [];
+    const verifyRequest = new Request(
+      `http://localhost/connectors/x/login/${SESSION_ID}/verify`,
       jsonRequest("POST", cookie),
     );
+    const verifyResponse = await app.fetch(verifyRequest, {
+      server: {
+        timeout(request: Request, seconds: number) {
+          timeoutCalls.push({ request, seconds });
+        },
+      } as unknown as Bun.Server<undefined>,
+    });
     assertEquals(verifyResponse.status, 200);
     assertEquals(await verifyResponse.json(), {
       sessionId: SESSION_ID,
       status: "complete",
       expiresAtMs: EXPIRES_AT_MS,
     });
+    assertEquals(
+      timeoutCalls.map(({ request, seconds }) => ({
+        url: request.url,
+        seconds,
+      })),
+      [{ url: verifyRequest.url, seconds: 255 }],
+    );
     assertEquals(manager.verifyCalls.length, 1);
     const verifyCall = manager.verifyCalls[0];
     assert(verifyCall);
@@ -332,20 +350,29 @@ test("X login route conflicts, ownership misses, and cleanup failures retain saf
 
 test("X target route validates and persists an owner-scoped target with cancellation", async () => {
   await withTestDb(async (database) => {
+    const events: string[] = [];
     const manager = new InjectedXLoginSessionManager();
-    const targetService = new InjectedXTargetService();
+    const targetService = new InjectedXTargetService(() => events.push("resolve"));
     const app = appWithXServices(database, manager, targetService);
     const { userId, cookie } = await ownerSession(app);
     const sourceId = "22222222-2222-4222-8222-222222222222";
     const url = "https://x.com/i/lists/123";
-
-    const response = await app.request(
-      "/connectors/x/targets",
+    const request = new Request(
+      "http://localhost/connectors/x/targets",
       jsonRequest("POST", cookie, { sourceId, url }),
     );
 
+    const response = await app.fetch(request, {
+      server: {
+        timeout(boundRequest: Request, seconds: number) {
+          events.push(`timeout:${boundRequest.url}:${seconds}`);
+        },
+      } as unknown as Bun.Server<undefined>,
+    });
+
     assertEquals(response.status, 201);
     assertEquals(await response.json(), targetService.result);
+    assertEquals(events, [`timeout:${request.url}:255`, "resolve"]);
     assertEquals(targetService.calls.length, 1);
     const call = targetService.calls[0];
     assert(call);

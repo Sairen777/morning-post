@@ -1,13 +1,22 @@
-import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 import {
   ApiClientError,
+  addXTarget,
   cancelXLogin,
   getXLoginStatus,
-  addXTarget,
+  listAvailableFeeds,
   startXLogin,
   verifyXLogin,
 } from "../api/client";
 import type {
+  AvailableFeed,
   PublicFeed,
   PublicSource,
   XLoginStatus,
@@ -24,7 +33,14 @@ interface XConnectPanelProps {
   onAuthError: () => void;
 }
 
-type Operation = "start" | "refresh" | "verify" | "cancel" | "target" | null;
+type Operation =
+  | "start"
+  | "refresh"
+  | "verify"
+  | "cancel"
+  | "discover"
+  | "target"
+  | null;
 
 const X_POLL_INTERVAL_MS = 2_000;
 const X_LOGIN_SESSION_STORAGE_KEY = "morning-post.x-login-session-id";
@@ -77,17 +93,17 @@ function statusLabel(status: XLoginStatus | undefined): string {
 function statusDescription(status: XLoginStatus | undefined): string {
   switch (status) {
     case "awaiting_login":
-      return "Sign in to X and complete any 2FA in the managed Chromium window. When you are signed in, return here and verify.";
+      return "Sign in to X and complete any 2FA in installed Chrome using Morning Post's dedicated profile, not your daily Chrome profile. When finished, fully quit Chrome before choosing Verify after Chrome quits. On macOS, press Cmd-Q; closing a tab or window is not enough.";
     case "awaiting_chat_unlock":
-      return "X is signed in. In the same managed window, open Chat and finish the unlock step if X asks for it, then verify here.";
+      return "Chrome has reopened at X Messages in Morning Post's dedicated profile. Unlock Chat, then fully quit Chrome before choosing Verify after Chrome quits. On macOS, press Cmd-Q; closing a tab or window is not enough.";
     case "complete":
-      return "X is connected. Scheduled captures will run headlessly from the managed profile.";
+      return "X is connected. Scheduled captures will run headlessly from Morning Post's dedicated profile.";
     case "error":
-      return "The headed login session could not be verified. Start another session after fixing the issue in the managed window.";
+      return "The Chrome login session could not be verified. Start another session after fixing the issue in Morning Post's dedicated profile.";
     case "expired":
       return "The login window expired. Start another session to try again.";
     default:
-      return "Start a headed login session to connect X.";
+      return "Start an installed Chrome login session using Morning Post's dedicated profile, not your daily Chrome profile.";
   }
 }
 
@@ -114,8 +130,8 @@ function isCanonicalXTargetUrl(value: string): boolean {
 
     return (
       url.pathname === "/home" ||
-      /^\/i\/lists\/\d+$/.test(url.pathname) ||
-      /^\/messages\/[A-Za-z0-9_-]+$/.test(url.pathname)
+      /^\/i\/lists\/[1-9]\d*$/.test(url.pathname) ||
+      /^\/i\/chat\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(url.pathname)
     );
   } catch {
     return false;
@@ -124,7 +140,39 @@ function isCanonicalXTargetUrl(value: string): boolean {
 
 function targetValidationMessage(value: string): string {
   if (!value.trim()) return "Enter an X target URL.";
-  return "Use one canonical URL: https://x.com/home, https://x.com/i/lists/<numeric-id>, or https://x.com/messages/<safe-id>.";
+  return "Use one canonical URL: https://x.com/home, https://x.com/i/lists/<numeric-id>, or https://x.com/i/chat/<safe-id>.";
+}
+
+const X_FOLLOWING_EXTERNAL_ID = "x:following";
+const X_LIST_EXTERNAL_ID_PATTERN = /^x:list:([1-9]\d*)$/;
+const X_CHAT_EXTERNAL_ID_PATTERN = /^x:chat:([A-Za-z0-9][A-Za-z0-9_-]{0,127})$/;
+
+type XDiscoveredTarget = {
+  feed: AvailableFeed;
+  kind: "Following" | "List" | "Chat";
+  url: string;
+};
+
+function xDiscoveredTarget(feed: AvailableFeed): XDiscoveredTarget | null {
+  if (feed.externalId === X_FOLLOWING_EXTERNAL_ID) {
+    return { feed, kind: "Following", url: "https://x.com/home" };
+  }
+
+  const listId = X_LIST_EXTERNAL_ID_PATTERN.exec(feed.externalId)?.[1];
+  if (listId) {
+    return {
+      feed,
+      kind: "List",
+      url: `https://x.com/i/lists/${listId}`,
+    };
+  }
+
+  const chatId = X_CHAT_EXTERNAL_ID_PATTERN.exec(feed.externalId)?.[1];
+  if (chatId) {
+    return { feed, kind: "Chat", url: `https://x.com/i/chat/${chatId}` };
+  }
+
+  return null;
 }
 
 export default function XConnectPanel(props: XConnectPanelProps) {
@@ -138,11 +186,28 @@ export default function XConnectPanel(props: XConnectPanelProps) {
   const [targetUrl, setTargetUrl] = createSignal("");
   const [targetError, setTargetError] = createSignal<string | null>(null);
   const [targetNotice, setTargetNotice] = createSignal<string | null>(null);
+  const [discoveryState, setDiscoveryState] = createSignal<
+    "untouched" | "loading" | "loaded" | "empty" | "error"
+  >("untouched");
+  const [discoveredTargets, setDiscoveredTargets] = createSignal<
+    XDiscoveredTarget[]
+  >([]);
+  const [discoveryError, setDiscoveryError] = createSignal<string | null>(null);
+  const [discoveryNotice, setDiscoveryNotice] = createSignal<string | null>(
+    null,
+  );
+  const [addingExternalId, setAddingExternalId] = createSignal<string | null>(
+    null,
+  );
+  const [discoverySourceId, setDiscoverySourceId] = createSignal<string | null>(
+    null,
+  );
 
   let pollTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   let pollInFlight = false;
   let disposed = false;
   let completionNotifiedForSession: string | null = null;
+  let discoveryGeneration = 0;
 
   const rememberSessionId = (value: string | null) => {
     persistXLoginSessionId(value);
@@ -156,6 +221,30 @@ export default function XConnectPanel(props: XConnectPanelProps) {
   const hasXSource = () =>
     props.sources.some((source) => source.connectorId === "X");
 
+  const isDiscoveredTargetAdded = (target: XDiscoveredTarget) => {
+    const sourceId = connectedSource()?.id;
+    return (
+      sourceId !== undefined &&
+      props.feeds.some(
+        (feed) =>
+          feed.sourceId === sourceId &&
+          feed.externalId === target.feed.externalId &&
+          feed.deletedAt === null,
+      )
+    );
+  };
+
+  createEffect(() => {
+    const sourceId = connectedSource()?.id ?? null;
+    if (discoverySourceId() === sourceId) return;
+
+    discoveryGeneration += 1;
+    setDiscoverySourceId(sourceId);
+    setDiscoveredTargets([]);
+    setDiscoveryError(null);
+    setDiscoveryNotice(null);
+    setAddingExternalId(null);
+  });
   const clearPollTimer = () => {
     if (pollTimer !== null) {
       globalThis.clearTimeout(pollTimer);
@@ -352,6 +441,98 @@ export default function XConnectPanel(props: XConnectPanelProps) {
     }
   };
 
+  const handleDiscoverFeeds = async () => {
+    const source = connectedSource();
+    if (!source || operation() !== null) return;
+
+    const requestSourceId = source.id;
+    const requestGeneration = discoveryGeneration;
+    setDiscoveryError(null);
+    setDiscoveryNotice(null);
+    setDiscoveredTargets([]);
+    setDiscoveryState("loading");
+    setOperation("discover");
+    try {
+      const availableFeeds = await listAvailableFeeds(requestSourceId);
+      if (
+        requestGeneration !== discoveryGeneration ||
+        connectedSource()?.id !== requestSourceId
+      ) {
+        return;
+      }
+
+      const targets: XDiscoveredTarget[] = [];
+      for (const feed of availableFeeds) {
+        const target = xDiscoveredTarget(feed);
+        if (target) targets.push(target);
+      }
+      setDiscoveredTargets(targets);
+      setDiscoveryState(targets.length > 0 ? "loaded" : "empty");
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) {
+        setDiscoveryState("error");
+        props.onAuthError();
+        return;
+      }
+      if (
+        requestGeneration !== discoveryGeneration ||
+        connectedSource()?.id !== requestSourceId
+      ) {
+        return;
+      }
+      setDiscoveryState("error");
+      setDiscoveryError(safeError(err, "X feeds could not be discovered."));
+    } finally {
+      setOperation(null);
+    }
+  };
+
+  const handleAddDiscoveredFeed = async (target: XDiscoveredTarget) => {
+    const source = connectedSource();
+    if (
+      !source ||
+      operation() !== null ||
+      isDiscoveredTargetAdded(target)
+    ) {
+      return;
+    }
+
+    const requestSourceId = source.id;
+    const requestGeneration = discoveryGeneration;
+    setDiscoveryError(null);
+    setDiscoveryNotice(null);
+    setAddingExternalId(target.feed.externalId);
+    setOperation("target");
+    try {
+      const feed = await addXTarget({
+        sourceId: requestSourceId,
+        url: target.url,
+      });
+      await props.onTargetAdded(requestSourceId);
+      if (
+        requestGeneration === discoveryGeneration &&
+        connectedSource()?.id === requestSourceId
+      ) {
+        setDiscoveryNotice(`${feed.name} was added to your feeds.`);
+      }
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError && err.status === 401) {
+        props.onAuthError();
+        return;
+      }
+      if (
+        requestGeneration !== discoveryGeneration ||
+        connectedSource()?.id !== requestSourceId
+      ) {
+        return;
+      }
+      setDiscoveryError(safeError(err, "That X feed could not be added."));
+    } finally {
+      setAddingExternalId(null);
+      setOperation(null);
+    }
+  };
+
   const handleTargetSubmit = async (event: Event) => {
     event.preventDefault();
     if (operation() !== null) return;
@@ -414,29 +595,33 @@ export default function XConnectPanel(props: XConnectPanelProps) {
       </div>
 
       <p class="hint x-connect-intro">
-        X capture uses a separate Morning Post-managed Chromium profile. You
-        never give Morning Post an X password, 2FA code, cookie, or session
-        credential here.
+        X capture uses installed Chrome with a separate profile dedicated to
+        Morning Post, not your daily Chrome profile. You never give Morning
+        Post an X password, 2FA code, cookie, or session credential here.
       </p>
 
       <div class="x-connect-safety" role="note">
         <strong>Before connecting</strong>
         <ul class="bullet-list">
           <li>
-            Start the headed login from this page. Morning Post opens a separate
-            Chromium window on the same desktop where its service is running.
-            That desktop must have a display; a remote or headless server
-            cannot display this window for you. Safari and Firefox users do not
-            need Chrome on their own computer, and this page works in any
-            browser.
+            Start the dedicated Chrome login from this page. Morning Post opens
+            installed Chrome with its separate profile on the same desktop where
+            its service is running. That desktop must have a display; a remote
+            or headless server cannot display this window for you. You can use
+            this page in Safari or Firefox, but the login itself uses installed
+            Chrome.
           </li>
           <li>
-            Sign in and complete 2FA manually in that managed window. If X asks
-            to unlock Chat, complete that step there before choosing Verify.
+            Sign in and complete any 2FA manually in the dedicated Chrome
+            profile. When finished, fully quit Chrome before choosing Verify
+            after Chrome quits. On macOS, use Cmd-Q; closing a tab or window is
+            not enough. If Chat unlock is required, Chrome will reopen at
+            Messages with the next instructions.
           </li>
           <li>
-            After verification, scheduled captures run headlessly from the
-            managed profile. Browser collection is unsupported and brittle, and
+            After verification, scheduled captures run headlessly from Morning
+            Post's dedicated profile. Do not use your daily Chrome profile for
+            this workflow. Browser collection is unsupported and brittle, and
             the profile grants full access to this X account.
           </li>
           <li>
@@ -483,7 +668,7 @@ export default function XConnectPanel(props: XConnectPanelProps) {
                 onClick={handleVerify}
                 disabled={operation() !== null || !canVerify()}
               >
-                {operation() === "verify" ? "Verifying…" : "Verify login and Chat unlock"}
+                {operation() === "verify" ? "Verifying after Chrome quits…" : "Verify after quitting Chrome"}
               </button>
               <button
                 type="button"
@@ -502,10 +687,10 @@ export default function XConnectPanel(props: XConnectPanelProps) {
                 disabled={operation() !== null}
               >
                 {operation() === "start"
-                  ? "Starting…"
+                  ? "Starting Morning Post's dedicated Chrome profile…"
                   : hasXSource()
-                  ? "Reconnect X"
-                  : "Try X again"}
+                  ? "Reconnect X with Morning Post's dedicated Chrome profile"
+                  : "Connect X with Morning Post's dedicated Chrome profile"}
               </button>
             </Show>
           </div>
@@ -523,10 +708,10 @@ export default function XConnectPanel(props: XConnectPanelProps) {
           disabled={operation() !== null}
         >
           {operation() === "start"
-            ? "Starting headed login…"
+            ? "Starting Morning Post's dedicated Chrome profile…"
             : hasXSource()
-            ? "Reconnect X"
-            : "Connect X"}
+            ? "Reconnect X with Morning Post's dedicated Chrome profile"
+            : "Connect X with Morning Post's dedicated Chrome profile"}
         </button>
       </Show>
 
@@ -548,12 +733,98 @@ export default function XConnectPanel(props: XConnectPanelProps) {
             one at a time. The server checks the target again before it is
             added.
           </p>
+          <section
+            class="x-connect-discovery"
+            aria-labelledby="x-connect-discovery-title"
+            aria-busy={discoveryState() === "loading"}
+          >
+            <div class="substack-discovery-header">
+              <div>
+                <h3 id="x-connect-discovery-title">Discover X feeds</h3>
+                <p class="hint">
+                  Find safe Following, Lists, and Chat conversations available
+                  in your connected X account.
+                </p>
+              </div>
+              <button
+                type="button"
+                class="primary"
+                onClick={handleDiscoverFeeds}
+                disabled={operation() !== null}
+              >
+                {operation() === "discover"
+                  ? "Discovering X feeds…"
+                  : "Discover X feeds"}
+              </button>
+            </div>
+            <Show when={discoveryState() === "loaded"}>
+              <div class="publication-list" aria-label="Discovered X feeds">
+                <For each={discoveredTargets()}>
+                  {(target) => {
+                    const feed = target.feed;
+                    return (
+                      <article class="publication-row">
+                        <div class="publication-details">
+                          <h4>{feed.name}</h4>
+                          <div class="publication-domain">
+                            {target.kind} · {target.url}
+                          </div>
+                        </div>
+                        <Show
+                          when={!isDiscoveredTargetAdded(target)}
+                          fallback={
+                            <button
+                              type="button"
+                              aria-label={`Added ${feed.name}`}
+                              disabled
+                            >
+                              Added
+                            </button>
+                          }
+                        >
+                          <button
+                            type="button"
+                            class="publication-action"
+                            aria-label={`${
+                              addingExternalId() === feed.externalId
+                                ? "Adding"
+                                : "Add"
+                            } ${feed.name}`}
+                            disabled={operation() !== null}
+                            onClick={() => handleAddDiscoveredFeed(target)}
+                          >
+                            {addingExternalId() === feed.externalId
+                              ? "Adding…"
+                              : "Add"}
+                          </button>
+                        </Show>
+                      </article>
+                    );
+                  }}
+                </For>
+              </div>
+            </Show>
+            <Show when={discoveryState() === "empty"}>
+              <p class="substack-discovery-empty" role="status">
+                No safe X feeds were found in this account.
+              </p>
+            </Show>
+            <Show when={discoveryNotice()}>
+              <p class="hint" role="status" aria-live="polite">
+                {discoveryNotice()}
+              </p>
+            </Show>
+            <Show when={discoveryError()}>
+              <p class="error" role="alert">{discoveryError()}</p>
+            </Show>
+          </section>
+
           <div class="x-connect-examples">
             <strong>Accepted canonical URLs</strong>
             <ul class="bullet-list">
               <li><code>https://x.com/home</code> — Following</li>
               <li><code>https://x.com/i/lists/&lt;numeric-id&gt;</code> — a List</li>
-              <li><code>https://x.com/messages/&lt;safe-id&gt;</code> — an X Chat conversation</li>
+              <li><code>https://x.com/i/chat/&lt;safe-id&gt;</code> — an X Chat conversation</li>
             </ul>
           </div>
           <form onSubmit={handleTargetSubmit}>
