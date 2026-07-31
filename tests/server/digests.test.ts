@@ -1,6 +1,9 @@
 import { test } from "bun:test";
 import { assertEquals } from "../assertions.ts";
 import { sql } from "drizzle-orm";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import type { Hono } from "hono";
 import { ConnectorId } from "../../src/constants.ts";
 import {
@@ -10,7 +13,7 @@ import {
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import type { Database } from "../../src/db/client.ts";
 import { withTestDb } from "../../src/db/testing.ts";
-import type { NormalizedItem } from "../../src/connectors/connector.types.ts";
+import type { Media, NormalizedItem } from "../../src/connectors/connector.types.ts";
 import {
   createOrReviveFeed,
   softDeleteFeed,
@@ -23,6 +26,8 @@ import { assembleDigestForPeriod } from "../../src/services/digest-service.ts";
 import {
   findDigestForUserPeriod,
   setDigestStatus,
+  upsertDigestForPeriod,
+  type PublicDigest,
 } from "../../src/repositories/digest-repository.ts";
 import type {
   SummarizeOptions,
@@ -163,6 +168,7 @@ function normalizedItem(
   feedExternalId: string,
   externalId: string,
   text: string,
+  media?: Media,
 ): NormalizedItem {
   return {
     connectorId: ConnectorId.Telegram,
@@ -173,7 +179,62 @@ function normalizedItem(
     text,
     author: "Channel",
     url: null,
+    ...(media === undefined ? {} : { media }),
   };
+}
+
+/** Cursor-shaped like the pre-redesign v1 payloads, which must stay rejected. */
+function legacyDigestCursor(): string {
+  const payload = {
+    v: 1,
+    k: "digest",
+    p: 1_700_086_400_000,
+    c: 10,
+    i: "00000000-0000-0000-0000-000000000001",
+  };
+  return btoa(JSON.stringify(payload))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** Five digests whose request order (createdAt) differs from their coverage order (periodEndMs). */
+async function createOrderedDigests(
+  database: Database,
+  userId: string,
+): Promise<PublicDigest[]> {
+  return [
+    await upsertDigestForPeriod(database, {
+      userId,
+      periodStartMs: 1_700_000_000_000,
+      periodEndMs: 1_700_086_400_000,
+      status: "complete",
+    }, 10),
+    await upsertDigestForPeriod(database, {
+      userId,
+      periodStartMs: 1_700_086_400_000,
+      periodEndMs: 1_700_172_800_000,
+      status: "complete",
+    }, 30),
+    await upsertDigestForPeriod(database, {
+      userId,
+      periodStartMs: 1_700_172_800_000,
+      periodEndMs: 1_700_259_200_000,
+      status: "complete",
+    }, 20),
+    await upsertDigestForPeriod(database, {
+      userId,
+      periodStartMs: 1_700_259_200_000,
+      periodEndMs: 1_700_345_600_000,
+      status: "complete",
+    }, 40),
+    await upsertDigestForPeriod(database, {
+      userId,
+      periodStartMs: 1_700_345_600_000,
+      periodEndMs: 1_700_432_000_000,
+      status: "complete",
+    }, 50),
+  ];
 }
 
 test("digest routes list and read user digests with grouped sections", async () => {
@@ -912,5 +973,335 @@ test("POST /digests/run forwards entrypoint digest dependencies", async () => {
     lifetimeAbortController.abort();
     assertEquals(receivedSignals[1].aborted, true);
     assertEquals(secondRequestAbortController.signal.aborted, false);
+  });
+});
+
+test("GET /digests defaults to newest-requested order and honors every sort", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const { userId, cookie } = await ownerSession(app);
+    const [digestA, digestB, digestC, digestD, digestE] =
+      await createOrderedDigests(database, userId);
+
+    // No sort parameter: newest request (createdAt) first.
+    const defaultResponse = await app.request("/digests", {
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(defaultResponse.status, 200);
+    assertEquals(
+      (await defaultResponse.json()).data.map((entry: { id: string }) => entry.id),
+      [digestE.id, digestD.id, digestB.id, digestC.id, digestA.id],
+    );
+
+    const requestedAscResponse = await app.request("/digests?sort=requested_asc", {
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(requestedAscResponse.status, 200);
+    assertEquals(
+      (await requestedAscResponse.json()).data.map((entry: { id: string }) => entry.id),
+      [digestA.id, digestC.id, digestB.id, digestD.id, digestE.id],
+    );
+
+    const periodDescResponse = await app.request("/digests?sort=period_desc", {
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(periodDescResponse.status, 200);
+    assertEquals(
+      (await periodDescResponse.json()).data.map((entry: { id: string }) => entry.id),
+      [digestE.id, digestD.id, digestC.id, digestB.id, digestA.id],
+    );
+
+    const periodAscResponse = await app.request("/digests?sort=period_asc", {
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(periodAscResponse.status, 200);
+    assertEquals(
+      (await periodAscResponse.json()).data.map((entry: { id: string }) => entry.id),
+      [digestA.id, digestB.id, digestC.id, digestD.id, digestE.id],
+    );
+  });
+});
+
+test("GET /digests paginates without duplicates or skips across pages", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const { userId, cookie } = await ownerSession(app);
+    const [digestA, digestB, digestC, digestD, digestE] =
+      await createOrderedDigests(database, userId);
+
+    const expected = [digestE.id, digestD.id, digestB.id, digestC.id, digestA.id];
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const url = cursor === null
+        ? "/digests?limit=2"
+        : `/digests?limit=2&cursor=${encodeURIComponent(cursor)}`;
+      const response = await app.request(url, {
+        headers: { cookie, Origin: "http://127.0.0.1:5173" },
+      });
+      assertEquals(response.status, 200);
+      const page = await response.json();
+      assertEquals(page.data.length <= 2, true);
+      seen.push(...page.data.map((entry: { id: string }) => entry.id));
+      pages += 1;
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+
+    assertEquals(pages, 3);
+    assertEquals(seen, expected);
+    assertEquals(new Set(seen).size, seen.length);
+  });
+});
+
+test("GET /digests rejects cross-sort, legacy, and malformed cursors with 422", async () => {
+  await withTestDb(async (database) => {
+    const app = buildApp(database);
+    const { userId, cookie } = await ownerSession(app);
+    await createOrderedDigests(database, userId);
+
+    const firstPageResponse = await app.request("/digests?limit=2", {
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    });
+    assertEquals(firstPageResponse.status, 200);
+    const firstPage = await firstPageResponse.json();
+    assertEquals(typeof firstPage.nextCursor, "string");
+    const cursor = firstPage.nextCursor as string;
+
+    // Positive control: the same cursor resumes the same sort.
+    const resumedResponse = await app.request(
+      `/digests?limit=2&sort=requested_desc&cursor=${encodeURIComponent(cursor)}`,
+      { headers: { cookie, Origin: "http://127.0.0.1:5173" } },
+    );
+    assertEquals(resumedResponse.status, 200);
+
+    // A cursor minted under one sort must never resume another sort.
+    for (const sort of ["requested_asc", "period_desc", "period_asc"]) {
+      const response = await app.request(
+        `/digests?limit=2&sort=${sort}&cursor=${encodeURIComponent(cursor)}`,
+        { headers: { cookie, Origin: "http://127.0.0.1:5173" } },
+      );
+      assertEquals(response.status, 422);
+      const json = await response.json();
+      assertEquals(json.error.code, "VALIDATION_ERROR");
+    }
+
+    // Pre-redesign v1 cursor payloads stay rejected.
+    const legacyResponse = await app.request(
+      `/digests?cursor=${encodeURIComponent(legacyDigestCursor())}`,
+      { headers: { cookie, Origin: "http://127.0.0.1:5173" } },
+    );
+    assertEquals(legacyResponse.status, 422);
+    assertEquals((await legacyResponse.json()).error.code, "VALIDATION_ERROR");
+
+    // Malformed cursor values stay rejected.
+    for (const malformed of ["%%%not-base64%%%", "not-a-cursor"]) {
+      const response = await app.request(
+        `/digests?cursor=${encodeURIComponent(malformed)}`,
+        { headers: { cookie, Origin: "http://127.0.0.1:5173" } },
+      );
+      assertEquals(response.status, 422);
+      assertEquals((await response.json()).error.code, "VALIDATION_ERROR");
+    }
+  });
+});
+
+test("GET /digests/:id/items/:itemId/media serves owned story media with no-store caching", async () => {
+  await withTestDb(async (database) => {
+    const mediaRoot = await mkdtemp(join(tmpdir(), "morning-post-digest-media-"));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(mediaRoot, "telegram_media"), { recursive: true });
+      const photoBytes = new Uint8Array([
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+      ]);
+      await writeFile(join(mediaRoot, "telegram_media", "photo.jpg"), photoBytes);
+      // The media root is resolved relative to the process cwd, so the temp
+      // root stands in for the project's connector media directories.
+      process.chdir(mediaRoot);
+
+      const app = buildApp(database);
+      const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
+      const otherCookie = await strangerSession(
+        database,
+        "digests-media-other@example.com",
+      );
+      const feed = await createFeed(
+        database,
+        ownerId,
+        ConnectorId.Telegram,
+        1,
+        1,
+        "channel:media",
+        "Media Feed",
+      );
+      const [item] = await upsertItems(database, feed.id, [
+        normalizedItem(feed.externalId, "1", "media story", {
+          type: "photo",
+          localPath: "telegram_media/photo.jpg",
+        }),
+      ], 1);
+      const digest = await assembleDigestForPeriod(
+        database,
+        ownerId,
+        periodStartMs,
+        periodEndMs,
+        {
+          summarizer: new FakeSummarizer([[{
+            text: "media bullet",
+            sourceUrl: null,
+          }]]),
+          intelligence: fixtureStoryIntelligence,
+          now: () => 107,
+        },
+      );
+
+      const url = `/digests/${digest.digest.id}/items/${item.id}/media`;
+      const headers = { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" };
+
+      const response = await app.request(url, { headers });
+      assertEquals(response.status, 200);
+      assertEquals(response.headers.get("content-type"), "image/jpeg");
+      assertEquals(response.headers.get("cache-control"), "private, no-store");
+      assertEquals(new Uint8Array(await response.arrayBuffer()), photoBytes);
+
+      const anonymous = await app.request(url);
+      assertEquals(anonymous.status, 401);
+      assertEquals((await anonymous.json()).error.code, "UNAUTHORIZED");
+
+      const otherOwner = await app.request(url, {
+        headers: { cookie: otherCookie, Origin: "http://127.0.0.1:5173" },
+      });
+      assertEquals(otherOwner.status, 404);
+      const otherOwnerJson = await otherOwner.json();
+      assertEquals(otherOwnerJson.error.code, "NOT_FOUND");
+      assertEquals(otherOwnerJson.error.message, "digest not found");
+    } finally {
+      process.chdir(previousCwd);
+      await rm(mediaRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("GET /digests/:id/items/:itemId/media serves only digest members and rejects unsafe paths", async () => {
+  await withTestDb(async (database) => {
+    const mediaRoot = await mkdtemp(join(tmpdir(), "morning-post-digest-media-"));
+    const rootName = basename(mediaRoot);
+    const outsideRoot = join(tmpdir(), `${rootName}-outside`);
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(mediaRoot, "telegram_media"), { recursive: true });
+      await mkdir(outsideRoot, { recursive: true });
+      const photoBytes = new Uint8Array([
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+      ]);
+      const secretBytes = new Uint8Array([0x73, 0x65, 0x63, 0x72, 0x65, 0x74]);
+      await writeFile(join(mediaRoot, "telegram_media", "photo.jpg"), photoBytes);
+      await writeFile(join(outsideRoot, "secret.jpg"), secretBytes);
+      await symlink(
+        join(outsideRoot, "secret.jpg"),
+        join(mediaRoot, "telegram_media", "escape.jpg"),
+      );
+      process.chdir(mediaRoot);
+
+      const app = buildApp(database);
+      const { userId: ownerId, cookie: ownerCookie } = await ownerSession(app);
+      const feed = await createFeed(
+        database,
+        ownerId,
+        ConnectorId.Telegram,
+        1,
+        1,
+        "channel:media-safe",
+        "Media Safety Feed",
+      );
+      const items = await upsertItems(database, feed.id, [
+        normalizedItem(feed.externalId, "member", "member", {
+          type: "photo",
+          localPath: "telegram_media/photo.jpg",
+        }),
+        normalizedItem(feed.externalId, "missing", "missing", {
+          type: "photo",
+          localPath: "telegram_media/missing.jpg",
+        }),
+        normalizedItem(feed.externalId, "dotdot", "dotdot", {
+          type: "photo",
+          localPath: `../${rootName}-outside/secret.jpg`,
+        }),
+        normalizedItem(feed.externalId, "absolute", "absolute", {
+          type: "photo",
+          localPath: join(mediaRoot, "telegram_media", "photo.jpg"),
+        }),
+        normalizedItem(feed.externalId, "escape", "escape", {
+          type: "photo",
+          localPath: "telegram_media/escape.jpg",
+        }),
+      ], 1);
+      const itemByExternalId = new Map(
+        items.map((item) => [item.externalId, item]),
+      );
+      const member = itemByExternalId.get("member")!;
+      const digest = await assembleDigestForPeriod(
+        database,
+        ownerId,
+        periodStartMs,
+        periodEndMs,
+        {
+          summarizer: new FakeSummarizer([[{
+            text: "safe bullet",
+            sourceUrl: null,
+          }]]),
+          intelligence: fixtureStoryIntelligence,
+          now: () => 108,
+        },
+      );
+
+      const headers = { cookie: ownerCookie, Origin: "http://127.0.0.1:5173" };
+      const mediaUrl = (itemId: string) =>
+        `/digests/${digest.digest.id}/items/${itemId}/media`;
+
+      const served = await app.request(mediaUrl(member.id), { headers });
+      assertEquals(served.status, 200);
+      assertEquals(new Uint8Array(await served.arrayBuffer()), photoBytes);
+
+      for (const unsafe of ["missing", "dotdot", "absolute", "escape"]) {
+        const response = await app.request(mediaUrl(itemByExternalId.get(unsafe)!.id), {
+          headers,
+        });
+        assertEquals(response.status, 404, unsafe);
+        const json = await response.json();
+        assertEquals(json.error.code, "NOT_FOUND", unsafe);
+        assertEquals(json.error.message, "media not found", unsafe);
+      }
+
+      // A real in-root file owned by the same user is not exposed unless its
+      // item belongs to a digest story. The feed reuses the existing Telegram
+      // source (one source per connector) and is created after assembly, so
+      // its item is never a digest story member.
+      const otherFeed = await createOrReviveFeed(database, {
+        userId: ownerId,
+        sourceId: feed.sourceId,
+        externalId: "channel:non-member",
+        name: "Non Member Feed",
+        kind: "news",
+        position: 2,
+      });
+      const [nonMember] = await upsertItems(database, otherFeed.id, [
+        normalizedItem(otherFeed.externalId, "other", "other", {
+          type: "photo",
+          localPath: "telegram_media/photo.jpg",
+        }),
+      ], 1);
+      const nonMemberResponse = await app.request(mediaUrl(nonMember.id), { headers });
+      assertEquals(nonMemberResponse.status, 404);
+      const nonMemberJson = await nonMemberResponse.json();
+      assertEquals(nonMemberJson.error.code, "NOT_FOUND");
+      assertEquals(nonMemberJson.error.message, "media not found");
+    } finally {
+      process.chdir(previousCwd);
+      await rm(mediaRoot, { recursive: true, force: true });
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -694,9 +694,9 @@ export function DigestViewContent(props: DigestViewContentProps) {
               >
                 {(group) => (
                   <section class="digest-group">
-                    <div class="digest-group-heading">
+                    <h2 class="digest-group-heading">
                       <ServiceIdentity connectorId={group.connectorId} />
-                    </div>
+                    </h2>
                     <For each={group.sections.filter(hasVisibleDigestSection)}>
                       {(section) => <DigestSectionView section={section} />}
                     </For>

@@ -136,6 +136,7 @@ export default function ConnectionsPanel(props: ConnectionsPanelProps) {
                 <article class="connections-service" role="listitem">
                   <button
                     type="button"
+                    class="connections-service-button"
                     classList={{ selected: selected() }}
                     aria-pressed={selected()}
                     aria-controls="connection-detail"
@@ -166,7 +167,14 @@ export default function ConnectionsPanel(props: ConnectionsPanelProps) {
                         {service.description}
                       </span>
                       <span class="connections-service-action">
-                        {selected() ? "Selected" : connected() ? "Manage connection" : "Connect service"}
+                        {selected()
+                          ? "Selected"
+                          : connected()
+                            ? "Manage connection"
+                            : "Connect service"}
+                        <span class="connections-service-chevron" aria-hidden="true">
+                          →
+                        </span>
                       </span>
                     </span>
                   </button>

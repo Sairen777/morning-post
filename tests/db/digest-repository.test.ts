@@ -9,10 +9,13 @@ import {
   deleteDigestForUser,
   findDigestById,
   findDigestForUserPeriod,
+  listDigestPageForUser,
   listDigestsForUser,
   setDigestStatus,
   upsertDigestForPeriod,
+  type PublicDigest,
 } from "../../src/repositories/digest-repository.ts";
+import { ValidationError } from "../../src/server/errors.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
 import { digests } from "../../src/db/schema/digest.ts";
 import { createUser, type CreateUserInput } from "../../src/repositories/user-repository.ts";
@@ -211,6 +214,249 @@ test("deleteDigestForUser deletes an owned digest and returns it", async () => {
 
     // Verify it's gone for the owner
     assertEquals(await findDigestById(database, digest.id, user.id), null);
+  });
+});
+
+interface DigestOrderFixture {
+  digestA: PublicDigest;
+  digestB: PublicDigest;
+  digestC: PublicDigest;
+  digestD: PublicDigest;
+  digestE: PublicDigest;
+  tieFirst: PublicDigest;
+  tieSecond: PublicDigest;
+}
+
+/**
+ * Seven digests whose request order (createdAt) differs from their coverage
+ * order (periodEndMs). The tie pair shares both createdAt and periodEndMs so
+ * the digest-id tie-break is observable for every sort.
+ */
+async function createDigestOrderFixture(
+  database: Database,
+  userId: string,
+): Promise<DigestOrderFixture> {
+  const digestA = await upsertDigestForPeriod(database, {
+    userId,
+    periodStartMs: 1_700_000_000_000,
+    periodEndMs: 1_700_086_400_000,
+    status: "complete",
+  }, 10);
+  const digestB = await upsertDigestForPeriod(database, {
+    userId,
+    periodStartMs: 1_700_086_400_000,
+    periodEndMs: 1_700_172_800_000,
+    status: "complete",
+  }, 30);
+  const digestC = await upsertDigestForPeriod(database, {
+    userId,
+    periodStartMs: 1_700_172_800_000,
+    periodEndMs: 1_700_259_200_000,
+    status: "complete",
+  }, 20);
+  const digestD = await upsertDigestForPeriod(database, {
+    userId,
+    periodStartMs: 1_700_259_200_000,
+    periodEndMs: 1_700_345_600_000,
+    status: "complete",
+  }, 40);
+  const digestE = await upsertDigestForPeriod(database, {
+    userId,
+    periodStartMs: 1_700_345_600_000,
+    periodEndMs: 1_700_432_000_000,
+    status: "complete",
+  }, 50);
+  const tieFirst = await upsertDigestForPeriod(database, {
+    userId,
+    periodStartMs: 1_700_400_000_000,
+    periodEndMs: 1_700_500_000_000,
+    status: "complete",
+  }, 60);
+  const tieSecond = await upsertDigestForPeriod(database, {
+    userId,
+    periodStartMs: 1_700_450_000_000,
+    periodEndMs: 1_700_500_000_000,
+    status: "complete",
+  }, 60);
+  return { digestA, digestB, digestC, digestD, digestE, tieFirst, tieSecond };
+}
+
+/** Cursor-shaped like the pre-redesign v1 payloads, which must stay rejected. */
+function legacyDigestCursor(): string {
+  const payload = {
+    v: 1,
+    k: "digest",
+    p: 1_700_086_400_000,
+    c: 10,
+    i: "00000000-0000-0000-0000-000000000001",
+  };
+  return btoa(JSON.stringify(payload))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+test("digest repository pages by request order by default with a deterministic id tie-break", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUserWithSource(database, "digest-page-request@example.com");
+    const fixture = await createDigestOrderFixture(database, user.id);
+    const tieAsc = [fixture.tieFirst.id, fixture.tieSecond.id].sort();
+    const tieDesc = [...tieAsc].reverse();
+
+    // No sort option: newest request first, then digest id descending.
+    const defaultPage = listDigestPageForUser(database, user.id);
+    assertEquals(
+      defaultPage.data.map((digest) => digest.id),
+      [
+        tieDesc[0],
+        tieDesc[1],
+        fixture.digestE.id,
+        fixture.digestD.id,
+        fixture.digestB.id,
+        fixture.digestC.id,
+        fixture.digestA.id,
+      ],
+    );
+
+    const ascendingPage = listDigestPageForUser(database, user.id, {
+      sort: "requested_asc",
+    });
+    assertEquals(
+      ascendingPage.data.map((digest) => digest.id),
+      [
+        fixture.digestA.id,
+        fixture.digestC.id,
+        fixture.digestB.id,
+        fixture.digestD.id,
+        fixture.digestE.id,
+        tieAsc[0],
+        tieAsc[1],
+      ],
+    );
+  });
+});
+
+test("digest repository pages by period end for period sorts with a deterministic id tie-break", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUserWithSource(database, "digest-page-period@example.com");
+    const fixture = await createDigestOrderFixture(database, user.id);
+    const tieAsc = [fixture.tieFirst.id, fixture.tieSecond.id].sort();
+    const tieDesc = [...tieAsc].reverse();
+
+    const descendingPage = listDigestPageForUser(database, user.id, {
+      sort: "period_desc",
+    });
+    assertEquals(
+      descendingPage.data.map((digest) => digest.id),
+      [
+        tieDesc[0],
+        tieDesc[1],
+        fixture.digestE.id,
+        fixture.digestD.id,
+        fixture.digestC.id,
+        fixture.digestB.id,
+        fixture.digestA.id,
+      ],
+    );
+
+    const ascendingPage = listDigestPageForUser(database, user.id, {
+      sort: "period_asc",
+    });
+    assertEquals(
+      ascendingPage.data.map((digest) => digest.id),
+      [
+        fixture.digestA.id,
+        fixture.digestB.id,
+        fixture.digestC.id,
+        fixture.digestD.id,
+        fixture.digestE.id,
+        tieAsc[0],
+        tieAsc[1],
+      ],
+    );
+  });
+});
+
+test("digest repository paginates without duplicates or skips and closes the cursor trail", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUserWithSource(database, "digest-page-walk@example.com");
+    const fixture = await createDigestOrderFixture(database, user.id);
+    const tieAsc = [fixture.tieFirst.id, fixture.tieSecond.id].sort();
+    const tieDesc = [...tieAsc].reverse();
+    const expectedOrder = [
+      tieDesc[0],
+      tieDesc[1],
+      fixture.digestE.id,
+      fixture.digestD.id,
+      fixture.digestB.id,
+      fixture.digestC.id,
+      fixture.digestA.id,
+    ];
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const page = listDigestPageForUser(database, user.id, {
+        cursor: cursor ?? undefined,
+        limit: 2,
+      });
+      assertEquals(page.data.length <= 2, true);
+      seen.push(...page.data.map((digest) => digest.id));
+      pages += 1;
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+
+    assertEquals(pages, 4);
+    assertEquals(seen, expectedOrder);
+    assertEquals(new Set(seen).size, seen.length);
+  });
+});
+
+test("digest repository rejects cross-sort, legacy, and malformed cursors", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUserWithSource(database, "digest-page-cursor@example.com");
+    const fixture = await createDigestOrderFixture(database, user.id);
+    const firstPage = listDigestPageForUser(database, user.id, { limit: 2 });
+    assertEquals(firstPage.nextCursor !== null, true);
+    const cursor = firstPage.nextCursor!;
+
+    // Positive control: the same cursor resumes the same sort.
+    const resumed = listDigestPageForUser(database, user.id, {
+      cursor,
+      limit: 2,
+      sort: "requested_desc",
+    });
+    assertEquals(
+      resumed.data.map((digest) => digest.id),
+      [fixture.digestE.id, fixture.digestD.id],
+    );
+
+    // A cursor minted under one sort must never resume another sort.
+    for (const sort of ["requested_asc", "period_desc", "period_asc"] as const) {
+      assertThrows(
+        () => listDigestPageForUser(database, user.id, { cursor, sort }),
+        ValidationError,
+        "Invalid cursor",
+      );
+    }
+
+    // Pre-redesign v1 payloads stay rejected.
+    assertThrows(
+      () => listDigestPageForUser(database, user.id, { cursor: legacyDigestCursor() }),
+      ValidationError,
+      "Invalid cursor",
+    );
+
+    // Malformed payloads stay rejected.
+    for (const malformed of ["%%%not-base64%%%", "not-a-cursor"]) {
+      assertThrows(
+        () => listDigestPageForUser(database, user.id, { cursor: malformed }),
+        ValidationError,
+        "Invalid cursor",
+      );
+    }
   });
 });
 

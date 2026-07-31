@@ -337,15 +337,8 @@ export default function FeedsPanel(props: FeedsPanelProps) {
                         <div class="feed-card-heading">
                           <div class="feed-card-title">
                             <h4>{feed.name}</h4>
-                            <div class="feed-card-badges" aria-label="Feed status">
+                            <div class="feed-card-badges" aria-label="Feed kind">
                               <span class="badge badge-muted">{kindLabel(feed.kind)}</span>
-                              <span
-                                class={`badge ${
-                                  feed.enabled ? "badge-success" : "badge-muted"
-                                }`}
-                              >
-                                {feed.enabled ? "Enabled" : "Paused"}
-                              </span>
                               <Show when={feed.deletedAt !== null}>
                                 <span class="badge badge-muted">Removed</span>
                               </Show>

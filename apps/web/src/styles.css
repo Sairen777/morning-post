@@ -1353,19 +1353,44 @@ summary:focus-visible {
 }
 
 .connections-service {
+  display: flex;
   min-width: 0;
+}
+
+
+.connections-service-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.connections-service-chevron {
+  color: currentColor;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: 1;
+  transition: transform 160ms ease-out;
+}
+
+.connections-service-button:hover:not(:disabled) .connections-service-chevron,
+.connections-service-button:focus-visible .connections-service-chevron {
+  transform: translateX(var(--space-1));
 }
 
 .connections-service-button {
   display: flex;
   align-items: flex-start;
+  align-self: stretch;
+  justify-content: flex-start;
   width: 100%;
+  min-width: 0;
   min-height: 100%;
   padding: var(--space-4);
   border-color: var(--border);
   background: var(--color-surface);
   box-shadow: var(--shadow-sm);
   text-align: left;
+  cursor: pointer;
 }
 
 .connections-service-button:hover:not(:disabled),
@@ -1472,8 +1497,7 @@ summary:focus-visible {
 .connections-welcome {
   display: flex;
   align-items: center;
-  min-height: 10rem;
-  padding: var(--space-7);
+  padding: var(--space-5) var(--space-6);
   border-top: 2px solid var(--accent);
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--color-surface) 82%, var(--paper));

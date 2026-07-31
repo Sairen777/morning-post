@@ -1,8 +1,9 @@
 /** @jsxImportSource solid-js */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import Dashboard from "./Dashboard";
 import type {
+  PublicDigest,
   PublicDigestRun,
   PublicFeed,
   PublicSource,
@@ -82,6 +83,8 @@ function createDeferred<Result>() {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
+  vi.useRealTimers();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("Dashboard Substack refresh ordering", () => {
@@ -152,6 +155,10 @@ describe("Dashboard Substack refresh ordering", () => {
         screen.getByRole("button", { name: "Connections" }),
       );
       await waitFor(() =>
+        expect(screen.getByRole("button", { name: /Substack/ })).toBeVisible()
+      );
+      await fireEvent.click(screen.getByRole("button", { name: /Substack/ }));
+      await waitFor(() =>
         expect(
           screen.getByRole("button", { name: "Find followed publications" }),
         )
@@ -180,6 +187,16 @@ describe("Dashboard Substack refresh ordering", () => {
       await fireEvent.click(screen.getByRole("button", { name: "Digests" }));
       await fireEvent.click(
         screen.getByRole("button", { name: "Connections" }),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /Substack/ })).toBeVisible()
+      );
+      await fireEvent.click(screen.getByRole("button", { name: /Substack/ }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Find followed publications" }),
+        )
+          .toBeVisible()
       );
       await fireEvent.click(
         screen.getByRole("button", { name: "Find followed publications" }),
@@ -216,6 +233,18 @@ const completedDigestRun: PublicDigestRun = {
   finishedAt: 1_700_086_500_000,
 };
 
+function digestRecord(id: string, periodStartMs: number): PublicDigest {
+  return {
+    id,
+    userId: user.id,
+    periodStartMs,
+    periodEndMs: periodStartMs + 86_400_000,
+    status: "complete",
+    createdAt: periodStartMs,
+    updatedAt: periodStartMs,
+  };
+}
+
 function emptyDigestPage() {
   return { data: [], nextCursor: null };
 }
@@ -229,7 +258,9 @@ function dashboardResponse(
   if (path === "/interests") return jsonResponse([]);
   if (path === "/feeds") return jsonResponse([]);
   if (path === "/digests/runs") return jsonResponse(digestRunsResponse);
-  if (path === "/digests") return jsonResponse(digestResponse);
+  if (path === "/digests" || path.startsWith("/digests?")) {
+    return jsonResponse(digestResponse);
+  }
   throw new Error(`Unexpected request: ${path}`);
 }
 
@@ -281,9 +312,10 @@ describe("Dashboard digest run recovery", () => {
     ));
 
     await waitFor(() => {
-      expect(screen.getByRole("status")).toHaveTextContent(
-        "A digest is running.",
-      );
+      expect(
+        within(screen.getByRole("region", { name: "Run Digest" }))
+          .getByRole("status"),
+      ).toHaveTextContent("A digest is running.");
       expect(screen.getByRole("button", { name: "Run digest" })).toBeDisabled();
     });
     expect(screen.getByRole("button", { name: "Open Runs tab" })).toBeVisible();
@@ -319,10 +351,13 @@ describe("Dashboard digest run recovery", () => {
     ).toBeVisible();
   });
 
-  it("polls an active run every five seconds and refreshes digests after completion", async () => {
+  it("polls an active run every five seconds and refreshes digests once after completion", async () => {
     vi.useFakeTimers();
     let digestRunRequestCount = 0;
     let digestRequestCount = 0;
+    const initialDigestPage = createDeferred<Response>();
+    const completionDigestPage = createDeferred<Response>();
+    const sortedDigestPage = createDeferred<Response>();
     globalThis.fetch = vi.fn((input) => {
       const path = String(input);
       if (path === "/digests/runs") {
@@ -332,9 +367,15 @@ describe("Dashboard digest run recovery", () => {
           : { data: [completedDigestRun], nextCursor: null };
         return Promise.resolve(jsonResponse(response));
       }
-      if (path === "/digests") {
+      if (path === "/digests?sort=requested_desc") {
         digestRequestCount += 1;
-        return Promise.resolve(jsonResponse(emptyDigestPage()));
+        return digestRequestCount === 1
+          ? initialDigestPage.promise
+          : completionDigestPage.promise;
+      }
+      if (path === "/digests?sort=requested_asc") {
+        digestRequestCount += 1;
+        return sortedDigestPage.promise;
       }
       return Promise.resolve(dashboardResponse(path, emptyDigestPage()));
     }) as typeof fetch;
@@ -348,7 +389,17 @@ describe("Dashboard digest run recovery", () => {
       />
     ));
 
+    const runnerCard = () =>
+      screen.getByRole("region", { name: "Run Digest" });
+    const archiveLink = () =>
+      screen.getByRole("link", { name: /read digest/ });
+
     await vi.advanceTimersByTimeAsync(0);
+    expect(digestRunRequestCount).toBe(1);
+    expect(digestRequestCount).toBe(1);
+    expect(within(runnerCard()).getByRole("status")).toHaveTextContent(
+      "A digest is running.",
+    );
     expect(screen.getByRole("button", { name: "Run digest" })).toBeDisabled();
 
     await vi.advanceTimersByTimeAsync(5_100);
@@ -356,6 +407,92 @@ describe("Dashboard digest run recovery", () => {
     expect(digestRequestCount).toBe(2);
     expect(screen.getByRole("button", { name: "Run digest" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Open Runs tab" })).toBeNull();
-    vi.useRealTimers();
+
+    await fireEvent.change(screen.getByLabelText("Order by"), {
+      target: { value: "requested_asc" },
+    });
+    expect(digestRequestCount).toBe(3);
+
+    const freshDigest = digestRecord("digest-fresh", 1_700_100_000_000);
+    const staleDigest = digestRecord("digest-stale", 1_700_200_000_000);
+    const sortedDigest = digestRecord("digest-sorted", 1_700_300_000_000);
+
+    sortedDigestPage.resolve(
+      jsonResponse({ data: [sortedDigest], nextCursor: null }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(archiveLink().getAttribute("href")).toBe(
+      `/issues/${sortedDigest.id}`,
+    );
+
+    // The completion refresh carries the pre-change sort, so it is now a
+    // stale request and must not replace the archive.
+    completionDigestPage.resolve(
+      jsonResponse({ data: [freshDigest], nextCursor: null }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(archiveLink().getAttribute("href")).toBe(
+      `/issues/${sortedDigest.id}`,
+    );
+
+    // The mount-time digest request is the oldest generation; it must not
+    // replace the archive either.
+    initialDigestPage.resolve(
+      jsonResponse({ data: [staleDigest], nextCursor: null }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(archiveLink().getAttribute("href")).toBe(
+      `/issues/${sortedDigest.id}`,
+    );
+
+    // Polling stops once the run completes: no further five-second ticks or
+    // completion-triggered refreshes.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(digestRunRequestCount).toBe(2);
+    expect(digestRequestCount).toBe(3);
+  });
+});
+
+describe("Dashboard section query navigation", () => {
+  it("opens Profile from ?section=profile and returns to Digests on reader return", async () => {
+    window.history.replaceState(null, "", "/?section=profile");
+    globalThis.fetch = vi.fn((input) => {
+      const path = String(input);
+      return Promise.resolve(dashboardResponse(path, emptyDigestPage()));
+    }) as typeof fetch;
+
+    render(() => (
+      <Dashboard
+        user={user}
+        onLogout={() => {}}
+        onAuthError={() => {}}
+        onUserUpdate={() => {}}
+      />
+    ));
+
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: /Preferences/ })).toBeVisible()
+    );
+    expect(screen.getByRole("heading", { name: "Profile" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Run digest" })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Digests" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Run digest" })).toBeVisible()
+    );
+    expect(screen.queryByRole("tab", { name: /Preferences/ })).toBeNull();
+    expect(window.location.search).toBe("");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Profile" }));
+    expect(new URLSearchParams(window.location.search).get("section")).toBe(
+      "profile",
+    );
+
+    window.history.replaceState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Run digest" })).toBeVisible()
+    );
+    expect(screen.queryByRole("tab", { name: /Preferences/ })).toBeNull();
   });
 });

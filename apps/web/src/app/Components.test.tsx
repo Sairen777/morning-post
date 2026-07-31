@@ -1,6 +1,6 @@
 /** @jsxImportSource solid-js */
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import StatusBadge from "../app/StatusBadge";
 import FormatTime from "../app/FormatTime";
 import ProfilePanel from "../app/ProfilePanel";
@@ -41,7 +41,7 @@ describe("FormatTime", () => {
 });
 
 describe("ProfilePanel", () => {
-  it("does not render a model selector", () => {
+  it("does not render a model selector", async () => {
     const user = {
       id: "user-1",
       name: "Ada",
@@ -72,10 +72,27 @@ describe("ProfilePanel", () => {
       />
     ));
     expect(container.querySelector("#profile-model")).toBeNull();
-    expect(container.querySelector("#profile-name")).not.toBeNull();
-    expect(container.querySelector("#profile-language")).not.toBeNull();
-    expect(container.querySelector("#profile-prompt")).not.toBeNull();
-    expect(container.querySelector("#profile-summary-prompt")).not.toBeNull();
+    expect(screen.getByRole("tab", { name: /^Preferences/ })).toBeVisible();
+    expect(screen.getByRole("tab", { name: /^Interests/ })).toBeVisible();
+    expect(screen.getByRole("tab", { name: /^Activity/ })).toBeVisible();
+
+    await fireEvent.click(screen.getByRole("tab", { name: /^Activity/ }));
+    expect(screen.getByText(
+      "Run a digest to start building your activity history.",
+    )).toBeVisible();
+
+    await fireEvent.click(screen.getByRole("tab", { name: /^Preferences/ }));
+    const preferences = within(
+      screen.getByRole("tabpanel", { name: /^Preferences/ }),
+    );
+    expect(preferences.getByLabelText("Your name")).toBeInTheDocument();
+    expect(preferences.getByLabelText("Digest language")).toBeInTheDocument();
+
+    await fireEvent.click(preferences.getByText("Advanced instructions"));
+    expect(preferences.getByLabelText("Interest instructions"))
+      .toBeInTheDocument();
+    expect(preferences.getByLabelText("Summary writing instructions"))
+      .toBeInTheDocument();
   });
 
   it("renders balanced story detail, explains outcomes, and saves each detail level", async () => {
@@ -110,26 +127,32 @@ describe("ProfilePanel", () => {
       />
     ));
 
-    const detail = screen.getByRole("combobox", { name: "Default story detail" });
+    await fireEvent.click(screen.getByRole("tab", { name: /^Preferences/ }));
+    const preferences = within(
+      screen.getByRole("tabpanel", { name: /^Preferences/ }),
+    );
+    const detail = preferences.getByRole("combobox", {
+      name: "How much context should stories include?",
+    });
     expect(detail).toHaveValue("balanced");
     expect(
-      screen.getByText("A clear explanation of the key points and why they matter."),
+      preferences.getByText("A clear explanation of the key points and why they matter."),
     ).toBeVisible();
 
     await fireEvent.change(detail, { target: { value: "headlines" } });
     expect(
-      screen.getByText("A quick scan with the essential point and context."),
+      preferences.getByText("A quick scan with the essential point and context."),
     ).toBeVisible();
-    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await fireEvent.click(preferences.getByRole("button", { name: "Save preferences" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       storyDetailLevel: "headlines",
     }));
 
     await fireEvent.change(detail, { target: { value: "thorough" } });
     expect(
-      screen.getByText("More context, nuance, and connections between sources."),
+      preferences.getByText("More context, nuance, and connections between sources."),
     ).toBeVisible();
-    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await fireEvent.click(preferences.getByRole("button", { name: "Save preferences" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       storyDetailLevel: "thorough",
     }));
@@ -167,13 +190,15 @@ describe("ProfilePanel", () => {
       />
     ));
 
-    const maximum = screen.getByLabelText(
-      "Maximum stories per digest (Default: 12)",
+    await fireEvent.click(screen.getByRole("tab", { name: /^Preferences/ }));
+    const preferences = within(
+      screen.getByRole("tabpanel", { name: /^Preferences/ }),
     );
+    const maximum = preferences.getByLabelText("Maximum stories per digest");
     expect(maximum).toHaveValue(null);
     expect(maximum).toHaveAttribute("placeholder", "Default (12)");
 
-    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await fireEvent.click(preferences.getByRole("button", { name: "Save preferences" }));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       maximumStoriesPerDigest: null,
     }));
@@ -211,15 +236,17 @@ describe("ProfilePanel", () => {
       />
     ));
 
-    const preset = screen.getByRole("combobox", { name: "Digest size preset" });
-    const maximum = screen.getByLabelText(
-      "Maximum stories per digest (Default: 12)",
+    await fireEvent.click(screen.getByRole("tab", { name: /^Preferences/ }));
+    const preferences = within(
+      screen.getByRole("tabpanel", { name: /^Preferences/ }),
     );
+    const preset = preferences.getByRole("combobox", { name: "Digest size" });
+    const maximum = preferences.getByLabelText("Maximum stories per digest");
     expect(preset).toHaveValue("standard");
 
     await fireEvent.change(preset, { target: { value: "concise" } });
     expect(maximum).toHaveValue(8);
-    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await fireEvent.click(preferences.getByRole("button", { name: "Save preferences" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       maximumStoriesPerDigest: 8,
     }));
@@ -229,14 +256,14 @@ describe("ProfilePanel", () => {
     await fireEvent.change(preset, { target: { value: "custom" } });
     await fireEvent.input(maximum, { target: { value: "7" } });
     expect(maximum).toHaveValue(7);
-    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await fireEvent.click(preferences.getByRole("button", { name: "Save preferences" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       maximumStoriesPerDigest: 7,
     }));
 
     await fireEvent.change(preset, { target: { value: "standard" } });
     expect(maximum).toHaveValue(null);
-    await fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await fireEvent.click(preferences.getByRole("button", { name: "Save preferences" }));
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({
       maximumStoriesPerDigest: null,
     }));
@@ -285,22 +312,42 @@ describe("ProfilePanel", () => {
         onAuthError={() => {}}
       />
     ));
-    expect(screen.getByRole("heading", { name: "Muted" })).toBeVisible();
-    expect(screen.getByText("Inferred")).toBeVisible();
-    await fireEvent.click(screen.getByRole("button", { name: "Unmute" }));
+
+    await fireEvent.click(screen.getByRole("tab", { name: /^Interests/ }));
+    const interests = within(
+      screen.getByRole("tabpanel", { name: /^Interests/ }),
+    );
+    const muteGroup = within(interests.getByRole("region", { name: "Mute" }));
+    expect(muteGroup.getByRole("heading", { name: "Mute" })).toBeVisible();
+    expect(muteGroup.getByText(/Inferred from reading/)).toBeVisible();
+
+    const ruleCard = within(
+      muteGroup.getByRole("heading", { name: "Machine learning" })
+        .closest("article")!,
+    );
+    await fireEvent.click(ruleCard.getByText("Edit rule"));
+    await fireEvent.click(
+      ruleCard.getByRole("button", { name: "Delete rule Machine learning" }),
+    );
     expect(onDeleteInterest).toHaveBeenCalledWith("rule-1");
-    const labelInput = screen.getByLabelText("Topic, entity, phrase, or story type");
+
+    const addSection = within(
+      interests.getByRole("region", { name: "Add an interest rule" }),
+    );
+    const labelInput = addSection.getByLabelText("What should Morning Post notice?");
     await fireEvent.input(labelInput, { target: { value: "Cryptography" } });
-    const addDisposition = document.querySelector("#interest-disposition")!;
-    await fireEvent.change(addDisposition, { target: { value: "mute" } });
-    await fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    await fireEvent.change(
+      addSection.getByLabelText("How should it affect your digest?"),
+      { target: { value: "mute" } },
+    );
+    await fireEvent.click(addSection.getByRole("button", { name: "Add rule" }));
     expect(onCreateInterest).toHaveBeenCalledWith({
       label: "Cryptography",
       kind: "topic",
       disposition: "mute",
       expiresAt: null,
     });
-    expect(screen.getByRole("button", { name: "Unmute" })).toBeVisible();
+    expect(labelInput).toHaveValue("");
   });
 });
 
@@ -340,9 +387,15 @@ describe("SourcesPanel", () => {
         onAuthError={() => {}}
       />
     ));
-    expect(screen.queryByLabelText("Summary detail for Substack")).toBeNull();
+    const sourceCard = within(
+      screen.getByRole("heading", { name: "Substack" }).closest("article")!,
+    );
+    expect(sourceCard.queryByLabelText("Summary detail for Substack")).toBeNull();
+    await fireEvent.click(
+      sourceCard.getByText("Source settings and maintenance"),
+    );
     await fireEvent.change(
-      screen.getByLabelText("Relevance filtering for Substack"),
+      sourceCard.getByLabelText("Relevance filtering for Substack"),
       { target: { value: "include_all" } },
     );
     expect(onUpdateSource).toHaveBeenCalledWith("source-1", {
@@ -350,7 +403,7 @@ describe("SourcesPanel", () => {
     });
   });
 
-  it("hides Discover feeds for Substack but keeps it for Telegram", () => {
+  it("shows Manage publications guidance for Substack but keeps Discover feeds for Telegram", () => {
     const props = {
       sources: [source],
       feeds: [],
@@ -370,7 +423,19 @@ describe("SourcesPanel", () => {
       onAuthError: () => {},
     };
     const substack = render(() => <SourcesPanel {...props} />);
-    expect(substack.container.textContent).not.toContain("Discover feeds");
+    const substackCard = within(
+      screen.getByRole("heading", { name: "Substack" }).closest("article")!,
+    );
+    expect(substackCard.getByRole("heading", { name: "Manage publications" }))
+      .toBeVisible();
+    expect(substackCard.getByText(
+      "Manage followed publications for this service in Connections.",
+    )).toBeVisible();
+    expect(substackCard.getByText(
+      "Publication selection for this service is managed in Connections.",
+    )).toBeVisible();
+    expect(substackCard.queryByRole("button", { name: "Discover feeds" }))
+      .toBeNull();
     substack.unmount();
 
     const telegram = render(() => (
@@ -379,7 +444,11 @@ describe("SourcesPanel", () => {
         sources={[{ ...source, connectorId: "Telegram" }]}
       />
     ));
-    expect(telegram.container.textContent).toContain("Discover feeds");
+    const telegramCard = within(
+      screen.getByRole("heading", { name: "Telegram" }).closest("article")!,
+    );
+    expect(telegramCard.getByRole("button", { name: "Discover feeds" }))
+      .toBeVisible();
   });
 });
 
@@ -412,8 +481,12 @@ describe("FeedsPanel", () => {
         onAuthError={() => {}}
       />
     ));
+    const feedCard = within(
+      screen.getByRole("heading", { name: "Morning feed" }).closest("article")!,
+    );
+    await fireEvent.click(feedCard.getByText("Customize & advanced"));
     await fireEvent.change(
-      screen.getByLabelText("Relevance filtering for Morning feed"),
+      feedCard.getByLabelText("Relevance policy for Morning feed"),
       { target: { value: "personalized" } },
     );
     expect(onUpdateFeed).toHaveBeenCalledWith("feed-1", {
@@ -457,15 +530,26 @@ describe("FeedsPanel", () => {
       />
     ));
 
-    const firstSelector = screen.getByLabelText("Story detail for Morning channel");
-    const secondSelector = screen.getByLabelText("Story detail for Evening channel");
+    const firstCard = within(
+      screen.getByRole("heading", { name: "Morning channel" })
+        .closest("article")!,
+    );
+    const secondCard = within(
+      screen.getByRole("heading", { name: "Evening channel" })
+        .closest("article")!,
+    );
+    await fireEvent.click(firstCard.getByText("Customize & advanced"));
+    await fireEvent.click(secondCard.getByText("Customize & advanced"));
+
+    const firstSelector = firstCard.getByLabelText("Summary depth for Morning channel");
+    const secondSelector = secondCard.getByLabelText("Summary depth for Evening channel");
     expect(firstSelector).toHaveValue("basic");
     expect(secondSelector).toHaveValue("thorough");
-    expect(screen.getByText(
-      "Standard follows your profile story-detail setting. Change the profile level in the Profile tab.",
+    expect(firstCard.getByText(
+      "Standard follows your profile story-detail setting.",
     )).toBeVisible();
-    expect(screen.getByText(
-      "Thorough overrides your profile story-detail setting for this feed, adding more context and nuance.",
+    expect(secondCard.getByText(
+      "Thorough adds more context and nuance.",
     )).toBeVisible();
 
     await fireEvent.change(firstSelector, { target: { value: "thorough" } });
@@ -511,10 +595,15 @@ describe("FeedsPanel", () => {
       />
     ));
 
-    const selector = screen.getByLabelText("Story detail for Morning channel");
+    const feedCard = within(
+      screen.getByRole("heading", { name: "Morning channel" })
+        .closest("article")!,
+    );
+    await fireEvent.click(feedCard.getByText("Customize & advanced"));
+    const selector = feedCard.getByLabelText("Summary depth for Morning channel");
     await fireEvent.change(selector, { target: { value: "thorough" } });
     await waitFor(() => expect(selector).toHaveValue("basic"));
-    expect(screen.getByText("Story detail could not be saved")).toBeVisible();
+    expect(feedCard.getByText("Story detail could not be saved")).toBeVisible();
     expect(selector).toBeEnabled();
   });
 });

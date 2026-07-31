@@ -5,7 +5,7 @@ import type {
   DigestView,
   StoryFeedbackInput,
 } from "../api/types";
-import DigestsPanel from "./DigestsPanel";
+import { DigestViewContent } from "./DigestsPanel";
 
 const storyView: DigestView = {
   digest: {
@@ -134,24 +134,13 @@ function renderDigest(
   } = {},
 ) {
   return render(() => (
-    <DigestsPanel
-      digests={[view.digest]}
-      onSelectDigest={() => Promise.resolve(view)}
-      onDeleteDigest={() => Promise.resolve()}
+    <DigestViewContent
+      view={view}
       onAuthError={() => {}}
       onSubmitFeedback={options.onSubmitFeedback}
       onFeedbackSuccess={options.onFeedbackSuccess}
     />
   ));
-}
-
-async function openDigest() {
-  await fireEvent.click(screen.getByRole("button", { name: /#1/ }));
-  await waitFor(() =>
-    expect(screen.getAllByRole("heading", {
-      name: /A consequential policy changed|Historical Feed/,
-    })[0]).toBeVisible()
-  );
 }
 
 async function openStoryDetails() {
@@ -161,26 +150,25 @@ async function openStoryDetails() {
   expect(disclosure.closest("details")).toHaveAttribute("open");
 }
 
-describe("DigestsPanel story rendering", () => {
+describe("DigestViewContent story rendering", () => {
   it("groups stories under connector and feed headings with details collapsed", async () => {
     renderDigest(storyView, { onSubmitFeedback: () => Promise.resolve() });
-    await openDigest();
 
-    expect(screen.getByRole("heading", { level: 4, name: "Substack" }))
+    expect(screen.getByRole("heading", { level: 2, name: /Substack/ }))
       .toBeVisible();
-    expect(screen.getByRole("heading", { level: 4, name: "RSS" }))
+    expect(screen.getByRole("heading", { level: 2, name: /RSS/ }))
       .toBeVisible();
-    expect(screen.getByRole("heading", { level: 4, name: "Telegram" }))
+    expect(screen.getByRole("heading", { level: 2, name: /Telegram/ }))
       .toBeVisible();
-    expect(screen.getAllByRole("heading", { level: 5, name: "Policy Dispatch" }))
+    expect(screen.getAllByRole("heading", { level: 3, name: "Policy Dispatch" }))
       .toHaveLength(1);
-    expect(screen.getByRole("heading", { level: 5, name: "Industry Wire" }))
+    expect(screen.getByRole("heading", { level: 3, name: "Industry Wire" }))
       .toBeVisible();
-    expect(screen.getByRole("heading", { level: 5, name: "Analyst Channel" }))
+    expect(screen.getByRole("heading", { level: 3, name: "Analyst Channel" }))
       .toBeVisible();
 
     expect(screen.getAllByRole("heading", {
-      level: 6,
+      level: 3,
       name: "A consequential policy changed",
     })).toHaveLength(3);
     expect(screen.getAllByText("The policy now applies across the industry."))
@@ -190,6 +178,7 @@ describe("DigestsPanel story rendering", () => {
     );
     expect(new Set(renderedIds).size).toBe(renderedIds.length);
     expect(screen.getAllByRole("link", { name: "source" })).toHaveLength(3);
+    expect(screen.getAllByLabelText("Story byline")).toHaveLength(3);
     expect(screen.getAllByText("Story details and tuning")).toHaveLength(3);
     expect(screen.getAllByText("87% relevance").every((node) =>
       !node.closest("details")?.hasAttribute("open")
@@ -211,9 +200,8 @@ describe("DigestsPanel story rendering", () => {
       .toBeVisible();
   });
 
-  it("keeps historical group rendering when contentMode and stories are absent", async () => {
+  it("keeps historical group rendering when contentMode and stories are absent", () => {
     renderDigest(legacyView);
-    await openDigest();
 
     expect(screen.getByRole("heading", { name: "Historical Feed" })).toBeVisible();
     expect(screen.getByText("Historical summary point")).toBeVisible();
@@ -221,11 +209,10 @@ describe("DigestsPanel story rendering", () => {
   });
 });
 
-describe("DigestsPanel story feedback", () => {
+describe("DigestViewContent story feedback", () => {
   it("sends all story action payloads without a target", async () => {
     const onSubmitFeedback = vi.fn(() => Promise.resolve());
     renderDigest(storyView, { onSubmitFeedback });
-    await openDigest();
     await openStoryDetails();
 
     for (const label of ["Relevant", "Not for me", "Already knew", "Too repetitive"]) {
@@ -246,7 +233,6 @@ describe("DigestsPanel story feedback", () => {
   it("sends explicit topic and entity targets for every target action", async () => {
     const onSubmitFeedback = vi.fn(() => Promise.resolve());
     renderDigest(storyView, { onSubmitFeedback });
-    await openDigest();
     await openStoryDetails();
 
     await fireEvent.click(screen.getAllByRole("button", {
@@ -288,7 +274,6 @@ describe("DigestsPanel story feedback", () => {
     );
     const onFeedbackSuccess = vi.fn(() => Promise.resolve());
     renderDigest(storyView, { onSubmitFeedback, onFeedbackSuccess });
-    await openDigest();
     await openStoryDetails();
 
     const relevant = screen.getAllByRole("button", {
@@ -297,7 +282,6 @@ describe("DigestsPanel story feedback", () => {
     const notForMe = screen.getAllByRole("button", {
       name: "Not for me: A consequential policy changed",
     })[0];
-    await fireEvent.click(relevant);
     await fireEvent.click(relevant);
 
     expect(relevant).toBeDisabled();
@@ -314,12 +298,22 @@ describe("DigestsPanel story feedback", () => {
     expect(onFeedbackSuccess).toHaveBeenCalledTimes(1);
   });
 
+  it("disables feedback controls when no submit handler is provided", () => {
+    renderDigest(storyView);
+
+    expect(screen.getAllByRole("button", {
+      name: "Relevant: A consequential policy changed",
+    })[0]).toBeDisabled();
+    expect(screen.getAllByRole("button", {
+      name: "Follow topic Artificial intelligence",
+    })[0]).toBeDisabled();
+  });
+
   it("surfaces a failed request without claiming or retaining success", async () => {
     const onSubmitFeedback = vi.fn(() =>
       Promise.reject(new Error("Feedback service unavailable"))
     );
     renderDigest(storyView, { onSubmitFeedback });
-    await openDigest();
     await openStoryDetails();
 
     const notForMe = screen.getAllByRole("button", {
@@ -349,7 +343,6 @@ describe("DigestsPanel story feedback", () => {
       })
     );
     renderDigest(storyView, { onSubmitFeedback });
-    await openDigest();
     await openStoryDetails();
 
     await fireEvent.click(screen.getAllByRole("button", {
