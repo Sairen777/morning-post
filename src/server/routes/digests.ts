@@ -13,6 +13,8 @@ import {
   listDigestRunFeedsForRun,
 } from "../../repositories/digest-run-repository.ts";
 import { listDigestPageForUser, deleteDigestForUser } from "../../repositories/digest-repository.ts";
+import { serveDigestItemMedia } from "../digest-media.ts";
+import { parseDigestSort } from "../digest-sort.ts";
 import {
   type AuthVariables,
   requireAuth,
@@ -132,7 +134,8 @@ export function buildDigestRoutes(
     const url = new URL(context.req.url);
     const cursor = url.searchParams.get("cursor") || undefined;
     const limit = parseLimit(url.searchParams.get("limit"));
-    const page = await listDigestPageForUser(database, context.var.userId, { cursor, limit });
+    const sort = parseDigestSort(url.searchParams.get("sort"));
+    const page = await listDigestPageForUser(database, context.var.userId, { cursor, limit, sort });
     return context.json(page, 200);
   });
 
@@ -170,6 +173,12 @@ export function buildDigestRoutes(
     const id = validate(digestIdSchema, context.req.param("id"));
     const digest = await deleteDigestForUser(database, id, context.var.userId);
     return context.json(digest, 200);
+  });
+
+  routes.get("/:digestId/items/:itemId/media", async (context) => {
+    const digestId = validate(digestIdSchema, context.req.param("digestId"));
+    const itemId = validate(digestIdSchema, context.req.param("itemId"));
+    return await serveDigestItemMedia(database, context.var.userId, digestId, itemId);
   });
 
   return routes;

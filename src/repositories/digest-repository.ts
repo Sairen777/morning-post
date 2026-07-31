@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import {
@@ -10,7 +10,13 @@ import {
 } from "../db/schema/digest.ts";
 import { digestRuns } from "../db/schema/digest-run.ts";
 import { NotFoundError } from "../server/errors.ts";
-import { type PageResult, encodeDigestCursor, decodeDigestCursor } from "../server/cursor.ts";
+import { DEFAULT_DIGEST_SORT, type DigestSort } from "../server/digest-sort.ts";
+import {
+  type PageResult,
+  encodeDigestCursor,
+  decodeDigestCursor,
+  type DigestCursor,
+} from "../server/cursor.ts";
 
 const publicDigestSchema = z.object({
   id: z.string().uuid(),
@@ -42,6 +48,8 @@ function attachLatestRunTiming(
   values: PublicDigest[],
 ): PublicDigest[] {
   if (values.length === 0) return [];
+  const userId = values[0]!.userId;
+  const digestIds = values.map(({ id }) => id);
   const rows = database
     .select({
       digestId: digestRuns.digestId,
@@ -49,26 +57,24 @@ function attachLatestRunTiming(
       finishedAt: digestRuns.finishedAt,
     })
     .from(digestRuns)
-    .where(and(
-      eq(digestRuns.userId, values[0]!.userId),
-      inArray(digestRuns.digestId, values.map(({ id }) => id)),
-      sql`${digestRuns.id} in (
-        select ranked.id
-        from (
-          select
-            ${digestRuns.id} as id,
-            row_number() over (
-              partition by ${digestRuns.digestId}
-              order by
-                ${digestRuns.startedAt} desc,
-                ${digestRuns.finishedAt} desc nulls last,
-                ${digestRuns.id} desc
-            ) as row_number
-          from ${digestRuns}
-        ) as ranked
-        where ranked.row_number = 1
-      )`,
-    ))
+    .where(sql`${digestRuns.id} in (
+      select ranked.id
+      from (
+        select
+          ${digestRuns.id} as id,
+          row_number() over (
+            partition by ${digestRuns.digestId}
+            order by
+              ${digestRuns.startedAt} desc,
+              ${digestRuns.finishedAt} desc nulls last,
+              ${digestRuns.id} desc
+          ) as row_number
+        from ${digestRuns}
+        where ${digestRuns.userId} = ${userId}
+          and ${digestRuns.digestId} in (${sql.join(digestIds.map((id) => sql`${id}`), sql`, `)})
+      ) as ranked
+      where ranked.row_number = 1
+    )`)
     .all();
   const latestByDigestId = new Map(
     rows.flatMap((row) => row.digestId === null ? [] : [[row.digestId, row]]),
@@ -192,45 +198,82 @@ export function listDigestsForUser(database: Database, userId: string): PublicDi
   .all();
 return attachLatestRunTiming(database, rows.map(parsePublicDigest)); }
 
-export function listDigestPageForUser(database: Database,
-userId: string,
-options: { cursor?: string; limit?: number } = {},): PageResult<PublicDigest> { const limit = (() => {
-  const n = options.limit ?? 20;
-  if (!Number.isInteger(n) || n < 1 || n > 100) {
-    throw new TypeError("limit must be an integer between 1 and 100");
-  }
-  return n;
-})();
+type DigestOrderKey = typeof digests.createdAt | typeof digests.periodEndMs;
 
-const conditions = [eq(digests.userId, userId)];
-if (options.cursor) {
-  const c = decodeDigestCursor(options.cursor);
-  const cursorCondition = or(
-    lt(digests.periodEndMs, c.p),
-    and(eq(digests.periodEndMs, c.p), lt(digests.createdAt, c.c)),
-    and(eq(digests.periodEndMs, c.p), eq(digests.createdAt, c.c), lt(digests.id, c.i)),
-  );
-  if (cursorCondition) conditions.push(cursorCondition);
+interface DigestOrdering {
+  /** Primary sort column: request/creation time or coverage period end. */
+  column: DigestOrderKey;
+  direction: "asc" | "desc";
+  /** Cursor value for the primary column. */
+  cursorValue: (cursor: DigestCursor) => number;
 }
 
-const rows = database
-  .select()
-  .from(digests)
-  .where(and(...conditions))
-  .orderBy(desc(digests.periodEndMs), desc(digests.createdAt), desc(digests.id))
-  .limit(limit + 1)
-  .all();
+function orderingFor(sort: DigestSort): DigestOrdering {
+  switch (sort) {
+    case "requested_desc":
+      return { column: digests.createdAt, direction: "desc", cursorValue: (c) => c.c };
+    case "requested_asc":
+      return { column: digests.createdAt, direction: "asc", cursorValue: (c) => c.c };
+    case "period_desc":
+      return { column: digests.periodEndMs, direction: "desc", cursorValue: (c) => c.p };
+    case "period_asc":
+      return { column: digests.periodEndMs, direction: "asc", cursorValue: (c) => c.p };
+  }
+}
 
-const hasMore = rows.length > limit;
-const data = attachLatestRunTiming(
-  database,
-  rows.slice(0, limit).map(parsePublicDigest),
-);
-const nextCursor: string | null = hasMore
-  ? encodeDigestCursor(data[data.length - 1].periodEndMs, data[data.length - 1].createdAt, data[data.length - 1].id)
-  : null;
+export function listDigestPageForUser(
+  database: Database,
+  userId: string,
+  options: { cursor?: string; limit?: number; sort?: DigestSort } = {},
+): PageResult<PublicDigest> {
+  const limit = (() => {
+    const n = options.limit ?? 20;
+    if (!Number.isInteger(n) || n < 1 || n > 100) {
+      throw new TypeError("limit must be an integer between 1 and 100");
+    }
+    return n;
+  })();
+  const sort = options.sort ?? DEFAULT_DIGEST_SORT;
+  const { column, direction, cursorValue } = orderingFor(sort);
 
-return { data, nextCursor }; }
+  const conditions: SQL[] = [eq(digests.userId, userId)];
+  if (options.cursor) {
+    const cursor = decodeDigestCursor(options.cursor, sort);
+    const value = cursorValue(cursor);
+    // Same direction for the id tie-breaker keeps one comparison shape per
+    // ordering: strictly after (asc) or strictly before (desc) the cursor row.
+    const cursorCondition = direction === "desc"
+      ? or(lt(column, value), and(eq(column, value), lt(digests.id, cursor.i)))
+      : or(gt(column, value), and(eq(column, value), gt(digests.id, cursor.i)));
+    if (cursorCondition) conditions.push(cursorCondition);
+  }
+
+  const idOrder = direction === "desc" ? desc(digests.id) : asc(digests.id);
+  const keyOrder = direction === "desc" ? desc(column) : asc(column);
+  const rows = database
+    .select()
+    .from(digests)
+    .where(and(...conditions))
+    .orderBy(keyOrder, idOrder)
+    .limit(limit + 1)
+    .all();
+
+  const hasMore = rows.length > limit;
+  const data = attachLatestRunTiming(
+    database,
+    rows.slice(0, limit).map(parsePublicDigest),
+  );
+  const nextCursor: string | null = hasMore
+    ? encodeDigestCursor(
+      data[data.length - 1].periodEndMs,
+      data[data.length - 1].createdAt,
+      data[data.length - 1].id,
+      sort,
+    )
+    : null;
+
+  return { data, nextCursor };
+}
 
 export function deleteDigestForUser(database: Database,
 id: string,

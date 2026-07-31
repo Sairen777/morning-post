@@ -82,6 +82,16 @@ export function upsertItems(
   return rows.map(parseStoredItem);
 }
 
+export function findItemById(database: Database, id: string): StoredItem | null {
+  const rows = database
+    .select()
+    .from(items)
+    .where(eq(items.id, id))
+    .limit(1)
+    .all();
+  return rows[0] ? parseStoredItem(rows[0]) : null;
+}
+
 export function listMediaPathsForFeedWindow(
   database: Database,
   feedId: string,

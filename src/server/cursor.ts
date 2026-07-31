@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { digestSorts, type DigestSort } from "./digest-sort.ts";
 import { ValidationError } from "./errors.ts";
 
 export const DEFAULT_PAGE_LIMIT = 20;
@@ -23,8 +24,9 @@ export function parsePageParams(
 }
 
 const digestCursorSchema = z.object({
-  v: z.literal(1),
+  v: z.literal(2),
   k: z.literal("digest"),
+  s: z.enum(digestSorts),
   p: z.number(),
   c: z.number(),
   i: z.string(),
@@ -54,8 +56,13 @@ function base64UrlDecode(s: string): Uint8Array {
   return Uint8Array.from(atob(s), (c) => c.codePointAt(0)!);
 }
 
-export function encodeDigestCursor(periodEndMs: number, createdAt: number, id: string): string {
-  const payload: DigestCursor = { v: 1, k: "digest", p: periodEndMs, c: createdAt, i: id };
+export function encodeDigestCursor(
+  periodEndMs: number,
+  createdAt: number,
+  id: string,
+  sort: DigestSort,
+): string {
+  const payload: DigestCursor = { v: 2, k: "digest", s: sort, p: periodEndMs, c: createdAt, i: id };
   return base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)));
 }
 
@@ -64,10 +71,20 @@ export function encodeDigestRunCursor(startedAt: number, id: string): string {
   return base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)));
 }
 
-export function decodeDigestCursor(raw: string): DigestCursor {
+/**
+ * Decodes a digest cursor and verifies it was minted for `expectedSort`.
+ * Malformed cursors and cursors minted under another ordering both raise the
+ * standard validation error, so a cursor can never silently resume a page
+ * under a different sort.
+ */
+export function decodeDigestCursor(raw: string, expectedSort: DigestSort): DigestCursor {
   try {
     const json = new TextDecoder().decode(base64UrlDecode(raw));
-    return digestCursorSchema.parse(JSON.parse(json));
+    const cursor = digestCursorSchema.parse(JSON.parse(json));
+    if (cursor.s !== expectedSort) {
+      throw new ValidationError("Invalid cursor");
+    }
+    return cursor;
   } catch {
     throw new ValidationError("Invalid cursor");
   }

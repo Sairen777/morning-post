@@ -83,6 +83,15 @@ export interface PublicInterestRule {
 
 export type DigestStatus = "pending" | "complete" | "failed";
 
+export const digestSorts = [
+  "requested_desc",
+  "requested_asc",
+  "period_desc",
+  "period_asc",
+] as const;
+
+export type DigestSort = (typeof digestSorts)[number];
+
 export interface PublicDigest {
   id: string;
   userId: string;

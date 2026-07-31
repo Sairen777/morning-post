@@ -3,6 +3,7 @@ import type {
   AvailableFeed,
   CursorPage,
   DigestRunDetail,
+  DigestSort,
   DigestView,
   DisconnectSourceResponse,
   FeedKind,
@@ -349,6 +350,8 @@ export function subscribeFeed(
 export interface DigestListParams {
   cursor?: string;
   limit?: number;
+  /** Defaults to `requested_desc` (newest-requested first) on the server. */
+  sort?: DigestSort;
 }
 
 export function listDigests(
@@ -364,6 +367,11 @@ export function listDigests(
     ).toString()
     : "";
   return apiRequest<CursorPage<PublicDigest>>(`/digests${qs}`);
+}
+
+/** Absolute API path for an item's media attached to a digest. */
+export function digestItemMediaUrl(digestId: string, itemId: string): string {
+  return `/digests/${encodeURIComponent(digestId)}/items/${encodeURIComponent(itemId)}/media`;
 }
 
 export function getDigest(id: string): Promise<DigestView> {
@@ -398,8 +406,13 @@ export function submitStoryFeedback(
 }
 
 // Digest runs
+export interface DigestRunListParams {
+  cursor?: string;
+  limit?: number;
+}
+
 export function listDigestRuns(
-  params?: DigestListParams,
+  params?: DigestRunListParams,
 ): Promise<CursorPage<PublicDigestRun>> {
   const qs = params
     ? "?" + new URLSearchParams(
