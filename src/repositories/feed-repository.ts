@@ -1,16 +1,28 @@
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { feeds } from "../db/schema/feed.ts";
 import { sources } from "../db/schema/source.ts";
 import { users } from "../db/schema/user.ts";
-import { ConflictError, NotFoundError } from "../server/errors.ts";
+import {
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+} from "../server/errors.ts";
 import type { FeedKind } from "../connectors/connector.types.ts";
+import { ConnectorId } from "../constants.ts";
+import { MAX_X_ACTIVE_FEEDS } from "../connectors/x/x-connector.ts";
+import { parseXFeedExternalId } from "../connectors/x/targets.ts";
 import { isUniqueViolation } from "../db/errors.ts";
+import {
+  clearDiscoveredFeedsForSource,
+  findDiscoveredFeedForRevision,
+} from "./x-discovered-feed-repository.ts";
 import {
   summarizationModes,
   type SummarizationMode,
 } from "../summarization-mode.ts";
+import { deleteItemsForFeedsOfSource } from "./item-repository.ts";
 
 const feedKindSchema = z.enum(["news", "discussion"]);
 
@@ -117,13 +129,23 @@ function assertSourceOwned(
   }
 }
 
+interface LockedSourceForFeedWrite {
+  connectorId: string;
+  credentialRevision: number;
+}
+
 function lockSourceForFeedWrite(
   database: Database,
   sourceId: string,
   userId: string,
-): void {
+): LockedSourceForFeedWrite {
   const source = database
-    .select({ id: sources.id, credentials: sources.credentials })
+    .select({
+      id: sources.id,
+      credentials: sources.credentials,
+      connectorId: sources.connectorId,
+      credentialRevision: sources.credentialRevision,
+    })
     .from(sources)
     .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
     .get();
@@ -133,6 +155,80 @@ function lockSourceForFeedWrite(
   if (source.credentials === null) {
     throw new ConflictError(
       "source must be reconnected before feeds can be subscribed",
+    );
+  }
+  return {
+    connectorId: source.connectorId,
+    credentialRevision: source.credentialRevision,
+  };
+}
+
+/**
+ * Authorization gate for X subscription. Runs inside the feed write
+ * transaction after the source row has been locked, so the revision read here
+ * is the same one the catalog lookup and the insert/revive commit against.
+ *
+ * Malformed or non-list/non-chat targets are rejected as validation errors
+ * before any write; well-formed targets are authorized only by an exact
+ * catalog entry for the source's current credential revision, and the
+ * server-canonical catalog name/kind always win over client-supplied
+ * metadata. Uncataloged targets (including direct-DM conversations, which
+ * discovery never returns) fail closed without any upstream call.
+ */
+function requireCatalogedXTarget(
+  database: Database,
+  sourceId: string,
+  credentialRevision: number,
+  externalId: string,
+): { name: string; kind: FeedKind } {
+  try {
+    parseXFeedExternalId(externalId);
+  } catch (error) {
+    throw new ValidationError(
+      error instanceof Error ? error.message : "invalid X feed external ID",
+    );
+  }
+  const cataloged = findDiscoveredFeedForRevision(
+    database,
+    sourceId,
+    credentialRevision,
+    externalId,
+  );
+  if (!cataloged) {
+    throw new ConflictError(
+      "X target was not discovered for the current connection; run discovery again",
+    );
+  }
+  return { name: cataloged.name, kind: cataloged.kind };
+}
+
+export function assertFeedActiveForSourceConnectionRevision(
+  database: Database,
+  feedId: string,
+  userId: string,
+  expectedRevision: number,
+): void {
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+    throw new ConflictError("source connection changed; retry ingestion");
+  }
+  const current = database
+    .select({ id: feeds.id })
+    .from(feeds)
+    .innerJoin(sources, eq(feeds.sourceId, sources.id))
+    .where(and(
+      eq(feeds.id, feedId),
+      eq(sources.userId, userId),
+      eq(sources.credentialRevision, expectedRevision),
+      eq(sources.enabled, true),
+      isNotNull(sources.credentials),
+      eq(feeds.enabled, true),
+      isNull(feeds.deletedAt),
+    ))
+    .limit(1)
+    .get();
+  if (!current) {
+    throw new ConflictError(
+      "source connection changed or feed became inactive; retry ingestion",
     );
   }
 }
@@ -163,11 +259,29 @@ export function createOrReviveFeed(
 
   return database.transaction((transaction) => {
     const transactionalDatabase = transaction as Database;
-    lockSourceForFeedWrite(
+    const locked = lockSourceForFeedWrite(
       transactionalDatabase,
       parsed.sourceId,
       parsed.userId,
     );
+
+    // X subscriptions are authorized only by the discovery catalog for the
+    // source's current credential revision, rechecked in this same immediate
+    // transaction. Client-supplied name/kind are ignored in favor of the
+    // server-canonical catalog values, and an active feed count cap mirrors
+    // the connector's per-batch limit so persistence can never exceed what
+    // ingestion will accept.
+    const canonicalTarget = locked.connectorId === ConnectorId.X
+      ? requireCatalogedXTarget(
+        transactionalDatabase,
+        parsed.sourceId,
+        locked.credentialRevision,
+        parsed.externalId,
+      )
+      : null;
+    const effectiveInput = canonicalTarget === null
+      ? parsed
+      : { ...parsed, name: canonicalTarget.name, kind: canonicalTarget.kind };
 
     const existingFeed = findFeedBySourceAndExternalId(
       transactionalDatabase,
@@ -178,11 +292,40 @@ export function createOrReviveFeed(
       if (existingFeed.deletedAt === null) {
         return existingFeed;
       }
-      return reviveFeed(transactionalDatabase, existingFeed.id, parsed);
+      if (locked.connectorId === ConnectorId.X) {
+        assertUnderActiveFeedCap(transactionalDatabase, parsed.sourceId);
+      }
+      return reviveFeed(transactionalDatabase, existingFeed.id, effectiveInput);
     }
 
-    return insertFeed(transactionalDatabase, parsed);
+    if (locked.connectorId === ConnectorId.X) {
+      assertUnderActiveFeedCap(transactionalDatabase, parsed.sourceId);
+    }
+    return insertFeed(transactionalDatabase, effectiveInput);
   }, { behavior: "immediate" });
+}
+
+/**
+ * Mirrors the connector's `MAX_X_ACTIVE_FEEDS` batch limit for persisted
+ * feeds: a subscription that would leave more than the limit active (not
+ * soft-deleted) is rejected so ingestion jobs can never be poisoned by
+ * over-cap state. Counting inside the same immediate transaction as the
+ * insert/revive keeps the check race-free.
+ */
+function assertUnderActiveFeedCap(
+  database: Database,
+  sourceId: string,
+): void {
+  const row = database
+    .select({ active: count() })
+    .from(feeds)
+    .where(and(eq(feeds.sourceId, sourceId), isNull(feeds.deletedAt)))
+    .get();
+  if ((row?.active ?? 0) >= MAX_X_ACTIVE_FEEDS) {
+    throw new ConflictError(
+      `X subscription limit reached: at most ${MAX_X_ACTIVE_FEEDS} active feeds per source`,
+    );
+  }
 }
 
 function reviveFeed(
@@ -389,6 +532,32 @@ export function softDeleteFeed(
     throw new NotFoundError("feed not found");
   }
   return parsePublicFeed(row);
+}
+
+export function resetFeedsForSourceConnection(
+  database: Database,
+  sourceId: string,
+): void {
+  const now = Date.now();
+  database
+    .update(feeds)
+    .set({
+      deletedAt: sql`coalesce(${feeds.deletedAt}, ${now})`,
+      enabled: false,
+      lastFetchedPeriodEndMs: null,
+      updatedAt: now,
+    })
+    .where(eq(feeds.sourceId, sourceId))
+    .run();
+  // Normalized items belong to the account the source was last connected to.
+  // A revived feed reuses its row, so the items must not survive the reset or
+  // a later revival could expose the previous account's content.
+  deleteItemsForFeedsOfSource(database, sourceId);
+  // Revoke every discovery authorization for the connection epoch. Callers
+  // run this inside their own immediate transaction (account-change reset),
+  // so the feed reset, normalized-item deletion, and this catalog clear all
+  // commit atomically.
+  clearDiscoveredFeedsForSource(database, sourceId);
 }
 
 export function setLastFetched(

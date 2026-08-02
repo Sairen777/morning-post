@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import Dashboard from "./Dashboard";
 import type {
+  AvailableFeed,
   PublicDigest,
   PublicDigestRun,
   PublicFeed,
@@ -83,6 +84,7 @@ function createDeferred<Result>() {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
   window.history.replaceState(null, "", "/");
 });
@@ -503,5 +505,471 @@ describe("Dashboard section query navigation", () => {
       expect(screen.getByRole("button", { name: "Run digest" })).toBeVisible()
     );
     expect(screen.queryByRole("tab", { name: /Preferences/ })).toBeNull();
+  });
+});
+
+describe("Dashboard X discovery state invalidation", () => {
+  const xSource: PublicSource = {
+    id: "source-x",
+    userId: user.id,
+    connectorId: "X",
+    position: null,
+    enabled: true,
+    showPaidPostTitles: false,
+    relevanceFilterMode: "inherit",
+    connected: true,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+
+  const xAvailableFeeds: AvailableFeed[] = [
+    { externalId: "x:list:123", name: "List A", kind: "news" },
+    {
+      externalId: "x:chat:conversation_1",
+      name: "Chat B",
+      kind: "discussion",
+    },
+  ];
+
+  // Distinct from the discoverable lists so a subscribed feed never hides the
+  // Subscribe controls we assert on.
+  const subscribedFeed = (): PublicFeed => ({
+    ...feed("feed-x-1", "x:list:999", "Feed X 1"),
+    sourceId: xSource.id,
+  });
+
+  const discoveryPrompt =
+    "Select Discover Lists and XChat groups to load the Lists and XChat groups available from this source.";
+
+  const renderDashboard = () =>
+    render(() => (
+      <Dashboard
+        user={user}
+        onLogout={() => {}}
+        onAuthError={() => {}}
+        onUserUpdate={() => {}}
+      />
+    ));
+
+  const xCard = () =>
+    within(screen.getByRole("heading", { name: "X" }).closest("article")!);
+
+  const fillXSecrets = () => {
+    fireEvent.input(screen.getByLabelText("TwexAPI key"), {
+      target: { value: "twex-key" },
+    });
+    fireEvent.input(screen.getByLabelText("X auth_token"), {
+      target: { value: "auth-token" },
+    });
+    fireEvent.input(screen.getByLabelText("Complete X Cookie header value"), {
+      target: { value: "auth_token=auth-token; ct0=csrf-token" },
+    });
+  };
+
+  it("clears discovered and loaded feed state when a source is disconnected", async () => {
+    const subscribedFeeds = [subscribedFeed()];
+    let connected = true;
+    globalThis.fetch = vi.fn((input, init) => {
+      const path = String(input);
+      if (path === "/interests") return Promise.resolve(jsonResponse([]));
+      if (path === "/sources") {
+        return Promise.resolve(
+          jsonResponse([
+            connected
+              ? xSource
+              : { ...xSource, connected: false, enabled: false },
+          ]),
+        );
+      }
+      if (path === "/feeds") {
+        return Promise.resolve(jsonResponse(connected ? subscribedFeeds : []));
+      }
+      if (path === "/digests" || path.startsWith("/digests?")) {
+        return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
+      }
+      if (path === "/digests/runs") {
+        return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
+      }
+      if (path === "/sources/source-x/available-feeds") {
+        return Promise.resolve(jsonResponse(xAvailableFeeds));
+      }
+      if (path === "/sources/source-x/feeds") {
+        return Promise.resolve(jsonResponse(subscribedFeeds));
+      }
+      if (path === "/sources/source-x" && init?.method === "DELETE") {
+        connected = false;
+        return Promise.resolve(
+          jsonResponse({
+            source: { ...xSource, connected: false, enabled: false },
+            revokeTelegramSession: false,
+            message: "X source disconnected.",
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }) as typeof fetch;
+    vi.stubGlobal("confirm", () => true);
+
+    renderDashboard();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+      ).toBeEnabled()
+    );
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+    );
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Subscribe to List A" }),
+      ).toBeVisible()
+    );
+    expect(
+      xCard().getByRole("button", { name: "Subscribe to Chat B" }),
+    ).toBeVisible();
+
+    await fireEvent.click(xCard().getByText("Source settings and maintenance"));
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Load subscribed feeds" }),
+    );
+    await waitFor(() => expect(xCard().getByText("Feed X 1")).toBeVisible());
+
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Disconnect source" }),
+    );
+    await waitFor(() =>
+      expect(xCard().getByText("X source disconnected.")).toBeInTheDocument()
+    );
+
+    // The preserved source row is now disconnected: neither the discovered
+    // groups/lists nor the loaded subscriptions may survive the disconnect.
+    expect(xCard().getByText("Reconnect needed")).toBeVisible();
+    expect(
+      xCard().queryByRole("button", { name: "Subscribe to List A" }),
+    ).toBeNull();
+    expect(
+      xCard().queryByRole("button", { name: "Subscribe to Chat B" }),
+    ).toBeNull();
+    expect(xCard().queryByText("Feed X 1")).toBeNull();
+    expect(
+      xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+    ).toBeDisabled();
+  });
+
+  it("does not repopulate cleared feed state when an in-flight refresh resolves after disconnect", async () => {
+    const subscribedFeeds = [subscribedFeed()];
+    const subscribedListFeed = {
+      ...feed("feed-x-list-a", "x:list:123", "List A"),
+      sourceId: xSource.id,
+    };
+    let connected = true;
+    let sourceFeedsRequests = 0;
+    const staleRefresh = createDeferred<Response>();
+    globalThis.fetch = vi.fn((input, init) => {
+      const path = String(input);
+      if (path === "/interests") return Promise.resolve(jsonResponse([]));
+      if (path === "/sources") {
+        return Promise.resolve(
+          jsonResponse([
+            connected
+              ? xSource
+              : { ...xSource, connected: false, enabled: false },
+          ]),
+        );
+      }
+      if (path === "/feeds") {
+        return Promise.resolve(jsonResponse(connected ? subscribedFeeds : []));
+      }
+      if (path === "/digests" || path.startsWith("/digests?")) {
+        return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
+      }
+      if (path === "/digests/runs") {
+        return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
+      }
+      if (path === "/sources/source-x/available-feeds") {
+        return Promise.resolve(jsonResponse(xAvailableFeeds));
+      }
+      if (path === "/sources/source-x/feeds" && init?.method === "POST") {
+        return Promise.resolve(jsonResponse(subscribedListFeed, 201));
+      }
+      if (path === "/sources/source-x/feeds") {
+        sourceFeedsRequests += 1;
+        // The initial load resolves immediately; the refresh triggered by the
+        // subscription stays in flight until the test resolves it.
+        if (sourceFeedsRequests === 1) {
+          return Promise.resolve(jsonResponse(subscribedFeeds));
+        }
+        return staleRefresh.promise;
+      }
+      if (path === "/sources/source-x" && init?.method === "DELETE") {
+        connected = false;
+        return Promise.resolve(
+          jsonResponse({
+            source: { ...xSource, connected: false, enabled: false },
+            revokeTelegramSession: false,
+            message: "X source disconnected.",
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }) as typeof fetch;
+    vi.stubGlobal("confirm", () => true);
+
+    renderDashboard();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+      ).toBeEnabled()
+    );
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+    );
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Subscribe to List A" }),
+      ).toBeVisible()
+    );
+    await fireEvent.click(xCard().getByText("Source settings and maintenance"));
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Load subscribed feeds" }),
+    );
+    await waitFor(() => expect(xCard().getByText("Feed X 1")).toBeVisible());
+
+    // Subscribing refreshes the source's loaded feeds; that refresh stays in
+    // flight with the pre-disconnect snapshot.
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Subscribe to List A" }),
+    );
+    await waitFor(() => expect(sourceFeedsRequests).toBe(2));
+
+    // Disconnect while the refresh is pending: the loaded feed state is
+    // cleared and the source becomes disconnected.
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Disconnect source" }),
+    );
+    await waitFor(() =>
+      expect(xCard().getByText("Reconnect needed")).toBeVisible()
+    );
+
+    // Force the maintenance details open so the subscribed feed list is
+    // observable regardless of whether the card DOM was recreated.
+    const advancedDetails = screen
+      .getByRole("heading", { name: "X" })
+      .closest("article")
+      ?.querySelector("details.source-advanced");
+    expect(advancedDetails).not.toBeNull();
+    (advancedDetails as HTMLDetailsElement).open = true;
+
+    // Resolving the stale response must not resurrect the cleared feeds.
+    staleRefresh.resolve(jsonResponse(subscribedFeeds));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(xCard().queryByText("Feed X 1")).toBeNull();
+    expect(xCard().getByText("Reconnect needed")).toBeVisible();
+    expect(
+      xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+    ).toBeDisabled();
+    expect(
+      xCard().queryByRole("button", { name: "Subscribe to List A" }),
+    ).toBeNull();
+  });
+
+  it("clears discovered and loaded feed state and requires fresh discovery when X reconnects with the same source id", async () => {
+    const subscribedFeeds = [subscribedFeed()];
+    let sessionCalls = 0;
+    let sourcesRequests = 0;
+    globalThis.fetch = vi.fn((input, init) => {
+      const path = String(input);
+      if (path === "/interests") return Promise.resolve(jsonResponse([]));
+      if (path === "/sources") {
+        sourcesRequests += 1;
+        return Promise.resolve(jsonResponse([xSource]));
+      }
+      if (path === "/feeds") return Promise.resolve(jsonResponse([]));
+      if (path === "/digests" || path.startsWith("/digests?")) {
+        return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
+      }
+      if (path === "/digests/runs") {
+        return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
+      }
+      if (path === "/sources/source-x/available-feeds") {
+        return Promise.resolve(jsonResponse(xAvailableFeeds));
+      }
+      if (path === "/sources/source-x/feeds") {
+        return Promise.resolve(jsonResponse(subscribedFeeds));
+      }
+      if (path === "/connectors/x/session" && init?.method === "POST") {
+        sessionCalls += 1;
+        return Promise.resolve(jsonResponse({ source: xSource }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }) as typeof fetch;
+
+    renderDashboard();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+      ).toBeEnabled()
+    );
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+    );
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Subscribe to List A" }),
+      ).toBeVisible()
+    );
+    await fireEvent.click(xCard().getByText("Source settings and maintenance"));
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Load subscribed feeds" }),
+    );
+    await waitFor(() => expect(xCard().getByText("Feed X 1")).toBeVisible());
+
+    // Reconnect the same X source id from Connections.
+    await fireEvent.click(screen.getByRole("button", { name: "Connections" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /X/ })).toBeVisible()
+    );
+    await fireEvent.click(screen.getByRole("button", { name: /X/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Reconnect X" })).toBeEnabled()
+    );
+    fillXSecrets();
+    await fireEvent.click(screen.getByRole("button", { name: "Reconnect X" }));
+    await waitFor(() => expect(sessionCalls).toBe(1));
+    // The reconnect handler clears the discovery state before refreshing the
+    // source list; wait for that refresh so the assertions below are
+    // deterministic.
+    await waitFor(() => expect(sourcesRequests).toBe(2));
+
+    // A preserved source id must not resurrect stale groups or lists: the
+    // Dashboard shows the discovery prompt and nothing is subscribed yet.
+    await fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() => expect(xCard().getByText(discoveryPrompt)).toBeVisible());
+    expect(
+      xCard().queryByRole("button", { name: "Subscribe to List A" }),
+    ).toBeNull();
+    expect(
+      xCard().queryByRole("button", { name: "Subscribe to Chat B" }),
+    ).toBeNull();
+    expect(xCard().queryByText("Feed X 1")).toBeNull();
+
+    // Fresh discovery repopulates the list for the reconnected source.
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+    );
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Subscribe to List A" }),
+      ).toBeVisible()
+    );
+  });
+
+  it("clears stale discovery state when reconnecting creates a new X source id", async () => {
+    const subscribedFeeds = [subscribedFeed()];
+    const newXSource = { ...xSource, id: "source-x-new" };
+    let reconnected = false;
+    let sourcesRequests = 0;
+    let feedsRequests = 0;
+    const discoveryPaths: string[] = [];
+    globalThis.fetch = vi.fn((input, init) => {
+      const path = String(input);
+      if (path === "/interests") return Promise.resolve(jsonResponse([]));
+      if (path === "/sources") {
+        sourcesRequests += 1;
+        return Promise.resolve(
+          jsonResponse([reconnected ? newXSource : xSource]),
+        );
+      }
+      if (path === "/feeds") {
+        feedsRequests += 1;
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (path === "/digests" || path.startsWith("/digests?")) {
+        return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
+      }
+      if (path === "/digests/runs") {
+        return Promise.resolve(jsonResponse({ data: [], nextCursor: null }));
+      }
+      if (path.endsWith("/available-feeds")) {
+        discoveryPaths.push(path);
+        return Promise.resolve(jsonResponse(xAvailableFeeds));
+      }
+      if (path === "/sources/source-x/feeds") {
+        return Promise.resolve(jsonResponse(subscribedFeeds));
+      }
+      if (path === "/connectors/x/session" && init?.method === "POST") {
+        reconnected = true;
+        return Promise.resolve(jsonResponse({ source: newXSource }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }) as typeof fetch;
+
+    renderDashboard();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+      ).toBeEnabled()
+    );
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+    );
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Subscribe to List A" }),
+      ).toBeVisible()
+    );
+    await fireEvent.click(xCard().getByText("Source settings and maintenance"));
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Load subscribed feeds" }),
+    );
+    await waitFor(() => expect(xCard().getByText("Feed X 1")).toBeVisible());
+
+    // Reconnect and let the session response carry a freshly created source id.
+    await fireEvent.click(screen.getByRole("button", { name: "Connections" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /X/ })).toBeVisible()
+    );
+    await fireEvent.click(screen.getByRole("button", { name: /X/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Reconnect X" })).toBeEnabled()
+    );
+    fillXSecrets();
+    await fireEvent.click(screen.getByRole("button", { name: "Reconnect X" }));
+    await waitFor(() => expect(reconnected).toBe(true));
+    await waitFor(() => expect(sourcesRequests).toBe(2));
+    await waitFor(() => expect(feedsRequests).toBe(2));
+
+    // The old source id's discovery must not resurface for the new source.
+    await fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await waitFor(() => expect(xCard().getByText(discoveryPrompt)).toBeVisible());
+    expect(
+      xCard().queryByRole("button", { name: "Subscribe to List A" }),
+    ).toBeNull();
+    expect(
+      xCard().queryByRole("button", { name: "Subscribe to Chat B" }),
+    ).toBeNull();
+    expect(xCard().queryByText("Feed X 1")).toBeNull();
+
+    // Fresh discovery runs against the new source id only.
+    await fireEvent.click(
+      xCard().getByRole("button", { name: "Discover Lists and XChat groups" }),
+    );
+    await waitFor(() =>
+      expect(
+        xCard().getByRole("button", { name: "Subscribe to List A" }),
+      ).toBeVisible()
+    );
+    expect(discoveryPaths).toEqual([
+      "/sources/source-x/available-feeds",
+      "/sources/source-x-new/available-feeds",
+    ]);
   });
 });

@@ -1,0 +1,1 @@
+ALTER TABLE `sources` ADD `credential_revision` integer DEFAULT 1 NOT NULL;

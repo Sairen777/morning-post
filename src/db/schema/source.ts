@@ -25,6 +25,7 @@ export const sources = sqliteTable("sources",
     .references(() => users.id, { onDelete: "cascade" }),
   connectorId: text("connector_id").notNull(),
   credentials: text("credentials", { mode: "json" }).$type<EncryptedBlob | null>(),
+  credentialRevision: integer("credential_revision").notNull().default(1),
   position: integer("position"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   showPaidPostTitles: integer("show_paid_post_titles", { mode: "boolean" }).notNull().default(

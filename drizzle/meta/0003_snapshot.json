@@ -1,0 +1,2214 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "fdf71c90-802c-4353-a79d-e73fedfa7c4c",
+  "prevId": "1e6e62ca-9f9a-4a04-bfe0-5c2358b24468",
+  "tables": {
+    "users": {
+      "name": "users",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "system_prompt": {
+          "name": "system_prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "summary_prompt": {
+          "name": "summary_prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
+        "default_language": {
+          "name": "default_language",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "default_relevance_filter_mode": {
+          "name": "default_relevance_filter_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'personalized'"
+        },
+        "story_detail_level": {
+          "name": "story_detail_level",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'balanced'"
+        },
+        "relevance_threshold": {
+          "name": "relevance_threshold",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 60
+        },
+        "maximum_stories_per_digest": {
+          "name": "maximum_stories_per_digest",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "interest_profile_version": {
+          "name": "interest_profile_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "users_email_unique": {
+          "name": "users_email_unique",
+          "columns": [
+            "email"
+          ],
+          "isUnique": true
+        },
+        "users_created_at_id_idx": {
+          "name": "users_created_at_id_idx",
+          "columns": [
+            "created_at",
+            "id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "users_default_relevance_filter_mode_check": {
+          "name": "users_default_relevance_filter_mode_check",
+          "value": "\"users\".\"default_relevance_filter_mode\" in ('personalized', 'include_all')"
+        },
+        "users_story_detail_level_check": {
+          "name": "users_story_detail_level_check",
+          "value": "\"users\".\"story_detail_level\" in ('headlines', 'balanced', 'thorough')"
+        },
+        "users_relevance_threshold_check": {
+          "name": "users_relevance_threshold_check",
+          "value": "\"users\".\"relevance_threshold\" between 0 and 100"
+        },
+        "users_maximum_stories_per_digest_check": {
+          "name": "users_maximum_stories_per_digest_check",
+          "value": "\"users\".\"maximum_stories_per_digest\" is null or \"users\".\"maximum_stories_per_digest\" > 0"
+        },
+        "users_interest_profile_version_check": {
+          "name": "users_interest_profile_version_check",
+          "value": "\"users\".\"interest_profile_version\" > 0"
+        }
+      }
+    },
+    "interest_rules": {
+      "name": "interest_rules",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "normalized_label": {
+          "name": "normalized_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "disposition": {
+          "name": "disposition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'active'"
+        },
+        "strength": {
+          "name": "strength",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 100
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "interest_rules_user_state_idx": {
+          "name": "interest_rules_user_state_idx",
+          "columns": [
+            "user_id",
+            "state"
+          ],
+          "isUnique": false
+        },
+        "interest_rules_user_kind_label_unique": {
+          "name": "interest_rules_user_kind_label_unique",
+          "columns": [
+            "user_id",
+            "kind",
+            "normalized_label"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "interest_rules_user_id_users_id_fk": {
+          "name": "interest_rules_user_id_users_id_fk",
+          "tableFrom": "interest_rules",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "interest_rules_kind_check": {
+          "name": "interest_rules_kind_check",
+          "value": "\"interest_rules\".\"kind\" in ('topic', 'entity', 'phrase', 'story_type')"
+        },
+        "interest_rules_disposition_check": {
+          "name": "interest_rules_disposition_check",
+          "value": "\"interest_rules\".\"disposition\" in ('prioritize', 'show_less', 'mute')"
+        },
+        "interest_rules_origin_check": {
+          "name": "interest_rules_origin_check",
+          "value": "\"interest_rules\".\"origin\" in ('explicit', 'inferred')"
+        },
+        "interest_rules_state_check": {
+          "name": "interest_rules_state_check",
+          "value": "\"interest_rules\".\"state\" in ('active', 'dismissed')"
+        },
+        "interest_rules_strength_check": {
+          "name": "interest_rules_strength_check",
+          "value": "\"interest_rules\".\"strength\" between 0 and 100"
+        },
+        "interest_rules_mute_origin_check": {
+          "name": "interest_rules_mute_origin_check",
+          "value": "\"interest_rules\".\"disposition\" <> 'mute' or \"interest_rules\".\"origin\" = 'explicit'"
+        }
+      }
+    },
+    "sessions": {
+      "name": "sessions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "sessions_token_hash_unique": {
+          "name": "sessions_token_hash_unique",
+          "columns": [
+            "token_hash"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "sessions_user_id_users_id_fk": {
+          "name": "sessions_user_id_users_id_fk",
+          "tableFrom": "sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "sources": {
+      "name": "sources",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "connector_id": {
+          "name": "connector_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "credentials": {
+          "name": "credentials",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "credential_revision": {
+          "name": "credential_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "show_paid_post_titles": {
+          "name": "show_paid_post_titles",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "relevance_filter_mode": {
+          "name": "relevance_filter_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'inherit'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "sources_user_id_idx": {
+          "name": "sources_user_id_idx",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": false
+        },
+        "sources_user_id_connector_id_unique": {
+          "name": "sources_user_id_connector_id_unique",
+          "columns": [
+            "user_id",
+            "connector_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "sources_user_id_users_id_fk": {
+          "name": "sources_user_id_users_id_fk",
+          "tableFrom": "sources",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "sources_connector_id_check": {
+          "name": "sources_connector_id_check",
+          "value": "\"sources\".\"connector_id\" in ('Telegram', 'Substack', 'YouTube', 'Reddit', 'X', 'RSS')"
+        },
+        "sources_credentials_disabled_check": {
+          "name": "sources_credentials_disabled_check",
+          "value": "\"sources\".\"credentials\" is not null or \"sources\".\"enabled\" = false"
+        },
+        "sources_relevance_filter_mode_check": {
+          "name": "sources_relevance_filter_mode_check",
+          "value": "\"sources\".\"relevance_filter_mode\" in ('inherit', 'personalized', 'include_all')"
+        }
+      }
+    },
+    "feeds": {
+      "name": "feeds",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "custom_prompt": {
+          "name": "custom_prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "summarization_mode": {
+          "name": "summarization_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'basic'"
+        },
+        "relevance_filter_mode": {
+          "name": "relevance_filter_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'inherit'"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_fetched_period_end_ms": {
+          "name": "last_fetched_period_end_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "feeds_source_id_idx": {
+          "name": "feeds_source_id_idx",
+          "columns": [
+            "source_id"
+          ],
+          "isUnique": false
+        },
+        "feeds_source_order_idx": {
+          "name": "feeds_source_order_idx",
+          "columns": [
+            "source_id",
+            "position",
+            "name"
+          ],
+          "isUnique": false
+        },
+        "feeds_source_id_external_id_unique": {
+          "name": "feeds_source_id_external_id_unique",
+          "columns": [
+            "source_id",
+            "external_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "feeds_source_id_sources_id_fk": {
+          "name": "feeds_source_id_sources_id_fk",
+          "tableFrom": "feeds",
+          "tableTo": "sources",
+          "columnsFrom": [
+            "source_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "feeds_kind_check": {
+          "name": "feeds_kind_check",
+          "value": "\"feeds\".\"kind\" in ('news', 'discussion')"
+        },
+        "feeds_summarization_mode_check": {
+          "name": "feeds_summarization_mode_check",
+          "value": "\"feeds\".\"summarization_mode\" in ('basic', 'thorough')"
+        },
+        "feeds_relevance_filter_mode_check": {
+          "name": "feeds_relevance_filter_mode_check",
+          "value": "\"feeds\".\"relevance_filter_mode\" in ('inherit', 'personalized', 'include_all')"
+        }
+      }
+    },
+    "items": {
+      "name": "items",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "feed_id": {
+          "name": "feed_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "date": {
+          "name": "date",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fetched_at": {
+          "name": "fetched_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "items_feed_date_external_id_idx": {
+          "name": "items_feed_date_external_id_idx",
+          "columns": [
+            "feed_id",
+            "date",
+            "external_id"
+          ],
+          "isUnique": false
+        },
+        "items_feed_id_external_id_unique": {
+          "name": "items_feed_id_external_id_unique",
+          "columns": [
+            "feed_id",
+            "external_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "items_feed_id_feeds_id_fk": {
+          "name": "items_feed_id_feeds_id_fk",
+          "tableFrom": "items",
+          "tableTo": "feeds",
+          "columnsFrom": [
+            "feed_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "x_content_cache_items": {
+      "name": "x_content_cache_items",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "feed_external_id": {
+          "name": "feed_external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "date": {
+          "name": "date",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fetched_at": {
+          "name": "fetched_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "x_content_cache_items_feed_date_external_idx": {
+          "name": "x_content_cache_items_feed_date_external_idx",
+          "columns": [
+            "source_id",
+            "feed_external_id",
+            "date",
+            "external_id"
+          ],
+          "isUnique": false
+        },
+        "x_content_cache_items_source_feed_external_unique": {
+          "name": "x_content_cache_items_source_feed_external_unique",
+          "columns": [
+            "source_id",
+            "feed_external_id",
+            "external_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "x_content_cache_items_source_id_sources_id_fk": {
+          "name": "x_content_cache_items_source_id_sources_id_fk",
+          "tableFrom": "x_content_cache_items",
+          "tableTo": "sources",
+          "columnsFrom": [
+            "source_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "x_content_cache_ranges": {
+      "name": "x_content_cache_ranges",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "feed_external_id": {
+          "name": "feed_external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "start_ms": {
+          "name": "start_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "end_ms": {
+          "name": "end_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fetched_at": {
+          "name": "fetched_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "x_content_cache_ranges_feed_start_end_idx": {
+          "name": "x_content_cache_ranges_feed_start_end_idx",
+          "columns": [
+            "source_id",
+            "feed_external_id",
+            "start_ms",
+            "end_ms"
+          ],
+          "isUnique": false
+        },
+        "x_content_cache_ranges_source_feed_start_unique": {
+          "name": "x_content_cache_ranges_source_feed_start_unique",
+          "columns": [
+            "source_id",
+            "feed_external_id",
+            "start_ms"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "x_content_cache_ranges_source_id_sources_id_fk": {
+          "name": "x_content_cache_ranges_source_id_sources_id_fk",
+          "tableFrom": "x_content_cache_ranges",
+          "tableTo": "sources",
+          "columnsFrom": [
+            "source_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "x_content_cache_ranges_window_check": {
+          "name": "x_content_cache_ranges_window_check",
+          "value": "\"x_content_cache_ranges\".\"end_ms\" >= \"x_content_cache_ranges\".\"start_ms\""
+        }
+      }
+    },
+    "summaries": {
+      "name": "summaries",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "feed_id": {
+          "name": "feed_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "period_start_ms": {
+          "name": "period_start_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "period_end_ms": {
+          "name": "period_end_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "feed_name_snapshot": {
+          "name": "feed_name_snapshot",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "generated_at": {
+          "name": "generated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "summaries_feed_id_period_unique": {
+          "name": "summaries_feed_id_period_unique",
+          "columns": [
+            "feed_id",
+            "period_start_ms",
+            "period_end_ms"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "summaries_feed_id_feeds_id_fk": {
+          "name": "summaries_feed_id_feeds_id_fk",
+          "tableFrom": "summaries",
+          "tableTo": "feeds",
+          "columnsFrom": [
+            "feed_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "summaries_period_order_check": {
+          "name": "summaries_period_order_check",
+          "value": "\"summaries\".\"period_start_ms\" <= \"summaries\".\"period_end_ms\""
+        }
+      }
+    },
+    "digests": {
+      "name": "digests",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "period_start_ms": {
+          "name": "period_start_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "period_end_ms": {
+          "name": "period_end_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "content_mode": {
+          "name": "content_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'legacy'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "digests_user_latest_idx": {
+          "name": "digests_user_latest_idx",
+          "columns": [
+            "user_id",
+            "period_end_ms",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "digests_user_period_unique": {
+          "name": "digests_user_period_unique",
+          "columns": [
+            "user_id",
+            "period_start_ms",
+            "period_end_ms"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "digests_user_id_users_id_fk": {
+          "name": "digests_user_id_users_id_fk",
+          "tableFrom": "digests",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "digests_status_check": {
+          "name": "digests_status_check",
+          "value": "\"digests\".\"status\" in ('pending', 'complete', 'failed')"
+        },
+        "digests_content_mode_check": {
+          "name": "digests_content_mode_check",
+          "value": "\"digests\".\"content_mode\" in ('legacy', 'stories')"
+        },
+        "digests_period_order_check": {
+          "name": "digests_period_order_check",
+          "value": "\"digests\".\"period_start_ms\" <= \"digests\".\"period_end_ms\""
+        }
+      }
+    },
+    "digest_stories": {
+      "name": "digest_stories",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "digest_id": {
+          "name": "digest_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "story_id": {
+          "name": "story_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "story_version": {
+          "name": "story_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "profile_version": {
+          "name": "profile_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "summary_version": {
+          "name": "summary_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'legacy'"
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "topics": {
+          "name": "topics",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "entities": {
+          "name": "entities",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "points": {
+          "name": "points",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sources": {
+          "name": "sources",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "relevance_score": {
+          "name": "relevance_score",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "matched_interest_rule_ids": {
+          "name": "matched_interest_rule_ids",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "generated_at": {
+          "name": "generated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "digest_stories_digest_idx": {
+          "name": "digest_stories_digest_idx",
+          "columns": [
+            "digest_id"
+          ],
+          "isUnique": false
+        },
+        "digest_stories_story_generated_idx": {
+          "name": "digest_stories_story_generated_idx",
+          "columns": [
+            "story_id",
+            "generated_at"
+          ],
+          "isUnique": false
+        },
+        "digest_stories_digest_story_unique": {
+          "name": "digest_stories_digest_story_unique",
+          "columns": [
+            "digest_id",
+            "story_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "digest_stories_digest_id_digests_id_fk": {
+          "name": "digest_stories_digest_id_digests_id_fk",
+          "tableFrom": "digest_stories",
+          "tableTo": "digests",
+          "columnsFrom": [
+            "digest_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "digest_stories_story_id_stories_id_fk": {
+          "name": "digest_stories_story_id_stories_id_fk",
+          "tableFrom": "digest_stories",
+          "tableTo": "stories",
+          "columnsFrom": [
+            "story_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "digest_stories_story_version_check": {
+          "name": "digest_stories_story_version_check",
+          "value": "\"digest_stories\".\"story_version\" > 0"
+        },
+        "digest_stories_profile_version_check": {
+          "name": "digest_stories_profile_version_check",
+          "value": "\"digest_stories\".\"profile_version\" > 0"
+        },
+        "digest_stories_relevance_score_check": {
+          "name": "digest_stories_relevance_score_check",
+          "value": "\"digest_stories\".\"relevance_score\" between 0 and 100"
+        }
+      }
+    },
+    "item_analyses": {
+      "name": "item_analyses",
+      "columns": {
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "analysis": {
+          "name": "analysis",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "analyzer_version": {
+          "name": "analyzer_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "analyzed_at": {
+          "name": "analyzed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "item_analyses_item_id_items_id_fk": {
+          "name": "item_analyses_item_id_items_id_fk",
+          "tableFrom": "item_analyses",
+          "tableTo": "items",
+          "columnsFrom": [
+            "item_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "stories": {
+      "name": "stories",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "canonical_key": {
+          "name": "canonical_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "topics": {
+          "name": "topics",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "entities": {
+          "name": "entities",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "first_seen_at": {
+          "name": "first_seen_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_updated_at": {
+          "name": "last_updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "stories_user_updated_idx": {
+          "name": "stories_user_updated_idx",
+          "columns": [
+            "user_id",
+            "last_updated_at"
+          ],
+          "isUnique": false
+        },
+        "stories_user_canonical_key_unique": {
+          "name": "stories_user_canonical_key_unique",
+          "columns": [
+            "user_id",
+            "canonical_key"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "stories_user_id_users_id_fk": {
+          "name": "stories_user_id_users_id_fk",
+          "tableFrom": "stories",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "stories_version_check": {
+          "name": "stories_version_check",
+          "value": "\"stories\".\"version\" > 0"
+        }
+      }
+    },
+    "story_developments": {
+      "name": "story_developments",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "story_id": {
+          "name": "story_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "canonical_key": {
+          "name": "canonical_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "first_seen_at": {
+          "name": "first_seen_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_updated_at": {
+          "name": "last_updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "story_developments_story_occurred_idx": {
+          "name": "story_developments_story_occurred_idx",
+          "columns": [
+            "story_id",
+            "occurred_at"
+          ],
+          "isUnique": false
+        },
+        "story_developments_story_key_unique": {
+          "name": "story_developments_story_key_unique",
+          "columns": [
+            "story_id",
+            "canonical_key"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "story_developments_story_id_stories_id_fk": {
+          "name": "story_developments_story_id_stories_id_fk",
+          "tableFrom": "story_developments",
+          "tableTo": "stories",
+          "columnsFrom": [
+            "story_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "story_developments_version_check": {
+          "name": "story_developments_version_check",
+          "value": "\"story_developments\".\"version\" > 0"
+        }
+      }
+    },
+    "story_items": {
+      "name": "story_items",
+      "columns": {
+        "development_id": {
+          "name": "development_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "item_fingerprint": {
+          "name": "item_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "confidence": {
+          "name": "confidence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "added_at": {
+          "name": "added_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "story_items_development_idx": {
+          "name": "story_items_development_idx",
+          "columns": [
+            "development_id"
+          ],
+          "isUnique": false
+        },
+        "story_items_item_unique": {
+          "name": "story_items_item_unique",
+          "columns": [
+            "item_id"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "story_items_development_id_story_developments_id_fk": {
+          "name": "story_items_development_id_story_developments_id_fk",
+          "tableFrom": "story_items",
+          "tableTo": "story_developments",
+          "columnsFrom": [
+            "development_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "story_items_item_id_items_id_fk": {
+          "name": "story_items_item_id_items_id_fk",
+          "tableFrom": "story_items",
+          "tableTo": "items",
+          "columnsFrom": [
+            "item_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "story_items_development_id_item_id_pk": {
+          "columns": [
+            "development_id",
+            "item_id"
+          ],
+          "name": "story_items_development_id_item_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "story_items_confidence_check": {
+          "name": "story_items_confidence_check",
+          "value": "\"story_items\".\"confidence\" between 0 and 100"
+        }
+      }
+    },
+    "story_feedback": {
+      "name": "story_feedback",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "digest_id": {
+          "name": "digest_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "digest_story_id": {
+          "name": "digest_story_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "story_id": {
+          "name": "story_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "story_version": {
+          "name": "story_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "target_kind": {
+          "name": "target_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "target_label": {
+          "name": "target_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "story_feedback_user_created_idx": {
+          "name": "story_feedback_user_created_idx",
+          "columns": [
+            "user_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "story_feedback_story_idx": {
+          "name": "story_feedback_story_idx",
+          "columns": [
+            "story_id",
+            "story_version"
+          ],
+          "isUnique": false
+        },
+        "story_feedback_identity_unique": {
+          "name": "story_feedback_identity_unique",
+          "columns": [
+            "user_id",
+            "digest_id",
+            "story_id",
+            "story_version",
+            "action",
+            "target_kind",
+            "target_label"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "story_feedback_user_id_users_id_fk": {
+          "name": "story_feedback_user_id_users_id_fk",
+          "tableFrom": "story_feedback",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "story_feedback_digest_id_digests_id_fk": {
+          "name": "story_feedback_digest_id_digests_id_fk",
+          "tableFrom": "story_feedback",
+          "tableTo": "digests",
+          "columnsFrom": [
+            "digest_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "story_feedback_story_id_stories_id_fk": {
+          "name": "story_feedback_story_id_stories_id_fk",
+          "tableFrom": "story_feedback",
+          "tableTo": "stories",
+          "columnsFrom": [
+            "story_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "story_feedback_story_version_check": {
+          "name": "story_feedback_story_version_check",
+          "value": "\"story_feedback\".\"story_version\" > 0"
+        },
+        "story_feedback_action_check": {
+          "name": "story_feedback_action_check",
+          "value": "\"story_feedback\".\"action\" in ('relevant', 'not_relevant', 'already_known', 'too_repetitive', 'follow_topic', 'show_less_topic', 'mute_topic')"
+        },
+        "story_feedback_target_kind_check": {
+          "name": "story_feedback_target_kind_check",
+          "value": "\"story_feedback\".\"target_kind\" in ('', 'topic', 'entity')"
+        },
+        "story_feedback_target_shape_check": {
+          "name": "story_feedback_target_shape_check",
+          "value": "(\n      \"story_feedback\".\"action\" in ('relevant', 'not_relevant', 'already_known', 'too_repetitive')\n      and \"story_feedback\".\"target_kind\" = ''\n      and \"story_feedback\".\"target_label\" = ''\n    ) or (\n      \"story_feedback\".\"action\" in ('follow_topic', 'show_less_topic', 'mute_topic')\n      and \"story_feedback\".\"target_kind\" in ('topic', 'entity')\n      and length(\"story_feedback\".\"target_label\") > 0\n    )"
+        }
+      }
+    },
+    "digest_run_feeds": {
+      "name": "digest_run_feeds",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "feed_id": {
+          "name": "feed_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "connector_id": {
+          "name": "connector_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "feed_external_id": {
+          "name": "feed_external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "feed_name": {
+          "name": "feed_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "stage": {
+          "name": "stage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "item_count": {
+          "name": "item_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "digest_run_feeds_run_idx": {
+          "name": "digest_run_feeds_run_idx",
+          "columns": [
+            "run_id",
+            "started_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "digest_run_feeds_run_id_digest_runs_id_fk": {
+          "name": "digest_run_feeds_run_id_digest_runs_id_fk",
+          "tableFrom": "digest_run_feeds",
+          "tableTo": "digest_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "digest_run_feeds_source_id_sources_id_fk": {
+          "name": "digest_run_feeds_source_id_sources_id_fk",
+          "tableFrom": "digest_run_feeds",
+          "tableTo": "sources",
+          "columnsFrom": [
+            "source_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "digest_run_feeds_feed_id_feeds_id_fk": {
+          "name": "digest_run_feeds_feed_id_feeds_id_fk",
+          "tableFrom": "digest_run_feeds",
+          "tableTo": "feeds",
+          "columnsFrom": [
+            "feed_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "digest_run_feeds_stage_check": {
+          "name": "digest_run_feeds_stage_check",
+          "value": "\"digest_run_feeds\".\"stage\" in ('connector', 'ingestion', 'summarization')"
+        },
+        "digest_run_feeds_status_check": {
+          "name": "digest_run_feeds_status_check",
+          "value": "\"digest_run_feeds\".\"status\" in ('running', 'complete', 'skipped', 'failed')"
+        }
+      }
+    },
+    "digest_runs": {
+      "name": "digest_runs",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "digest_id": {
+          "name": "digest_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "trigger": {
+          "name": "trigger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "period_start_ms": {
+          "name": "period_start_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "period_end_ms": {
+          "name": "period_end_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "model_usage": {
+          "name": "model_usage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "digest_runs_user_running_unique": {
+          "name": "digest_runs_user_running_unique",
+          "columns": [
+            "user_id"
+          ],
+          "isUnique": true,
+          "where": "\"digest_runs\".\"status\" = 'running'"
+        },
+        "digest_runs_user_started_idx": {
+          "name": "digest_runs_user_started_idx",
+          "columns": [
+            "user_id",
+            "started_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "digest_runs_digest_id_digests_id_fk": {
+          "name": "digest_runs_digest_id_digests_id_fk",
+          "tableFrom": "digest_runs",
+          "tableTo": "digests",
+          "columnsFrom": [
+            "digest_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "digest_runs_user_id_users_id_fk": {
+          "name": "digest_runs_user_id_users_id_fk",
+          "tableFrom": "digest_runs",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "digest_runs_status_check": {
+          "name": "digest_runs_status_check",
+          "value": "\"digest_runs\".\"status\" in ('running', 'complete', 'partial', 'failed')"
+        },
+        "digest_runs_trigger_check": {
+          "name": "digest_runs_trigger_check",
+          "value": "\"digest_runs\".\"trigger\" in ('manual', 'scheduled')"
+        },
+        "digest_runs_period_order_check": {
+          "name": "digest_runs_period_order_check",
+          "value": "\"digest_runs\".\"period_start_ms\" <= \"digest_runs\".\"period_end_ms\""
+        }
+      }
+    },
+    "rate_limit_buckets": {
+      "name": "rate_limit_buckets",
+      "columns": {
+        "bucket_key": {
+          "name": "bucket_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "count": {
+          "name": "count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "resets_at": {
+          "name": "resets_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

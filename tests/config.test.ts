@@ -4,6 +4,7 @@ import {
   getConfig,
   getSummarizerBudgetConfig,
   getSummarizerRuntimeConfig,
+  getTwexApiBaseUrl,
   resolveAllowRemoteSummarization,
   resolveAppSecurityOptions,
   resolveServerHostname,
@@ -17,9 +18,7 @@ const ENV_KEYS = [
   "DATABASE_PATH",
   "ALLOW_REMOTE_SUMMARIZATION",
   "CONNECTOR_TIMEOUT_MS",
-  "X_BROWSER_PROFILE_ROOT",
-  "X_BROWSER_LOGIN_TIMEOUT_MS",
-  "X_BROWSER_CHANNEL",
+  "TWEXAPI_BASE_URL",
   "SUMMARIZER_MODEL",
   "SUMMARIZER_BASE_URL",
   "SUMMARIZER_API_KEY",
@@ -99,9 +98,7 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.databasePath, "./data/morning-post.sqlite");
   assertEquals(config.allowRemoteSummarization, false);
   assertEquals(config.connectorTimeoutMs, 120_000);
-  assertEquals(config.xBrowserProfileRoot, ".x-browser-profiles");
-  assertEquals(config.xBrowserLoginTimeoutMs, 900_000);
-  assertEquals(config.xBrowserChannel, "chromium");
+  assertEquals(config.twexApiBaseUrl, "https://api.twexapi.io");
   assertEquals(config.summarizerTextBytesPerChunk, 120_000);
   assertEquals(config.summarizerMaxItemsPerChunk, 50);
   assertEquals(config.summarizerMaxImageBytes, 1_000_000);
@@ -248,9 +245,7 @@ test("environment values override supported configuration defaults", () => {
       VISION_BASE_URL: "http://localhost:4321/v1",
       VISION_API_KEY: "key-b",
       CONNECTOR_TIMEOUT_MS: "5000",
-      X_BROWSER_PROFILE_ROOT: "/tmp/morning-post-x-profiles",
-      X_BROWSER_LOGIN_TIMEOUT_MS: "12345",
-      X_BROWSER_CHANNEL: "chrome",
+      TWEXAPI_BASE_URL: " https://twex.example/api/// ",
       SUMMARIZER_TEXT_BYTES_PER_CHUNK: "9000",
       SUMMARIZER_MAX_ITEMS_PER_CHUNK: "7",
       SUMMARIZER_MAX_IMAGE_BYTES: "8000",
@@ -285,9 +280,7 @@ test("environment values override supported configuration defaults", () => {
     assertEquals(config.databasePath, "./data/environment.sqlite");
     assertEquals(config.allowRemoteSummarization, true);
     assertEquals(config.connectorTimeoutMs, 5000);
-    assertEquals(config.xBrowserProfileRoot, "/tmp/morning-post-x-profiles");
-    assertEquals(config.xBrowserLoginTimeoutMs, 12345);
-    assertEquals(config.xBrowserChannel, "chrome");
+    assertEquals(config.twexApiBaseUrl, "https://twex.example/api");
     assertEquals(config.summarizerTextBytesPerChunk, 9000);
     assertEquals(config.summarizerMaxItemsPerChunk, 7);
     assertEquals(config.summarizerMaxImageBytes, 8000);
@@ -332,9 +325,7 @@ test("constructor values take precedence over environment", () => {
       "MAX_REQUEST_BODY_BYTES",
       "DATABASE_PATH",
       "ALLOW_REMOTE_SUMMARIZATION",
-      "X_BROWSER_PROFILE_ROOT",
-      "X_BROWSER_LOGIN_TIMEOUT_MS",
-      "X_BROWSER_CHANNEL",
+      "TWEXAPI_BASE_URL",
     ].map((key) => [key, process.env[key]]),
   );
   try {
@@ -343,27 +334,21 @@ test("constructor values take precedence over environment", () => {
     process.env["MAX_REQUEST_BODY_BYTES"] = "100";
     process.env["DATABASE_PATH"] = "./data/environment.sqlite";
     process.env["ALLOW_REMOTE_SUMMARIZATION"] = "true";
-    process.env["X_BROWSER_PROFILE_ROOT"] = "./env-x-profiles";
-    process.env["X_BROWSER_LOGIN_TIMEOUT_MS"] = "12345";
-    process.env["X_BROWSER_CHANNEL"] = "chrome";
+    process.env["TWEXAPI_BASE_URL"] = "https://env.example/api";
     const config = getConfig({
       port: 4311,
       allowedOrigins: ["https://constructor.example"],
       maxRequestBodyBytes: 200,
       databasePath: "./data/constructor.sqlite",
       allowRemoteSummarization: false,
-      xBrowserProfileRoot: "./constructor-x-profiles",
-      xBrowserLoginTimeoutMs: 54_321,
-      xBrowserChannel: "chromium",
+      twexApiBaseUrl: " https://constructor.example/api/// ",
     });
     assertEquals(config.port, 4311);
     assertEquals(config.allowedOrigins, ["https://constructor.example"]);
     assertEquals(config.maxRequestBodyBytes, 200);
     assertEquals(config.databasePath, "./data/constructor.sqlite");
     assertEquals(config.allowRemoteSummarization, false);
-    assertEquals(config.xBrowserProfileRoot, "./constructor-x-profiles");
-    assertEquals(config.xBrowserLoginTimeoutMs, 54_321);
-    assertEquals(config.xBrowserChannel, "chromium");
+    assertEquals(config.twexApiBaseUrl, "https://constructor.example/api");
     assertEquals(resolveAppSecurityOptions({ maxRequestBodyBytes: 300 }), {
       allowedOrigins: ["https://env.example"],
       maxRequestBodyBytes: 300,
@@ -384,8 +369,6 @@ test("invalid numeric and boolean values fail at startup", () => {
         key === "ALLOWED_ORIGINS" ||
         key === "DATABASE_PATH" ||
         key === "ALLOW_REMOTE_SUMMARIZATION" ||
-        key === "X_BROWSER_PROFILE_ROOT" ||
-        key === "X_BROWSER_CHANNEL" ||
         key.endsWith("_MODEL") ||
         key.endsWith("_BASE_URL") ||
         key.endsWith("_API_KEY")
@@ -416,14 +399,86 @@ test("invalid numeric and boolean values fail at startup", () => {
     else process.env["ALLOW_REMOTE_SUMMARIZATION"] = previous;
   }
 });
-test("invalid X browser channels fail with the setting name", () => {
-  withClearedEnvironment(["X_BROWSER_CHANNEL"], () => {
-    process.env["X_BROWSER_CHANNEL"] = "stable";
+test("Twex API base URL follows default, environment, then constructor precedence", () => {
+  withClearedEnvironment(["TWEXAPI_BASE_URL"], () => {
+    assertEquals(getTwexApiBaseUrl(), "https://api.twexapi.io");
+
+    process.env["TWEXAPI_BASE_URL"] = " https://twex.example/api/// ";
+    assertEquals(getTwexApiBaseUrl(), "https://twex.example/api");
+
+    assertEquals(
+      getTwexApiBaseUrl("https://constructor.example/api//"),
+      "https://constructor.example/api",
+    );
+
+    process.env["TWEXAPI_BASE_URL"] = "   ";
+    assertThrows(
+      () => getTwexApiBaseUrl(),
+      Error,
+      "Invalid TWEXAPI_BASE_URL",
+    );
+    assertThrows(
+      () => getTwexApiBaseUrl("   "),
+      Error,
+      "Invalid TWEXAPI_BASE_URL",
+    );
+  });
+});
+
+
+
+test("Twex API base URL rejects non-HTTPS, relative, credentialed, query, and fragment URLs", () => {
+  withClearedEnvironment(["TWEXAPI_BASE_URL"], () => {
+    for (const bad of [
+      "http://twex.example",
+      "ftp://twex.example",
+      "twex.example",
+      "/just/a/path",
+      "https://",
+      "https://user:pass@twex.example",
+      "https://twex.example?token=secret",
+      "https://twex.example#fragment",
+    ]) {
+      assertThrows(
+        () => getTwexApiBaseUrl(bad),
+        Error,
+        "Invalid TWEXAPI_BASE_URL",
+        `override ${JSON.stringify(bad)} must be rejected`,
+      );
+    }
+
+    process.env["TWEXAPI_BASE_URL"] = "http://insecure.example";
+    assertThrows(
+      () => getTwexApiBaseUrl(),
+      Error,
+      "Invalid TWEXAPI_BASE_URL",
+    );
+    process.env["TWEXAPI_BASE_URL"] = "https://user:pass@example.com";
+    assertThrows(
+      () => getTwexApiBaseUrl(),
+      Error,
+      "Invalid TWEXAPI_BASE_URL",
+    );
+    process.env["TWEXAPI_BASE_URL"] = "twex.example";
     assertThrows(
       () => getConfig(),
       Error,
-      "Invalid X_BROWSER_CHANNEL",
+      "Invalid TWEXAPI_BASE_URL",
     );
+    assertThrows(
+      () => getConfig({ twexApiBaseUrl: "https://twex.example?token=secret" }),
+      Error,
+      "Invalid TWEXAPI_BASE_URL",
+    );
+
+    // Accepted HTTPS paths normalize trailing slashes on every source.
+    assertEquals(
+      getTwexApiBaseUrl(" https://twex.example/api/// "),
+      "https://twex.example/api",
+    );
+    process.env["TWEXAPI_BASE_URL"] = "https://env.example/api///";
+    assertEquals(getTwexApiBaseUrl(), "https://env.example/api");
+    assertEquals(getConfig().twexApiBaseUrl, "https://env.example/api");
   });
 });
 

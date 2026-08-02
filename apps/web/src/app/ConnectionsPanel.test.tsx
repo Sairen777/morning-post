@@ -37,7 +37,6 @@ function renderConnections(
       onSubstackPublicationAdded={() => Promise.resolve()}
       onSubstackSourceUpdated={() => Promise.resolve()}
       onXConnected={() => Promise.resolve()}
-      onXTargetAdded={() => Promise.resolve()}
       onDisconnectSource={onDisconnectSource}
       onAuthError={onAuthError}
     />
@@ -74,9 +73,8 @@ describe("ConnectionsPanel disconnect", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Disconnect X" }));
 
     await waitFor(() => expect(onDisconnectSource).toHaveBeenCalledWith("source-x"));
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "X source disconnected.",
-    );
+    const notice = await screen.findByText("X source disconnected.");
+    expect(notice).toHaveAttribute("role", "status");
   });
 
   it("routes a disconnect authentication error to auth recovery", async () => {

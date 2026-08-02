@@ -1,6 +1,3 @@
-import type { XBrowserChannel } from "./connectors/x/x.types.ts";
-
-
 export interface ModelPricingSnapshot {
   uncachedInputUsdPerMillionTokens: number;
   cachedInputUsdPerMillionTokens: number;
@@ -47,12 +44,6 @@ export interface SummarizerBudgetConfig {
   mediaMaxAttempts: number;
 }
 
-export interface XBrowserConfig {
-  profileRoot: string;
-  loginTimeoutMs: number;
-  browserChannel: XBrowserChannel;
-}
-
 export interface Config {
   databasePath: string;
   port: number;
@@ -82,9 +73,7 @@ export interface Config {
   mediaTtlMs: number;
   mediaQuotaBytes: number;
   digestRunStaleAfterMs: number;
-  xBrowserProfileRoot?: string;
-  xBrowserLoginTimeoutMs?: number;
-  xBrowserChannel?: XBrowserChannel;
+  twexApiBaseUrl?: string;
 }
 
 export interface AppSecurityOptions {
@@ -120,9 +109,7 @@ const DEFAULT_SUMMARIZATION_CONCURRENCY = 2;
 const DEFAULT_MEDIA_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MEDIA_QUOTA_BYTES = 500 * 1024 * 1024;
 const DEFAULT_DIGEST_RUN_STALE_AFTER_MS = 15 * 60 * 1_000;
-const DEFAULT_X_BROWSER_PROFILE_ROOT = ".x-browser-profiles";
-const DEFAULT_X_BROWSER_LOGIN_TIMEOUT_MS = 15 * 60 * 1_000;
-const DEFAULT_X_BROWSER_CHANNEL: XBrowserChannel = "chromium";
+const DEFAULT_TWEX_API_BASE_URL = "https://api.twexapi.io";
 const DEFAULT_SUMMARIZER_MODEL = "local-model";
 const DEFAULT_SUMMARIZER_BASE_URL = "http://127.0.0.1:1234/v1";
 
@@ -252,6 +239,26 @@ function booleanSetting(
 
 function normalizeEndpointRoot(value: string): string {
   return value.trim().replace(/\/+$/, "");
+}
+
+function normalizeTwexApiBaseUrl(value: string): string {
+  const normalized = normalizeEndpointRoot(value);
+  let url: URL;
+  try {
+    url = new URL(normalized);
+  } catch {
+    throw invalidConfig("TWEXAPI_BASE_URL", "expected an absolute HTTPS URL");
+  }
+  if (url.protocol !== "https:") {
+    throw invalidConfig("TWEXAPI_BASE_URL", "expected an HTTPS URL");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw invalidConfig(
+      "TWEXAPI_BASE_URL",
+      "URL credentials, query parameters, and fragments are not allowed",
+    );
+  }
+  return url.toString().replace(/\/+$/, "");
 }
 
 function requiredStringSetting(
@@ -408,37 +415,14 @@ export function resolveAllowRemoteSummarization(override?: boolean): boolean {
   );
 }
 
-function xBrowserChannelSetting(
-  override: XBrowserChannel | undefined,
-): XBrowserChannel {
-  const value = override ?? process.env["X_BROWSER_CHANNEL"] ??
-    DEFAULT_X_BROWSER_CHANNEL;
-  if (value !== "chromium" && value !== "chrome") {
-    throw invalidConfig(
-      "X_BROWSER_CHANNEL",
-      'expected "chromium" or "chrome"',
-    );
-  }
-  return value;
-}
-
-export function getXBrowserConfig(
-  overrides: Partial<XBrowserConfig> = {},
-): XBrowserConfig {
-  return {
-    profileRoot: requiredStringSetting(
-      "X_BROWSER_PROFILE_ROOT",
-      overrides.profileRoot,
-      DEFAULT_X_BROWSER_PROFILE_ROOT,
+export function getTwexApiBaseUrl(override?: string): string {
+  return normalizeTwexApiBaseUrl(
+    requiredStringSetting(
+      "TWEXAPI_BASE_URL",
+      override,
+      DEFAULT_TWEX_API_BASE_URL,
     ),
-    loginTimeoutMs: numberSetting(
-      "X_BROWSER_LOGIN_TIMEOUT_MS",
-      "X_BROWSER_LOGIN_TIMEOUT_MS",
-      overrides.loginTimeoutMs,
-      DEFAULT_X_BROWSER_LOGIN_TIMEOUT_MS,
-    ),
-    browserChannel: xBrowserChannelSetting(overrides.browserChannel),
-  };
+  );
 }
 
 function originsSetting(override: string[] | undefined): string[] {
@@ -564,11 +548,7 @@ export function getSummarizerBudgetConfig(
 export function getConfig(overrides: Partial<Config> = {}): Config {
   const port = numberSetting("PORT", "PORT", overrides.port, DEFAULT_PORT);
   if (port > 65_535) throw invalidConfig("PORT", "expected a valid TCP port");
-  const xBrowserConfig = getXBrowserConfig({
-    profileRoot: overrides.xBrowserProfileRoot,
-    loginTimeoutMs: overrides.xBrowserLoginTimeoutMs,
-    browserChannel: overrides.xBrowserChannel,
-  });
+  const twexApiBaseUrl = getTwexApiBaseUrl(overrides.twexApiBaseUrl);
   return {
     databasePath: overrides.databasePath ?? process.env["DATABASE_PATH"] ??
       "./data/morning-post.sqlite",
@@ -636,9 +616,7 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
       overrides.digestRunStaleAfterMs,
       DEFAULT_DIGEST_RUN_STALE_AFTER_MS,
     ),
-    xBrowserProfileRoot: xBrowserConfig.profileRoot,
-    xBrowserLoginTimeoutMs: xBrowserConfig.loginTimeoutMs,
-    xBrowserChannel: xBrowserConfig.browserChannel,
+    twexApiBaseUrl,
   };
 }
 

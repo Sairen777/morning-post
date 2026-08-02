@@ -1,7 +1,7 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { Database } from "../../db/client.ts";
-import { getConfig, getXBrowserConfig } from "../../config.ts";
+import { getConfig, getTwexApiBaseUrl } from "../../config.ts";
 import type { TelegramLoginSessionManager } from "../../connectors/telegram/login-session.ts";
 import {
   type SubstackCredentials,
@@ -22,10 +22,10 @@ import {
 import { SubstackSessionService } from "../../services/substack-session-service.ts";
 import type { ConnectorCommit } from "../../services/connector-commit.ts";
 import {
-  type XLoginSessionStatus,
-  XLoginSessionManager,
-} from "../../services/x-login-service.ts";
-import { XTargetService } from "../../services/x-target-service.ts";
+  xSessionInputSchema,
+  XSessionService,
+} from "../../services/x-session-service.ts";
+import type { XSessionInput } from "../../services/x-session-service.ts";
 import { type AuthVariables, requireAuth } from "../middleware/require-auth.ts";
 import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
 import { validate } from "../validate.ts";
@@ -39,15 +39,6 @@ type ConnectorRouteEnvironment = {
 const loginSessionParamsSchema = z.object({
   id: z.string().uuid("id must be a valid UUID"),
 });
-
-const xLoginSessionParamsSchema = z.object({
-  sessionId: z.string().uuid("sessionId must be a valid UUID"),
-});
-
-const xTargetBodySchema = z.object({
-  sourceId: z.string().uuid("sourceId must be a valid UUID"),
-  url: z.string().min(1, "url is required").max(2_048),
-}).strict();
 
 const twoFactorAuthenticationBodySchema = z.object({
   password: z.string().min(1, "password is required"),
@@ -80,25 +71,13 @@ export interface SubstackPublicationDiscoveryServiceLike {
   list(userId: string, signal?: AbortSignal): Promise<AvailableFeed[]>;
 }
 
-export interface XLoginSessionManagerLike {
-  startLogin(userId: string, signal?: AbortSignal): Promise<XLoginSessionStatus>;
-  getStatus(sessionId: string, userId: string): Promise<XLoginSessionStatus>;
-  verify(
-    sessionId: string,
+export interface XSessionServiceLike {
+  connect(
     userId: string,
-    signal?: AbortSignal,
-  ): Promise<XLoginSessionStatus>;
-  cancel(sessionId: string, userId: string): Promise<void>;
-}
-
-export interface XTargetServiceLike {
-  add(
-    userId: string,
-    sourceId: string,
-    url: string,
+    input: XSessionInput,
     signal?: AbortSignal,
     commitOperation?: ConnectorCommit,
-  ): Promise<PublicFeed>;
+  ): Promise<PublicSource>;
 }
 
 export type ConnectorDeadlineScheduler = (
@@ -110,11 +89,8 @@ export interface ConnectorRouteDependencies {
   telegramLoginSessionManager?: TelegramLoginSessionManager;
   telegramLoginRateLimiter?: MiddlewareHandler;
   telegramTwoFactorRateLimiter?: MiddlewareHandler;
-  xLoginSessionManager?: XLoginSessionManagerLike;
-  xTargetService?: XTargetServiceLike;
-  xLoginRateLimiter?: MiddlewareHandler;
-  xLoginVerifyRateLimiter?: MiddlewareHandler;
-  xTargetRateLimiter?: MiddlewareHandler;
+  xSessionService?: XSessionServiceLike;
+  xSessionRateLimiter?: MiddlewareHandler;
   substackSessionService?: SubstackSessionServiceLike;
   substackPublicationService?: SubstackPublicationServiceLike;
   substackPublicationDiscoveryService?: SubstackPublicationDiscoveryServiceLike;
@@ -190,14 +166,13 @@ function defaultSubstackPublicationDiscoveryRateLimiter(
   });
 }
 
-function defaultXRateLimiter(
+function defaultXSessionRateLimiter(
   database: Database,
   trustedProxyCount: number,
-  bucket: "x-login" | "x-login-verify" | "x-target",
 ): MiddlewareHandler {
   return createRateLimitMiddleware({
     database,
-    bucket,
+    bucket: "x-session",
     trustedProxyCount,
     ...CONNECTOR_RATE_LIMIT,
   });
@@ -271,14 +246,7 @@ export function buildConnectorRoutes(
   let substackPublicationService = dependencies.substackPublicationService;
   let substackPublicationDiscoveryService =
     dependencies.substackPublicationDiscoveryService;
-  let xLoginSessionManager = dependencies.xLoginSessionManager;
-  let xTargetService = dependencies.xTargetService;
-  let defaultXServicesLoader:
-    | Promise<{
-      loginSessionManager: XLoginSessionManager;
-      targetService: XTargetService;
-    }>
-    | undefined;
+  let xSessionService = dependencies.xSessionService;
   const trustedProxyCount = dependencies.trustedProxyCount ??
     getConfig().trustedProxyCount;
   const telegramLoginRateLimiter = dependencies.telegramLoginRateLimiter ??
@@ -297,12 +265,8 @@ export function buildConnectorRoutes(
         database,
         trustedProxyCount,
       );
-  const xLoginRateLimiter = dependencies.xLoginRateLimiter ??
-    defaultXRateLimiter(database, trustedProxyCount, "x-login");
-  const xLoginVerifyRateLimiter = dependencies.xLoginVerifyRateLimiter ??
-    defaultXRateLimiter(database, trustedProxyCount, "x-login-verify");
-  const xTargetRateLimiter = dependencies.xTargetRateLimiter ??
-    defaultXRateLimiter(database, trustedProxyCount, "x-target");
+  const xSessionRateLimiter = dependencies.xSessionRateLimiter ??
+    defaultXSessionRateLimiter(database, trustedProxyCount);
   const connectorTimeoutMs = dependencies.connectorTimeoutMs ??
     getConfig().connectorTimeoutMs;
   const connectorDeadlineScheduler = dependencies.scheduleConnectorDeadline ??
@@ -330,52 +294,13 @@ export function buildConnectorRoutes(
     return telegramLoginSessionManager;
   }
 
-  async function getDefaultXServices(): Promise<{
-    loginSessionManager: XLoginSessionManager;
-    targetService: XTargetService;
-  }> {
-    defaultXServicesLoader ??= (async () => {
-      const { XBrowserRuntime } = await import(
-        "../../connectors/x/index.ts"
-      );
-      const xBrowserConfig = getXBrowserConfig();
-      const browserRuntime = new XBrowserRuntime({
-        profileRoot: xBrowserConfig.profileRoot,
-        browserChannel: xBrowserConfig.browserChannel,
-      });
-      const credentialCipher = new CredentialCipher(
-        new EnvMasterKeyProvider(),
-      );
-      return {
-        loginSessionManager: new XLoginSessionManager({
-          database,
-          credentialCipher,
-          browserRuntime,
-          loginTimeoutMs: xBrowserConfig.loginTimeoutMs,
-        }),
-        targetService: new XTargetService({
-          database,
-          credentialCipher,
-          browserRuntime,
-        }),
-      };
-    })();
-    return await defaultXServicesLoader;
-  }
-
-  async function getXLoginSessionManager(): Promise<XLoginSessionManagerLike> {
-    if (xLoginSessionManager === undefined) {
-      xLoginSessionManager =
-        (await getDefaultXServices()).loginSessionManager;
-    }
-    return xLoginSessionManager;
-  }
-
-  async function getXTargetService(): Promise<XTargetServiceLike> {
-    if (xTargetService === undefined) {
-      xTargetService = (await getDefaultXServices()).targetService;
-    }
-    return xTargetService;
+  function getXSessionService(): XSessionServiceLike {
+    xSessionService ??= new XSessionService({
+      database,
+      credentialCipher: new CredentialCipher(new EnvMasterKeyProvider()),
+      baseUrl: getTwexApiBaseUrl(),
+    });
+    return xSessionService;
   }
 
   function getSubstackSessionService(): SubstackSessionServiceLike {
@@ -394,76 +319,23 @@ export function buildConnectorRoutes(
     return substackPublicationDiscoveryService;
   }
 
-  routes.post("/x/login", xLoginRateLimiter, async (context) => {
-    const manager = await getXLoginSessionManager();
-    const status = await manager.startLogin(
-      context.var.userId,
-      context.req.raw.signal,
-    );
-    return context.json(status, 202);
-  });
-
-  routes.get("/x/login/:sessionId", async (context) => {
-    const { sessionId } = validate(
-      xLoginSessionParamsSchema,
-      context.req.param(),
-    );
-    const manager = await getXLoginSessionManager();
-    const status = await manager.getStatus(sessionId, context.var.userId);
-    return context.json(status, 200);
-  });
-
-  routes.post(
-    "/x/login/:sessionId/verify",
-    xLoginVerifyRateLimiter,
-    async (context) => {
-      const { sessionId } = validate(
-        xLoginSessionParamsSchema,
-        context.req.param(),
-      );
-      extendLongRequestTimeout(context.env?.server, context.req.raw);
-      const manager = await getXLoginSessionManager();
-      const status = await manager.verify(
-        sessionId,
-        context.var.userId,
-        context.req.raw.signal,
-      );
-      return context.json(status, 200);
-    },
-  );
-
-  routes.delete("/x/login/:sessionId", async (context) => {
-    const { sessionId } = validate(
-      xLoginSessionParamsSchema,
-      context.req.param(),
-    );
-    const manager = await getXLoginSessionManager();
-    await manager.cancel(sessionId, context.var.userId);
-    return context.body(null, 204);
-  });
-
-  routes.post("/x/targets", xTargetRateLimiter, async (context) => {
-    const { sourceId, url } = validate(
-      xTargetBodySchema,
-      await context.req.json(),
-    );
+  routes.post("/x/session", xSessionRateLimiter, async (context) => {
+    const body = await context.req.json();
+    const input = validate(xSessionInputSchema, body);
     extendLongRequestTimeout(context.env?.server, context.req.raw);
-    const feed = await withConnectorDeadline(
+    const source = await withConnectorDeadline(
       context.req.raw.signal,
       connectorTimeoutMs,
       connectorDeadlineScheduler,
       (signal, commitOperation) =>
-        getXTargetService().then((service) =>
-          service.add(
-            context.var.userId,
-            sourceId,
-            url,
-            signal,
-            commitOperation,
-          )
+        getXSessionService().connect(
+          context.var.userId,
+          input,
+          signal,
+          commitOperation,
         ),
     );
-    return context.json(feed, 201);
+    return context.json({ source }, 200);
   });
 
   routes.post("/telegram/login", telegramLoginRateLimiter, async (context) => {

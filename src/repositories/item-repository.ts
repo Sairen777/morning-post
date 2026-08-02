@@ -2,6 +2,7 @@ import { and, asc, between, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { ConnectorId } from "../constants.ts";
 import type { Database } from "../db/client.ts";
+import { feeds } from "../db/schema/feed.ts";
 import { items } from "../db/schema/item.ts";
 import type { NormalizedItem } from "../connectors/connector.types.ts";
 
@@ -136,6 +137,27 @@ export function listFeedIdsWithPaidItems(
     .orderBy(asc(items.feedId))
     .all();
   return rows.map((row) => row.feedId);
+}
+
+export function deleteItemsForFeedsOfSource(
+  database: Database,
+  sourceId: string,
+): void {
+  // Every feed of the source, including soft-deleted ones: a revived feed
+  // reuses its row, so its normalized items must not survive an account reset.
+  const feedIds = database
+    .select({ id: feeds.id })
+    .from(feeds)
+    .where(eq(feeds.sourceId, sourceId))
+    .all()
+    .map((row) => row.id);
+  if (feedIds.length === 0) {
+    return;
+  }
+  database
+    .delete(items)
+    .where(inArray(items.feedId, feedIds))
+    .run();
 }
 
 export function listItemsForFeedsInWindow(

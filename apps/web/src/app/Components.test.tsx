@@ -500,6 +500,74 @@ describe("SourcesPanel", () => {
     expect(telegramCard.getByRole("button", { name: "Discover feeds" }))
       .toBeVisible();
   });
+
+  it("discovers and subscribes Lists and XChat groups for an X source", async () => {
+    const xSource = { ...source, id: "source-x", connectorId: "X" };
+    const availableFeeds = [
+      {
+        externalId: "x:list:123",
+        name: "Engineering list",
+        kind: "news" as const,
+      },
+      {
+        externalId: "x:chat:conversation_1",
+        name: "Project chat",
+        kind: "discussion" as const,
+      },
+    ];
+    const onDiscoverFeeds = vi.fn(() => Promise.resolve(availableFeeds));
+    const onSubscribe = vi.fn(() => Promise.resolve());
+    render(() => (
+      <SourcesPanel
+        sources={[xSource]}
+        feeds={[]}
+        availableFeeds={{ "source-x": availableFeeds }}
+        sourceFeeds={{}}
+        onToggleSource={() => Promise.resolve()}
+        onUpdateSourcePosition={() => Promise.resolve()}
+        onDisconnectSource={() =>
+          Promise.resolve({
+            source: xSource,
+            revokeTelegramSession: false,
+            message: "Disconnected",
+          })}
+        onDiscoverFeeds={onDiscoverFeeds}
+        onLoadSourceFeeds={() => Promise.resolve([])}
+        onSubscribe={onSubscribe}
+        onAuthError={() => {}}
+      />
+    ));
+    const xCard = within(
+      screen.getByRole("heading", { name: "X" }).closest("article")!,
+    );
+    const discoverButton = xCard.getByRole("button", {
+      name: "Discover Lists and XChat groups",
+    });
+    expect(
+      xCard.getByRole("heading", { name: "Discover Lists and XChat groups" }),
+    ).toBeVisible();
+    expect(xCard.getByText("Lists and XChat groups you choose to monitor for timely updates."))
+      .toBeVisible();
+
+    await fireEvent.click(discoverButton);
+    await waitFor(() =>
+      expect(onDiscoverFeeds).toHaveBeenCalledWith("source-x")
+    );
+
+    expect(xCard.getByText("Engineering list")).toBeVisible();
+    expect(xCard.getByText("Project chat")).toBeVisible();
+    expect(xCard.getByText("News")).toBeVisible();
+    expect(xCard.getByText("Discussion")).toBeVisible();
+
+    await fireEvent.click(
+      xCard.getByRole("button", { name: "Subscribe to Engineering list" }),
+    );
+    await fireEvent.click(
+      xCard.getByRole("button", { name: "Subscribe to Project chat" }),
+    );
+    expect(onSubscribe).toHaveBeenCalledWith("source-x", availableFeeds[0]);
+    expect(onSubscribe).toHaveBeenCalledWith("source-x", availableFeeds[1]);
+  });
 });
 
 describe("FeedsPanel", () => {

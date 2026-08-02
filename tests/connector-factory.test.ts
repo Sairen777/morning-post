@@ -6,6 +6,8 @@ import {
   type SubstackClientFactory,
   type TelegramClientFactory,
   type TelegramClientHandle,
+  type XApiClientFactory,
+  type XContentCacheFactory,
 } from "../src/connectors/connector-factory.ts";
 import {
   CredentialCipher,
@@ -24,6 +26,8 @@ import {
 } from "../src/repositories/user-repository.ts";
 import { ConflictError, NotFoundError } from "../src/server/errors.ts";
 import type { SubstackPostReader } from "../src/connectors/substack/substack-connector.ts";
+import type { XApiClient, TwexFetch } from "../src/connectors/x/twex-api-client.ts";
+import type { XContentCache } from "../src/repositories/x-content-cache-repository.ts";
 
 class FakeTelegramClientFactory implements TelegramClientFactory {
   readonly sessions: string[] = [];
@@ -43,6 +47,51 @@ class FakeTelegramClientFactory implements TelegramClientFactory {
       },
     } as unknown as TelegramClientHandle;
     return Promise.resolve(client);
+  }
+}
+
+class FakeXApiClientFactory implements XApiClientFactory {
+  readonly created: Array<{
+    credentials: Parameters<XApiClientFactory["createClient"]>[0];
+    options?: { baseUrl?: string; fetch?: TwexFetch };
+  }> = [];
+  createdClients = 0;
+
+  createClient(
+    credentials: Parameters<XApiClientFactory["createClient"]>[0],
+    options?: { baseUrl?: string; fetch?: TwexFetch },
+  ): XApiClient {
+    this.createdClients += 1;
+    this.created.push({ credentials, options });
+    return {
+      getUserInfo: () => Promise.reject(new Error("unused")),
+      searchLists: () => Promise.resolve([]),
+      getConversations: () => Promise.resolve([]),
+      getListPosts: () => Promise.resolve([]),
+      getChatMessages: () => Promise.resolve([]),
+    } as unknown as XApiClient;
+  }
+}
+
+class FakeXContentCacheFactory implements XContentCacheFactory {
+  readonly created: Array<{
+    database: Database;
+    sourceId: string;
+    expectedCredentialRevision?: number;
+  }> = [];
+
+  createCache(
+    database: Database,
+    sourceId: string,
+    expectedCredentialRevision?: number,
+  ): XContentCache {
+    this.created.push({ database, sourceId, expectedCredentialRevision });
+    return {
+      missingRanges: () => [],
+      read: () => [],
+      record: () => {},
+      clear: () => {},
+    } as unknown as XContentCache;
   }
 }
 
@@ -84,6 +133,21 @@ async function encryptedCredentials(
     userId,
     connectorId,
   });
+}
+
+async function encryptedXCredentials(userId: string): Promise<EncryptedBlob> {
+  return await credentialCipher().encrypt(
+    JSON.stringify({
+      apiKey: "twex-api-key",
+      authToken: "auth-token-123",
+      cookie: "auth_token=auth-token-123; ct0=csrf-token-456",
+      pin: "1234",
+      listQuery: "my-lists",
+      xUserId: "x-user-1",
+      xUsername: "alice",
+    }),
+    { userId, connectorId: ConnectorId.X },
+  );
 }
 
 async function encryptedSubstackCredentials(
@@ -163,6 +227,53 @@ test("ConnectorFactory builds an individual Substack connector from encrypted cr
       substackSessionId: "s%3Asubstack.signature",
       connectSessionId: "s%3Aconnect.signature",
     }]);
+  });
+});
+
+test("ConnectorFactory builds an X connector from encrypted credentials with client and cache factories", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("x-factory@example.com"),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.X,
+      credentials: await encryptedXCredentials(user.id),
+    });
+    const xApiClientFactory = new FakeXApiClientFactory();
+    const xContentCacheFactory = new FakeXContentCacheFactory();
+    const factory = new ConnectorFactory(database, {
+      credentialCipher: credentialCipher(),
+      telegramClientFactory: new FakeTelegramClientFactory(),
+      xApiClientFactory,
+      xContentCacheFactory,
+    });
+
+    const handle = await factory.forSource(source, user.id);
+    assertEquals(handle.ingestionMode, "batch");
+    assertEquals(typeof handle.connector.getNormalizedData, "function");
+    assertEquals(xApiClientFactory.createdClients, 1);
+    assertEquals(xApiClientFactory.created[0].credentials, {
+      apiKey: "twex-api-key",
+      authToken: "auth-token-123",
+      cookie: "auth_token=auth-token-123; ct0=csrf-token-456",
+      pin: "1234",
+    });
+    // The handle and the cache are bound to the same credential revision.
+    assertEquals(handle.sourceCredentialRevision, 1);
+    assertEquals(xContentCacheFactory.created, [{
+      database,
+      sourceId: source.id,
+      expectedCredentialRevision: 1,
+    }]);
+
+    await handle.dispose?.();
+    await assertRejects(
+      () => handle.connector.getRawData(0, 1),
+      Error,
+      "X connector has been disposed",
+    );
   });
 });
 

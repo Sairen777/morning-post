@@ -3,6 +3,7 @@ import { ConnectorId, DEFAULT_MAXIMUM_STORIES_PER_DIGEST } from "../constants.ts
 import type { StoryDetailLevel } from "../story-detail-level.ts";
 import { getSummarizerBudgetConfig } from "../config.ts";
 import type { PublicFeed } from "../repositories/feed-repository.ts";
+import { assertFeedActiveForSourceConnectionRevision } from "../repositories/feed-repository.ts";
 import { listActiveInterestRules } from "../repositories/interest-rule-repository.ts";
 import { listItemsForFeedsInWindow } from "../repositories/item-repository.ts";
 import { listSourcesForUser, type PublicSource } from "../repositories/source-repository.ts";
@@ -80,12 +81,45 @@ export interface StoryDigestDependencies {
   progressStartedAtMs?: number;
   modelUsageAggregate?: DigestModelUsageAggregate;
   suppressPreviouslyDelivered?: boolean;
+  /**
+   * Credential revision each contributing X feed was ingested or accepted
+   * under, keyed by feed id. When present, every assembly boundary re-checks
+   * that the feed's source is still connected/enabled at that revision and
+   * the feed is still enabled/not deleted; a mismatch aborts the run so stale
+   * account content is never summarized, persisted, or sent. Feeds absent
+   * from the map (non-X flows) are never guarded.
+   */
+  credentialRevisionByFeedId?: ReadonlyMap<string, number>;
 }
 
 export interface StoryDigestResult {
   stories: StoredDigestStory[];
   hadSummaryFailure: boolean;
   summaryFailureReason: unknown | null;
+}
+
+/**
+ * Re-asserts every guarded X feed's source connection revision and feed
+ * liveness against the current database. Throws when a reconnect, disconnect,
+ * or feed disable/deletion landed after the revision was captured, so the
+ * caller aborts instead of using content that may belong to another account.
+ */
+export function assertGuardedFeedsActive(
+  database: Database,
+  userId: string,
+  credentialRevisionByFeedId: ReadonlyMap<string, number> | undefined,
+): void {
+  if (credentialRevisionByFeedId === undefined) {
+    return;
+  }
+  for (const [feedId, revision] of credentialRevisionByFeedId) {
+    assertFeedActiveForSourceConnectionRevision(
+      database,
+      feedId,
+      userId,
+      revision,
+    );
+  }
 }
 
 function effectiveMode(feed: PublicFeed, source: PublicSource, user: User) {
@@ -215,6 +249,16 @@ export async function assembleStoryDigest(
   const runId = dependencies.runId;
   const progressStartedAtMs = dependencies.progressStartedAtMs ?? now();
   const elapsedMs = () => Math.max(0, now() - progressStartedAtMs);
+  // Synchronous pre-flight gate bound to the guarded feeds: re-asserts every
+  // X source/feed at its captured revision immediately before each outbound
+  // model request, so a revoke landing during backoff, retries, or a prior
+  // model call can never be followed by a fetch carrying revoked content.
+  const assertFeedsActive = () =>
+    assertGuardedFeedsActive(
+      database,
+      user.id,
+      dependencies.credentialRevisionByFeedId,
+    );
   const onAttempt = (stage: DigestModelStage) =>
     (attempt: ModelAttemptTelemetry): void =>
       reportDigestModelAttempt(
@@ -230,6 +274,13 @@ export async function assembleStoryDigest(
   const feedById = new Map(feeds.map((feed) => [feed.id, feed]));
   const feedOrder = new Map(feeds.map((feed, index) => [feed.id, index]));
   const connectorBySource = new Map(sources.map((source) => [source.id, source.connectorId as ConnectorId]));
+  // Boundary: selecting normalized items must not consume content accepted
+  // under a connection that has since changed or been disabled.
+  assertGuardedFeedsActive(
+    database,
+    user.id,
+    dependencies.credentialRevisionByFeedId,
+  );
   const storedItems = (await listItemsForFeedsInWindow(database, feeds.map((feed) => feed.id), periodStartMs, periodEndMs))
     .sort((left, right) =>
       left.payload.date - right.payload.date ||
@@ -301,13 +352,27 @@ export async function assembleStoryDigest(
         totalCount: misses.length,
         status: "started",
       });
+      // Boundary: immediately before the intelligence await.
+      assertGuardedFeedsActive(
+        database,
+        user.id,
+        dependencies.credentialRevisionByFeedId,
+      );
       const checkpoint = await intelligence.analyze(inputs, {
         signal: dependencies.signal,
         requestTimeoutMs: dependencies.timeoutMs,
         onAttempt: onAttempt("analysis"),
         onMediaAttempt: onAttempt("media"),
+        beforeAttempt: assertFeedsActive,
         analysisUnitSizes,
       });
+      // Boundary: immediately after the intelligence await and before any
+      // model-derived analysis is persisted.
+      assertGuardedFeedsActive(
+        database,
+        user.id,
+        dependencies.credentialRevisionByFeedId,
+      );
       const returnedIds = new Set(checkpoint.map((item) => item.itemId));
       const validCheckpoint = checkpoint.length === inputs.length &&
         returnedIds.size === checkpoint.length &&
@@ -360,7 +425,20 @@ export async function assembleStoryDigest(
     itemCount: analyzed.length,
     status: "started",
   });
-  const resolved = await intelligence.resolve(analyzed, recentStories, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs });
+  // Boundary: immediately before the resolution await.
+  assertGuardedFeedsActive(
+    database,
+    user.id,
+    dependencies.credentialRevisionByFeedId,
+  );
+  const resolved = await intelligence.resolve(analyzed, recentStories, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, beforeAttempt: assertFeedsActive });
+  // Boundary: immediately after the resolution await and before the
+  // model-derived story candidates are persisted.
+  assertGuardedFeedsActive(
+    database,
+    user.id,
+    dependencies.credentialRevisionByFeedId,
+  );
   const persisted = await upsertResolvedStories(database, user.id, resolved, now());
   if (runId) reportDigestProgress(progress, {
     event: "resolution",
@@ -386,9 +464,51 @@ export async function assembleStoryDigest(
     itemCount: persisted.length,
     status: "started",
   });
+  // Boundary: immediately before the first classification await.
+  assertGuardedFeedsActive(
+    database,
+    user.id,
+    dependencies.credentialRevisionByFeedId,
+  );
+  const personalizedDecisions = personalized.length
+    ? await intelligence.classify(personalized, rules, user.relevanceThreshold, {
+      signal: dependencies.signal,
+      requestTimeoutMs: dependencies.timeoutMs,
+      preferencePrompt: user.systemPrompt,
+      onAttempt: onAttempt("classification"),
+      beforeAttempt: assertFeedsActive,
+    })
+    : [];
+  // Boundary: immediately after the first classification await; a revoke that
+  // landed while it was in flight aborts before the second call is dispatched.
+  assertGuardedFeedsActive(
+    database,
+    user.id,
+    dependencies.credentialRevisionByFeedId,
+  );
+  // Boundary: immediately before the second classification await.
+  assertGuardedFeedsActive(
+    database,
+    user.id,
+    dependencies.credentialRevisionByFeedId,
+  );
+  const includeAllDecisions = includeAll.length
+    ? await intelligence.classify(includeAll, rules.filter((rule) => rule.disposition === "mute"), 0, {
+      signal: dependencies.signal,
+      requestTimeoutMs: dependencies.timeoutMs,
+      onAttempt: onAttempt("classification"),
+      beforeAttempt: assertFeedsActive,
+    })
+    : [];
+  // Boundary: immediately after the second classification await.
+  assertGuardedFeedsActive(
+    database,
+    user.id,
+    dependencies.credentialRevisionByFeedId,
+  );
   const decisions: StoryRelevanceDecision[] = [
-    ...(personalized.length ? await intelligence.classify(personalized, rules, user.relevanceThreshold, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, preferencePrompt: user.systemPrompt, onAttempt: onAttempt("classification") }) : []),
-    ...(includeAll.length ? await intelligence.classify(includeAll, rules.filter((rule) => rule.disposition === "mute"), 0, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, onAttempt: onAttempt("classification") }) : []),
+    ...personalizedDecisions,
+    ...includeAllDecisions,
   ];
   if (runId) reportDigestProgress(progress, {
     event: "classification",
@@ -566,6 +686,12 @@ export async function assembleStoryDigest(
       const items = story.candidate.developments.flatMap((development) =>
         development.items
       );
+      // Boundary: immediately before the summarizer await.
+      assertGuardedFeedsActive(
+        database,
+        user.id,
+        dependencies.credentialRevisionByFeedId,
+      );
       const points = await summarizer.summarize(
         items.map((item) => item.payload),
         singleRulesByDetail[entry.detail],
@@ -573,12 +699,20 @@ export async function assembleStoryDigest(
           signal: dependencies.signal,
           requestTimeoutMs: dependencies.timeoutMs,
           onAttempt: onAttempt("summarization"),
+          beforeAttempt: assertFeedsActive,
           maxOutputTokens: STORY_DETAIL_POLICIES[entry.detail].singleMaxOutputTokens,
         },
       );
       if (items.length > 0 && points.length === 0) {
         throw new Error("Story summarization returned no points");
       }
+      // Boundary: immediately after the summarizer await and before the
+      // model-derived summary is recorded for replacement.
+      assertGuardedFeedsActive(
+        database,
+        user.id,
+        dependencies.credentialRevisionByFeedId,
+      );
       summaries[index] = {
         status: "fulfilled",
         value: makeSummary(story, points),
@@ -594,6 +728,12 @@ export async function assembleStoryDigest(
       if (job.kind === "batch") {
         try {
           const detail = job.entries[0].detail as Exclude<StoryDetailLevel, "thorough">;
+          // Boundary: immediately before the batch summarizer await.
+          assertGuardedFeedsActive(
+            database,
+            user.id,
+            dependencies.credentialRevisionByFeedId,
+          );
           const results = await summarizer.summarizeBatch!(
             job.entries.map((entry) => entry.input),
             batchRulesByDetail[detail],
@@ -601,8 +741,16 @@ export async function assembleStoryDigest(
               signal: dependencies.signal,
               requestTimeoutMs: dependencies.timeoutMs,
               onAttempt: onAttempt("summarization"),
+              beforeAttempt: assertFeedsActive,
               maxOutputTokens: STORY_DETAIL_POLICIES[detail].batchMaxOutputTokens,
             },
+          );
+          // Boundary: immediately after the batch summarizer await and before
+          // the model-derived summaries are recorded for replacement.
+          assertGuardedFeedsActive(
+            database,
+            user.id,
+            dependencies.credentialRevisionByFeedId,
           );
           const byId = new Map(results.map((result) => [result.storyId, result]));
           for (const entry of job.entries) {
@@ -649,6 +797,13 @@ export async function assembleStoryDigest(
   });
   const summaryFailure = summaries.find((result) =>
     result.status === "rejected"
+  );
+  // Boundary: before the final story replacement commits model-derived
+  // content for this digest.
+  assertGuardedFeedsActive(
+    database,
+    user.id,
+    dependencies.credentialRevisionByFeedId,
   );
   return {
     stories: await replaceDigestStories(

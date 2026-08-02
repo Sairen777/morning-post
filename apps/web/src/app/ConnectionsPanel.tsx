@@ -37,9 +37,9 @@ const services: ConnectionService[] = [
   {
     connectorId: "X",
     label: "X",
-    description: "Following, Lists, and Chat conversations.",
+    description: "Lists and XChat groups.",
     context:
-      "Sign in through Morning Post's dedicated Chrome profile, then discover or add safe X targets.",
+      "Connect with your TwexAPI credentials, then discover and subscribe to Lists and XChat groups in Sources.",
   },
 ];
 
@@ -51,7 +51,6 @@ interface ConnectionsPanelProps {
   onSubstackPublicationAdded: () => Promise<void>;
   onSubstackSourceUpdated: () => Promise<void>;
   onXConnected: () => Promise<void>;
-  onXTargetAdded: (sourceId: string) => Promise<void>;
   onDisconnectSource: (id: string) => Promise<DisconnectSourceResponse>;
   onAuthError: () => void;
 }
@@ -289,9 +288,7 @@ export default function ConnectionsPanel(props: ConnectionsPanelProps) {
                   <Match when={connectorId() === "X"}>
                     <XConnectPanel
                       sources={props.sources}
-                      feeds={props.feeds}
                       onConnected={props.onXConnected}
-                      onTargetAdded={props.onXTargetAdded}
                       onAuthError={props.onAuthError}
                     />
                   </Match>

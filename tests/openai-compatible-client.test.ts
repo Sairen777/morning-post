@@ -158,6 +158,38 @@ test("OpenAICompatibleChatClient does not retry a non-reset Error", async () => 
   );
 });
 
+test("OpenAICompatibleChatClient beforeAttempt throws on retry and fetch count remains one", async () => {
+  const gateError = new Error("credential fence revoked");
+  const telemetry: ModelAttemptTelemetry[] = [];
+  let attemptCount = 0;
+  let gateCalls = 0;
+  const thrownError = await assertRejects(() =>
+    createClient(() => {
+      attemptCount++;
+      return Promise.reject(new TypeError("transport reset"));
+    }).complete("system", "content", {
+      maxAttempts: 3,
+      onAttempt: (attempt) => {
+        telemetry.push(attempt);
+      },
+      beforeAttempt: () => {
+        gateCalls++;
+        if (gateCalls > 1) throw gateError;
+      },
+    })
+  );
+
+  // The gate runs before the first attempt, passes, and runs again before the
+  // retry, where its throw aborts the request before any second fetch.
+  assertStrictEquals(thrownError, gateError);
+  assertEquals(gateCalls, 2);
+  assertEquals(attemptCount, 1);
+  assertEquals(
+    telemetry.map(({ attempt, status }) => ({ attempt, status })),
+    [{ attempt: 1, status: "retry" }],
+  );
+});
+
 test("OpenAICompatibleChatClient retries a response body TypeError and succeeds", async () => {
   let attemptCount = 0;
   const mockFetch: FetchFunction = () => {

@@ -53,6 +53,13 @@ export interface SummarizeOptions {
   requestTimeoutMs?: number;
   /** Receives content-safe telemetry once for each model HTTP attempt */
   onAttempt?: ModelAttemptTelemetryCallback;
+  /**
+   * Synchronous pre-flight gate invoked on every model attempt, immediately
+   * before each request is dispatched (including transport retries, vision
+   * fallbacks, recovery completions, and merges). A throw aborts the run
+   * without an outbound fetch.
+   */
+  beforeAttempt?: () => void;
   /** Receives redacted operational events without item or prompt content */
   onDiagnostic?: (
     diagnostic: SummarizationDiagnostic,

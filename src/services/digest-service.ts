@@ -26,7 +26,7 @@ import { NotFoundError } from "../server/errors.ts";
 import { sanitizeErrorForOps } from "../server/error-sanitizer.ts";
 import type { SummaryContent } from "../summarizers/summarizer.types.ts";
 import { listDigestStories, type StoredDigestStory } from "../repositories/story-repository.ts";
-import { assembleStoryDigest, type StoryDigestDependencies } from "./story-digest-service.ts";
+import { assembleStoryDigest, assertGuardedFeedsActive, type StoryDigestDependencies } from "./story-digest-service.ts";
 import { isInaccessiblePaidItem } from "./content-access.ts";
 
 export interface DigestSection {
@@ -309,6 +309,15 @@ export async function assembleDigestForPeriod(
       : new Error("Every selected story summary failed");
   }
 
+  // Boundary: before completing the digest. A completed digest must never
+  // reference content accepted under a connection that has since changed.
+  if (!hadFailure) {
+    assertGuardedFeedsActive(
+      database,
+      userId,
+      dependencies.credentialRevisionByFeedId,
+    );
+  }
   digest = await setDigestStatus(
     database,
     digest.id,

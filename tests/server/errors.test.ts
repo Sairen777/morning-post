@@ -217,17 +217,37 @@ test("operational redaction removes API keys, PEM keys, and URL userinfo", async
   const rawGrokKey = "gsk_secret";
   const rawBearer = "Bearer token-secret";
   const rawPem = "-----BEGIN PRIVATE KEY-----\\nprivate-secret\\n-----END PRIVATE KEY-----";
+  const rawTwexKey = "twex-key-without-standard-prefix";
+  const rawAuthToken = "x-auth-token-secret";
+  const rawCsrfToken = "x-csrf-token-secret";
+  const rawPin = "4826";
+  const rawCookie = `auth_token=${rawAuthToken}; ct0=${rawCsrfToken}; lang=en`;
   try {
     const app = testApp((a) => {
       a.get("/secret-error", () => {
         throw new Error(
-          `credentials ${rawApiKey} ${rawGoogleKey} ${rawXaiKey} ${rawGrokKey} ${rawBearer} ${rawPem} https://alice:password@example.com/path`,
+          `credentials ${rawApiKey} ${rawGoogleKey} ${rawXaiKey} ${rawGrokKey} ${rawBearer} ${rawPem} https://alice:password@example.com/path apiKey=${rawTwexKey} auth_token=${rawAuthToken}; ct0=${rawCsrfToken}; pin=${rawPin}\nCookie: ${rawCookie}`,
         );
       });
     });
     assertEquals((await app.request("/secret-error")).status, 500);
     const logText = logged.join(" ");
-    for (const secret of [rawApiKey, rawGoogleKey, rawXaiKey, rawGrokKey, rawBearer, rawPem, "alice:password"]) {
+    for (
+      const secret of [
+        rawApiKey,
+        rawGoogleKey,
+        rawXaiKey,
+        rawGrokKey,
+        rawBearer,
+        rawPem,
+        "alice:password",
+        rawTwexKey,
+        rawAuthToken,
+        rawCsrfToken,
+        rawPin,
+        rawCookie,
+      ]
+    ) {
       assertEquals(logText.includes(secret), false);
     }
     assertEquals(summarizeErrorForOps(new Error(`${rawApiKey}\\nparams: db-secret`)).includes(rawApiKey), false);

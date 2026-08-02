@@ -9,6 +9,14 @@ export function redactSecrets(value: string): string {
     .replace(/\b(?:sk[-_]|xai-)[A-Za-z0-9_-]+\b/g, "[REDACTED]")
     .replace(/\bAIza[A-Za-z0-9_-]+\b/g, "[REDACTED]")
     .replace(/\bgsk_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .replace(
+      /(\bcookie\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n]+)/gi,
+      "$1[REDACTED]",
+    )
+    .replace(
+      /(\b(?:api[_-]?key|auth[_-]?token|ct0|pin)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^;\s,}\]]+)/gi,
+      "$1[REDACTED]",
+    )
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1[REDACTED]@");
 }
 

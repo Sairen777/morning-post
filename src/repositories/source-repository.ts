@@ -19,6 +19,7 @@ import {
   ValidationError,
 } from "../server/errors.ts";
 import { isUniqueViolation } from "../db/errors.ts";
+import { clearDiscoveredFeedsForSource } from "./x-discovered-feed-repository.ts";
 
 const encryptedBlobSchema = z.object({
   v: z.number(),
@@ -42,6 +43,7 @@ const publicSourceRowSchema = z.object({
 
 const sourceWithCredentialsRowSchema = publicSourceRowSchema.extend({
   credentials: z.unknown().nullable(),
+  credentialRevision: z.number().int().positive(),
 });
 
 export type PublicSource = z.infer<typeof publicSourceRowSchema>;
@@ -83,6 +85,7 @@ function selectableColumns() {
     showPaidPostTitles: sources.showPaidPostTitles,
     relevanceFilterMode: sources.relevanceFilterMode,
     credentials: sources.credentials,
+    credentialRevision: sources.credentialRevision,
     createdAt: sources.createdAt,
     updatedAt: sources.updatedAt,
   };
@@ -196,6 +199,110 @@ export function findSourceByConnectorId(
   return row ? parsePublicSource(row) : null;
 }
 
+export function getSourceCredentialRevision(
+  database: Database,
+  sourceId: string,
+): number | null {
+  const row = database
+    .select({ credentialRevision: sources.credentialRevision })
+    .from(sources)
+    .where(eq(sources.id, sourceId))
+    .limit(1)
+    .get();
+  return row ? row.credentialRevision : null;
+}
+
+export interface SourceCredentialState {
+  sourceId: string;
+  credentialRevision: number;
+  connected: boolean;
+}
+
+export function findSourceCredentialStateByConnectorId(
+  database: Database,
+  userId: string,
+  connectorId: string,
+): SourceCredentialState | null {
+  const row = database
+    .select({
+      sourceId: sources.id,
+      credentialRevision: sources.credentialRevision,
+      credentials: sources.credentials,
+    })
+    .from(sources)
+    .where(
+      and(eq(sources.userId, userId), eq(sources.connectorId, connectorId)),
+    )
+    .limit(1)
+    .get();
+  return row
+    ? {
+      sourceId: row.sourceId,
+      credentialRevision: row.credentialRevision,
+      connected: row.credentials !== null,
+    }
+    : null;
+}
+
+export function assertSourceConnectionRevision(
+  database: Database,
+  sourceId: string,
+  expectedRevision: number,
+): void {
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+    throw new ValidationError(
+      "source credential revision must be a positive safe integer",
+    );
+  }
+  const current = database
+    .select({ id: sources.id })
+    .from(sources)
+    .where(and(
+      eq(sources.id, sourceId),
+      eq(sources.credentialRevision, expectedRevision),
+      eq(sources.enabled, true),
+      isNotNull(sources.credentials),
+    ))
+    .limit(1)
+    .get();
+  if (!current) {
+    throw new ConflictError("source connection changed; retry ingestion");
+  }
+}
+
+/**
+ * Fail-closed guard for X discovery catalog replacement and catalog-bound
+ * subscription: requires the source to be connected under exactly
+ * `expectedRevision`. Unlike {@link assertSourceConnectionRevision} this
+ * deliberately ignores `enabled`, because discovery and subscription stay
+ * available for connected-but-disabled sources; `enabled` only gates digest
+ * inclusion and ingestion, not authorization.
+ */
+export function assertSourceConnectedRevision(
+  database: Database,
+  sourceId: string,
+  expectedRevision: number,
+): void {
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+    throw new ValidationError(
+      "source credential revision must be a positive safe integer",
+    );
+  }
+  const current = database
+    .select({ id: sources.id })
+    .from(sources)
+    .where(and(
+      eq(sources.id, sourceId),
+      eq(sources.credentialRevision, expectedRevision),
+      isNotNull(sources.credentials),
+    ))
+    .limit(1)
+    .get();
+  if (!current) {
+    throw new ConflictError("source connection changed; retry ingestion");
+  }
+}
+
 export function upsertSourceCredentials(
   database: Database,
   input: UpsertSourceCredentialsInput,
@@ -211,6 +318,7 @@ export function upsertSourceCredentials(
       enabled: true,
       createdAt: now,
       updatedAt: now,
+      credentialRevision: 1,
     })
     .onConflictDoUpdate({
       target: [sources.userId, sources.connectorId],
@@ -218,6 +326,7 @@ export function upsertSourceCredentials(
         credentials,
         enabled: true,
         updatedAt: now,
+        credentialRevision: sql`${sources.credentialRevision} + 1`,
       },
     })
     .returning(selectableColumns())
@@ -231,9 +340,12 @@ function updateSourceRow(
   userId: string,
   partial: UpdateSourceInput,
 ): PublicSource {
-  const updates: UpdateSourceInput & { updatedAt: number } = {
+  const updates = {
     ...partial,
     updatedAt: Date.now(),
+    ...(Object.hasOwn(partial, "credentials")
+      ? { credentialRevision: sql`${sources.credentialRevision} + 1` }
+      : {}),
   };
   if (partial.enabled === true && partial.credentials === null) {
     throw new ConflictError(
@@ -333,7 +445,8 @@ export function deleteSourceCredentials(
 ): PublicSource {
   const now = Date.now();
   return database.transaction((transaction) => {
-    const existingRow = transaction
+    const transactionalDatabase = transaction as Database;
+    const existingRow = transactionalDatabase
       .select(selectableColumns())
       .from(sources)
       .where(and(eq(sources.id, id), eq(sources.userId, userId)))
@@ -343,9 +456,14 @@ export function deleteSourceCredentials(
       throw new NotFoundError("source not found");
     }
 
-    const row = transaction
+    const row = transactionalDatabase
       .update(sources)
-      .set({ credentials: null, enabled: false, updatedAt: now })
+      .set({
+        credentials: null,
+        enabled: false,
+        credentialRevision: sql`${sources.credentialRevision} + 1`,
+        updatedAt: now,
+      })
       .where(and(eq(sources.id, id), eq(sources.userId, userId)))
       .returning(selectableColumns())
       .get();
@@ -353,22 +471,37 @@ export function deleteSourceCredentials(
       throw new NotFoundError("source not found");
     }
 
-    transaction
+    transactionalDatabase
       .update(feeds)
-      .set({ deletedAt: now, enabled: false, updatedAt: now })
+      .set({
+        deletedAt: now,
+        enabled: false,
+        lastFetchedPeriodEndMs: null,
+        updatedAt: now,
+      })
       .where(and(eq(feeds.sourceId, id), isNull(feeds.deletedAt)))
       .run();
+
+    // Revoke every discovery authorization: no target may be subscribed for
+    // a disconnected source, and reconnecting must start from a fresh
+    // discovery at the new revision.
+    clearDiscoveredFeedsForSource(transactionalDatabase, id);
 
     return parsePublicSource(row);
   }, { behavior: "immediate" });
 }
 
-export async function getDecryptedCredentials(
+export interface DecryptedCredentialSnapshot {
+  credentials: ConnectorCredentials;
+  credentialRevision: number;
+}
+
+export async function getDecryptedCredentialSnapshot(
   database: Database,
   id: string,
   userId: string,
   credentialCipher: CredentialCipher,
-): Promise<ConnectorCredentials> {
+): Promise<DecryptedCredentialSnapshot> {
   const row = findOwnedSourceWithCredentials(database, id, userId);
   if (!row) {
     throw new NotFoundError("source not found");
@@ -405,5 +538,22 @@ export async function getDecryptedCredentials(
   if (!credentialResult.success) {
     throw new ValidationError("invalid source credential shape");
   }
-  return credentialResult.data as ConnectorCredentials;
+  return {
+    credentials: credentialResult.data as ConnectorCredentials,
+    credentialRevision: row.credentialRevision,
+  };
+}
+
+export async function getDecryptedCredentials(
+  database: Database,
+  id: string,
+  userId: string,
+  credentialCipher: CredentialCipher,
+): Promise<ConnectorCredentials> {
+  return (await getDecryptedCredentialSnapshot(
+    database,
+    id,
+    userId,
+    credentialCipher,
+  )).credentials;
 }

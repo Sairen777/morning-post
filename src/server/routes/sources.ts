@@ -1,8 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { getXBrowserConfig } from "../../config.ts";
 import { ConnectorId } from "../../constants.ts";
-import type { XBrowserRuntime } from "../../connectors/x/index.ts";
 import type { Database } from "../../db/client.ts";
 import {
   deleteSourceCredentials,
@@ -36,30 +34,9 @@ function disconnectMessage(connectorId: string): string {
   return "Source disconnected.";
 }
 
-export interface SourceRouteDependencies {
-  xBrowserRuntime?: Pick<XBrowserRuntime, "disconnectProfile">;
-}
-
 export function buildSourceRoutes(
   database: Database,
-  dependencies: SourceRouteDependencies = {},
 ): Hono<{ Variables: AuthVariables }> {
-  let defaultXBrowserRuntime: Promise<XBrowserRuntime> | undefined;
-  const resolveXBrowserRuntime = async (): Promise<
-    Pick<XBrowserRuntime, "disconnectProfile">
-  > => {
-    if (dependencies.xBrowserRuntime) return dependencies.xBrowserRuntime;
-    defaultXBrowserRuntime ??= import("../../connectors/x/index.ts").then(
-      ({ XBrowserRuntime }) => {
-        const config = getXBrowserConfig();
-        return new XBrowserRuntime({
-          profileRoot: config.profileRoot,
-          browserChannel: config.browserChannel,
-        });
-      },
-    );
-    return await defaultXBrowserRuntime;
-  };
   const routes = new Hono<{ Variables: AuthVariables }>();
 
   routes.use("*", requireAuth(database));
@@ -90,13 +67,7 @@ export function buildSourceRoutes(
       throw new NotFoundError("source not found");
     }
 
-    const source = existingSource.connectorId === ConnectorId.X
-      ? await (await resolveXBrowserRuntime()).disconnectProfile(
-        userId,
-        async () => await deleteSourceCredentials(database, id, userId),
-        context.req.raw.signal,
-      )
-      : await deleteSourceCredentials(database, id, userId);
+    const source = await deleteSourceCredentials(database, id, userId);
     const revokeTelegramSession = source.connectorId === ConnectorId.Telegram;
     return context.json({
       source,

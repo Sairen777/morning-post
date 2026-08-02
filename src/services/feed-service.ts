@@ -11,9 +11,14 @@ import {
   destroyTelegramClient,
 } from "../connectors/telegram/client-factory.ts";
 import type { TelegramConnector as TelegramConnectorClass } from "../connectors/telegram/telegram-connector.ts";
-import type { XBrowserRuntime } from "../connectors/x/index.ts";
+import {
+  type XApiClientFactory,
+  type XContentCacheFactory,
+  defaultXApiClientFactory,
+  defaultXContentCacheFactory,
+} from "../connectors/connector-factory.ts";
+import { XConnector } from "../connectors/x/x-connector.ts";
 import { ConnectorId } from "../constants.ts";
-import { getXBrowserConfig } from "../config.ts";
 import { CredentialCipher } from "../crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../crypto/key-provider.ts";
 import type { Database } from "../db/client.ts";
@@ -24,10 +29,14 @@ import {
   softDeleteFeed,
 } from "../repositories/feed-repository.ts";
 import {
+  assertSourceConnectedRevision,
+  assertSourceConnectionRevision,
   findSourceById,
+  getDecryptedCredentialSnapshot,
   getDecryptedCredentials,
   type PublicSource,
 } from "../repositories/source-repository.ts";
+import { replaceDiscoveredFeedsForRevision } from "../repositories/x-discovered-feed-repository.ts";
 import { ConflictError, NotFoundError } from "../server/errors.ts";
 
 export interface TelegramFeedDiscoveryRuntime {
@@ -50,23 +59,16 @@ const loadTelegramFeedDiscoveryRuntime: TelegramFeedDiscoveryRuntimeLoader =
     );
     return { createClientFromSession, TelegramConnector };
   };
-export type XFeedDiscoveryRuntimeLoader = () => Promise<
-  Pick<XBrowserRuntime, "createConnector">
->;
 
-const loadXFeedDiscoveryRuntime: XFeedDiscoveryRuntimeLoader = async () => {
-  // Deliberately lazy: feed discovery loads Playwright only for an X source.
-  const { XBrowserRuntime } = await import("../connectors/x/index.ts");
-  const config = getXBrowserConfig();
-  return new XBrowserRuntime({
-    profileRoot: config.profileRoot,
-    browserChannel: config.browserChannel,
-  });
-};
-
+export interface XFeedDiscoveryOptions {
+  twexApiBaseUrl?: string;
+  xApiClientFactory?: XApiClientFactory;
+  xContentCacheFactory?: XContentCacheFactory;
+}
 
 export interface FeedDiscoveryHandle {
   connector: Pick<Connector<unknown>, "listAvailableFeeds">;
+  sourceCredentialRevision?: number;
   dispose?(): Promise<void> | void;
 }
 
@@ -78,26 +80,23 @@ export class DefaultFeedDiscoveryFactory implements FeedDiscoveryFactory {
   readonly #database: Database;
   readonly #credentialCipher: CredentialCipher;
   readonly #runtimeLoader: TelegramFeedDiscoveryRuntimeLoader;
-  readonly #xBrowserRuntime?: Pick<XBrowserRuntime, "createConnector">;
-  readonly #xBrowserRuntimeLoader: XFeedDiscoveryRuntimeLoader;
-  #loadedXBrowserRuntime?: Promise<
-    Pick<XBrowserRuntime, "createConnector">
-  >;
+  readonly #xApiClientFactory: XApiClientFactory;
+  readonly #xContentCacheFactory: XContentCacheFactory;
 
   constructor(
     database: Database,
     credentialCipher = new CredentialCipher(new EnvMasterKeyProvider()),
     runtimeLoader: TelegramFeedDiscoveryRuntimeLoader =
       loadTelegramFeedDiscoveryRuntime,
-    xBrowserRuntime?: Pick<XBrowserRuntime, "createConnector">,
-    xBrowserRuntimeLoader: XFeedDiscoveryRuntimeLoader =
-      loadXFeedDiscoveryRuntime,
+    options: XFeedDiscoveryOptions = {},
   ) {
     this.#database = database;
     this.#credentialCipher = credentialCipher;
     this.#runtimeLoader = runtimeLoader;
-    this.#xBrowserRuntime = xBrowserRuntime;
-    this.#xBrowserRuntimeLoader = xBrowserRuntimeLoader;
+    this.#xApiClientFactory = options.xApiClientFactory ??
+      defaultXApiClientFactory(options.twexApiBaseUrl);
+    this.#xContentCacheFactory = options.xContentCacheFactory ??
+      defaultXContentCacheFactory();
   }
 
   async create(
@@ -141,44 +140,38 @@ export class DefaultFeedDiscoveryFactory implements FeedDiscoveryFactory {
       throw error;
     }
   }
-  async #resolveXBrowserRuntime(): Promise<
-    Pick<XBrowserRuntime, "createConnector">
-  > {
-    if (this.#xBrowserRuntime) return this.#xBrowserRuntime;
-    try {
-      this.#loadedXBrowserRuntime ??= this.#xBrowserRuntimeLoader();
-      return await this.#loadedXBrowserRuntime;
-    } catch (error) {
-      this.#loadedXBrowserRuntime = undefined;
-      throw new Error("Failed to load X feed discovery connector", {
-        cause: error,
-      });
-    }
-  }
 
   async #createX(
     source: PublicSource,
     userId: string,
   ): Promise<FeedDiscoveryHandle> {
-    const credentials = xCredentialSchema.parse(
-      await getDecryptedCredentials(
-        this.#database,
-        source.id,
-        userId,
-        this.#credentialCipher,
-      ),
+    const credentialSnapshot = await getDecryptedCredentialSnapshot(
+      this.#database,
+      source.id,
+      userId,
+      this.#credentialCipher,
     );
-    if (credentials.profileId !== userId) {
-      throw new ConflictError("X source has invalid browser profile credentials");
-    }
-    const runtime = await this.#resolveXBrowserRuntime();
-    const connector = runtime.createConnector(credentials.profileId);
+    const credentials = xCredentialSchema.parse(
+      credentialSnapshot.credentials,
+    );
+    const client = this.#xApiClientFactory.createClient({
+      apiKey: credentials.apiKey,
+      authToken: credentials.authToken,
+      cookie: credentials.cookie,
+      pin: credentials.pin,
+    });
+    const cache = this.#xContentCacheFactory.createCache(
+      this.#database,
+      source.id,
+      credentialSnapshot.credentialRevision,
+    );
+    const connector = new XConnector(client, cache, credentials.listQuery);
     return {
       connector,
+      sourceCredentialRevision: credentialSnapshot.credentialRevision,
       dispose: async () => await connector.dispose(),
     };
   }
-
 }
 
 export async function discoverFeeds(
@@ -207,7 +200,39 @@ export async function discoverFeeds(
         "source connector does not support feed discovery",
       );
     }
-    return await handle.connector.listAvailableFeeds(signal);
+    const availableFeeds = await handle.connector.listAvailableFeeds(signal);
+    const sourceCredentialRevision = handle.sourceCredentialRevision;
+    if (source.connectorId === ConnectorId.X &&
+        sourceCredentialRevision !== undefined) {
+      // Catalog authorization: after a successful discovery, revalidate the
+      // source is still connected under the exact revision the discovery ran
+      // under, then atomically replace the source's catalog with exactly the
+      // returned lists/group chats. Revalidation and replacement share one
+      // immediate transaction, so a reconnect, disconnect, or reset that
+      // lands meanwhile fails the revalidation and rolls the replace back;
+      // no additional upstream call is made beyond the discovery itself.
+      database.transaction((transaction) => {
+        const transactionalDatabase = transaction as Database;
+        assertSourceConnectedRevision(
+          transactionalDatabase,
+          source.id,
+          sourceCredentialRevision,
+        );
+        replaceDiscoveredFeedsForRevision(
+          transactionalDatabase,
+          source.id,
+          sourceCredentialRevision,
+          availableFeeds,
+        );
+      }, { behavior: "immediate" });
+    } else if (sourceCredentialRevision !== undefined) {
+      assertSourceConnectionRevision(
+        database,
+        source.id,
+        sourceCredentialRevision,
+      );
+    }
+    return availableFeeds;
   } finally {
     await handle.dispose?.();
   }
@@ -224,11 +249,6 @@ export async function subscribeFeed(
   if (source.connectorId === ConnectorId.Substack) {
     throw new ConflictError(
       "Substack publications must be added through the Substack connector",
-    );
-  }
-  if (source.connectorId === ConnectorId.X) {
-    throw new ConflictError(
-      "X targets must be added through the X connector",
     );
   }
   return await createOrReviveFeed(database, input);

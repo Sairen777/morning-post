@@ -10,10 +10,9 @@ import { withTestDb } from "../../src/db/testing.ts";
 import { bootServer } from "../../src/server/main.ts";
 import { createOrReviveFeed } from "../../src/repositories/feed-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
-import type { XLoginSessionManager } from "../../src/services/x-login-service.ts";
+import type { XSessionService } from "../../src/services/x-session-service.ts";
 import { CredentialCipher } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
-import type { XBrowserRuntime } from "../../src/connectors/x/index.ts";
 import {
   createDigestRun,
   listDigestRunFeedsForRun,
@@ -327,7 +326,7 @@ test("bootServer aborts before attempting every cleanup exactly once", async () 
     };
     const cleanupFailure = new Error("server stop failed");
     const cleanupObservations: Array<{
-      resource: "server" | "scheduler" | "login";
+      resource: "server" | "scheduler";
       signalAborted: boolean;
     }> = [];
     const scheduler = new class extends FakeScheduler {
@@ -338,16 +337,9 @@ test("bootServer aborts before attempting every cleanup exactly once", async () 
         });
       }
     }();
-    const xLoginSessionManager = {
-      dispose(): Promise<void> {
-        cleanupObservations.push({
-          resource: "login",
-          signalAborted: digestSignal?.aborted ?? false,
-        });
-        return Promise.resolve();
-      },
-    } as unknown as XLoginSessionManager;
-    const xBrowserRuntime = {} as unknown as XBrowserRuntime;
+    const xSessionService = {
+      connect: () => Promise.resolve({}),
+    } as unknown as XSessionService;
 
     const lifecycle = await bootServer({
       database,
@@ -355,8 +347,7 @@ test("bootServer aborts before attempting every cleanup exactly once", async () 
       scheduler,
       summarizer: { summarize: () => Promise.resolve([]) },
       connectorFactory,
-      xLoginSessionManager,
-      xBrowserRuntime,
+      xSessionService,
       recoverStaleRuns: () => 0,
       config: {
         databasePath: ":memory:",
@@ -387,8 +378,6 @@ test("bootServer aborts before attempting every cleanup exactly once", async () 
         mediaQuotaBytes: 1,
         digestRunStaleAfterMs: 1,
         digestProgressLogging: false,
-        xBrowserProfileRoot: "/tmp/morning-post-lifecycle-test",
-        xBrowserLoginTimeoutMs: 1_000,
       },
       serve: () => ({
         stop: () => {
@@ -421,7 +410,6 @@ test("bootServer aborts before attempting every cleanup exactly once", async () 
     assertEquals(cleanupObservations, [
       { resource: "server", signalAborted: true },
       { resource: "scheduler", signalAborted: true },
-      { resource: "login", signalAborted: true },
     ]);
   });
 });

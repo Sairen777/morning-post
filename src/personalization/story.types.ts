@@ -80,6 +80,13 @@ export interface StoryIntelligenceOptions {
   preferencePrompt?: string;
   onAttempt?: ModelAttemptTelemetryCallback;
   onMediaAttempt?: ModelAttemptTelemetryCallback;
+  /**
+   * Synchronous pre-flight gate invoked on every model attempt (primary,
+   * split, and semantic retries, plus media descriptions), immediately before
+   * each request is dispatched. A throw aborts the operation without an
+   * outbound fetch.
+   */
+  beforeAttempt?: () => void;
   /** Preserves precomputed discussion-unit boundaries when checkpoints combine cache misses. */
   analysisUnitSizes?: number[];
 }

@@ -32,16 +32,20 @@ import type {
 } from "../../src/connectors/connector.types.ts";
 import {
   createOrReviveFeed,
+  findFeedById,
   setLastFetched,
 } from "../../src/repositories/feed-repository.ts";
 import {
   listItemsForFeedInWindow,
   upsertItems,
 } from "../../src/repositories/item-repository.ts";
+import { replaceDiscoveredFeedsForRevision } from "../../src/repositories/x-discovered-feed-repository.ts";
 import {
   createSource,
+  deleteSourceCredentials,
   type PublicSource,
   updateSource,
+  upsertSourceCredentials,
 } from "../../src/repositories/source-repository.ts";
 import { runForUser } from "../../src/services/orchestrator.ts";
 import { renderDigestMarkdown } from "../../src/services/digest-service.ts";
@@ -67,8 +71,21 @@ import {
   startDigestRunFeed,
 } from "../../src/repositories/digest-run-repository.ts";
 import { fixtureStoryIntelligence } from "./fixture-story-intelligence.ts";
+import {
+  listDigestStories,
+} from "../../src/repositories/story-repository.ts";
 import type { DigestProgressEvent } from "../../src/services/digest-progress.ts";
-import type { StoryIntelligenceService } from "../../src/personalization/story.types.ts";
+import type {
+  AnalyzedStoryItem,
+  PersistedStoryCandidate,
+  ResolvedStoryCandidate,
+  StoryIntelligenceOptions,
+  StoryIntelligenceService,
+  StoryItemInput,
+  StoryPreferenceRule,
+  StoryRelevanceDecision,
+  StoryReference,
+} from "../../src/personalization/story.types.ts";
 
 class FakeConnector implements Connector<unknown> {
   readonly calls: Array<
@@ -148,6 +165,7 @@ class FakeConnectorFactory implements ConnectorFactoryLike {
     readonly failingSourceIds: Set<string> = new Set(),
     readonly ingestionModesBySourceId: Record<string, "batch" | "individual"> =
       {},
+    readonly revisionsBySourceId: Record<string, number> = {},
   ) {}
 
   forSource(
@@ -165,10 +183,127 @@ class FakeConnectorFactory implements ConnectorFactoryLike {
     return Promise.resolve({
       connector,
       ingestionMode: this.ingestionModesBySourceId[source.id] ?? "batch",
+      // Mirrors the production factory, which binds every X handle to the
+      // source's credential revision captured at construction time.
+      sourceCredentialRevision: this.revisionsBySourceId[source.id] ?? 1,
       dispose: () => {
         this.disposeCalls.push(source.id);
       },
     });
+  }
+}
+
+/**
+ * Connector factory whose handle disposal blocks on a barrier. Lets a test
+ * land a reconnect/disconnect deterministically after ingestion completed
+ * but before story assembly starts.
+ */
+class DisposeBarrierConnectorFactory extends FakeConnectorFactory {
+  readonly disposeEntered = Promise.withResolvers<void>();
+  #releaseDispose: (() => void) | undefined;
+
+  releaseDispose(): void {
+    this.#releaseDispose?.();
+  }
+
+  override async forSource(
+    source: PublicSource,
+    userId: string,
+  ): Promise<ConnectorHandle<unknown>> {
+    const handle = await super.forSource(source, userId);
+    const originalDispose = handle.dispose;
+    return {
+      ...handle,
+      dispose: async () => {
+        this.disposeEntered.resolve();
+        await new Promise<void>((resolve) => {
+          this.#releaseDispose = resolve;
+        });
+        await originalDispose?.();
+      },
+    };
+  }
+}
+
+/** Intelligence that counts resolution and classification model calls. */
+class RecordingIntelligence implements StoryIntelligenceService {
+  readonly resolveCalls: number[] = [];
+  readonly classifyCalls: number[] = [];
+
+  analyze(
+    items: StoryItemInput[],
+    options?: StoryIntelligenceOptions,
+  ): Promise<AnalyzedStoryItem[]> {
+    return fixtureStoryIntelligence.analyze(items, options);
+  }
+
+  resolve(
+    items: AnalyzedStoryItem[],
+    recentStories?: StoryReference[],
+    options?: StoryIntelligenceOptions,
+  ): Promise<ResolvedStoryCandidate[]> {
+    this.resolveCalls.push(items.length);
+    return fixtureStoryIntelligence.resolve(items);
+  }
+
+  classify(
+    stories: PersistedStoryCandidate[],
+    rules: StoryPreferenceRule[],
+    threshold: number,
+    options?: StoryIntelligenceOptions,
+  ): Promise<StoryRelevanceDecision[]> {
+    this.classifyCalls.push(stories.length);
+    return fixtureStoryIntelligence.classify(stories, rules, threshold);
+  }
+}
+
+/**
+ * Intelligence whose analysis call blocks on a barrier. Lets a test land a
+ * reconnect/disconnect deterministically while model assembly is in flight.
+ */
+class GatedAnalyzeIntelligence extends RecordingIntelligence {
+  readonly analyzeEntered = Promise.withResolvers<void>();
+  #releaseAnalyze: (() => void) | undefined;
+
+  releaseAnalyze(): void {
+    this.#releaseAnalyze?.();
+  }
+
+  override analyze(
+    items: StoryItemInput[],
+    options?: StoryIntelligenceOptions,
+  ): Promise<AnalyzedStoryItem[]> {
+    this.analyzeEntered.resolve();
+    return (async () => {
+      await new Promise<void>((resolve) => {
+        this.#releaseAnalyze = resolve;
+      });
+      return await fixtureStoryIntelligence.analyze(items, options);
+    })();
+  }
+}
+
+/** Summarizer whose first call blocks on a barrier. */
+class GatedSummarizer extends FakeSummarizer {
+  readonly summarizeEntered = Promise.withResolvers<void>();
+  #releaseSummarize: (() => void) | undefined;
+
+  releaseSummarize(): void {
+    this.#releaseSummarize?.();
+  }
+
+  override summarize(
+    items: NormalizedItem[],
+    rules: SummaryRuleset,
+    options?: SummarizeOptions,
+  ): Promise<SummaryPoint[]> {
+    this.summarizeEntered.resolve();
+    return (async () => {
+      await new Promise<void>((resolve) => {
+        this.#releaseSummarize = resolve;
+      });
+      return await super.summarize(items, rules, options);
+    })();
   }
 }
 
@@ -216,6 +351,13 @@ async function createSourceAndFeed(
     credentials: await encryptedCredentials(userId, connectorId),
     position: sourcePosition,
   });
+  if (connectorId === ConnectorId.X) {
+    // Mirror a real discovery so the direct feed creation below is a
+    // catalog-authorized subscription under the source's initial revision.
+    replaceDiscoveredFeedsForRevision(database, source.id, 1, [
+      { externalId: feedExternalId, name: feedName, kind: "news" },
+    ]);
+  }
   const feed = await createOrReviveFeed(database, {
     userId,
     sourceId: source.id,
@@ -241,6 +383,23 @@ function normalizedItem(
     text,
     author: "Channel",
     url: null,
+  };
+}
+
+function xNormalizedItem(
+  feedExternalId: string,
+  externalId: string,
+  text = "x post",
+): NormalizedItem {
+  return {
+    connectorId: ConnectorId.X,
+    feedExternalId,
+    externalId,
+    date: 1_700_000_000_000,
+    title: null,
+    text,
+    author: "alice",
+    url: `https://x.com/alice/status/${externalId}`,
   };
 }
 
@@ -1199,6 +1358,207 @@ test("runForUser uses one individual handle and requests each feed separately", 
   });
 });
 
+test("runForUser rejects a stale single-feed handle without fetching or writing", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-stale-single@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Telegram,
+      1,
+      "channel:stale-single",
+      "Stale Single",
+    );
+    // A reconnect lands between handle creation and the run: the handle's
+    // captured revision 1 is now stale.
+    await upsertSourceCredentials(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedCredentials(user.id, ConnectorId.Telegram),
+    });
+    const connector = new FakeConnector({
+      [setup.feed.externalId]: [
+        normalizedItem(setup.feed.externalId, "1", "stale item"),
+      ],
+    });
+    const connectorFactory = new FakeConnectorFactory(
+      { [setup.source.id]: connector },
+      new Set(),
+      {},
+      { [setup.source.id]: 1 },
+    );
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      now: () => 205,
+    });
+
+    assertEquals(view.digest.status, "failed");
+    assertEquals(connector.calls, []);
+    assertEquals(
+      await listItemsForFeedInWindow(
+        database,
+        setup.feed.id,
+        period.startMs,
+        period.endMs,
+      ),
+      [],
+    );
+    assertEquals(
+      (await findFeedById(database, setup.feed.id, user.id))
+        ?.lastFetchedPeriodEndMs,
+      null,
+    );
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    const feedRows = database.all<Record<string, unknown>>(
+      sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,
+    );
+    const failedRows = feedRows.filter((row) =>
+      row.stage === "ingestion" && row.status === "failed"
+    );
+    assertEquals(failedRows.length, 1);
+    assertStringIncludes(
+      String(failedRows[0].error_message),
+      "source connection changed or feed became inactive; retry ingestion",
+    );
+  });
+});
+
+test("runForUser rejects a stale batch handle for every feed without fetching", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-stale-batch@example.com"),
+    );
+    const setup1 = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Telegram,
+      1,
+      "channel:stale-batch-1",
+      "Stale Batch One",
+    );
+    await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: setup1.source.id,
+      externalId: "channel:stale-batch-2",
+      name: "Stale Batch Two",
+      kind: "news",
+    });
+    await upsertSourceCredentials(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedCredentials(user.id, ConnectorId.Telegram),
+    });
+    const connector = new FakeConnector({
+      "channel:stale-batch-1": [
+        normalizedItem("channel:stale-batch-1", "1", "stale item"),
+      ],
+      "channel:stale-batch-2": [
+        normalizedItem("channel:stale-batch-2", "2", "stale item"),
+      ],
+    });
+    const connectorFactory = new FakeConnectorFactory(
+      { [setup1.source.id]: connector },
+      new Set(),
+      {},
+      { [setup1.source.id]: 1 },
+    );
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      now: () => 205,
+    });
+
+    assertEquals(view.digest.status, "failed");
+    assertEquals(connector.calls, []);
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "partial");
+    const feedRows = database.all<Record<string, unknown>>(
+      sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,
+    );
+    const failedRows = feedRows.filter((row) =>
+      row.stage === "ingestion" && row.status === "failed"
+    );
+    assertEquals(failedRows.length, 2);
+    for (const row of failedRows) {
+      assertStringIncludes(
+        String(row.error_message),
+        "source connection changed or feed became inactive; retry ingestion",
+      );
+    }
+  });
+});
+
+test("runForUser rejects a stale individual handle per feed without fetching", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-stale-individual@example.com"),
+    );
+    const setup1 = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.Telegram,
+      1,
+      "channel:stale-individual-1",
+      "Stale Individual One",
+    );
+    await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: setup1.source.id,
+      externalId: "channel:stale-individual-2",
+      name: "Stale Individual Two",
+      kind: "news",
+    });
+    await upsertSourceCredentials(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedCredentials(user.id, ConnectorId.Telegram),
+    });
+    const connector = new FakeConnector({
+      "channel:stale-individual-1": [
+        normalizedItem("channel:stale-individual-1", "1", "stale item"),
+      ],
+      "channel:stale-individual-2": [
+        normalizedItem("channel:stale-individual-2", "2", "stale item"),
+      ],
+    });
+    const connectorFactory = new FakeConnectorFactory(
+      { [setup1.source.id]: connector },
+      new Set(),
+      { [setup1.source.id]: "individual" },
+      { [setup1.source.id]: 1 },
+    );
+
+    const view = await runForUser(database, user.id, period, {
+      connectorFactory,
+      now: () => 205,
+    });
+
+    assertEquals(view.digest.status, "failed");
+    assertEquals(connector.calls, []);
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "partial");
+    const feedRows = database.all<Record<string, unknown>>(
+      sql`select * from digest_run_feeds where run_id = ${runs[0].id}`,
+    );
+    const failedRows = feedRows.filter((row) =>
+      row.stage === "ingestion" && row.status === "failed"
+    );
+    assertEquals(failedRows.length, 2);
+    for (const row of failedRows) {
+      assertStringIncludes(
+        String(row.error_message),
+        "source connection changed or feed became inactive; retry ingestion",
+      );
+    }
+  });
+});
+
 test("runForUser refreshes covered Substack feeds with paid items for the full period", async () => {
   await withTestDb(async (database) => {
     const user = await createUser(
@@ -1729,5 +2089,341 @@ test("runForUser summarizes a public Substack podcast beside an inaccessible pai
     assert(markdown.includes(podcastSummary));
     assert(markdown.includes(paidTitle));
     assertEquals(markdown.includes(paidPreview), false);
+  });
+});
+
+test("runForUser aborts an X run when a disconnect lands after ingestion and before assembly", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-x-dispose-disconnect@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.X,
+      1,
+      "x:list:9101",
+      "X Dispose Disconnect",
+    );
+    const connector = new FakeConnector({
+      [setup.feed.externalId]: [
+        xNormalizedItem(setup.feed.externalId, "t-1"),
+      ],
+    });
+    const connectorFactory = new DisposeBarrierConnectorFactory(
+      { [setup.source.id]: connector },
+      new Set(),
+      {},
+      { [setup.source.id]: 1 },
+    );
+    const summarizer = new FakeSummarizer([[
+      { text: "x summary", sourceUrl: null },
+    ]]);
+    const intelligence = new RecordingIntelligence();
+
+    const run = runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      intelligence,
+      now: () => period.endMs + 1,
+    });
+    // Ingestion completed; the handle disposal (end of ingestion) is parked.
+    await connectorFactory.disposeEntered.promise;
+    await deleteSourceCredentials(database, setup.source.id, user.id);
+    connectorFactory.releaseDispose();
+    const view = await run;
+
+    // The disconnect fenced the run: no completed digest, no model use, and
+    // nothing summarized or persisted.
+    assertEquals(view.digest.status, "failed");
+    assertEquals(intelligence.resolveCalls, []);
+    assertEquals(intelligence.classifyCalls, []);
+    assertEquals(summarizer.calls, []);
+    assertEquals(await listDigestStories(database, user.id, view.digest.id), []);
+    assertEquals(
+      Number(
+        database.all<Record<string, unknown>>(
+          sql`select count(*) as count from item_analyses`,
+        )[0].count,
+      ),
+      0,
+    );
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "failed");
+    // Disconnect alone never deletes committed normalized items; only a
+    // changed-account reset does.
+    const preserved = await listItemsForFeedInWindow(
+      database,
+      setup.feed.id,
+      period.startMs,
+      period.endMs,
+    );
+    assertEquals(preserved.length, 1);
+    assertEquals(preserved[0].feedId, setup.feed.id);
+    assertEquals(preserved[0].externalId, "t-1");
+    assertEquals(preserved[0].payload, xNormalizedItem(setup.feed.externalId, "t-1"));
+  });
+});
+
+test("runForUser aborts an X run when a same-account reconnect lands after ingestion and before assembly", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-x-dispose-reconnect@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.X,
+      1,
+      "x:list:9102",
+      "X Dispose Reconnect",
+    );
+    const connector = new FakeConnector({
+      [setup.feed.externalId]: [
+        xNormalizedItem(setup.feed.externalId, "t-1"),
+      ],
+    });
+    const connectorFactory = new DisposeBarrierConnectorFactory(
+      { [setup.source.id]: connector },
+      new Set(),
+      {},
+      { [setup.source.id]: 1 },
+    );
+    const summarizer = new FakeSummarizer([[
+      { text: "x summary", sourceUrl: null },
+    ]]);
+    const intelligence = new RecordingIntelligence();
+
+    const run = runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      intelligence,
+      now: () => period.endMs + 1,
+    });
+    await connectorFactory.disposeEntered.promise;
+    // Same-account reconnect bumps the revision but preserves committed items.
+    await upsertSourceCredentials(database, {
+      userId: user.id,
+      connectorId: ConnectorId.X,
+      credentials: await encryptedCredentials(user.id, ConnectorId.X),
+    });
+    connectorFactory.releaseDispose();
+    const view = await run;
+
+    assertEquals(view.digest.status, "failed");
+    assertEquals(intelligence.resolveCalls, []);
+    assertEquals(intelligence.classifyCalls, []);
+    assertEquals(summarizer.calls, []);
+    assertEquals(await listDigestStories(database, user.id, view.digest.id), []);
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "failed");
+    // Preservation-only reconnect: committed normalized items survive.
+    assertEquals(
+      (await listItemsForFeedInWindow(
+        database,
+        setup.feed.id,
+        period.startMs,
+        period.endMs,
+      )).length,
+      1,
+    );
+  });
+});
+
+test("runForUser aborts when a disconnect lands inside model analysis", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-x-analysis-disconnect@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.X,
+      1,
+      "x:list:9103",
+      "X Analysis Disconnect",
+    );
+    const connector = new FakeConnector({
+      [setup.feed.externalId]: [
+        xNormalizedItem(setup.feed.externalId, "t-1"),
+      ],
+    });
+    const connectorFactory = new FakeConnectorFactory(
+      { [setup.source.id]: connector },
+      new Set(),
+      {},
+      { [setup.source.id]: 1 },
+    );
+    const summarizer = new FakeSummarizer([[
+      { text: "x summary", sourceUrl: null },
+    ]]);
+    const intelligence = new GatedAnalyzeIntelligence();
+
+    const run = runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      intelligence,
+      now: () => period.endMs + 1,
+    });
+    await intelligence.analyzeEntered.promise;
+    await deleteSourceCredentials(database, setup.source.id, user.id);
+    intelligence.releaseAnalyze();
+    const view = await run;
+
+    // The disconnect landed while the analysis model call was in flight: the
+    // returned analyses must not be persisted and no later model stage may
+    // run against them.
+    assertEquals(view.digest.status, "failed");
+    assertEquals(
+      Number(
+        database.all<Record<string, unknown>>(
+          sql`select count(*) as count from item_analyses`,
+        )[0].count,
+      ),
+      0,
+    );
+    assertEquals(intelligence.resolveCalls, []);
+    assertEquals(intelligence.classifyCalls, []);
+    assertEquals(summarizer.calls, []);
+    assertEquals(await listDigestStories(database, user.id, view.digest.id), []);
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "failed");
+  });
+});
+
+test("runForUser aborts when a same-account reconnect lands inside summarization", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-x-summarize-reconnect@example.com"),
+    );
+    const setup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.X,
+      1,
+      "x:list:9104",
+      "X Summarize Reconnect",
+    );
+    const connector = new FakeConnector({
+      [setup.feed.externalId]: [
+        xNormalizedItem(setup.feed.externalId, "t-1"),
+      ],
+    });
+    const connectorFactory = new FakeConnectorFactory(
+      { [setup.source.id]: connector },
+      new Set(),
+      {},
+      { [setup.source.id]: 1 },
+    );
+    const summarizer = new GatedSummarizer([[
+      { text: "x summary", sourceUrl: null },
+    ]]);
+    const intelligence = new RecordingIntelligence();
+
+    const run = runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      intelligence,
+      now: () => period.endMs + 1,
+    });
+    await summarizer.summarizeEntered.promise;
+    await upsertSourceCredentials(database, {
+      userId: user.id,
+      connectorId: ConnectorId.X,
+      credentials: await encryptedCredentials(user.id, ConnectorId.X),
+    });
+    summarizer.releaseSummarize();
+    const view = await run;
+
+    // The reconnect landed while the summary model call was in flight: the
+    // stale summary is discarded before any story replacement and the digest
+    // never completes. No further model call is attempted after the fence.
+    assertEquals(view.digest.status, "failed");
+    assertEquals(summarizer.calls.length, 1);
+    assertEquals(await listDigestStories(database, user.id, view.digest.id), []);
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "failed");
+  });
+});
+
+test("runForUser fences skipped X feeds against a disconnect after the skip decision", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("orchestrator-x-skipped-fence@example.com"),
+    );
+    // The X feed was already ingested for the period in an earlier run, so
+    // this run skips it without opening a connector.
+    const xSetup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.X,
+      1,
+      "x:list:9105",
+      "X Skipped",
+    );
+    await upsertItems(database, xSetup.feed.id, [
+      xNormalizedItem(xSetup.feed.externalId, "t-1"),
+    ]);
+    setLastFetched(database, xSetup.feed.id, user.id, period.endMs);
+    // A second source keeps the run going after the skip; its handle disposal
+    // is where the transition lands, after the skip decision was recorded.
+    const rssSetup = await createSourceAndFeed(
+      database,
+      user.id,
+      ConnectorId.RSS,
+      2,
+      "rss:skipped-fence",
+      "RSS Fence",
+    );
+    const rssConnector = new FakeConnector({
+      [rssSetup.feed.externalId]: [
+        normalizedItem(rssSetup.feed.externalId, "1", "rss item"),
+      ],
+    });
+    const connectorFactory = new DisposeBarrierConnectorFactory(
+      { [rssSetup.source.id]: rssConnector },
+      new Set(),
+      {},
+      { [rssSetup.source.id]: 1 },
+    );
+    const summarizer = new FakeSummarizer([[
+      { text: "rss summary", sourceUrl: null },
+    ]]);
+    const intelligence = new RecordingIntelligence();
+
+    const run = runForUser(database, user.id, period, {
+      connectorFactory,
+      summarizer,
+      intelligence,
+      now: () => period.endMs + 1,
+    });
+    await connectorFactory.disposeEntered.promise;
+    await deleteSourceCredentials(database, xSetup.source.id, user.id);
+    connectorFactory.releaseDispose();
+    const view = await run;
+
+    // The skipped feed's accepted revision went stale: assembly aborts before
+    // selecting any items, so the old-account content is neither summarized
+    // nor persisted into a completed digest.
+    assertEquals(view.digest.status, "failed");
+    assertEquals(intelligence.resolveCalls, []);
+    assertEquals(intelligence.classifyCalls, []);
+    assertEquals(summarizer.calls, []);
+    assertEquals(await listDigestStories(database, user.id, view.digest.id), []);
+    assertEquals(
+      Number(
+        database.all<Record<string, unknown>>(
+          sql`select count(*) as count from item_analyses`,
+        )[0].count,
+      ),
+      0,
+    );
+    const runs = await listDigestRunsForUser(database, user.id, { limit: 1 });
+    assertEquals(runs[0].status, "failed");
   });
 });

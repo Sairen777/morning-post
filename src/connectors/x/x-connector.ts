@@ -5,21 +5,24 @@ import type {
   NormalizedData,
   NormalizedItem,
 } from "../connector.types.ts";
+import type { XContentCache } from "../../repositories/x-content-cache-repository.ts";
 import { combineAbortSignals, throwIfAborted } from "./abort.ts";
-import type { XBrowserSessions } from "./browser-session.ts";
-import { collectXTarget } from "./collection.ts";
-import { discoverXFeedsOnPage } from "./discovery.ts";
 import {
   formatXFeedExternalId,
   parseXFeedExternalId,
 } from "./targets.ts";
+import type { XApiClient } from "./twex-api-client.ts";
 import type {
+  TwexConversation,
   XConnectorRawData,
+  XRawFeedData,
   XRawItem,
   XTarget,
 } from "./x.types.ts";
 
 const MAX_SELECTED_FEEDS = 250;
+export { MAX_SELECTED_FEEDS as MAX_X_ACTIVE_FEEDS };
+const MAX_SEARCHED_LISTS = 100;
 
 export class XConnector implements Connector<XConnectorRawData> {
   private readonly lifetime = new AbortController();
@@ -27,8 +30,9 @@ export class XConnector implements Connector<XConnectorRawData> {
   private disposed = false;
 
   constructor(
-    private readonly sessions: XBrowserSessions,
-    private readonly profileId: string,
+    private readonly client: XApiClient,
+    private readonly cache: XContentCache,
+    private readonly listQuery: string,
   ) {}
 
   public async getRawData(
@@ -48,27 +52,26 @@ export class XConnector implements Connector<XConnectorRawData> {
     }
 
     return await this.track(signal, async (operationSignal) => {
-      return await this.sessions.withHeadless(this.profileId, operationSignal, async ({ page }) => {
-        const targets = explicitTargets ?? (await discoverXFeedsOnPage(page, operationSignal))
-          .map((feed) => parseXFeedExternalId(feed.externalId));
-        if (targets.length > MAX_SELECTED_FEEDS) {
-          throw new Error(`X collection is limited to ${MAX_SELECTED_FEEDS} feeds per batch`);
-        }
+      const availableFeeds = explicitTargets === undefined
+        ? await this.resolveAvailableFeeds(operationSignal)
+        : explicitTargets.map(fallbackFeed);
+      if (availableFeeds.length > MAX_SELECTED_FEEDS) {
+        throw new Error(`X collection is limited to ${MAX_SELECTED_FEEDS} feeds per batch`);
+      }
 
-        const result: XConnectorRawData = {};
-        for (const target of targets) {
-          throwIfAborted(operationSignal);
-          const externalId = formatXFeedExternalId(target);
-          result[externalId] = await collectXTarget(
-            page,
-            target,
-            from,
-            to,
-            operationSignal,
-          );
-        }
-        return result;
-      });
+      const result: XConnectorRawData = {};
+      for (const feed of availableFeeds) {
+        throwIfAborted(operationSignal);
+        const target = parseXFeedExternalId(feed.externalId);
+        result[feed.externalId] = await this.collectTarget(
+          target,
+          feed,
+          from,
+          to,
+          operationSignal,
+        );
+      }
+      return result;
     });
   }
 
@@ -91,9 +94,7 @@ export class XConnector implements Connector<XConnectorRawData> {
 
   public async listAvailableFeeds(signal?: AbortSignal): Promise<AvailableFeed[]> {
     return await this.track(signal, async (operationSignal) => {
-      return await this.sessions.withHeadless(this.profileId, operationSignal, async ({ page }) => {
-        return await discoverXFeedsOnPage(page, operationSignal);
-      });
+      return await this.resolveAvailableFeeds(operationSignal);
     });
   }
 
@@ -103,6 +104,105 @@ export class XConnector implements Connector<XConnectorRawData> {
       this.lifetime.abort(new DOMException("X connector disposed", "AbortError"));
     }
     await Promise.allSettled(Array.from(this.activeOperations));
+  }
+
+  private async resolveAvailableFeeds(signal: AbortSignal): Promise<AvailableFeed[]> {
+    const discoveryController = new AbortController();
+    const discoverySignal = combineAbortSignals(
+      signal,
+      discoveryController.signal,
+    ) ?? signal;
+    let firstFailure: unknown;
+    let hasFailure = false;
+    const listsPromise = Promise.resolve()
+      .then(() =>
+        this.client.searchLists(
+          this.listQuery,
+          MAX_SEARCHED_LISTS,
+          discoverySignal,
+        )
+      )
+      .catch((error) => {
+        if (!hasFailure) {
+          hasFailure = true;
+          firstFailure = error;
+          discoveryController.abort(error);
+        }
+        throw error;
+      });
+    const conversationsPromise = Promise.resolve()
+      .then(() => this.client.getConversations(discoverySignal))
+      .catch((error) => {
+        if (!hasFailure) {
+          hasFailure = true;
+          firstFailure = error;
+          discoveryController.abort(error);
+        }
+        throw error;
+      });
+    const [listsResult, conversationsResult] = await Promise.allSettled([
+      listsPromise,
+      conversationsPromise,
+    ]);
+    if (hasFailure) throw firstFailure;
+    if (listsResult.status === "rejected") throw listsResult.reason;
+    if (conversationsResult.status === "rejected") {
+      throw conversationsResult.reason;
+    }
+    const lists = listsResult.value;
+    const conversations = conversationsResult.value;
+
+    const feeds: AvailableFeed[] = [];
+    const seen = new Set<string>();
+    for (const list of lists) {
+      const externalId = formatXFeedExternalId({ kind: "list", listId: list.id });
+      if (seen.has(externalId)) continue;
+      seen.add(externalId);
+      feeds.push({ externalId, name: list.name, kind: "news" });
+    }
+    for (const conversation of conversations) {
+      if (conversation.type !== "group") continue;
+      const externalId = formatXFeedExternalId({
+        kind: "chat",
+        conversationId: conversation.conversation_id,
+      });
+      if (seen.has(externalId)) continue;
+      seen.add(externalId);
+      feeds.push({
+        externalId,
+        name: groupLabel(conversation),
+        kind: "discussion",
+      });
+    }
+    return feeds.sort(compareFeeds);
+  }
+
+  private async collectTarget(
+    target: XTarget,
+    feed: AvailableFeed,
+    from: number,
+    to: number,
+    signal: AbortSignal,
+  ): Promise<XRawFeedData> {
+    const externalId = feed.externalId;
+    for (const range of this.cache.missingRanges(externalId, from, to)) {
+      throwIfAborted(signal);
+      const items = target.kind === "list"
+        ? await this.client.getListPosts(target.listId, range.from, range.to, signal)
+        : await this.client.getChatMessages(
+          target.conversationId,
+          range.from,
+          range.to,
+          signal,
+        );
+      throwIfAborted(signal);
+      this.cache.record(externalId, range, items);
+    }
+    return {
+      feed,
+      target,
+      items: dedupeItems(this.cache.read(externalId, from, to)),
+    };
   }
 
   private async track<T>(
@@ -146,6 +246,44 @@ function validateWindow(from: number, to: number): void {
     throw new Error("X collection window must contain finite epoch milliseconds");
   }
   if (from > to) throw new Error("X collection window start must not exceed its end");
+}
+
+function dedupeItems(items: XRawItem[]): XRawItem[] {
+  const seen = new Set<string>();
+  const result: XRawItem[] = [];
+  for (const item of items) {
+    if (seen.has(item.externalId)) continue;
+    seen.add(item.externalId);
+    result.push(item);
+  }
+  return result;
+}
+
+function groupLabel(conversation: TwexConversation): string {
+  return `Group (${conversation.participants.length} participants) - ${conversation.conversation_id}`;
+}
+
+function fallbackFeed(target: XTarget): AvailableFeed {
+  switch (target.kind) {
+    case "list":
+      return {
+        externalId: formatXFeedExternalId(target),
+        name: `List ${target.listId}`,
+        kind: "news",
+      };
+    case "chat":
+      return {
+        externalId: formatXFeedExternalId(target),
+        name: `Chat ${target.conversationId}`,
+        kind: "discussion",
+      };
+  }
+}
+
+function compareFeeds(left: AvailableFeed, right: AvailableFeed): number {
+  if (left.kind !== right.kind) return left.kind === "news" ? -1 : 1;
+  return left.name.localeCompare(right.name)
+    || left.externalId.localeCompare(right.externalId);
 }
 
 function normalizeItem(feedExternalId: string, item: XRawItem): NormalizedItem {

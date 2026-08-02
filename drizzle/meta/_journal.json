@@ -15,6 +15,27 @@
       "when": 1785317358344,
       "tag": "0001_little_bishop",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785677423916,
+      "tag": "0002_wakeful_blob",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1785680350343,
+      "tag": "0003_icy_proteus",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1785766750343,
+      "tag": "0004_loyal_catalog",
+      "breakpoints": true
     }
   ]
 }

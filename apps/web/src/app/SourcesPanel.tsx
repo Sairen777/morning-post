@@ -78,7 +78,7 @@ function sourceContribution(connectorId: string): string {
       return "Channels and discussions from your connected Telegram account.";
     case "twitter":
     case "x":
-      return "Profiles and lists you choose to monitor for timely updates.";
+      return "Lists and XChat groups you choose to monitor for timely updates.";
     case "youtube":
       return "Channels you follow, turned into a focused reading queue.";
     default:
@@ -99,6 +99,30 @@ function policyLabel(mode: RelevanceFilterOverride): string {
 
 function feedKindLabel(kind: AvailableFeed["kind"]): string {
   return kind === "discussion" ? "Discussion" : "News";
+}
+
+function discoveryHeading(connectorId: string): string {
+  return connectorId.trim().toLowerCase() === "x"
+    ? "Discover Lists and XChat groups"
+    : "Discover feeds";
+}
+
+function discoveryDescription(connectorId: string): string {
+  return connectorId.trim().toLowerCase() === "x"
+    ? "Find Lists and XChat groups this connected account can contribute to your next digest."
+    : "Find the publications or channels this source can contribute to your next digest.";
+}
+
+function discoveryEmptyMessage(connectorId: string): string {
+  return connectorId.trim().toLowerCase() === "x"
+    ? "No Lists or XChat groups were found yet. Check that this account can access them, then try discovery again."
+    : "No feeds were found yet. Check that this account has accessible publications or channels, then try Discover feeds again.";
+}
+
+function discoveryPrompt(connectorId: string): string {
+  return connectorId.trim().toLowerCase() === "x"
+    ? "Select Discover Lists and XChat groups to load the Lists and XChat groups available from this source."
+    : "Select Discover feeds to load the publications and channels available from this source.";
 }
 
 export default function SourcesPanel(props: SourcesPanelProps) {
@@ -322,7 +346,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
           <h2 id="sources-page-title">Sources</h2>
           <p>
             Choose the accounts and publications that supply your digest. Start
-            with a connected source, then discover the feeds worth following.
+            with a connected source, then discover the feeds to add.
           </p>
         </div>
         <dl class="source-overview-stats" aria-label="Source overview">
@@ -381,8 +405,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
               const sourceError = () => errors()[source.id];
               const feedLoadState = () => sourceFeedLoadState()[source.id];
               const discoveryResult = () => discoveryState()[source.id];
-              const canDiscover =
-                source.connectorId !== "Substack" && source.connectorId !== "X";
+              const canDiscover = source.connectorId !== "Substack";
 
               return (
                 <article class="source-card">
@@ -463,11 +486,13 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                       <div>
                         <p class="source-card-kicker">Build your reading list</p>
                         <h4 id={`source-discovery-${source.id}`}>
-                          {canDiscover ? "Discover feeds" : "Manage publications"}
+                          {canDiscover
+                            ? discoveryHeading(source.connectorId)
+                            : "Manage publications"}
                         </h4>
                         <p>
                           {canDiscover
-                            ? "Find the publications or channels this source can contribute to your next digest."
+                            ? discoveryDescription(source.connectorId)
                             : "Manage followed publications for this service in Connections."}
                         </p>
                       </div>
@@ -488,7 +513,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                         >
                           {isLoading("discover")
                             ? "Discovering…"
-                            : "Discover feeds"}
+                            : discoveryHeading(source.connectorId)}
                         </button>
                       </Show>
                     </div>
@@ -550,9 +575,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                         }
                       >
                         <p class="source-discovery-empty" role="status">
-                          No feeds were found yet. Check that this account has
-                          accessible publications or channels, then try
-                          Discover feeds again.
+                          {discoveryEmptyMessage(source.connectorId)}
                         </p>
                       </Show>
                       <Show
@@ -562,8 +585,7 @@ export default function SourcesPanel(props: SourcesPanelProps) {
                         }
                       >
                         <p class="source-discovery-empty">
-                          Select Discover feeds to load the publications and
-                          channels available from this source.
+                          {discoveryPrompt(source.connectorId)}
                         </p>
                       </Show>
                     </Show>
