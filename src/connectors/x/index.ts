@@ -1,6 +1,6 @@
 export { XConnector } from "./x-connector.ts";
 export { TwexApiClient, TwexApiError } from "./twex-api-client.ts";
-export type { XApiClient } from "./twex-api-client.ts";
+export type { XApiClient, XContentPage } from "./twex-api-client.ts";
 export {
   X_ORIGIN,
   formatXFeedExternalId,

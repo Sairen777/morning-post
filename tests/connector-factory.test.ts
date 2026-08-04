@@ -27,7 +27,7 @@ import {
 import { ConflictError, NotFoundError } from "../src/server/errors.ts";
 import type { SubstackPostReader } from "../src/connectors/substack/substack-connector.ts";
 import type { XApiClient, TwexFetch } from "../src/connectors/x/twex-api-client.ts";
-import type { XContentCache } from "../src/repositories/x-content-cache-repository.ts";
+import type { XContentCache, XTimeRange } from "../src/repositories/x-content-cache-repository.ts";
 
 class FakeTelegramClientFactory implements TelegramClientFactory {
   readonly sessions: string[] = [];
@@ -56,6 +56,14 @@ class FakeXApiClientFactory implements XApiClientFactory {
     options?: { baseUrl?: string; fetch?: TwexFetch };
   }> = [];
   createdClients = 0;
+  readonly pageCalls: Array<{
+    op: "list" | "chat";
+    listId?: string;
+    conversationId?: string;
+    from: number;
+    to: number;
+    cursor: string | null;
+  }> = [];
 
   createClient(
     credentials: Parameters<XApiClientFactory["createClient"]>[0],
@@ -67,8 +75,32 @@ class FakeXApiClientFactory implements XApiClientFactory {
       getUserInfo: () => Promise.reject(new Error("unused")),
       searchLists: () => Promise.resolve([]),
       getConversations: () => Promise.resolve([]),
-      getListPosts: () => Promise.resolve([]),
-      getChatMessages: () => Promise.resolve([]),
+      getListPostsPage: (
+        listId: string,
+        from: number,
+        to: number,
+        cursor: string | null,
+      ) => {
+        this.pageCalls.push({ op: "list", listId, from, to, cursor });
+        return Promise.resolve({
+          items: [],
+          nextCursor: null,
+          complete: true,
+        });
+      },
+      getChatMessagesPage: (
+        conversationId: string,
+        from: number,
+        to: number,
+        cursor: string | null,
+      ) => {
+        this.pageCalls.push({ op: "chat", conversationId, from, to, cursor });
+        return Promise.resolve({
+          items: [],
+          nextCursor: null,
+          complete: true,
+        });
+      },
     } as unknown as XApiClient;
   }
 }
@@ -79,6 +111,7 @@ class FakeXContentCacheFactory implements XContentCacheFactory {
     sourceId: string;
     expectedCredentialRevision?: number;
   }> = [];
+  readonly gaps = new Map<string, XTimeRange[]>();
 
   createCache(
     database: Database,
@@ -87,8 +120,10 @@ class FakeXContentCacheFactory implements XContentCacheFactory {
   ): XContentCache {
     this.created.push({ database, sourceId, expectedCredentialRevision });
     return {
-      missingRanges: () => [],
+      missingRanges: (feedExternalId: string) => this.gaps.get(feedExternalId) ?? [],
       read: () => [],
+      pendingRanges: () => [],
+      recordPage: () => {},
       record: () => {},
       clear: () => {},
     } as unknown as XContentCache;
@@ -274,6 +309,74 @@ test("ConnectorFactory builds an X connector from encrypted credentials with cli
       Error,
       "X connector has been disposed",
     );
+  });
+});
+
+test("ConnectorFactory threads cache coverage tolerance into the X connector", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("x-tolerance@example.com"),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.X,
+      credentials: await encryptedXCredentials(user.id),
+    });
+    const windowFrom = 1_700_000_000_000;
+    const windowTo = windowFrom + 10_000;
+
+    const toleratedApiClientFactory = new FakeXApiClientFactory();
+    const toleratedCacheFactory = new FakeXContentCacheFactory();
+    const toleratedFactory = new ConnectorFactory(database, {
+      credentialCipher: credentialCipher(),
+      telegramClientFactory: new FakeTelegramClientFactory(),
+      xApiClientFactory: toleratedApiClientFactory,
+      xContentCacheFactory: toleratedCacheFactory,
+      cacheCoverageToleranceMs: 600_000,
+    });
+    const toleratedHandle = await toleratedFactory.forSource(source, user.id);
+    // A head sliver under the tolerance with real coverage behind it is
+    // suppressed only when the configured tolerance reaches the connector.
+    toleratedCacheFactory.gaps.set("x:list:1001", [
+      { from: windowFrom, to: windowFrom + 500 },
+    ]);
+    await toleratedHandle.connector.getRawData(windowFrom, windowTo, [
+      "x:list:1001",
+    ]);
+    assertEquals(
+      toleratedApiClientFactory.pageCalls,
+      [],
+      "a threaded tolerance must suppress the head sliver",
+    );
+    await toleratedHandle.dispose?.();
+
+    const exactApiClientFactory = new FakeXApiClientFactory();
+    const exactCacheFactory = new FakeXContentCacheFactory();
+    const exactFactory = new ConnectorFactory(database, {
+      credentialCipher: credentialCipher(),
+      telegramClientFactory: new FakeTelegramClientFactory(),
+      xApiClientFactory: exactApiClientFactory,
+      xContentCacheFactory: exactCacheFactory,
+      cacheCoverageToleranceMs: 0,
+    });
+    const exactHandle = await exactFactory.forSource(source, user.id);
+    exactCacheFactory.gaps.set("x:list:1001", [
+      { from: windowFrom, to: windowFrom + 500 },
+    ]);
+    await exactHandle.connector.getRawData(windowFrom, windowTo, [
+      "x:list:1001",
+    ]);
+    assertEquals(exactApiClientFactory.pageCalls, [
+      {
+        op: "list",
+        listId: "1001",
+        from: windowFrom,
+        to: windowFrom + 500,
+        cursor: null,
+      },
+    ]);
+    await exactHandle.dispose?.();
   });
 });
 

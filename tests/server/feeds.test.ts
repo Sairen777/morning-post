@@ -683,8 +683,16 @@ function fakeXDiscoveryClient(counters: XCallCounters, state: {
         counters.getConversations += 1;
         return Promise.resolve(state.conversations);
       },
-      getListPosts: () => Promise.resolve([]),
-      getChatMessages: () => Promise.resolve([]),
+      getListPostsPage: () => Promise.resolve({
+        items: [],
+        nextCursor: null,
+        complete: true,
+      }),
+      getChatMessagesPage: () => Promise.resolve({
+        items: [],
+        nextCursor: null,
+        complete: true,
+      }),
     } as unknown as XApiClient),
   };
 }
@@ -694,6 +702,8 @@ function fakeXDiscoveryCache(): XContentCacheFactory {
     createCache: () => ({
       missingRanges: () => [],
       read: () => [],
+      pendingRanges: () => [],
+      recordPage: () => {},
       record: () => {},
       clear: () => {},
     } as unknown as XContentCache),

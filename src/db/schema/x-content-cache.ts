@@ -73,7 +73,67 @@ export const xContentCacheRanges = sqliteTable("x_content_cache_ranges",
   check("x_content_cache_ranges_window_check", sql`${table.endMs} >= ${table.startMs}`),
 ],);
 
+/**
+ * Terminal reasons a fetch range can never be completed. A blocked range must
+ * not be resumed or retried: ingestion of the affected window stops locally.
+ */
+export type XContentProgressBlockReason =
+  | "repeated_cursor"
+  | "missing_cursor"
+  | "mismatched_conversation";
+
+/**
+ * Fetch progress for a range whose coverage is not yet committed. One row per
+ * (source, feed, exact range): the next provider cursor and the number of
+ * pages persisted so far survive process or run failure, so a retry can
+ * resume a sunk-cost range from its cursor instead of re-fetching page 1.
+ * Rows never contribute coverage; they are deleted when the range is
+ * committed through `record`, on cache clear, or when the source is deleted.
+ *
+ * A row may instead carry a terminal {@link XContentProgressBlockReason}
+ * written atomically with the page that exposed it; such a range is never
+ * resumed, and the reason survives every later page write.
+ *
+ * Each row also records the distinct provider cursors seen so far (bounded
+ * to the most recent 500) so a provider that cycles its cursor is detected
+ * durably, even across process restarts.
+ */
+export const xContentFetchProgress = sqliteTable("x_content_fetch_progress",
+{
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  sourceId: text("source_id")
+    .notNull()
+    .references(() => sources.id, { onDelete: "cascade" }),
+  feedExternalId: text("feed_external_id").notNull(),
+  startMs: integer("start_ms", { mode: "number" }).notNull(),
+  endMs: integer("end_ms", { mode: "number" }).notNull(),
+  nextCursor: text("next_cursor"),
+  blockedReason: text("blocked_reason").$type<XContentProgressBlockReason>(),
+  seenCursors: text("seen_cursors", { mode: "json" })
+    .$type<string[]>()
+    .notNull()
+    .default([]),
+  pageCount: integer("page_count", { mode: "number" }).notNull(),
+  createdAt: integer("created_at", { mode: "number" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+},
+(table) => [
+  unique("x_content_fetch_progress_source_feed_range_unique").on(
+    table.sourceId,
+    table.feedExternalId,
+    table.startMs,
+    table.endMs,
+  ),
+  check("x_content_fetch_progress_window_check", sql`${table.endMs} >= ${table.startMs}`),
+  check(
+    "x_content_fetch_progress_blocked_reason_check",
+    sql`${table.blockedReason} is null or ${table.blockedReason} in ('repeated_cursor', 'missing_cursor', 'mismatched_conversation')`,
+  ),
+],);
+
 export type XContentCacheItemRow = typeof xContentCacheItems.$inferSelect;
 export type NewXContentCacheItemRow = typeof xContentCacheItems.$inferInsert;
 export type XContentCacheRangeRow = typeof xContentCacheRanges.$inferSelect;
 export type NewXContentCacheRangeRow = typeof xContentCacheRanges.$inferInsert;
+export type XContentFetchProgressRow = typeof xContentFetchProgress.$inferSelect;
+export type NewXContentFetchProgressRow = typeof xContentFetchProgress.$inferInsert;

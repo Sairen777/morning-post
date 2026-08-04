@@ -18,6 +18,7 @@ const ENV_KEYS = [
   "DATABASE_PATH",
   "ALLOW_REMOTE_SUMMARIZATION",
   "CONNECTOR_TIMEOUT_MS",
+  "X_CACHE_COVERAGE_TOLERANCE_MS",
   "TWEXAPI_BASE_URL",
   "SUMMARIZER_MODEL",
   "SUMMARIZER_BASE_URL",
@@ -98,6 +99,7 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.databasePath, "./data/morning-post.sqlite");
   assertEquals(config.allowRemoteSummarization, false);
   assertEquals(config.connectorTimeoutMs, 120_000);
+  assertEquals(config.cacheCoverageToleranceMs, 600_000);
   assertEquals(config.twexApiBaseUrl, "https://api.twexapi.io");
   assertEquals(config.summarizerTextBytesPerChunk, 120_000);
   assertEquals(config.summarizerMaxItemsPerChunk, 50);
@@ -245,6 +247,7 @@ test("environment values override supported configuration defaults", () => {
       VISION_BASE_URL: "http://localhost:4321/v1",
       VISION_API_KEY: "key-b",
       CONNECTOR_TIMEOUT_MS: "5000",
+      X_CACHE_COVERAGE_TOLERANCE_MS: "2500",
       TWEXAPI_BASE_URL: " https://twex.example/api/// ",
       SUMMARIZER_TEXT_BYTES_PER_CHUNK: "9000",
       SUMMARIZER_MAX_ITEMS_PER_CHUNK: "7",
@@ -280,6 +283,7 @@ test("environment values override supported configuration defaults", () => {
     assertEquals(config.databasePath, "./data/environment.sqlite");
     assertEquals(config.allowRemoteSummarization, true);
     assertEquals(config.connectorTimeoutMs, 5000);
+    assertEquals(config.cacheCoverageToleranceMs, 2500);
     assertEquals(config.twexApiBaseUrl, "https://twex.example/api");
     assertEquals(config.summarizerTextBytesPerChunk, 9000);
     assertEquals(config.summarizerMaxItemsPerChunk, 7);
@@ -325,6 +329,7 @@ test("constructor values take precedence over environment", () => {
       "MAX_REQUEST_BODY_BYTES",
       "DATABASE_PATH",
       "ALLOW_REMOTE_SUMMARIZATION",
+      "X_CACHE_COVERAGE_TOLERANCE_MS",
       "TWEXAPI_BASE_URL",
     ].map((key) => [key, process.env[key]]),
   );
@@ -334,6 +339,7 @@ test("constructor values take precedence over environment", () => {
     process.env["MAX_REQUEST_BODY_BYTES"] = "100";
     process.env["DATABASE_PATH"] = "./data/environment.sqlite";
     process.env["ALLOW_REMOTE_SUMMARIZATION"] = "true";
+    process.env["X_CACHE_COVERAGE_TOLERANCE_MS"] = "3000";
     process.env["TWEXAPI_BASE_URL"] = "https://env.example/api";
     const config = getConfig({
       port: 4311,
@@ -341,6 +347,7 @@ test("constructor values take precedence over environment", () => {
       maxRequestBodyBytes: 200,
       databasePath: "./data/constructor.sqlite",
       allowRemoteSummarization: false,
+      cacheCoverageToleranceMs: 2500,
       twexApiBaseUrl: " https://constructor.example/api/// ",
     });
     assertEquals(config.port, 4311);
@@ -348,6 +355,7 @@ test("constructor values take precedence over environment", () => {
     assertEquals(config.maxRequestBodyBytes, 200);
     assertEquals(config.databasePath, "./data/constructor.sqlite");
     assertEquals(config.allowRemoteSummarization, false);
+    assertEquals(config.cacheCoverageToleranceMs, 2500);
     assertEquals(config.twexApiBaseUrl, "https://constructor.example/api");
     assertEquals(resolveAppSecurityOptions({ maxRequestBodyBytes: 300 }), {
       allowedOrigins: ["https://env.example"],
@@ -359,6 +367,40 @@ test("constructor values take precedence over environment", () => {
       else process.env[key] = value;
     }
   }
+});
+
+test("X cache coverage tolerance uses constructor, environment, then default precedence with zero disable", () => {
+  withClearedEnvironment(["X_CACHE_COVERAGE_TOLERANCE_MS"], () => {
+    assertEquals(getConfig().cacheCoverageToleranceMs, 600_000);
+
+    process.env["X_CACHE_COVERAGE_TOLERANCE_MS"] = "0";
+    assertEquals(
+      getConfig().cacheCoverageToleranceMs,
+      0,
+      "zero must disable tolerance",
+    );
+
+    process.env["X_CACHE_COVERAGE_TOLERANCE_MS"] = "300000";
+    assertEquals(getConfig().cacheCoverageToleranceMs, 300_000);
+    assertEquals(
+      getConfig({ cacheCoverageToleranceMs: 150_000 }).cacheCoverageToleranceMs,
+      150_000,
+      "constructor must win over environment",
+    );
+
+    process.env["X_CACHE_COVERAGE_TOLERANCE_MS"] = "-1";
+    assertThrows(
+      () => getConfig(),
+      Error,
+      "Invalid X_CACHE_COVERAGE_TOLERANCE_MS",
+    );
+    process.env["X_CACHE_COVERAGE_TOLERANCE_MS"] = "1.5";
+    assertThrows(
+      () => getConfig(),
+      Error,
+      "Invalid X_CACHE_COVERAGE_TOLERANCE_MS",
+    );
+  });
 });
 
 test("invalid numeric and boolean values fail at startup", () => {

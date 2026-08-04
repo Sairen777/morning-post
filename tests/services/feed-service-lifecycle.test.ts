@@ -123,8 +123,16 @@ test("default X feed discovery disposes its connector when discovery throws", as
               : Promise.resolve([]);
           },
           getConversations: () => Promise.resolve([]),
-          getListPosts: () => Promise.resolve([]),
-          getChatMessages: () => Promise.resolve([]),
+          getListPostsPage: () => Promise.resolve({
+            items: [],
+            nextCursor: null,
+            complete: true,
+          }),
+          getChatMessagesPage: () => Promise.resolve({
+            items: [],
+            nextCursor: null,
+            complete: true,
+          }),
         } as unknown as XApiClient;
       },
     };
@@ -135,6 +143,8 @@ test("default X feed discovery disposes its connector when discovery throws", as
         return {
           missingRanges: () => [],
           read: () => [],
+          pendingRanges: () => [],
+          recordPage: () => {},
           record: () => {},
           clear: () => {},
         } as unknown as XContentCache;

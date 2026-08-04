@@ -87,6 +87,7 @@ contains deployment credentials. The main settings are:
 | `ALLOW_REMOTE_SUMMARIZATION` | Allow non-loopback summarizer providers | `false` |
 | `CONNECTOR_TIMEOUT_MS` | Connector call timeout in milliseconds | `120000` |
 | `TWEXAPI_BASE_URL` | TwexAPI provider root used by the X connector; explicit server overrides take precedence, then this value, then `https://api.twexapi.io`; must be an absolute HTTPS URL without credentials, query, or fragment | `https://api.twexapi.io` |
+| `X_CACHE_COVERAGE_TOLERANCE_MS` | X cache edge tolerance: suppresses only small uncovered head/tail slivers of a requested window that touch a window edge and are no wider than this, and only when some coverage exists inside the window; fully uncovered windows and internal gaps always fetch; `0` disables suppression | `600000` (10 min) |
 | `SUMMARIZER_TEXT_BYTES_PER_CHUNK` | Max text bytes per summarizer chunk | `120000` |
 | `SUMMARIZER_MAX_ITEMS_PER_CHUNK` | Max items per summarizer chunk | `50` |
 | `SUMMARIZER_MAX_IMAGE_BYTES` | Oversize images become `[IMAGE_OMITTED]` | `1000000` |
@@ -423,9 +424,17 @@ they are never returned by the API and never written to logs.
   excluded and can never be cataloged, so a crafted direct-DM target is
   rejected at subscription time.
 - XChat history: `POST /v3/twitter/dm-history` receives the full cookie (never
-  the bare auth token) plus the PIN, and pages backward through cursor-based
-  history. Messages may include disappearing messages captured before they
-  disappear.
+  the bare auth token) plus the PIN, and is fetched with `all: true` and
+  `count: 200`. At most one DM-history request is made per feed per connector
+  operation: an all-mode response that still claims more history is durably
+  persisted and surfaced as a resumable local error, so the next run resumes
+  once from the saved cursor via `before`. Per range, at most two DM-history
+  requests are ever made: if the resumed response is still incomplete, later
+  overlapping runs fail locally before any DM-history request, and the
+  retained progress intentionally blocks repurchasing until the operator
+  disconnects and reconnects X; the identity-less reconnect resets the X
+  cache, subscriptions, and progress. Messages may include disappearing
+  messages captured before they disappear.
 - No credentials are bundled with Morning Post and the application never
   performs a live X login: the operator supplies their own TwexAPI key, X
   auth token, and cookie. The X session material is forwarded to the
@@ -435,29 +444,105 @@ they are never returned by the API and never written to logs.
 
 Discovery emits only `x:list:<positive-numeric-id>` and group-only
 `x:chat:<conversation-id>` feed identifiers. Group labels include the
-participant count and the conversation ID. Pagination continues until the
-inclusive requested lower bound is reached or the provider is exhausted;
-repeated cursors or a claimed next page without a cursor fail the fetch rather
-than advancing coverage.
+participant count and the conversation ID. List-tweet pagination continues
+until the inclusive requested lower bound is reached or the provider is
+exhausted. Every successful page
+is durably recorded before the next provider request, so a failed or
+interrupted run leaves the items and the next cursor behind and a retry
+resumes the range from the saved cursor instead of repurchasing page 1; a
+failed attempt never advances progress. Each page's cursor is appended to the
+range's durable bounded history (newest 500), so a repeated or cyclic cursor
+— including cycles across process or connector restarts — is detected in the
+same atomic write that saves the page and its items, which then terminally
+blocks the range (`repeated_cursor`); an incomplete page with no resume
+cursor saves the page and terminally blocks the range (`missing_cursor`).
+Terminally blocked progress fails locally before any provider request on
+later overlapping runs until the operator disconnects and reconnects X. Chat
+ranges make at most one
+DM-history request per connector operation: an incomplete all-mode response is
+persisted and then raised as a resumable local error, and the next operation
+resumes once with `before` from the saved cursor. A chat range is limited to
+two DM-history requests in total — after a second incomplete all-mode
+response, later overlapping runs fail locally before any DM-history request,
+and the retained progress intentionally blocks repurchasing until the operator
+disconnects and reconnects X; the identity-less reconnect resets the X cache,
+subscriptions, and progress.
 
 ### Caching and account identity
 
-Raw X posts and chat messages are normalized and persisted in SQLite
-(`x_content_cache_items`, migration `0002`) with inclusive coverage ranges per
-source and feed (`x_content_cache_ranges`). A successful empty fetch still
-establishes coverage, so only uncovered gaps call the Twex API. Reads are
-ordered stably by date then external ID.
+Raw X posts and chat messages are persisted in SQLite (`x_content_cache_items`,
+migration `0002`) with inclusive coverage ranges per source and feed
+(`x_content_cache_ranges`). Every valid dated item returned by a successful
+provider page — paid data — is cached regardless of whether it falls inside
+the requested digest window, so a page fetched to cover one window never
+discards items outside it. Coverage rows record the exact inclusive requested
+periods (for example 13:00–19:00, both bounds inclusive) as a ledger distinct
+from item timestamps and from fetch progress: an item's date may lie anywhere
+in a fetched range, while coverage states only which requested periods were
+fully fetched. A successful empty fetch still establishes coverage, so only
+uncovered gaps call the Twex API. Reads are ordered stably by date then
+external ID.
+
+Fetch progress for ranges whose coverage is not yet committed is persisted in
+`x_content_fetch_progress` (migrations `0005`, `0006`). Every successful
+provider page is durably recorded — items, the next cursor, a page count, and
+the page's cursor appended to a bounded history of the newest 500 cursors —
+before another provider request, and coverage is committed only when the
+whole range is complete; failed requests advance nothing. A successful page,
+complete or incomplete, commits before an abort racing the response is
+propagated, so cancellation can never discard fetched items, cursors, or
+coverage; the next iteration's pre-request check still blocks further HTTP. A
+retry therefore resumes the saved cursor instead of re-fetching pages, and a
+run whose window is already covered makes zero provider calls. The progress
+row is deleted when its range commits. Pending progress is resumed only when
+it intersects a required gap of the current window: pending ranges outside
+those gaps never force a provider call, and the required gaps are re-derived
+after each resumed range commits. An account-identity reset deletes pending
+progress along with the cached items and ranges.
+
+`X_CACHE_COVERAGE_TOLERANCE_MS` (default `600000`, 10 minutes; `0` disables)
+suppresses only small uncovered head/tail slivers of a requested window: a gap
+is skipped solely when it touches a window edge, is no wider than the
+tolerance, and real coverage exists inside the window; a wholly uncovered
+window and any internal gap are never suppressed. For example, with exact
+coverage 13:00–19:00 and a request for 12:50–19:10, both 10-minute edge
+slivers fall inside the tolerance, so the run makes zero provider calls and
+returns the cached messages. Suppressed gaps are not recorded as covered —
+stored ranges keep the exact inclusive requested periods — so the bounded risk
+is explicit: messages that fall only inside a tolerated edge sliver may be
+omitted by policy until a future request actually fetches that sliver. Safety
+limits are enforced against the durable page count before any further request:
+a chat range makes at most two DM-history requests in total, and any range can
+become terminally blocked. A repeated or cyclic list cursor is detected from
+the durable cursor history inside the atomic page write (`repeated_cursor`),
+an incomplete page without a resume cursor blocks with `missing_cursor`, and
+a DM-history response for a different conversation than the one requested is
+fail-closed: no foreign messages are cached and an empty blocked page is
+persisted with `mismatched_conversation`. Terminal blocks are written
+atomically with the page that exposed them and are never cleared by later
+normal pages; any later overlapping run whose required gaps include a blocked
+range fails locally before any provider request, so the retained progress
+intentionally blocks repurchasing until the operator disconnects and
+reconnects X; the identity-less reconnect resets the X cache, subscriptions,
+and progress.
 
 Every `sources.credential_revision` starts at 1 and increments on each
 credential replacement, reconnect, or disconnect (migration `0003`). Each
 decrypted credential snapshot binds its X content cache and ingestion handle
-to the captured revision: stale-revision cache missing-range, read, and record
-calls reject with a conflict, and record rechecks the revision inside the same
-immediate transaction so it writes nothing once the source was disconnected,
-disabled, or reconnected in the meantime. Every ingestion mode carries the
-snapshot's `sourceCredentialRevision`, and the write transaction requires the
-source to still be connected and enabled at that revision and the feed still
-enabled and not soft-deleted before upserting items or advancing the watermark.
+to the captured revision. Fetch-planning reads — the missing-range and
+pending-progress lookups that decide whether the provider is called —
+preflight the source revision and the feed's active state (enabled, not
+soft-deleted) before any connector HTTP, so a stale or disabled feed cannot
+purchase paid pages; the raw cache read is source-revision-fenced only. Raw
+cache writes are atomically source-revision plus active-feed guarded: the
+per-page progress write and the final coverage commit recheck the revision
+and the feed's active state inside the same immediate transaction, so they
+write nothing once the source was disconnected, disabled, or reconnected in
+the meantime. Normalized ingestion remains feed-fenced: every ingestion mode
+carries the snapshot's `sourceCredentialRevision`, and the write transaction
+requires the source to still be connected and enabled at that revision and the
+feed still enabled and not soft-deleted before upserting items or advancing
+the watermark.
 The same guard carries through digest generation: every contributing X feed's
 revision (recorded at ingestion or acceptance) is re-asserted before item
 selection, immediately before and after every intelligence and summarizer
@@ -477,8 +562,9 @@ aborts with a fixed retry conflict. Reconnecting the same derived X user
 preserves the previously committed cache and feed subscriptions but still
 increments the revision and conservatively fences every older in-flight
 handle; a changed, legacy, disconnected, or undecryptable identity instead, in
-the same immediate transaction, deletes the source's raw X cache (items and
-coverage ranges), deletes its normalized items (including those of
+the same immediate transaction, deletes the source's raw X cache (items,
+coverage ranges, and pending fetch progress), deletes its normalized items
+(including those of
 soft-deleted feeds, whose rows a later revival would reuse), clears the
 discovery catalog, soft-deletes the source's X feeds, and only then stores the
 new encrypted credentials. Disconnect itself clears credentials, disables the

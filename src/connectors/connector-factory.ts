@@ -138,6 +138,7 @@ export interface ConnectorFactoryDependencies {
   substackClientFactory?: SubstackClientFactory;
   substackPublicationReader?: PublicationPageReader;
   twexApiBaseUrl?: string;
+  cacheCoverageToleranceMs?: number;
   xApiClientFactory?: XApiClientFactory;
   xContentCacheFactory?: XContentCacheFactory;
 }
@@ -150,6 +151,7 @@ export class ConnectorFactory {
   readonly #substackPublicationReader: PublicationPageReader;
   readonly #xApiClientFactory: XApiClientFactory;
   readonly #xContentCacheFactory: XContentCacheFactory;
+  readonly #cacheCoverageToleranceMs: number | undefined;
 
   constructor(
     database: Database,
@@ -168,6 +170,7 @@ export class ConnectorFactory {
       defaultXApiClientFactory(dependencies.twexApiBaseUrl);
     this.#xContentCacheFactory = dependencies.xContentCacheFactory ??
       defaultXContentCacheFactory();
+    this.#cacheCoverageToleranceMs = dependencies.cacheCoverageToleranceMs;
   }
 
   async forSource(
@@ -244,7 +247,12 @@ export class ConnectorFactory {
       source.id,
       credentialSnapshot.credentialRevision,
     );
-    const connector = new XConnector(client, cache, credentials.listQuery);
+    const connector = new XConnector(
+      client,
+      cache,
+      credentials.listQuery,
+      this.#cacheCoverageToleranceMs,
+    );
     return {
       connector,
       ingestionMode: "batch",

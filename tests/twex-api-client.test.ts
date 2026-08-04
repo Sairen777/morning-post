@@ -259,8 +259,9 @@ test("every Twex request is issued with redirect set to error", async () => {
   await client.getUserInfo();
   await client.searchLists("space", 10);
   await client.getConversations();
-  await client.getListPosts("1001", FROM, TO);
-  await client.getChatMessages("conv-abc", FROM, TO);
+  await client.getListPostsPage("1001", FROM, TO, null);
+  await client.getChatMessagesPage("conv-abc", FROM, TO, null);
+
 
   assertEquals(captured.length, 5);
   for (const request of captured) {
@@ -556,122 +557,121 @@ test("getConversations rejects conversation types outside direct and group", asy
   assertStringIncludes(error.message, "schema validation");
 });
 
-test("getListPosts fetches the first page and maps tweets", async () => {
+test("getListPostsPage fetches one page and maps tweets", async () => {
   const { captured, fetch: fetchMock } = mockFetch([
     Response.json(listPage([tweetData()], false)),
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const posts = await client.getListPosts("1001", FROM, TO);
+  const page = await client.getListPostsPage("1001", FROM, TO, null);
 
   assertEquals(captured.length, 1);
   assertEquals(captured[0].method, "POST");
   assertEquals(captured[0].url, `${BASE_URL}/twitter/list/tweets/page`);
   assertEquals(captured[0].authorization, `Bearer ${API_KEY}`);
   assertEquals(captured[0].body, { list_id: "1001", next_cursor: null });
-  assertEquals(posts, [{
-    kind: "post",
-    externalId: "987654321",
-    platformId: "u-1",
-    date: FROM,
-    text: "full text of the tweet",
-    author: "alice",
-    url: "https://x.com/alice/status/987654321",
-    replyCount: 2,
-    repostCount: 1,
-    likeCount: 7,
-    viewCount: 12345,
-  }]);
+  assertEquals(page, {
+    items: [{
+      kind: "post",
+      externalId: "987654321",
+      platformId: "u-1",
+      date: FROM,
+      text: "full text of the tweet",
+      author: "alice",
+      url: "https://x.com/alice/status/987654321",
+      replyCount: 2,
+      repostCount: 1,
+      likeCount: 7,
+      viewCount: 12345,
+    }],
+    nextCursor: null,
+    complete: true,
+  });
 });
 
-test("getListPosts follows next cursors until exhaustion", async () => {
+test("getListPostsPage sends the provided cursor and returns resumable progress", async () => {
   const { captured, fetch: fetchMock } = mockFetch([
     Response.json(listPage([
-      tweetData({ tweet_id: "t1", created_at_datetime: new Date(TO - 2000).toISOString() }),
-    ], true, "c1")),
-    Response.json(listPage([
-      tweetData({ tweet_id: "t2", created_at_datetime: new Date(TO - 1000).toISOString() }),
-    ], true, "c2")),
-    Response.json(listPage([
-      tweetData({ tweet_id: "t3", created_at_datetime: new Date(TO).toISOString() }),
-    ], false)),
-  ]);
-  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
-
-  const posts = await client.getListPosts("1001", FROM, TO);
-
-  assertEquals(captured.map((request) => request.body), [
-    { list_id: "1001", next_cursor: null },
-    { list_id: "1001", next_cursor: "c1" },
-    { list_id: "1001", next_cursor: "c2" },
-  ]);
-  assertEquals(posts.map((post) => post.externalId), ["t1", "t2", "t3"]);
-});
-
-test("getListPosts stops at the inclusive lower bound even when more pages exist", async () => {
-  const { captured, fetch: fetchMock } = mockFetch([
-    Response.json(listPage([
-      tweetData({ tweet_id: "newer", created_at_datetime: new Date(FROM + 1000).toISOString() }),
-      tweetData({ tweet_id: "older", created_at_datetime: new Date(FROM - 1000).toISOString() }),
+      tweetData({
+        tweet_id: "t1",
+        created_at_datetime: new Date(TO - 1000).toISOString(),
+      }),
     ], true, "c1")),
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const posts = await client.getListPosts("1001", FROM, TO);
+  const page = await client.getListPostsPage("1001", FROM, TO, "previous");
 
-  assertEquals(captured.length, 1, "no further page may be requested past the lower bound");
-  assertEquals(posts.map((post) => post.externalId), ["newer"]);
+  assertEquals(captured.length, 1, "a page method must make exactly one request");
+  assertEquals(captured[0].body, { list_id: "1001", next_cursor: "previous" });
+  assertEquals(page.items.map((post) => post.externalId), ["t1"]);
+  assertEquals(page.nextCursor, "c1");
+  assertEquals(page.complete, false);
 });
 
-test("getListPosts skips items above the window and keeps paginating", async () => {
+test("getListPostsPage retains out-of-window tweets and completes only at the lower bound", async () => {
   const { captured, fetch: fetchMock } = mockFetch([
     Response.json(listPage([
-      tweetData({ tweet_id: "future", created_at_datetime: new Date(TO + 1000).toISOString() }),
-    ], true, "c1")),
-    Response.json(listPage([
-      tweetData({ tweet_id: "good", created_at_datetime: new Date(FROM).toISOString() }),
-    ], false)),
+      tweetData({
+        tweet_id: "future",
+        created_at_datetime: new Date(TO + 1).toISOString(),
+      }),
+      tweetData({
+        tweet_id: "at-start",
+        created_at_datetime: new Date(FROM).toISOString(),
+      }),
+      tweetData({
+        tweet_id: "older",
+        created_at_datetime: new Date(FROM - 1).toISOString(),
+      }),
+    ], true, "ignored-after-boundary")),
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const posts = await client.getListPosts("1001", FROM, TO);
+  const page = await client.getListPostsPage("1001", FROM, TO, null);
 
-  assertEquals(captured.length, 2);
-  assertEquals(posts.map((post) => post.externalId), ["good"]);
+  assertEquals(captured.length, 1, "the lower boundary must not trigger a hidden second request");
+  assertEquals(page.items.map((post) => post.externalId), ["future", "at-start", "older"]);
+  assertEquals(page.nextCursor, null);
+  assertEquals(page.complete, true);
 });
 
-test("getListPosts fails instead of returning partial results when a cursor is missing", async () => {
+test("getListPostsPage retains after-to tweets without treating them as a boundary", async () => {
+  const { captured, fetch: fetchMock } = mockFetch([
+    Response.json(listPage([
+      tweetData({
+        tweet_id: "future",
+        created_at_datetime: new Date(TO + 1).toISOString(),
+      }),
+    ], true, "c-future")),
+  ]);
+  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
+
+  const page = await client.getListPostsPage("1001", FROM, TO, null);
+
+  assertEquals(captured.length, 1);
+  assertEquals(page.items.map((post) => post.externalId), ["future"]);
+  assertEquals(page.nextCursor, "c-future");
+  assertEquals(page.complete, false);
+});
+
+test("getListPostsPage returns items with a null cursor when an incomplete page has no cursor", async () => {
   for (const missingCursor of [null, ""]) {
     const { captured, fetch: fetchMock } = mockFetch([
       Response.json(listPage([tweetData()], true, missingCursor)),
     ]);
     const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-    const error = await assertRejects(() => client.getListPosts("1001", FROM, TO));
-    assert(error instanceof TwexApiError);
-    assertStringIncludes(error.message, "no cursor");
-    assertEquals(captured.length, 1, "the corrupt page must not be followed by more requests");
+    const page = await client.getListPostsPage("1001", FROM, TO, null);
+
+    assertEquals(page.items.map((post) => post.externalId), ["987654321"]);
+    assertEquals(page.nextCursor, null);
+    assertEquals(page.complete, false);
+    assertEquals(captured.length, 1);
   }
 });
 
-test("getListPosts fails on a repeated cursor cycle", async () => {
-  const { captured, fetch: fetchMock } = mockFetch([
-    Response.json(listPage([
-      tweetData({ tweet_id: "a", created_at_datetime: new Date(FROM).toISOString() }),
-    ], true, "c1")),
-    Response.json(listPage([
-      tweetData({ tweet_id: "b", created_at_datetime: new Date(FROM).toISOString() }),
-    ], true, "c1")),
-  ]);
-  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
-
-  const error = await assertRejects(() => client.getListPosts("1001", FROM, TO));
-  assert(error instanceof TwexApiError);
-  assertStringIncludes(error.message, "repeated a cursor");
-  assertEquals(captured.length, 2);
-});
-
-test("getListPosts skips undated tweets and falls back to created_at", async () => {
+test("getListPostsPage skips undated tweets and falls back to created_at", async () => {
   const { fetch: fetchMock } = mockFetch([
     Response.json(listPage([
       tweetData({ tweet_id: "no-date", created_at_datetime: null, created_at: null }),
@@ -684,13 +684,14 @@ test("getListPosts skips undated tweets and falls back to created_at", async () 
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const posts = await client.getListPosts("1001", FROM, TO);
+  const page = await client.getListPostsPage("1001", FROM, TO, null);
 
-  assertEquals(posts.map((post) => post.externalId), ["fallback"]);
-  assertEquals(posts[0]?.date, FROM);
+  assertEquals(page.items.map((post) => post.externalId), ["fallback"]);
+  assertEquals(page.items[0]?.date, FROM);
+  assertEquals(page.complete, true);
 });
 
-test("getListPosts maps missing users and non-numeric view counts safely", async () => {
+test("getListPostsPage maps missing users and non-numeric view counts safely", async () => {
   const { fetch: fetchMock } = mockFetch([
     Response.json(listPage([
       tweetData({ tweet_id: "views", view_count: "abc", user: null }),
@@ -698,9 +699,9 @@ test("getListPosts maps missing users and non-numeric view counts safely", async
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const posts = await client.getListPosts("1001", FROM, TO);
+  const page = await client.getListPostsPage("1001", FROM, TO, null);
 
-  assertEquals(posts, [{
+  assertEquals(page.items, [{
     kind: "post",
     externalId: "views",
     platformId: null,
@@ -715,31 +716,13 @@ test("getListPosts maps missing users and non-numeric view counts safely", async
   }]);
 });
 
-test("getListPosts enforces the pagination safety page limit", async () => {
-  const pages = Array.from({ length: 500 }, (_, index) =>
-    Response.json(listPage([
-      tweetData({
-        tweet_id: `t${index}`,
-        created_at_datetime: new Date(FROM).toISOString(),
-      }),
-    ], true, `c${index}`))
-  );
-  const { captured, fetch: fetchMock } = mockFetch(pages);
-  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
-
-  const error = await assertRejects(() => client.getListPosts("1001", FROM, TO));
-  assert(error instanceof TwexApiError);
-  assertStringIncludes(error.message, "safety page limit");
-  assertEquals(captured.length, 500);
-});
-
-test("getChatMessages posts recipient, full cookie, and the default PIN", async () => {
+test("getChatMessagesPage posts one all-mode request with the full cookie and default PIN", async () => {
   const { captured, fetch: fetchMock } = mockFetch([
     Response.json(dmHistoryPage([messageData()], false)),
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const messages = await client.getChatMessages("conv-abc", FROM, TO);
+  const page = await client.getChatMessagesPage("conv-abc", FROM, TO, null);
 
   assertEquals(captured.length, 1);
   assertEquals(captured[0].method, "POST");
@@ -749,7 +732,7 @@ test("getChatMessages posts recipient, full cookie, and the default PIN", async 
     cookie: COOKIE,
     pin: "1234",
     count: 200,
-    before: null,
+    all: true,
   });
   assert(
     captured[0].body !== null &&
@@ -759,19 +742,23 @@ test("getChatMessages posts recipient, full cookie, and the default PIN", async 
       !Object.hasOwn(captured[0].body, "authToken"),
     "DM history must use the full cookie without an authToken field",
   );
-  assertEquals(messages, [{
-    kind: "chat_message",
-    externalId: "msg-1",
-    platformId: "u-9",
-    date: FROM,
-    text: "hello",
-    author: "u-9",
-    url: null,
-    reactions: [],
-  }]);
+  assertEquals(page, {
+    items: [{
+      kind: "chat_message",
+      externalId: "msg-1",
+      platformId: "u-9",
+      date: FROM,
+      text: "hello",
+      author: "u-9",
+      url: null,
+      reactions: [],
+    }],
+    nextCursor: null,
+    complete: true,
+  });
 });
 
-test("getChatMessages passes an explicit PIN through", async () => {
+test("getChatMessagesPage passes an explicit PIN and before cursor", async () => {
   const { captured, fetch: fetchMock } = mockFetch([
     Response.json(dmHistoryPage([messageData()], false)),
   ]);
@@ -780,87 +767,130 @@ test("getChatMessages passes an explicit PIN through", async () => {
     fetch: fetchMock,
   });
 
-  await client.getChatMessages("conv-abc", FROM, TO);
+  await client.getChatMessagesPage("conv-abc", FROM, TO, "s-before");
 
+  assertEquals(captured.length, 1);
   assertEquals((captured[0].body as Record<string, unknown>)["pin"], "7777");
+  assertEquals((captured[0].body as Record<string, unknown>)["before"], "s-before");
+  assertEquals((captured[0].body as Record<string, unknown>)["all"], true);
 });
 
-test("getChatMessages walks pages with the oldest sequence cursor", async () => {
+test("getChatMessagesPage retains out-of-window messages and completes only at the lower bound", async () => {
   const { captured, fetch: fetchMock } = mockFetch([
     Response.json(dmHistoryPage([
-      messageData({ id: "m1", time: new Date(FROM + 1000).toISOString(), sequence_id: "s1" }),
-      messageData({ id: "m2", time: new Date(FROM + 2000).toISOString(), sequence_id: "s2" }),
-    ], true)),
-    Response.json(dmHistoryPage([
-      messageData({ id: "m3", time: new Date(FROM + 3000).toISOString(), sequence_id: "s3" }),
-    ], false)),
-  ]);
-  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
-
-  const messages = await client.getChatMessages("conv-abc", FROM, TO);
-
-  assertEquals(captured.map((request) => (request.body as Record<string, unknown>)["before"]), [
-    null,
-    "s1",
-  ]);
-  assertEquals(messages.map((message) => message.externalId), ["m1", "m2", "m3"]);
-});
-
-test("getChatMessages stops at the inclusive lower bound even when more pages exist", async () => {
-  const { captured, fetch: fetchMock } = mockFetch([
-    Response.json(dmHistoryPage([
-      messageData({ id: "m-new", time: new Date(FROM).toISOString(), sequence_id: "s1" }),
+      messageData({ id: "m-new", time: new Date(TO + 1).toISOString(), sequence_id: "s1" }),
       messageData({ id: "m-old", time: new Date(FROM - 1).toISOString(), sequence_id: "s2" }),
     ], true)),
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const messages = await client.getChatMessages("conv-abc", FROM, TO);
+  const page = await client.getChatMessagesPage("conv-abc", FROM, TO, null);
 
-  assertEquals(captured.length, 1, "no further page may be requested past the lower bound");
-  assertEquals(messages.map((message) => message.externalId), ["m-new"]);
+  assertEquals(captured.length, 1, "all-mode must not issue a hidden second request");
+  assertEquals(page.items.map((message) => message.externalId), ["m-new", "m-old"]);
+  assertEquals(page.nextCursor, null);
+  assertEquals(page.complete, true);
 });
 
-test("getChatMessages treats a null data payload as the end of history", async () => {
-  const { fetch: fetchMock } = mockFetch([
+test("getChatMessagesPage retains after-to messages without treating them as a boundary", async () => {
+  const { captured, fetch: fetchMock } = mockFetch([
+    Response.json(dmHistoryPage([
+      messageData({ id: "m-future", time: new Date(TO + 1).toISOString(), sequence_id: "s1" }),
+    ], true)),
+  ]);
+  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
+
+  const page = await client.getChatMessagesPage("conv-abc", FROM, TO, null);
+
+  assertEquals(captured.length, 1, "all-mode must not issue a hidden second request");
+  assertEquals(page.items.map((message) => message.externalId), ["m-future"]);
+  assertEquals(page.nextCursor, "s1");
+  assertEquals(page.complete, false);
+});
+
+test("getChatMessagesPage returns a cursor instead of looping when all-mode has more history", async () => {
+  const { captured, fetch: fetchMock } = mockFetch([
+    Response.json(dmHistoryPage([
+      messageData({ id: "m1", time: new Date(FROM + 1000).toISOString(), sequence_id: "s1" }),
+      messageData({ id: "m2", time: new Date(FROM + 2000).toISOString(), sequence_id: "s2" }),
+    ], true)),
+  ]);
+  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
+
+  const page = await client.getChatMessagesPage("conv-abc", FROM, TO, null);
+
+  assertEquals(captured.length, 1, "has_more must never cause a second provider request");
+  assertEquals(page.items.map((message) => message.externalId), ["m1", "m2"]);
+  assertEquals(page.nextCursor, "s1");
+  assertEquals(page.complete, false);
+});
+
+test("getChatMessagesPage treats a null data payload as the end of history", async () => {
+  const { captured, fetch: fetchMock } = mockFetch([
     Response.json(envelope(200, "ok", null)),
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const messages = await client.getChatMessages("conv-abc", FROM, TO);
+  const page = await client.getChatMessagesPage("conv-abc", FROM, TO, null);
 
-  assertEquals(messages, []);
-});
-
-test("getChatMessages fails when more history is claimed without a sequence cursor", async () => {
-  const { captured, fetch: fetchMock } = mockFetch([
-    Response.json(dmHistoryPage([
-      messageData({ id: "m1", sequence_id: null, sender_id: "u" }),
-    ], true)),
-  ]);
-  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
-
-  const error = await assertRejects(() => client.getChatMessages("conv-abc", FROM, TO));
-  assert(error instanceof TwexApiError);
-  assertStringIncludes(error.message, "no sequence cursor");
   assertEquals(captured.length, 1);
+  assertEquals(page, { items: [], nextCursor: null, complete: true });
 });
 
-test("getChatMessages fails on a repeated sequence cursor cycle", async () => {
+test("getChatMessagesPage returns items with a null cursor when more history has no sequence cursor", async () => {
+  for (const sequenceId of [null, ""]) {
+    const { captured, fetch: fetchMock } = mockFetch([
+      Response.json(dmHistoryPage([
+        messageData({ id: "m1", sequence_id: sequenceId, sender_id: "u" }),
+      ], true)),
+    ]);
+    const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
+
+    const page = await client.getChatMessagesPage("conv-abc", FROM, TO, null);
+
+    assertEquals(page.items.map((message) => message.externalId), ["m1"]);
+    assertEquals(page.nextCursor, null);
+    assertEquals(page.complete, false);
+    assertEquals(captured.length, 1);
+  }
+});
+
+test("getChatMessagesPage accepts an exact conversation id match", async () => {
   const { captured, fetch: fetchMock } = mockFetch([
-    Response.json(dmHistoryPage([
-      messageData({ id: "m1", sequence_id: "s1" }),
-    ], true)),
-    Response.json(dmHistoryPage([
-      messageData({ id: "m2", sequence_id: "s1" }),
-    ], true)),
+    Response.json(dmHistoryPage([messageData()], false)),
   ]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
-  const error = await assertRejects(() => client.getChatMessages("conv-abc", FROM, TO));
-  assert(error instanceof TwexApiError);
-  assertStringIncludes(error.message, "repeated a sequence cursor");
-  assertEquals(captured.length, 2);
+  const page = await client.getChatMessagesPage("conv-abc", FROM, TO, null);
+
+  assertEquals(captured.length, 1);
+  assertEquals(page.items.map((message) => message.externalId), ["msg-1"]);
+  assertEquals(page.nextCursor, null);
+  assertEquals(page.complete, true);
+  assertEquals(page.terminalReason, undefined);
+});
+
+test("getChatMessagesPage returns a terminal page on a mismatched conversation id", async () => {
+  const { captured, fetch: fetchMock } = mockFetch([
+    Response.json({
+      code: 200,
+      msg: "ok",
+      data: {
+        conversation_id: "conv-OTHER",
+        has_more: false,
+        messages: [messageData()],
+      },
+    }),
+  ]);
+  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
+
+  const page = await client.getChatMessagesPage("conv-abc", FROM, TO, null);
+
+  assertEquals(captured.length, 1, "a mismatched conversation must not trigger a second request");
+  assertEquals(page.items, [], "foreign messages must never be mapped or returned");
+  assertEquals(page.nextCursor, null);
+  assertEquals(page.complete, false);
+  assertEquals(page.terminalReason, "mismatched_conversation");
 });
 
 test("TwexApiClient rejects invalid retrieval windows before any request", async () => {
@@ -868,34 +898,34 @@ test("TwexApiClient rejects invalid retrieval windows before any request", async
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
   await assertRejects(
-    () => client.getListPosts("1001", TO, FROM),
+    () => client.getListPostsPage("1001", TO, FROM, null),
     "Twex retrieval window",
   );
   await assertRejects(
-    () => client.getListPosts("1001", Number.NaN, TO),
+    () => client.getListPostsPage("1001", Number.NaN, TO, null),
     "finite epoch milliseconds",
   );
   await assertRejects(
-    () => client.getChatMessages("c1", TO, FROM),
+    () => client.getChatMessagesPage("c1", TO, FROM, null),
     "Twex retrieval window",
   );
   assertEquals(captured.length, 0);
 });
 
-test("getListPosts and getChatMessages propagate aborts without wrapping", async () => {
+test("getListPostsPage and getChatMessagesPage propagate aborts without wrapping", async () => {
   const preAborted = new AbortController();
   preAborted.abort();
   const { captured, fetch: fetchMock } = mockFetch([]);
   const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: fetchMock });
 
   const listError = await assertRejects(() =>
-    client.getListPosts("1001", FROM, TO, preAborted.signal)
+    client.getListPostsPage("1001", FROM, TO, null, preAborted.signal)
   );
   assert(listError instanceof DOMException);
   assertEquals(listError.name, "AbortError");
 
   const chatError = await assertRejects(() =>
-    client.getChatMessages("conv-abc", FROM, TO, preAborted.signal)
+    client.getChatMessagesPage("conv-abc", FROM, TO, null, preAborted.signal)
   );
   assert(chatError instanceof DOMException);
   assertEquals(chatError.name, "AbortError");
@@ -903,10 +933,10 @@ test("getListPosts and getChatMessages propagate aborts without wrapping", async
 
   const midController = new AbortController();
   let callCount = 0;
-  const abortingFetch: TwexFetch = (_input, init) => {
+  const abortingFetch: TwexFetch = (_input) => {
     callCount += 1;
-    if (callCount === 2) midController.abort();
-    return Promise.resolve(Response.json(listPage([tweetData()], true, "c1")));
+    midController.abort();
+    return Promise.reject(new DOMException("The operation was aborted", "AbortError"));
   };
   const midClient = new TwexApiClient(creds(), {
     baseUrl: BASE_URL,
@@ -914,9 +944,131 @@ test("getListPosts and getChatMessages propagate aborts without wrapping", async
   });
 
   const midError = await assertRejects(() =>
-    midClient.getListPosts("1001", FROM, TO, midController.signal)
+    midClient.getListPostsPage("1001", FROM, TO, null, midController.signal)
   );
   assert(midError instanceof DOMException);
   assertEquals(midError.name, "AbortError");
-  assertEquals(callCount, 2);
+  assertEquals(callCount, 1);
+});
+
+test("paid page methods keep decoded items when the signal aborts after a successful response", async () => {
+  const listController = new AbortController();
+  let listRequests = 0;
+  const listFetch: TwexFetch = (_input) => {
+    listRequests += 1;
+    listController.abort();
+    return Promise.resolve(Response.json(listPage([tweetData()], false)));
+  };
+  const listClient = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: listFetch });
+
+  const listResult = await listClient.getListPostsPage(
+    "1001", FROM, TO, null, listController.signal,
+  );
+
+  assertEquals(listRequests, 1);
+  assertEquals(listResult.items.map((post) => post.externalId), ["987654321"]);
+  assertEquals(listResult.nextCursor, null);
+  assertEquals(listResult.complete, true);
+
+  const dmController = new AbortController();
+  const dmFetch: TwexFetch = (_input) => {
+    dmController.abort();
+    return Promise.resolve(Response.json(dmHistoryPage([messageData()], false)));
+  };
+  const dmClient = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: dmFetch });
+
+  const dmResult = await dmClient.getChatMessagesPage(
+    "conv-abc", FROM, TO, null, dmController.signal,
+  );
+
+  assertEquals(dmResult.items.map((message) => message.externalId), ["msg-1"]);
+  assertEquals(dmResult.nextCursor, null);
+  assertEquals(dmResult.complete, true);
+});
+
+test("paid page methods keep decoded items when the signal aborts during JSON completion", async () => {
+  const listController = new AbortController();
+  const listResponse = {
+    ok: true,
+    json: () => {
+      listController.abort();
+      return Promise.resolve(listPage([tweetData()], false));
+    },
+  } as unknown as Response;
+  const { fetch: listFetch } = mockFetch([listResponse]);
+  const listClient = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: listFetch });
+
+  const listResult = await listClient.getListPostsPage(
+    "1001", FROM, TO, null, listController.signal,
+  );
+
+  assertEquals(listResult.items.map((post) => post.externalId), ["987654321"]);
+  assertEquals(listResult.complete, true);
+
+  const dmController = new AbortController();
+  const dmResponse = {
+    ok: true,
+    json: () => {
+      dmController.abort();
+      return Promise.resolve(dmHistoryPage([messageData()], false));
+    },
+  } as unknown as Response;
+  const { fetch: dmFetch } = mockFetch([dmResponse]);
+  const dmClient = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: dmFetch });
+
+  const dmResult = await dmClient.getChatMessagesPage(
+    "conv-abc", FROM, TO, null, dmController.signal,
+  );
+
+  assertEquals(dmResult.items.map((message) => message.externalId), ["msg-1"]);
+  assertEquals(dmResult.complete, true);
+});
+
+test("paid page methods still propagate a body-read AbortError when no decoded body exists", async () => {
+  const original = new DOMException("The operation was aborted", "AbortError");
+  const listController = new AbortController();
+  const listResponse = {
+    ok: true,
+    json: () => {
+      listController.abort(original);
+      return Promise.reject(original);
+    },
+  } as unknown as Response;
+  const { fetch: listFetch } = mockFetch([listResponse]);
+  const listClient = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: listFetch });
+
+  const listError = await assertRejects(() =>
+    listClient.getListPostsPage("1001", FROM, TO, null, listController.signal)
+  );
+  assertStrictEquals(listError, original);
+
+  const dmController = new AbortController();
+  const dmResponse = {
+    ok: true,
+    json: () => {
+      dmController.abort(original);
+      return Promise.reject(original);
+    },
+  } as unknown as Response;
+  const { fetch: dmFetch } = mockFetch([dmResponse]);
+  const dmClient = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: dmFetch });
+
+  const dmError = await assertRejects(() =>
+    dmClient.getChatMessagesPage("conv-abc", FROM, TO, null, dmController.signal)
+  );
+  assertStrictEquals(dmError, original);
+});
+
+test("non-content requests still abort after a successful response", async () => {
+  const controller = new AbortController();
+  const abortingFetch: TwexFetch = (_input) => {
+    controller.abort();
+    return Promise.resolve(Response.json(envelope(200, "ok", userInfoData())));
+  };
+  const client = new TwexApiClient(creds(), { baseUrl: BASE_URL, fetch: abortingFetch });
+
+  const error = await assertRejects(() => client.getUserInfo(controller.signal));
+
+  assert(error instanceof DOMException);
+  assertEquals(error.name, "AbortError");
 });

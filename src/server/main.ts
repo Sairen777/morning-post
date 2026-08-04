@@ -93,6 +93,7 @@ export async function bootServer(
     new ConnectorFactory(database, {
       credentialCipher,
       twexApiBaseUrl: config.twexApiBaseUrl,
+      cacheCoverageToleranceMs: config.cacheCoverageToleranceMs,
     });
   const feedDiscoveryFactory = dependencies.feedDiscoveryFactory ??
     new DefaultFeedDiscoveryFactory(database, credentialCipher, undefined, {

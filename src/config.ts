@@ -1,3 +1,5 @@
+import { DEFAULT_X_CACHE_COVERAGE_TOLERANCE_MS } from "./connectors/x/x-connector.ts";
+
 export interface ModelPricingSnapshot {
   uncachedInputUsdPerMillionTokens: number;
   cachedInputUsdPerMillionTokens: number;
@@ -52,6 +54,7 @@ export interface Config {
   maxRequestBodyBytes: number;
   allowRemoteSummarization: boolean;
   connectorTimeoutMs: number;
+  cacheCoverageToleranceMs: number;
   summarizerTextBytesPerChunk: number;
   summarizerMaxItemsPerChunk: number;
   summarizerMaxImageBytes: number;
@@ -578,6 +581,13 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
       "CONNECTOR_TIMEOUT_MS",
       overrides.connectorTimeoutMs,
       DEFAULT_CONNECTOR_TIMEOUT_MS,
+    ),
+    cacheCoverageToleranceMs: numberSetting(
+      "X_CACHE_COVERAGE_TOLERANCE_MS",
+      "X_CACHE_COVERAGE_TOLERANCE_MS",
+      overrides.cacheCoverageToleranceMs,
+      DEFAULT_X_CACHE_COVERAGE_TOLERANCE_MS,
+      true,
     ),
     ...getSummarizerBudgetConfig(overrides),
     summarizerTimeoutMs: numberSetting(

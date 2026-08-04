@@ -36,6 +36,20 @@
       "when": 1785766750343,
       "tag": "0004_loyal_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785767000343,
+      "tag": "0005_mellow_lagoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785896000000,
+      "tag": "0006_bold_rain",
+      "breakpoints": true
     }
   ]
 }

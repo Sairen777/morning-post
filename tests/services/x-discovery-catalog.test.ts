@@ -79,13 +79,13 @@ function fakeXApiClientFactory(
           ? Promise.resolve(conversations)
           : options.conversationsGate.then(() => conversations);
       },
-      getListPosts: () => {
+      getListPostsPage: () => {
         counters.getListPosts += 1;
-        return Promise.resolve([]);
+        return Promise.resolve({ items: [], nextCursor: null, complete: true });
       },
-      getChatMessages: () => {
+      getChatMessagesPage: () => {
         counters.getChatMessages += 1;
-        return Promise.resolve([]);
+        return Promise.resolve({ items: [], nextCursor: null, complete: true });
       },
     } as unknown as XApiClient),
   };
@@ -96,6 +96,8 @@ function fakeXContentCacheFactory(): XContentCacheFactory {
     createCache: () => ({
       missingRanges: () => [],
       read: () => [],
+      pendingRanges: () => [],
+      recordPage: () => {},
       record: () => {},
       clear: () => {},
     } as unknown as XContentCache),

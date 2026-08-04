@@ -13,8 +13,6 @@ import type {
 
 const DEFAULT_PIN = "1234";
 const DM_HISTORY_PAGE_COUNT = 200;
-const LIST_TWEETS_PAGE_LIMIT = 500;
-const DM_HISTORY_PAGE_LIMIT = 500;
 
 /** Error raised for any upstream failure: non-2xx HTTP, non-JSON body,
  * non-success envelope code, or a response that fails schema validation.
@@ -30,12 +28,43 @@ export class TwexApiError extends Error {
   }
 }
 
+/** One provider request's worth of content. `items` carries every valid
+ * dated item from the page, including items outside the requested window:
+ * paid-for content is never dropped here. `complete` is true only when the
+ * requested window is fully covered (its lower bound was reached or the
+ * provider reported exhaustion); a `complete` page never carries a cursor.
+ * When `complete` is false, the caller must not treat the range as covered:
+ * `nextCursor` is a validated, durable resume point, or `null` when the
+ * provider claimed more content but returned no cursor — the caller still
+ * persists `items` and durably blocks on the missing cursor. */
+export interface XContentPage<T> {
+  items: T[];
+  nextCursor: string | null;
+  complete: boolean;
+  /** Marks a terminal page that must never be retried or resumed: the
+   * provider answered for a different resource than the one requested. Such
+   * pages carry no items and no cursor, and `complete` is false. */
+  terminalReason?: "mismatched_conversation";
+}
+
 export interface XApiClient {
   getUserInfo(signal?: AbortSignal): Promise<TwexUserInfo>;
   searchLists(query: string, targetCount: number, signal?: AbortSignal): Promise<TwexList[]>;
   getConversations(signal?: AbortSignal): Promise<TwexConversation[]>;
-  getListPosts(listId: string, from: number, to: number, signal?: AbortSignal): Promise<XRawPost[]>;
-  getChatMessages(conversationId: string, from: number, to: number, signal?: AbortSignal): Promise<XRawChatMessage[]>;
+  getListPostsPage(
+    listId: string,
+    from: number,
+    to: number,
+    cursor: string | null,
+    signal?: AbortSignal,
+  ): Promise<XContentPage<XRawPost>>;
+  getChatMessagesPage(
+    conversationId: string,
+    from: number,
+    to: number,
+    cursor: string | null,
+    signal?: AbortSignal,
+  ): Promise<XContentPage<XRawChatMessage>>;
 }
 
 export type TwexFetch = (
@@ -225,147 +254,140 @@ export class TwexApiClient implements XApiClient {
     return response.data;
   }
 
-  public async getListPosts(
+  public async getListPostsPage(
     listId: string,
     from: number,
     to: number,
+    cursor: string | null,
     signal?: AbortSignal,
-  ): Promise<XRawPost[]> {
+  ): Promise<XContentPage<XRawPost>> {
     validateWindow(from, to);
-    const posts: XRawPost[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | null = null;
-    let pages = 0;
+    const response: z.infer<typeof twexListTweetsPageSchema> = await this.request(
+      "POST",
+      "/twitter/list/tweets/page",
+      twexListTweetsPageSchema,
+      { list_id: listId, next_cursor: cursor },
+      signal,
+      true,
+    );
 
-    for (;;) {
-      throwIfAborted(signal);
-      pages += 1;
-      if (pages > LIST_TWEETS_PAGE_LIMIT) {
-        throw new TwexApiError("Twex list tweet pagination exceeded the safety page limit");
+    const items: XRawPost[] = [];
+    let reachedBoundary = false;
+    for (const tweet of response.data) {
+      const date = parseTweetDate(tweet);
+      if (date === null) continue;
+      if (date < from) {
+        reachedBoundary = true;
       }
-      if (cursor !== null) {
-        if (seenCursors.has(cursor)) {
-          throw new TwexApiError(
-            "Twex list tweet pagination repeated a cursor; aborting to avoid a cycle",
-          );
-        }
-        seenCursors.add(cursor);
-      }
-
-      const response: z.infer<typeof twexListTweetsPageSchema> = await this.request(
-        "POST",
-        "/twitter/list/tweets/page",
-        twexListTweetsPageSchema,
-        { list_id: listId, next_cursor: cursor },
-        signal,
-      );
-
-      let reachedBoundary = false;
-      for (const tweet of response.data) {
-        const date = parseTweetDate(tweet);
-        if (date === null) continue;
-        if (date < from) {
-          reachedBoundary = true;
-          continue;
-        }
-        if (date > to) continue;
-        posts.push(mapTweet(tweet, date));
-      }
-      if (reachedBoundary || !response.has_next_page) break;
-      const nextCursor = response.next_cursor ?? null;
-      if (nextCursor === null || nextCursor === "") {
-        throw new TwexApiError(
-          "Twex list tweets claimed another page but returned no cursor",
-        );
-      }
-      cursor = nextCursor;
+      // Retain every valid dated tweet, even outside [from, to]: the page is
+      // already paid for, so its content must survive to the cache. Only
+      // completion (reachedBoundary) is window-sensitive.
+      items.push(mapTweet(tweet, date));
     }
-    return posts;
+    if (reachedBoundary || !response.has_next_page) {
+      return { items, nextCursor: null, complete: true };
+    }
+    const nextCursor = response.next_cursor ?? null;
+    if (nextCursor === null || nextCursor === "") {
+      // The provider claimed another page but returned no cursor: the items
+      // are still persisted and the caller durably blocks on the missing
+      // cursor; there is nothing to resume from.
+      return { items, nextCursor: null, complete: false };
+    }
+    return { items, nextCursor, complete: false };
   }
 
-  public async getChatMessages(
+  public async getChatMessagesPage(
     conversationId: string,
     from: number,
     to: number,
+    cursor: string | null,
     signal?: AbortSignal,
-  ): Promise<XRawChatMessage[]> {
+  ): Promise<XContentPage<XRawChatMessage>> {
     validateWindow(from, to);
-    const messages: XRawChatMessage[] = [];
-    const seenCursors = new Set<string>();
-    let before: string | null = null;
-    let pages = 0;
+    const response: z.infer<typeof twexDmHistorySchema> = await this.request(
+      "POST",
+      "/v3/twitter/dm-history",
+      twexDmHistorySchema,
+      {
+        recipient: conversationId,
+        cookie: this.#cookie,
+        pin: this.#pin ?? DEFAULT_PIN,
+        count: DM_HISTORY_PAGE_COUNT,
+        all: true,
+        ...(cursor === null ? {} : { before: cursor }),
+      },
+      signal,
+      true,
+    );
 
-    for (;;) {
-      throwIfAborted(signal);
-      pages += 1;
-      if (pages > DM_HISTORY_PAGE_LIMIT) {
-        throw new TwexApiError("Twex DM history pagination exceeded the safety page limit");
-      }
-      if (before !== null) {
-        if (seenCursors.has(before)) {
-          throw new TwexApiError(
-            "Twex DM history pagination repeated a sequence cursor; aborting to avoid a cycle",
-          );
-        }
-        seenCursors.add(before);
-      }
-
-      const response: z.infer<typeof twexDmHistorySchema> = await this.request(
-        "POST",
-        "/v3/twitter/dm-history",
-        twexDmHistorySchema,
-        {
-          recipient: conversationId,
-          cookie: this.#cookie,
-          pin: this.#pin ?? DEFAULT_PIN,
-          count: DM_HISTORY_PAGE_COUNT,
-          before,
-        },
-        signal,
-      );
-
-      const data = response.data;
-      if (data === null || data === undefined) break;
-
-      let reachedBoundary = false;
-      let oldestSequenceId: string | null = null;
-      let oldestSequenceDate = Number.POSITIVE_INFINITY;
-      let lastSequenceId: string | null = null;
-      for (const message of data.messages) {
-        const date = Date.parse(message.time);
-        if (Number.isFinite(date)) {
-          if (date < from) {
-            reachedBoundary = true;
-          } else if (date <= to) {
-            messages.push(mapMessage(message, date));
-          }
-        }
-        if (message.sequence_id !== null && message.sequence_id !== undefined) {
-          lastSequenceId = message.sequence_id;
-          if (Number.isFinite(date) && date < oldestSequenceDate) {
-            oldestSequenceDate = date;
-            oldestSequenceId = message.sequence_id;
-          }
-        }
-      }
-      if (reachedBoundary || !data.has_more) break;
-      const nextBefore = oldestSequenceId ?? lastSequenceId;
-      if (nextBefore === null) {
-        throw new TwexApiError(
-          "Twex DM history claimed more messages but returned no sequence cursor",
-        );
-      }
-      before = nextBefore;
+    const data = response.data;
+    if (data === null || data === undefined) {
+      return { items: [], nextCursor: null, complete: true };
     }
-    return messages;
+    if (data.conversation_id !== conversationId) {
+      // Fail closed before mapping or returning any messages: a response for
+      // a different conversation must never surface as this one's content.
+      // The empty terminal page lets the caller persist a durable block
+      // instead of refetching the paid page on every run.
+      return {
+        items: [],
+        nextCursor: null,
+        complete: false,
+        terminalReason: "mismatched_conversation",
+      };
+    }
+
+    const items: XRawChatMessage[] = [];
+    let reachedBoundary = false;
+    let oldestSequenceId: string | null = null;
+    let oldestSequenceDate = Number.POSITIVE_INFINITY;
+    let lastSequenceId: string | null = null;
+    for (const message of data.messages) {
+      const date = Date.parse(message.time);
+      if (Number.isFinite(date)) {
+        if (date < from) {
+          reachedBoundary = true;
+        }
+        // Retain every valid dated message, even outside [from, to]: the page
+        // is already paid for, so its content must survive to the cache.
+        items.push(mapMessage(message, date));
+      }
+      if (message.sequence_id !== null && message.sequence_id !== undefined) {
+        lastSequenceId = message.sequence_id;
+        if (Number.isFinite(date) && date < oldestSequenceDate) {
+          oldestSequenceDate = date;
+          oldestSequenceId = message.sequence_id;
+        }
+      }
+    }
+    if (reachedBoundary || !data.has_more) {
+      return { items, nextCursor: null, complete: true };
+    }
+    const nextCursor = oldestSequenceId ?? lastSequenceId;
+    if (nextCursor === null || nextCursor === "") {
+      // The provider claimed more history but returned no sequence cursor:
+      // the items are still persisted and the caller durably blocks on the
+      // missing cursor; there is nothing to resume from.
+      return { items, nextCursor: null, complete: false };
+    }
+    return { items, nextCursor, complete: false };
   }
 
+  /** Performs one provider request. With `paidContent`, a successfully
+   * decoded success response is returned even if the signal aborted after the
+   * HTTP response resolved: the page is already paid for, so the caller
+   * persists the items and then propagates the abort itself. Aborts before
+   * the request, fetch rejections, non-ok responses, body reads that fail
+   * without producing a decoded body, and schema/envelope failures all keep
+   * their strict behavior in both modes. */
   private async request<TEnvelope extends { code: number; msg: string }>(
     method: "GET" | "POST",
     path: string,
     schema: z.ZodType<TEnvelope>,
     body: Record<string, unknown> | undefined,
     signal?: AbortSignal,
+    paidContent = false,
   ): Promise<TEnvelope> {
     throwIfAborted(signal);
     let response: Response;
@@ -387,7 +409,9 @@ export class TwexApiClient implements XApiClient {
         "Twex API request failed before receiving a response",
       );
     }
-    throwIfAborted(signal);
+    if (!paidContent || !response.ok) {
+      throwIfAborted(signal);
+    }
     if (!response.ok) {
       throw new TwexApiError(
         `Twex API request failed with HTTP ${response.status}`,
@@ -405,7 +429,6 @@ export class TwexApiClient implements XApiClient {
         response.status,
       );
     }
-    throwIfAborted(signal);
     const parsed = schema.safeParse(json);
     if (!parsed.success) {
       throw new TwexApiError(
@@ -419,6 +442,9 @@ export class TwexApiClient implements XApiClient {
         response.status,
         parsed.data.code,
       );
+    }
+    if (!paidContent) {
+      throwIfAborted(signal);
     }
     return parsed.data;
   }
