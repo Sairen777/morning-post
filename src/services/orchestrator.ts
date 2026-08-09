@@ -1,6 +1,5 @@
 import type { ConnectorFactoryLike } from "../connectors/connector-factory.ts";
 import { ConnectorFactory } from "../connectors/connector-factory.ts";
-import { ConnectorId } from "../constants.ts";
 import type { Database } from "../db/client.ts";
 import type { DigestRunTrigger } from "../db/schema/digest-run.ts";
 import {
@@ -20,7 +19,6 @@ import {
 } from "../repositories/feed-repository.ts";
 import { listFeedIdsWithPaidItems } from "../repositories/item-repository.ts";
 import {
-  getSourceCredentialRevision,
   listSourcesForUser,
   type PublicSource,
 } from "../repositories/source-repository.ts";
@@ -146,13 +144,8 @@ async function ingestUserFeeds(
   >,
   now: () => number,
   runContext: RunContext,
-): Promise<{
-  successfulFeedIds: string[];
-  hadFailure: boolean;
-  credentialRevisionByFeedId: Map<string, number>;
-}> {
+): Promise<{ successfulFeedIds: string[]; hadFailure: boolean }> {
   const successfulFeedIds: string[] = [];
-  const credentialRevisionByFeedId = new Map<string, number>();
   let hadFailure = false;
   const activeFeedIds = [...plan.feedsBySourceId.values()]
     .flatMap((feeds) => feeds.map((feed) => feed.id));
@@ -195,23 +188,12 @@ async function ingestUserFeeds(
     }
 
     const feedsNeedingIngestion: PublicFeed[] = [];
-    // Credential revision accepted for feeds of this source that were already
-    // ingested for the period and are skipped without opening a connector.
-    // Only X sources carry a revision-bound guard into assembly.
-    let skippedXSourceRevision: number | undefined;
     for (const feed of sourceFeeds) {
       if (
         alreadyIngestedForPeriod(feed, period) &&
         !paidRefreshFeedIds.has(feed.id)
       ) {
         successfulFeedIds.push(feed.id);
-        if (source.connectorId === ConnectorId.X) {
-          skippedXSourceRevision ??=
-            getSourceCredentialRevision(database, source.id) ?? undefined;
-          if (skippedXSourceRevision !== undefined) {
-            credentialRevisionByFeedId.set(feed.id, skippedXSourceRevision);
-          }
-        }
         reportDigestProgress(runContext.progressReporter, {
           event: "ingestion_feed",
           runId: runContext.digestRunId,
@@ -267,16 +249,6 @@ async function ingestUserFeeds(
         continue;
       }
 
-      const sourceCredentialRevision = handle.sourceCredentialRevision;
-      const recordIngestedXRevision = (feedId: string): void => {
-        if (
-          source.connectorId === ConnectorId.X &&
-          sourceCredentialRevision !== undefined
-        ) {
-          credentialRevisionByFeedId.set(feedId, sourceCredentialRevision);
-        }
-      };
-
       if (handle.ingestionMode === "individual") {
         const feedRunMap = new Map<string, { id: string }>();
         for (const feed of feedsNeedingIngestion) {
@@ -312,12 +284,7 @@ async function ingestUserFeeds(
             userId,
             feedsNeedingIngestion,
             handle.connector,
-            {
-              feedWindows,
-              fetchedAt: now(),
-              signal: runContext.signal,
-              sourceCredentialRevision: handle.sourceCredentialRevision,
-            },
+            { feedWindows, fetchedAt: now(), signal: runContext.signal },
           );
 
           for (const result of individualResult.feedResults) {
@@ -337,7 +304,6 @@ async function ingestUserFeeds(
                 itemCount: result.itemCount,
               }, runContext.now());
               successfulFeedIds.push(result.feedId);
-              recordIngestedXRevision(result.feedId);
             }
             reportDigestProgress(runContext.progressReporter, {
               event: "ingestion_feed",
@@ -400,7 +366,6 @@ async function ingestUserFeeds(
               window: ingestionWindow(feed, period, paidRefreshFeedIds),
               fetchedAt: now(),
               signal: runContext.signal,
-              sourceCredentialRevision: handle.sourceCredentialRevision,
             },
           );
           await digestRunFeedRepository.finish(database, feedRun.id, {
@@ -408,7 +373,6 @@ async function ingestUserFeeds(
             itemCount: result.itemCount,
           }, runContext.now());
           successfulFeedIds.push(feed.id);
-          recordIngestedXRevision(feed.id);
           reportDigestProgress(runContext.progressReporter, {
             event: "ingestion_feed",
             runId: runContext.digestRunId,
@@ -473,12 +437,7 @@ async function ingestUserFeeds(
             userId,
             feedsNeedingIngestion,
             handle.connector,
-            {
-              feedWindows,
-              fetchedAt: now(),
-              signal: runContext.signal,
-              sourceCredentialRevision: handle.sourceCredentialRevision,
-            },
+            { feedWindows, fetchedAt: now(), signal: runContext.signal },
           );
 
           for (const result of batchResult.feedResults) {
@@ -498,7 +457,6 @@ async function ingestUserFeeds(
                 itemCount: result.itemCount,
               }, runContext.now());
               successfulFeedIds.push(result.feedId);
-              recordIngestedXRevision(result.feedId);
             }
             reportDigestProgress(runContext.progressReporter, {
               event: "ingestion_feed",
@@ -565,7 +523,7 @@ async function ingestUserFeeds(
     }
   }
 
-  return { successfulFeedIds, hadFailure, credentialRevisionByFeedId };
+  return { successfulFeedIds, hadFailure };
 }
 
 async function assembleRunDigest(
@@ -573,7 +531,6 @@ async function assembleRunDigest(
   userId: string,
   period: DigestPeriod,
   successfulFeedIds: string[],
-  credentialRevisionByFeedId: ReadonlyMap<string, number>,
   sourcesById: Map<string, PublicSource>,
   feeds: PublicFeed[],
   dependencies: OrchestratorDependencies,
@@ -592,7 +549,6 @@ async function assembleRunDigest(
     {
       ...dependencies,
       feedIds: successfulFeedIds,
-      credentialRevisionByFeedId,
       runId: runContext.digestRunId,
       sourceConnectorIdsBySourceId,
       feeds,
@@ -666,7 +622,6 @@ async function executeDigestRun(
       userId,
       period,
       ingestionResult.successfulFeedIds,
-      ingestionResult.credentialRevisionByFeedId,
       plan.sourcesById,
       allFeeds,
       dependencies,

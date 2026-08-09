@@ -490,7 +490,6 @@ class ModelBackedMediaDescriber implements StoryMediaDescriber {
         signal: options.signal,
         requestTimeoutMs: options.requestTimeoutMs,
         onAttempt: options.onMediaAttempt ?? options.onAttempt,
-        beforeAttempt: options.beforeAttempt,
         maxItemsPerChunk: 1,
       },
     );

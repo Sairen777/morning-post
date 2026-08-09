@@ -1,14 +1,12 @@
+import { getXBrowserConfig } from "../config.ts";
 import { ConnectorId } from "../constants.ts";
 import { CredentialCipher } from "../crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../crypto/key-provider.ts";
 import type { Database } from "../db/client.ts";
 import {
-  getDecryptedCredentialSnapshot,
   getDecryptedCredentials,
   type PublicSource,
 } from "../repositories/source-repository.ts";
-import type { XContentCache } from "../repositories/x-content-cache-repository.ts";
-import { DatabaseXContentCache } from "../repositories/x-content-cache-repository.ts";
 import { ConflictError } from "../server/errors.ts";
 import type { Connector } from "./connector.types.ts";
 import {
@@ -25,10 +23,7 @@ import type {
   SubstackPostReader,
   SubstackRawData,
 } from "./substack/substack-connector.ts";
-import type { TwexFetch, XApiClient } from "./x/twex-api-client.ts";
-import { TwexApiClient } from "./x/twex-api-client.ts";
-import { XConnector } from "./x/x-connector.ts";
-import type { XCredentials } from "./x/x.types.ts";
+import type { XBrowserRuntime } from "./x/index.ts";
 
 export type TelegramClientHandle = ConstructorParameters<
   typeof TelegramConnector
@@ -37,7 +32,6 @@ export type TelegramClientHandle = ConstructorParameters<
 export interface ConnectorHandle<TRawData = unknown> {
   connector: Connector<TRawData>;
   ingestionMode: "batch" | "individual";
-  sourceCredentialRevision?: number;
   dispose?(): Promise<void> | void;
 }
 
@@ -93,54 +87,28 @@ const defaultSubstackPublicationReader: PublicationPageReader = async (
   );
   return await readPublicArchive(publicationUrl, {}, offset, limit, signal);
 };
+export type XBrowserRuntimeLoader = () => Promise<
+  Pick<XBrowserRuntime, "createConnector">
+>;
 
-export interface XApiClientFactory {
-  createClient(
-    credentials: Pick<XCredentials, "apiKey" | "authToken" | "cookie" | "pin">,
-    options?: { baseUrl?: string; fetch?: TwexFetch },
-  ): XApiClient;
-}
+const loadXBrowserRuntime: XBrowserRuntimeLoader = async () => {
+  // Deliberately lazy: Playwright is loaded only when an X source is requested.
+  const { XBrowserRuntime } = await import("./x/index.ts");
+  const config = getXBrowserConfig();
+  return new XBrowserRuntime({
+    profileRoot: config.profileRoot,
+    browserChannel: config.browserChannel,
+  });
+};
 
-export interface XContentCacheFactory {
-  createCache(
-    database: Database,
-    sourceId: string,
-    expectedCredentialRevision?: number,
-  ): XContentCache;
-}
-
-export function defaultXApiClientFactory(baseUrl?: string): XApiClientFactory {
-  return {
-    createClient(credentials, options) {
-      return new TwexApiClient(credentials, {
-        ...options,
-        baseUrl: options?.baseUrl ?? baseUrl,
-      });
-    },
-  };
-}
-
-export function defaultXContentCacheFactory(): XContentCacheFactory {
-  return {
-    createCache(database, sourceId, expectedCredentialRevision) {
-      return new DatabaseXContentCache(
-        database,
-        sourceId,
-        expectedCredentialRevision,
-      );
-    },
-  };
-}
 
 export interface ConnectorFactoryDependencies {
   credentialCipher?: CredentialCipher;
   telegramClientFactory?: TelegramClientFactory;
   substackClientFactory?: SubstackClientFactory;
   substackPublicationReader?: PublicationPageReader;
-  twexApiBaseUrl?: string;
-  cacheCoverageToleranceMs?: number;
-  xApiClientFactory?: XApiClientFactory;
-  xContentCacheFactory?: XContentCacheFactory;
+  xBrowserRuntime?: Pick<XBrowserRuntime, "createConnector">;
+  xBrowserRuntimeLoader?: XBrowserRuntimeLoader;
 }
 
 export class ConnectorFactory {
@@ -149,9 +117,11 @@ export class ConnectorFactory {
   readonly #telegramClientFactory: TelegramClientFactory;
   readonly #substackClientFactory: SubstackClientFactory;
   readonly #substackPublicationReader: PublicationPageReader;
-  readonly #xApiClientFactory: XApiClientFactory;
-  readonly #xContentCacheFactory: XContentCacheFactory;
-  readonly #cacheCoverageToleranceMs: number | undefined;
+  readonly #xBrowserRuntime?: Pick<XBrowserRuntime, "createConnector">;
+  readonly #xBrowserRuntimeLoader: XBrowserRuntimeLoader;
+  #loadedXBrowserRuntime?: Promise<
+    Pick<XBrowserRuntime, "createConnector">
+  >;
 
   constructor(
     database: Database,
@@ -166,11 +136,9 @@ export class ConnectorFactory {
       new DefaultSubstackClientFactory();
     this.#substackPublicationReader = dependencies.substackPublicationReader ??
       defaultSubstackPublicationReader;
-    this.#xApiClientFactory = dependencies.xApiClientFactory ??
-      defaultXApiClientFactory(dependencies.twexApiBaseUrl);
-    this.#xContentCacheFactory = dependencies.xContentCacheFactory ??
-      defaultXContentCacheFactory();
-    this.#cacheCoverageToleranceMs = dependencies.cacheCoverageToleranceMs;
+    this.#xBrowserRuntime = dependencies.xBrowserRuntime;
+    this.#xBrowserRuntimeLoader = dependencies.xBrowserRuntimeLoader ??
+      loadXBrowserRuntime;
   }
 
   async forSource(
@@ -223,40 +191,39 @@ export class ConnectorFactory {
     };
   }
 
+  async #resolveXBrowserRuntime(): Promise<
+    Pick<XBrowserRuntime, "createConnector">
+  > {
+    if (this.#xBrowserRuntime) return this.#xBrowserRuntime;
+    try {
+      this.#loadedXBrowserRuntime ??= this.#xBrowserRuntimeLoader();
+      return await this.#loadedXBrowserRuntime;
+    } catch (error) {
+      this.#loadedXBrowserRuntime = undefined;
+      throw new Error("Failed to load X browser runtime", { cause: error });
+    }
+  }
+
   async #xConnector(
     source: PublicSource,
     userId: string,
   ): Promise<ConnectorHandle> {
-    const credentialSnapshot = await getDecryptedCredentialSnapshot(
-      this.#database,
-      source.id,
-      userId,
-      this.#credentialCipher,
-    );
     const credentials = xCredentialSchema.parse(
-      credentialSnapshot.credentials,
+      await getDecryptedCredentials(
+        this.#database,
+        source.id,
+        userId,
+        this.#credentialCipher,
+      ),
     );
-    const client = this.#xApiClientFactory.createClient({
-      apiKey: credentials.apiKey,
-      authToken: credentials.authToken,
-      cookie: credentials.cookie,
-      pin: credentials.pin,
-    });
-    const cache = this.#xContentCacheFactory.createCache(
-      this.#database,
-      source.id,
-      credentialSnapshot.credentialRevision,
-    );
-    const connector = new XConnector(
-      client,
-      cache,
-      credentials.listQuery,
-      this.#cacheCoverageToleranceMs,
-    );
+    if (credentials.profileId !== userId) {
+      throw new ConflictError("X source has invalid browser profile credentials");
+    }
+    const runtime = await this.#resolveXBrowserRuntime();
+    const connector = runtime.createConnector(credentials.profileId);
     return {
       connector,
       ingestionMode: "batch",
-      sourceCredentialRevision: credentialSnapshot.credentialRevision,
       dispose: async () => await connector.dispose(),
     };
   }

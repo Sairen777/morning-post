@@ -47,6 +47,7 @@ test("operational scripts validate and load the production environment", async (
       "e2e:api",
       "e2e:db:cleanup",
       "test:analysis:live",
+      "test:x:live",
       "capture-fixtures",
     ]
   ) {

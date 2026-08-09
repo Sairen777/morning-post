@@ -4,11 +4,8 @@ import type {
   NormalizedItem,
 } from "../connectors/connector.types.ts";
 import type { Database } from "../db/client.ts";
-import {
-  assertFeedActiveForSourceConnectionRevision,
-  type PublicFeed,
-  setLastFetched,
-} from "../repositories/feed-repository.ts";
+import type { PublicFeed } from "../repositories/feed-repository.ts";
+import { setLastFetched } from "../repositories/feed-repository.ts";
 import {
   upsertItems,
   validateNormalizedItems,
@@ -33,7 +30,6 @@ export interface IngestFeedOptions {
   signal?: AbortSignal;
   connectorTimeoutMs?: number;
   concurrency?: number;
-  sourceCredentialRevision?: number;
 }
 
 export interface IngestFeedResult {
@@ -71,21 +67,6 @@ function validateFeedItems(
   return validItems;
 }
 
-function assertRevisionBoundFeedIsWritable(
-  database: Database,
-  userId: string,
-  feed: PublicFeed,
-  sourceCredentialRevision: number | undefined,
-): void {
-  if (sourceCredentialRevision === undefined) return;
-  assertFeedActiveForSourceConnectionRevision(
-    database,
-    feed.id,
-    userId,
-    sourceCredentialRevision,
-  );
-}
-
 export async function ingestFeed(
   database: Database,
   userId: string,
@@ -93,12 +74,6 @@ export async function ingestFeed(
   connector: Connector<unknown>,
   options: IngestFeedOptions = {},
 ): Promise<IngestFeedResult> {
-  assertRevisionBoundFeedIsWritable(
-    database,
-    userId,
-    feed,
-    options.sourceCredentialRevision,
-  );
   const window = computeIngestionWindow(feed, options);
   const normalizedData = await connector.getNormalizedData(
     window.from,
@@ -123,12 +98,6 @@ export async function ingestFeed(
     if (options.signal?.aborted) {
       throw new IngestionAbortError();
     }
-    assertRevisionBoundFeedIsWritable(
-      transactionalDatabase,
-      userId,
-      feed,
-      options.sourceCredentialRevision,
-    );
     upsertItems(
       transactionalDatabase,
       feed.id,
@@ -186,14 +155,6 @@ export async function ingestFeedsForSource(
     return {
       feedResults: feeds.map((feed) => ({ feedId: feed.id, error })),
     };
-  }
-  for (const feed of feeds) {
-    assertRevisionBoundFeedIsWritable(
-      database,
-      userId,
-      feed,
-      options.sourceCredentialRevision,
-    );
   }
 
   const feedWindows = feeds.map((feed) => {
@@ -272,12 +233,6 @@ export async function ingestFeedsForSource(
         if (options.signal?.aborted) {
           throw new IngestionAbortError();
         }
-        assertRevisionBoundFeedIsWritable(
-          transactionalDatabase,
-          userId,
-          feed,
-          options.sourceCredentialRevision,
-        );
         upsertItems(
           transactionalDatabase,
           feed.id,

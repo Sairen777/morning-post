@@ -217,7 +217,7 @@ test("operational redaction removes API keys, PEM keys, and URL userinfo", async
   const rawGrokKey = "gsk_secret";
   const rawBearer = "Bearer token-secret";
   const rawPem = "-----BEGIN PRIVATE KEY-----\\nprivate-secret\\n-----END PRIVATE KEY-----";
-  const rawTwexKey = "twex-key-without-standard-prefix";
+  const rawUnprefixedApiKey = "key-without-standard-prefix";
   const rawAuthToken = "x-auth-token-secret";
   const rawCsrfToken = "x-csrf-token-secret";
   const rawPin = "4826";
@@ -226,7 +226,7 @@ test("operational redaction removes API keys, PEM keys, and URL userinfo", async
     const app = testApp((a) => {
       a.get("/secret-error", () => {
         throw new Error(
-          `credentials ${rawApiKey} ${rawGoogleKey} ${rawXaiKey} ${rawGrokKey} ${rawBearer} ${rawPem} https://alice:password@example.com/path apiKey=${rawTwexKey} auth_token=${rawAuthToken}; ct0=${rawCsrfToken}; pin=${rawPin}\nCookie: ${rawCookie}`,
+          `credentials ${rawApiKey} ${rawGoogleKey} ${rawXaiKey} ${rawGrokKey} ${rawBearer} ${rawPem} https://alice:password@example.com/path apiKey=${rawUnprefixedApiKey} auth_token=${rawAuthToken}; ct0=${rawCsrfToken}; pin=${rawPin}\nCookie: ${rawCookie}`,
         );
       });
     });
@@ -241,7 +241,7 @@ test("operational redaction removes API keys, PEM keys, and URL userinfo", async
         rawBearer,
         rawPem,
         "alice:password",
-        rawTwexKey,
+        rawUnprefixedApiKey,
         rawAuthToken,
         rawCsrfToken,
         rawPin,

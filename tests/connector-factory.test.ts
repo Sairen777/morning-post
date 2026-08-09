@@ -6,8 +6,6 @@ import {
   type SubstackClientFactory,
   type TelegramClientFactory,
   type TelegramClientHandle,
-  type XApiClientFactory,
-  type XContentCacheFactory,
 } from "../src/connectors/connector-factory.ts";
 import {
   CredentialCipher,
@@ -26,8 +24,6 @@ import {
 } from "../src/repositories/user-repository.ts";
 import { ConflictError, NotFoundError } from "../src/server/errors.ts";
 import type { SubstackPostReader } from "../src/connectors/substack/substack-connector.ts";
-import type { XApiClient, TwexFetch } from "../src/connectors/x/twex-api-client.ts";
-import type { XContentCache, XTimeRange } from "../src/repositories/x-content-cache-repository.ts";
 
 class FakeTelegramClientFactory implements TelegramClientFactory {
   readonly sessions: string[] = [];
@@ -47,86 +43,6 @@ class FakeTelegramClientFactory implements TelegramClientFactory {
       },
     } as unknown as TelegramClientHandle;
     return Promise.resolve(client);
-  }
-}
-
-class FakeXApiClientFactory implements XApiClientFactory {
-  readonly created: Array<{
-    credentials: Parameters<XApiClientFactory["createClient"]>[0];
-    options?: { baseUrl?: string; fetch?: TwexFetch };
-  }> = [];
-  createdClients = 0;
-  readonly pageCalls: Array<{
-    op: "list" | "chat";
-    listId?: string;
-    conversationId?: string;
-    from: number;
-    to: number;
-    cursor: string | null;
-  }> = [];
-
-  createClient(
-    credentials: Parameters<XApiClientFactory["createClient"]>[0],
-    options?: { baseUrl?: string; fetch?: TwexFetch },
-  ): XApiClient {
-    this.createdClients += 1;
-    this.created.push({ credentials, options });
-    return {
-      getUserInfo: () => Promise.reject(new Error("unused")),
-      searchLists: () => Promise.resolve([]),
-      getConversations: () => Promise.resolve([]),
-      getListPostsPage: (
-        listId: string,
-        from: number,
-        to: number,
-        cursor: string | null,
-      ) => {
-        this.pageCalls.push({ op: "list", listId, from, to, cursor });
-        return Promise.resolve({
-          items: [],
-          nextCursor: null,
-          complete: true,
-        });
-      },
-      getChatMessagesPage: (
-        conversationId: string,
-        from: number,
-        to: number,
-        cursor: string | null,
-      ) => {
-        this.pageCalls.push({ op: "chat", conversationId, from, to, cursor });
-        return Promise.resolve({
-          items: [],
-          nextCursor: null,
-          complete: true,
-        });
-      },
-    } as unknown as XApiClient;
-  }
-}
-
-class FakeXContentCacheFactory implements XContentCacheFactory {
-  readonly created: Array<{
-    database: Database;
-    sourceId: string;
-    expectedCredentialRevision?: number;
-  }> = [];
-  readonly gaps = new Map<string, XTimeRange[]>();
-
-  createCache(
-    database: Database,
-    sourceId: string,
-    expectedCredentialRevision?: number,
-  ): XContentCache {
-    this.created.push({ database, sourceId, expectedCredentialRevision });
-    return {
-      missingRanges: (feedExternalId: string) => this.gaps.get(feedExternalId) ?? [],
-      read: () => [],
-      pendingRanges: () => [],
-      recordPage: () => {},
-      record: () => {},
-      clear: () => {},
-    } as unknown as XContentCache;
   }
 }
 
@@ -168,21 +84,6 @@ async function encryptedCredentials(
     userId,
     connectorId,
   });
-}
-
-async function encryptedXCredentials(userId: string): Promise<EncryptedBlob> {
-  return await credentialCipher().encrypt(
-    JSON.stringify({
-      apiKey: "twex-api-key",
-      authToken: "auth-token-123",
-      cookie: "auth_token=auth-token-123; ct0=csrf-token-456",
-      pin: "1234",
-      listQuery: "my-lists",
-      xUserId: "x-user-1",
-      xUsername: "alice",
-    }),
-    { userId, connectorId: ConnectorId.X },
-  );
 }
 
 async function encryptedSubstackCredentials(
@@ -262,121 +163,6 @@ test("ConnectorFactory builds an individual Substack connector from encrypted cr
       substackSessionId: "s%3Asubstack.signature",
       connectSessionId: "s%3Aconnect.signature",
     }]);
-  });
-});
-
-test("ConnectorFactory builds an X connector from encrypted credentials with client and cache factories", async () => {
-  await withTestDb(async (database) => {
-    const user = await createUser(
-      database,
-      userInput("x-factory@example.com"),
-    );
-    const source = await createSource(database, {
-      userId: user.id,
-      connectorId: ConnectorId.X,
-      credentials: await encryptedXCredentials(user.id),
-    });
-    const xApiClientFactory = new FakeXApiClientFactory();
-    const xContentCacheFactory = new FakeXContentCacheFactory();
-    const factory = new ConnectorFactory(database, {
-      credentialCipher: credentialCipher(),
-      telegramClientFactory: new FakeTelegramClientFactory(),
-      xApiClientFactory,
-      xContentCacheFactory,
-    });
-
-    const handle = await factory.forSource(source, user.id);
-    assertEquals(handle.ingestionMode, "batch");
-    assertEquals(typeof handle.connector.getNormalizedData, "function");
-    assertEquals(xApiClientFactory.createdClients, 1);
-    assertEquals(xApiClientFactory.created[0].credentials, {
-      apiKey: "twex-api-key",
-      authToken: "auth-token-123",
-      cookie: "auth_token=auth-token-123; ct0=csrf-token-456",
-      pin: "1234",
-    });
-    // The handle and the cache are bound to the same credential revision.
-    assertEquals(handle.sourceCredentialRevision, 1);
-    assertEquals(xContentCacheFactory.created, [{
-      database,
-      sourceId: source.id,
-      expectedCredentialRevision: 1,
-    }]);
-
-    await handle.dispose?.();
-    await assertRejects(
-      () => handle.connector.getRawData(0, 1),
-      Error,
-      "X connector has been disposed",
-    );
-  });
-});
-
-test("ConnectorFactory threads cache coverage tolerance into the X connector", async () => {
-  await withTestDb(async (database) => {
-    const user = await createUser(
-      database,
-      userInput("x-tolerance@example.com"),
-    );
-    const source = await createSource(database, {
-      userId: user.id,
-      connectorId: ConnectorId.X,
-      credentials: await encryptedXCredentials(user.id),
-    });
-    const windowFrom = 1_700_000_000_000;
-    const windowTo = windowFrom + 10_000;
-
-    const toleratedApiClientFactory = new FakeXApiClientFactory();
-    const toleratedCacheFactory = new FakeXContentCacheFactory();
-    const toleratedFactory = new ConnectorFactory(database, {
-      credentialCipher: credentialCipher(),
-      telegramClientFactory: new FakeTelegramClientFactory(),
-      xApiClientFactory: toleratedApiClientFactory,
-      xContentCacheFactory: toleratedCacheFactory,
-      cacheCoverageToleranceMs: 600_000,
-    });
-    const toleratedHandle = await toleratedFactory.forSource(source, user.id);
-    // A head sliver under the tolerance with real coverage behind it is
-    // suppressed only when the configured tolerance reaches the connector.
-    toleratedCacheFactory.gaps.set("x:list:1001", [
-      { from: windowFrom, to: windowFrom + 500 },
-    ]);
-    await toleratedHandle.connector.getRawData(windowFrom, windowTo, [
-      "x:list:1001",
-    ]);
-    assertEquals(
-      toleratedApiClientFactory.pageCalls,
-      [],
-      "a threaded tolerance must suppress the head sliver",
-    );
-    await toleratedHandle.dispose?.();
-
-    const exactApiClientFactory = new FakeXApiClientFactory();
-    const exactCacheFactory = new FakeXContentCacheFactory();
-    const exactFactory = new ConnectorFactory(database, {
-      credentialCipher: credentialCipher(),
-      telegramClientFactory: new FakeTelegramClientFactory(),
-      xApiClientFactory: exactApiClientFactory,
-      xContentCacheFactory: exactCacheFactory,
-      cacheCoverageToleranceMs: 0,
-    });
-    const exactHandle = await exactFactory.forSource(source, user.id);
-    exactCacheFactory.gaps.set("x:list:1001", [
-      { from: windowFrom, to: windowFrom + 500 },
-    ]);
-    await exactHandle.connector.getRawData(windowFrom, windowTo, [
-      "x:list:1001",
-    ]);
-    assertEquals(exactApiClientFactory.pageCalls, [
-      {
-        op: "list",
-        listId: "1001",
-        from: windowFrom,
-        to: windowFrom + 500,
-        cursor: null,
-      },
-    ]);
-    await exactHandle.dispose?.();
   });
 });
 

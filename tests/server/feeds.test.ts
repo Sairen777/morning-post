@@ -12,23 +12,9 @@ import {
   type PublicFeed,
 } from "../../src/repositories/feed-repository.ts";
 import { createSource } from "../../src/repositories/source-repository.ts";
-import {
-  listDiscoveredFeedsForSource,
-  replaceDiscoveredFeedsForRevision,
-} from "../../src/repositories/x-discovered-feed-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
 import type { FeedDiscoveryFactory, FeedDiscoveryHandle } from "../../src/services/feed-service.ts";
-import {
-  DefaultFeedDiscoveryFactory,
-} from "../../src/services/feed-service.ts";
-import {
-  type XApiClientFactory,
-  type XContentCacheFactory,
-} from "../../src/connectors/connector-factory.ts";
-import type { XApiClient } from "../../src/connectors/x/twex-api-client.ts";
-import type { XContentCache } from "../../src/repositories/x-content-cache-repository.ts";
-import { upsertSourceCredentials } from "../../src/repositories/source-repository.ts";
 import { createUser } from "../../src/repositories/user-repository.ts";
 import { createSession } from "../../src/auth/session-service.ts";
 
@@ -124,45 +110,6 @@ async function encryptCredentials(
   });
 }
 
-async function encryptXCredentials(
-  credentialCipher: CredentialCipher,
-  userId: string,
-): Promise<EncryptedBlob> {
-  return await credentialCipher.encrypt(
-    JSON.stringify({
-      apiKey: "twex-api-key",
-      authToken: "auth-token-123",
-      cookie: "auth_token=auth-token-123; ct0=csrf-token-456",
-      pin: "1234",
-      listQuery: "my-lists",
-      xUserId: "x-user-1",
-      xUsername: "alice",
-    }),
-    { userId, connectorId: ConnectorId.X },
-  );
-}
-
-async function createConnectedXSource(
-  database: Database,
-  userId: string,
-): Promise<{ id: string }> {
-  return await createSource(database, {
-    userId,
-    connectorId: ConnectorId.X,
-    credentials: await encryptXCredentials(buildCredentialCipher(), userId),
-    enabled: true,
-  });
-}
-
-const X_CATALOG_FEEDS: AvailableFeed[] = [
-  { externalId: "x:list:44196397", name: "Curated List", kind: "news" },
-  {
-    externalId: "x:chat:group-42",
-    name: "Group (5 participants) - group-42",
-    kind: "discussion",
-  },
-];
-
 async function createOwnedSource(
   database: Database,
   userId: string,
@@ -199,10 +146,7 @@ test("GET X available feeds extends the bound request timeout before discovery",
   await withTestDb(async (database) => {
     const events: string[] = [];
     const discoveryFactory = new FakeFeedDiscoveryFactory(
-      [
-        { externalId: "x:list:44196397", name: "Curated List", kind: "news" },
-        { externalId: "x:chat:group-42", name: "Group (5 participants) - group-42", kind: "discussion" },
-      ],
+      [{ externalId: "x:following", name: "Following", kind: "news" }],
       () => events.push("discover"),
     );
     const app = buildApp(database, { feeds: { discoveryFactory } });
@@ -232,7 +176,7 @@ test("GET X available feeds extends the bound request timeout before discovery",
   });
 });
 
-test("generic feed routes reject connector-owned Substack creation and require a current catalog for X subscription", async () => {
+test("generic feed routes reject connector-owned Substack and X creation paths", async () => {
   await withTestDb(async (database) => {
     const discoveryFactory = new FakeFeedDiscoveryFactory([]);
     const app = buildApp(database, { feeds: { discoveryFactory } });
@@ -259,15 +203,11 @@ test("generic feed routes reject connector-owned Substack creation and require a
     });
     assertEquals(subscribe.status, 409);
 
-    // X subscription is authorized only by a catalog entry for the source's
-    // current revision, and server-canonical name/kind win over the client.
-    const xSource = await createConnectedXSource(database, user.id);
-    replaceDiscoveredFeedsForRevision(database, xSource.id, 1, X_CATALOG_FEEDS);
-
-    const xListSubscribe = await app.request(`/sources/${xSource.id}/feeds`, {
+    const xSource = await createOwnedSource(database, user.id, ConnectorId.X);
+    const xSubscribe = await app.request(`/sources/${xSource.id}/feeds`, {
       ...jsonRequest("POST", {
-        externalId: "x:list:44196397",
-        name: "Spoofed List Name",
+        externalId: "x:chat:compose",
+        name: "Unverified X target",
         kind: "discussion",
       }),
       headers: {
@@ -276,71 +216,7 @@ test("generic feed routes reject connector-owned Substack creation and require a
         Origin: "http://127.0.0.1:5173",
       },
     });
-    assertEquals(xListSubscribe.status, 201);
-    const xListFeed = await xListSubscribe.json() as PublicFeed;
-    assertEquals(xListFeed.externalId, "x:list:44196397");
-    assertEquals(xListFeed.name, "Curated List");
-    assertEquals(xListFeed.kind, "news");
-
-    const xChatSubscribe = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:chat:group-42",
-        name: "Spoofed Chat Name",
-        kind: "news",
-      }),
-      headers: {
-        "content-type": "application/json",
-        cookie,
-        Origin: "http://127.0.0.1:5173",
-      },
-    });
-    assertEquals(xChatSubscribe.status, 201);
-    const xChatFeed = await xChatSubscribe.json() as PublicFeed;
-    assertEquals(xChatFeed.externalId, "x:chat:group-42");
-    assertEquals(xChatFeed.name, "Group (5 participants) - group-42");
-    assertEquals(xChatFeed.kind, "discussion");
-
-    // Uncataloged well-formed targets (e.g. a direct DM) fail closed.
-    const directDm = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:chat:direct-dm-1",
-        name: "Direct DM",
-        kind: "discussion",
-      }),
-      headers: {
-        "content-type": "application/json",
-        cookie,
-        Origin: "http://127.0.0.1:5173",
-      },
-    });
-    assertEquals(directDm.status, 409);
-
-    // Non-list/non-chat and malformed external IDs are validation errors.
-    for (const externalId of ["x:following", "bogus", "x:list:not-a-number"]) {
-      const malformed = await app.request(`/sources/${xSource.id}/feeds`, {
-        ...jsonRequest("POST", {
-          externalId,
-          name: "Spoofed",
-          kind: "news",
-        }),
-        headers: {
-          "content-type": "application/json",
-          cookie,
-          Origin: "http://127.0.0.1:5173",
-        },
-      });
-      assertEquals(malformed.status, 422, `expected 422 for ${externalId}`);
-      await malformed.body?.cancel();
-    }
-
-    const listed = await app.request(`/sources/${xSource.id}/feeds`, {
-      headers: { cookie },
-    });
-    const feeds = await listed.json() as PublicFeed[];
-    assertEquals(feeds.map((feed) => feed.externalId), [
-      "x:list:44196397",
-      "x:chat:group-42",
-    ]);
+    assertEquals(xSubscribe.status, 409);
   });
 });
 
@@ -660,255 +536,5 @@ test("feed routes validate bodies and parameters", async () => {
       headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
     });
     assertEquals(invalidParameterResponse.status, 422);
-  });
-});
-
-interface XCallCounters {
-  searchLists: number;
-  getConversations: number;
-}
-
-function fakeXDiscoveryClient(counters: XCallCounters, state: {
-  lists: Array<{ id: string; name: string }>;
-  conversations: Array<{ conversation_id: string; type: string; participants: string[] }>;
-}): XApiClientFactory {
-  return {
-    createClient: () => ({
-      getUserInfo: () => Promise.reject(new Error("unused")),
-      searchLists: (_query: string, _targetCount: number) => {
-        counters.searchLists += 1;
-        return Promise.resolve(state.lists);
-      },
-      getConversations: () => {
-        counters.getConversations += 1;
-        return Promise.resolve(state.conversations);
-      },
-      getListPostsPage: () => Promise.resolve({
-        items: [],
-        nextCursor: null,
-        complete: true,
-      }),
-      getChatMessagesPage: () => Promise.resolve({
-        items: [],
-        nextCursor: null,
-        complete: true,
-      }),
-    } as unknown as XApiClient),
-  };
-}
-
-function fakeXDiscoveryCache(): XContentCacheFactory {
-  return {
-    createCache: () => ({
-      missingRanges: () => [],
-      read: () => [],
-      pendingRanges: () => [],
-      recordPage: () => {},
-      record: () => {},
-      clear: () => {},
-    } as unknown as XContentCache),
-  };
-}
-
-interface MutableXDiscovery {
-  factory: FeedDiscoveryFactory;
-  state: {
-    lists: Array<{ id: string; name: string }>;
-    conversations: Array<{ conversation_id: string; type: string; participants: string[] }>;
-  };
-  counters: XCallCounters;
-}
-
-function xDiscoveryFactory(database: Database, options: {
-  lists?: Array<{ id: string; name: string }>;
-  conversations?: Array<{ conversation_id: string; type: string; participants: string[] }>;
-} = {}): MutableXDiscovery {
-  const counters: XCallCounters = { searchLists: 0, getConversations: 0 };
-  const state = {
-    lists: options.lists ?? [{ id: "44196397", name: "Curated List" }],
-    conversations: options.conversations ?? [
-      {
-        conversation_id: "group-42",
-        type: "group",
-        participants: ["a", "b", "c", "d", "e"],
-      },
-      { conversation_id: "direct-dm-1", type: "direct", participants: ["a", "b"] },
-    ],
-  };
-  const factory = new DefaultFeedDiscoveryFactory(
-    database,
-    buildCredentialCipher(),
-    undefined,
-    {
-      xApiClientFactory: fakeXDiscoveryClient(counters, state),
-      xContentCacheFactory: fakeXDiscoveryCache(),
-    },
-  );
-  return { factory, state, counters };
-}
-
-test("X discovery populates the catalog and subscription enforces it end to end", async () => {
-  await withTestDb(async (database) => {
-    const discovery = xDiscoveryFactory(database);
-    const app = buildApp(database, {
-      feeds: { discoveryFactory: discovery.factory },
-    });
-    const { user, cookie } = await registerAndLogin(app);
-    const xSource = await createConnectedXSource(database, user.id);
-
-    // Fresh discovery catalogs exactly the returned lists and group chats,
-    // excluding direct-DM conversations.
-    const discoveryResponse = await app.request(
-      `/sources/${xSource.id}/available-feeds`,
-      { headers: { cookie } },
-    );
-    assertEquals(discoveryResponse.status, 200);
-    const discovered = await discoveryResponse.json() as AvailableFeed[];
-    assertEquals(discovered.map((feed) => feed.externalId), [
-      "x:list:44196397",
-      "x:chat:group-42",
-    ]);
-    assertEquals(listDiscoveredFeedsForSource(database, xSource.id).length, 2);
-    assertEquals(discovery.counters, { searchLists: 1, getConversations: 1 });
-
-    // Subscription of a cataloged target with spoofed metadata persists the
-    // server-canonical name/kind.
-    const subscribeResponse = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:list:44196397",
-        name: "Spoofed List Name",
-        kind: "discussion",
-      }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
-    });
-    assertEquals(subscribeResponse.status, 201);
-    const feed = await subscribeResponse.json() as PublicFeed;
-    assertEquals(feed.name, "Curated List");
-    assertEquals(feed.kind, "news");
-
-    // Uncataloged direct DMs and malformed IDs stay rejected, and no upstream
-    // discovery call happens for any subscription.
-    const directDm = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:chat:direct-dm-1",
-        name: "Direct DM",
-        kind: "discussion",
-      }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
-    });
-    assertEquals(directDm.status, 409);
-    const malformed = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:following",
-        name: "Spoofed",
-        kind: "news",
-      }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
-    });
-    assertEquals(malformed.status, 422);
-    await malformed.body?.cancel();
-    assertEquals(discovery.counters, { searchLists: 1, getConversations: 1 });
-
-    // A same-account reconnect bumps the revision: the old catalog no longer
-    // authorizes anything until a fresh discovery replaces it.
-    await upsertSourceCredentials(database, {
-      userId: user.id,
-      connectorId: ConnectorId.X,
-      credentials: await encryptXCredentials(buildCredentialCipher(), user.id),
-    });
-    const staleSubscribe = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:list:44196397",
-        name: "Curated List",
-        kind: "news",
-      }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
-    });
-    assertEquals(staleSubscribe.status, 409);
-
-    // A fresh discovery at the new revision authorizes the returned targets
-    // again, and a changed result set replaces the catalog.
-    const refreshed = await app.request(`/sources/${xSource.id}/available-feeds`, {
-      headers: { cookie },
-    });
-    assertEquals(refreshed.status, 200);
-    const refreshedSubscribe = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:list:44196397",
-        name: "Spoofed Again",
-        kind: "discussion",
-      }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
-    });
-    assertEquals(refreshedSubscribe.status, 201);
-    assertEquals((await refreshedSubscribe.json() as PublicFeed).name, "Curated List");
-  });
-});
-
-test("X discovery catalog is replaced by a changed result set and supports connected-but-disabled sources", async () => {
-  await withTestDb(async (database) => {
-    const discovery = xDiscoveryFactory(database, {
-      lists: [{ id: "44196397", name: "Curated List" }],
-    });
-    const app = buildApp(database, {
-      feeds: { discoveryFactory: discovery.factory },
-    });
-    const { user, cookie } = await registerAndLogin(app);
-    const xSource = await createConnectedXSource(database, user.id);
-
-    const firstDiscovery = await app.request(`/sources/${xSource.id}/available-feeds`, {
-      headers: { cookie },
-    });
-    assertEquals(firstDiscovery.status, 200);
-    assertEquals(listDiscoveredFeedsForSource(database, xSource.id).length, 2);
-
-    // A second discovery with a different result set replaces the catalog
-    // wholesale: the dropped target is no longer subscribable.
-    discovery.state.lists = [{ id: "777", name: "New List" }];
-    discovery.state.conversations = [];
-    const secondDiscovery = await app.request(`/sources/${xSource.id}/available-feeds`, {
-      headers: { cookie },
-    });
-    assertEquals(secondDiscovery.status, 200);
-    assertEquals((await secondDiscovery.json() as AvailableFeed[]).map((feed) => feed.externalId), [
-      "x:list:777",
-    ]);
-    assertEquals(listDiscoveredFeedsForSource(database, xSource.id), [
-      {
-        credentialRevision: 1,
-        externalId: "x:list:777",
-        name: "New List",
-        kind: "news",
-      },
-    ]);
-    const dropped = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:chat:group-42",
-        name: "Dropped",
-        kind: "discussion",
-      }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
-    });
-    assertEquals(dropped.status, 409);
-
-    // Disabled-but-connected sources still discover and subscribe.
-    const disableResponse = await app.request(`/sources/${xSource.id}`, {
-      ...jsonRequest("PATCH", { enabled: false }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
-    });
-    assertEquals(disableResponse.status, 200);
-    assertEquals((await disableResponse.json()).enabled, false);
-    const disabledSubscribe = await app.request(`/sources/${xSource.id}/feeds`, {
-      ...jsonRequest("POST", {
-        externalId: "x:list:777",
-        name: "Spoofed",
-        kind: "discussion",
-      }),
-      headers: { "content-type": "application/json", cookie, Origin: "http://127.0.0.1:5173" },
-    });
-    assertEquals(disabledSubscribe.status, 201);
-    const disabledFeed = await disabledSubscribe.json() as PublicFeed;
-    assertEquals(disabledFeed.name, "New List");
-    assertEquals(disabledFeed.kind, "news");
   });
 });

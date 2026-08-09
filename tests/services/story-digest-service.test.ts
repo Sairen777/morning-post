@@ -1,5 +1,4 @@
 import { test } from "bun:test";
-import { sql } from "drizzle-orm";
 import {
   assertEquals,
   assertRejects,
@@ -18,13 +17,11 @@ import { createUser } from "../../src/repositories/user-repository.ts";
 import {
   createSource,
   updateSource,
-  upsertSourceCredentials,
 } from "../../src/repositories/source-repository.ts";
 import {
   createOrReviveFeed,
   updateFeed,
 } from "../../src/repositories/feed-repository.ts";
-import { replaceDiscoveredFeedsForRevision } from "../../src/repositories/x-discovered-feed-repository.ts";
 import { upsertItems } from "../../src/repositories/item-repository.ts";
 import { upsertDigestForPeriod } from "../../src/repositories/digest-repository.ts";
 import {
@@ -38,8 +35,6 @@ import {
   CURRENT_STORY_SUMMARY_VERSION,
   THOROUGH_STORY_SUMMARY_VERSION,
 } from "../../src/services/story-digest-service.ts";
-import { OpenAICompatibleChatClient } from "../../src/summarizers/openai-compatible-client.ts";
-import { OpenAICompatibleStoryIntelligenceService } from "../../src/services/story-intelligence-service.ts";
 import { fingerprintStoryAnalysisMember, fingerprintStoryItem, groupStoryAnalysisUnits, partitionStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
 import type {
   AnalyzedStoryItem,
@@ -1750,239 +1745,5 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
       ),
       true,
     );
-  });
-});
-
-test("guarded X feed aborts at a model retry boundary with one fetch and no stale persistence", async () => {
-  await withTestDb(async (database) => {
-    const user = await createUser(database, {
-      name: "Retry Boundary Owner",
-      email: "story-retry-boundary@example.com",
-      passwordHash: "$argon2id$fake",
-      defaultLanguage: "en",
-      systemPrompt: "",
-      relevanceThreshold: 0,
-      storyDetailLevel: "balanced",
-    });
-    const cipher = new CredentialCipher(
-      new EnvMasterKeyProvider(new Uint8Array(32).fill(11)),
-    );
-    const source = await createSource(database, {
-      userId: user.id,
-      connectorId: ConnectorId.X,
-      credentials: await cipher.encrypt("{}", {
-        userId: user.id,
-        connectorId: ConnectorId.X,
-      }),
-    });
-    replaceDiscoveredFeedsForRevision(database, source.id, 1, [
-      { externalId: "x:list:91001", name: "Retry feed", kind: "news" },
-    ]);
-    const feed = await createOrReviveFeed(database, {
-      userId: user.id,
-      sourceId: source.id,
-      externalId: "x:list:91001",
-      name: "Retry feed",
-      kind: "news",
-    });
-    await upsertItems(database, feed.id, [{
-      connectorId: ConnectorId.X,
-      feedExternalId: feed.externalId,
-      externalId: "retry-item",
-      date: 100,
-      title: "Retry item",
-      text: "A guarded account item that must never be summarized.",
-      author: null,
-      url: "https://x.example/retry",
-    }], 101);
-    const row = await upsertDigestForPeriod(database, {
-      userId: user.id,
-      periodStartMs: 0,
-      periodEndMs: 200,
-      status: "pending",
-    });
-    let fetchCount = 0;
-    // The real client runs the retry loop; the first transport attempt fails
-    // after a same-account reconnect lands, so the pre-flight gate on the
-    // retry must refuse to dispatch a second fetch.
-    const intelligence = new OpenAICompatibleStoryIntelligenceService({
-      client: new OpenAICompatibleChatClient(
-        { model: "analysis", baseUrl: "http://localhost" },
-        {
-          retryBaseDelayMs: 0,
-          fetch: async () => {
-            fetchCount++;
-            await upsertSourceCredentials(database, {
-              userId: user.id,
-              connectorId: ConnectorId.X,
-              credentials: await cipher.encrypt("{}", {
-                userId: user.id,
-                connectorId: ConnectorId.X,
-              }),
-            });
-            throw new TypeError("transport reset");
-          },
-        },
-      ),
-      mediaDescriber: { describe: async () => null },
-    });
-    const error = await assertRejects(
-      () => assembleStoryDigest(
-        database,
-        row.id,
-        user,
-        [feed],
-        0,
-        200,
-        {
-          intelligence,
-          analyzerVersion: "retry-boundary-v1",
-          credentialRevisionByFeedId: new Map([[feed.id, 1]]),
-        },
-      ),
-      "source connection changed",
-    );
-    assertStringIncludes(
-      error.message,
-      "source connection changed",
-    );
-    // The retry gate threw before the second transport attempt: exactly one
-    // outbound fetch ever carried the revoked feed's content.
-    assertEquals(fetchCount, 1);
-    assertEquals(
-      Number(
-        database.all<Record<string, unknown>>(
-          sql`select count(*) as count from item_analyses`,
-        )[0].count,
-      ),
-      0,
-    );
-    assertEquals(await listDigestStories(database, user.id, row.id), []);
-  });
-});
-
-test("guarded X feeds abort between the two classification calls without dispatching the second", async () => {
-  await withTestDb(async (database) => {
-    const user = await createUser(database, {
-      name: "Classification Boundary Owner",
-      email: "story-classification-boundary@example.com",
-      passwordHash: "$argon2id$fake",
-      defaultLanguage: "en",
-      systemPrompt: "",
-      relevanceThreshold: 50,
-      storyDetailLevel: "balanced",
-    });
-    const cipher = new CredentialCipher(
-      new EnvMasterKeyProvider(new Uint8Array(32).fill(12)),
-    );
-    const source = await createSource(database, {
-      userId: user.id,
-      connectorId: ConnectorId.X,
-      credentials: await cipher.encrypt("{}", {
-        userId: user.id,
-        connectorId: ConnectorId.X,
-      }),
-    });
-    replaceDiscoveredFeedsForRevision(database, source.id, 1, [
-      {
-        externalId: "x:list:91002",
-        name: "Personalized feed",
-        kind: "news",
-      },
-      {
-        externalId: "x:list:91003",
-        name: "Include-all feed",
-        kind: "news",
-      },
-    ]);
-    const personalizedFeed = await createOrReviveFeed(database, {
-      userId: user.id,
-      sourceId: source.id,
-      externalId: "x:list:91002",
-      name: "Personalized feed",
-      kind: "news",
-      relevanceFilterMode: "personalized",
-    });
-    const includeAllFeed = await createOrReviveFeed(database, {
-      userId: user.id,
-      sourceId: source.id,
-      externalId: "x:list:91003",
-      name: "Include-all feed",
-      kind: "news",
-      relevanceFilterMode: "include_all",
-    });
-    for (const feed of [personalizedFeed, includeAllFeed]) {
-      await upsertItems(database, feed.id, [{
-        connectorId: ConnectorId.X,
-        feedExternalId: feed.externalId,
-        externalId: `item-${feed.externalId}`,
-        date: 100,
-        title: `Title ${feed.name}`,
-        text: `Guarded item from ${feed.name}.`,
-        author: null,
-        url: `https://x.example/${feed.externalId}`,
-      }], 101);
-    }
-    const row = await upsertDigestForPeriod(database, {
-      userId: user.id,
-      periodStartMs: 0,
-      periodEndMs: 200,
-      status: "pending",
-    });
-    const intelligence = new FixtureIntelligence();
-    // One story per feed so both the personalized and the include-all
-    // classification calls are populated (the shared-story default would fold
-    // every item into one story and skip the personalized call).
-    intelligence.splitStories = true;
-    let classifyCalls = 0;
-    intelligence.classify = async (stories, _rules, threshold) => {
-      classifyCalls++;
-      // A same-account reconnect lands while the first classification runs:
-      // the fence after it must abort before the second classification is
-      // dispatched.
-      await upsertSourceCredentials(database, {
-        userId: user.id,
-        connectorId: ConnectorId.X,
-        credentials: await cipher.encrypt("{}", {
-          userId: user.id,
-          connectorId: ConnectorId.X,
-        }),
-      });
-      return stories.map((story) => ({
-        storyId: story.id,
-        relevant: threshold <= 80,
-        score: 80,
-        matchedInterestRuleIds: [],
-        blockedByInterestRuleIds: [],
-        reason: "fixture",
-      }));
-    };
-    const error = await assertRejects(
-      () => assembleStoryDigest(
-        database,
-        row.id,
-        user,
-        [personalizedFeed, includeAllFeed],
-        0,
-        200,
-        {
-          intelligence,
-          analyzerVersion: "classification-boundary-v1",
-          credentialRevisionByFeedId: new Map([
-            [personalizedFeed.id, 1],
-            [includeAllFeed.id, 1],
-          ]),
-        },
-      ),
-      "source connection changed",
-    );
-    assertStringIncludes(
-      error.message,
-      "source connection changed",
-    );
-    // The second classification never started and no digest stories were
-    // replaced from the revoked feed content.
-    assertEquals(classifyCalls, 1);
-    assertEquals(await listDigestStories(database, user.id, row.id), []);
   });
 });

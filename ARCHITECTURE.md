@@ -33,16 +33,18 @@ date formatting happens at the presentation layer.
 
 ### 1. Connectors
 
-Each connector wraps a single external service (Telegram, RSS, Twitter, etc.)
-and is responsible for two things only: **fetching** and **normalizing**.
+Each connector wraps a single external source (Telegram, RSS, X, etc.) and is
+responsible for two things only: **fetching** and **normalizing**.
 
 Every connector implements the `Connector<TRawData>` interface in
 `src/connectors/connector.types.ts`. Connector files have exactly one exported
-class implementing that interface. Connector config (API keys, URLs) is provided
-at instantiation time via env vars.
+class implementing that interface. Connector config (URLs, browser
+channel/profile roots, API credentials where applicable) is provided at
+instantiation time via env vars.
 
 `getRawData(from, to)` fetches raw messages within the time window from the
-service API. Caching for repeat calls in a short window is a DB-layer concern
+external source. Caching for repeat calls in a short window is a DB-layer
+concern
 (see `ROADMAP.md`).
 
 **`getRawData` stays on the interface deliberately.** No external caller uses it
@@ -243,16 +245,20 @@ using Drizzle ORM over Bun's built-in SQLite. The conceptual shape:
   independently selectable per feed even when multiple feeds share one source.
   Standard (`basic`) is the default for newly created or revived feeds unless
   explicitly supplied. A **Feed** has cached **Item** rows and immutable
-  **Summary** rows.
+  **Summary** rows. X sources additionally enforce at most 250 non-deleted
+  feeds inside the create-or-revive transaction, matching one connector
+  collection batch.
 - A **Digest** is the user-facing morning post for a period. Its sections are
   **derived, not stored**: the period's **Summary** rows for the user's
   non-deleted feeds, ordered by `(Source.position, then Feed.position or name)`.
 
 The persistence model mirrors the runtime's connector-agnostic stance: one
-generic `Source`/`Feed`/`Summary` triad instead of per-connector tables.
-Connector-specific fields live in `Source.credentials` — the persistence twin of
-`NormalizedItem.meta`, and the system's most sensitive asset (see Credentials
-&amp; secrets below).
+generic `Source`/`Feed`/`Summary` triad instead of per-connector content tables.
+Encrypted connector credentials live in `Source.credentials`, alongside
+connector-neutral feed and item records. X is the deliberate exception to
+database custody: `Source.credentials` stores only the canonical app-owned
+profile ID, while the account-equivalent X cookies and local storage remain in
+the dedicated filesystem profile beneath `X_BROWSER_PROFILE_ROOT`.
 
 All cross-layer timestamps are epoch ms (`number`); periods are explicit
 `periodStartMs`/`periodEndMs` ranges, never a day string.
@@ -278,11 +284,21 @@ summaries without re-ingestion, re-summarization, or a new model call.
 
 #### Credentials &amp; secrets
 
-`Source.credentials` is the highest-severity asset in the system. A Telegram
-session string is an **unrevokable, unscoped, full-account bearer token** — only
-the user can terminate it (Telegram → Devices); there is no server-side scope or
-revoke. Plaintext storage means one DB leak = full takeover of every connected
-account.
+`Source.credentials` and the app-owned X browser profile are the
+highest-severity assets in the system. A Telegram session string is an
+**unrevokable, unscoped, full-account bearer token** — only the user can
+terminate it (Telegram → Devices); there is no server-side scope or revoke. The
+X profile's cookies and local storage likewise grant account access even though
+the database holds only its encrypted canonical profile ID. Plaintext
+credential storage or exposure of that profile can therefore mean full account
+takeover.
+
+The X profile is an application-owned credential artifact, never a daily
+browser profile. Run Morning Post under a dedicated operating-system identity,
+keep `X_BROWSER_PROFILE_ROOT` owned by and accessible only to that identity,
+and protect or destroy profile backups with the same rigor as database
+credential backups. Browser automation does not reduce X platform,
+authentication-challenge, or account-restriction risk.
 
 **No zero-knowledge option here.** Morning Post runs scheduled digests while the
 user is offline, so the server must decrypt and use a credential without the
@@ -305,9 +321,13 @@ trusted-custodian posture of any SaaS that holds your OAuth tokens.
   the dangerous case precisely because a bot cannot read a user's full feed, so
   the session is required — which is why it earns the strongest custody.
 - **Never log credentials** (keep them out of `.debug_logs`), encrypt backups,
-  and make "disconnect" delete the row. For Telegram, prompt the user to revoke
-  the session in Telegram → Devices, since deleting your copy cannot revoke a
-  copy an attacker already exfiltrated.
+  and make disconnect clear `Source.credentials`, disable the source, and
+  soft-delete its active feeds without deleting captured history. X disconnect
+  additionally removes the app-owned browser profile under its exclusive lease;
+  an unmanaged Chrome close retains that lease until child-process exit is
+  confirmed, and a failed shutdown remains retryable.
+  For Telegram, prompt the user to revoke the session in Telegram → Devices,
+  since deleting your copy cannot revoke a copy an attacker already exfiltrated.
 - **This deploy — self-hosted, single owner.** App, DB, and backups share one
   box, so a key sitting on that box barely raises the bar: a rooted host reads
   decrypted secrets regardless. The moves that matter: (1) hold the **master key

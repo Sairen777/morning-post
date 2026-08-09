@@ -19,10 +19,6 @@ import {
   createSource,
   findSourceById,
 } from "../../src/repositories/source-repository.ts";
-import {
-  listDiscoveredFeedsForSource,
-  replaceDiscoveredFeedsForRevision,
-} from "../../src/repositories/x-discovered-feed-repository.ts";
 import { buildApp } from "../../src/server/app.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
 import { createUser } from "../../src/repositories/user-repository.ts";
@@ -143,15 +139,7 @@ async function createConnectedXSource(
       credentialCipher,
       userId,
       ConnectorId.X,
-      {
-        apiKey: "twex-api-key",
-        authToken: "auth-token-123",
-        cookie: "auth_token=auth-token-123; ct0=csrf-token-456",
-        pin: "1234",
-        listQuery: "my-lists",
-        xUserId: "x-user-1",
-        xUsername: "alice",
-      },
+      { profileId: userId },
     ),
     enabled: true,
   });
@@ -616,26 +604,48 @@ test("DELETE /sources/:id disconnects telegram sources and preserves the row for
   });
 });
 
-test("DELETE /sources/:id disconnects an X source with generic credential removal", async () => {
+test("DELETE /sources/:id disconnects an X source through the authenticated user's browser profile", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();
-    const app = buildApp(database);
+    const disconnectedProfileIds: string[] = [];
+    let sourceId: string | undefined;
+    let mutationObserved = false;
+    const app = buildApp(database, {
+      sources: {
+        xBrowserRuntime: {
+          async disconnectProfile<T>(
+            profileId: string,
+            mutation: () => Promise<T>,
+            _signal?: AbortSignal,
+          ): Promise<T> {
+            disconnectedProfileIds.push(profileId);
+            const result = await mutation();
+            const id = sourceId;
+            assertExists(id);
+            const storedRows = await database
+              .select({
+                credentials: sources.credentials,
+                enabled: sources.enabled,
+              })
+              .from(sources)
+              .where(eq(sources.id, id))
+              .limit(1);
+            assertExists(storedRows[0]);
+            assertEquals(storedRows[0].credentials, null);
+            assertEquals(storedRows[0].enabled, false);
+            mutationObserved = true;
+            return result;
+          },
+        },
+      },
+    });
     const { user, cookie } = await registerAndLogin(app);
     const source = await createConnectedXSource(
       database,
       credentialCipher,
       user.id,
     );
-    replaceDiscoveredFeedsForRevision(database, source.id, 1, [
-      { externalId: "x:list:44196397", name: "Curated List", kind: "news" },
-    ]);
-    const feed = await createOrReviveFeed(database, {
-      userId: user.id,
-      sourceId: source.id,
-      externalId: "x:list:44196397",
-      name: "Curated List",
-      kind: "news",
-    });
+    sourceId = source.id;
 
     const response = await app.request(`/sources/${source.id}`, {
       method: "DELETE",
@@ -644,6 +654,8 @@ test("DELETE /sources/:id disconnects an X source with generic credential remova
     assertEquals(response.status, 200);
     const json = await response.json();
 
+    assertEquals(disconnectedProfileIds, [user.id]);
+    assertEquals(mutationObserved, true);
     assertEquals(json.revokeTelegramSession, false);
     assertEquals(json.message, "Source disconnected.");
     assertEquals(json.source.id, source.id);
@@ -651,31 +663,78 @@ test("DELETE /sources/:id disconnects an X source with generic credential remova
     assertEquals(json.source.enabled, false);
     assertEquals("credentials" in json.source, false);
 
-    // Disconnect revokes the discovery catalog as well.
-    assertEquals(listDiscoveredFeedsForSource(database, source.id), []);
-
-    const storedRows = await database
-      .select({ credentials: sources.credentials, enabled: sources.enabled })
-      .from(sources)
-      .where(eq(sources.id, source.id))
-      .limit(1);
-    assertExists(storedRows[0]);
-    assertEquals(storedRows[0].credentials, null);
-    assertEquals(storedRows[0].enabled, false);
-
-    const activeFeeds = await listFeedsForUser(database, user.id);
-    assertEquals(activeFeeds.length, 0);
-    const historicalFeeds = await listFeedsForUser(database, user.id, {
-      includeDeleted: true,
-    });
-    assertEquals(historicalFeeds.length, 1);
-    assertEquals(historicalFeeds[0].id, feed.id);
-    assertExists(historicalFeeds[0].deletedAt);
-
     const stored = await findSourceById(database, source.id, user.id);
     assertExists(stored);
     assertEquals(stored.connected, false);
     assertEquals(stored.enabled, false);
+  });
+});
+
+test("DELETE /sources/:id retries X profile cleanup after a post-mutation failure", async () => {
+  await withTestDb(async (database: Database) => {
+    const credentialCipher = buildCredentialCipher();
+    const disconnectedProfileIds: string[] = [];
+    let disconnectAttempts = 0;
+    let mutationCalls = 0;
+    const app = buildApp(database, {
+      sources: {
+        xBrowserRuntime: {
+          async disconnectProfile<T>(
+            profileId: string,
+            mutation: () => Promise<T>,
+            _signal?: AbortSignal,
+          ): Promise<T> {
+            disconnectedProfileIds.push(profileId);
+            disconnectAttempts += 1;
+            const result = await mutation();
+            mutationCalls += 1;
+            if (disconnectAttempts === 1) {
+              throw new Error("browser profile cleanup failed");
+            }
+            return result;
+          },
+        },
+      },
+    });
+    const { user, cookie } = await registerAndLogin(app);
+    const source = await createConnectedXSource(
+      database,
+      credentialCipher,
+      user.id,
+    );
+    const request = {
+      method: "DELETE",
+      headers: { cookie, Origin: "http://127.0.0.1:5173" },
+    };
+
+    const failedResponse = await app.request(`/sources/${source.id}`, request);
+    assertEquals(failedResponse.status, 500);
+    assertEquals(await failedResponse.json(), {
+      error: { code: "INTERNAL_ERROR", message: "Internal server error" },
+    });
+    assertEquals(disconnectAttempts, 1);
+    assertEquals(mutationCalls, 1);
+
+    const storedAfterFailure = await findSourceById(
+      database,
+      source.id,
+      user.id,
+    );
+    assertExists(storedAfterFailure);
+    assertEquals(storedAfterFailure.connected, false);
+    assertEquals(storedAfterFailure.enabled, false);
+
+    const retryResponse = await app.request(`/sources/${source.id}`, request);
+    assertEquals(retryResponse.status, 200);
+    const retryJson = await retryResponse.json();
+
+    assertEquals(disconnectedProfileIds, [user.id, user.id]);
+    assertEquals(disconnectAttempts, 2);
+    assertEquals(mutationCalls, 2);
+    assertEquals(retryJson.source.id, source.id);
+    assertEquals(retryJson.source.connected, false);
+    assertEquals(retryJson.source.enabled, false);
+    assertEquals("credentials" in retryJson.source, false);
   });
 });
 

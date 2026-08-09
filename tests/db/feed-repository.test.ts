@@ -8,24 +8,20 @@ import {
 } from "../../src/crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../../src/crypto/key-provider.ts";
 import { withTestDb } from "../../src/db/testing.ts";
-import type { Database } from "../../src/db/client.ts";
 import { feeds } from "../../src/db/schema/feed.ts";
 import { credentialSchemaFor } from "../../src/connectors/credential-schemas.ts";
+import { MAX_X_FEEDS } from "../../src/connectors/x/x-connector.ts";
 import {
   createOrReviveFeed,
   type CreateOrReviveFeedInput,
+  type PublicFeed,
   findFeedById,
   listFeedsForSource,
   listFeedsForUser,
-  resetFeedsForSourceConnection,
   setLastFetched,
   softDeleteFeed,
   updateFeed,
 } from "../../src/repositories/feed-repository.ts";
-import {
-  listItemsForFeedInWindow,
-  upsertItems,
-} from "../../src/repositories/item-repository.ts";
 import {
   createSource,
   deleteSourceCredentials,
@@ -36,7 +32,7 @@ import {
   type CreateUserInput,
 } from "../../src/repositories/user-repository.ts";
 import { ConflictError, NotFoundError } from "../../src/server/errors.ts";
-import type { FeedKind, NormalizedItem } from "../../src/connectors/connector.types.ts";
+import type { FeedKind } from "../../src/connectors/connector.types.ts";
 import type { SummarizationMode } from "../../src/summarization-mode.ts";
 
 const telegramCredentials = { sessionString: "telegram-session-secret-3.1" };
@@ -101,22 +97,6 @@ function feedInput(
     name: "Morning Channel",
     kind: "news",
     ...overrides,
-  };
-}
-
-function normalizedFeedItem(
-  feedExternalId: string,
-  externalId: string,
-): NormalizedItem {
-  return {
-    connectorId: ConnectorId.Telegram,
-    feedExternalId,
-    externalId,
-    date: 1_700_000_000_000,
-    title: null,
-    text: "reset item",
-    author: "Channel",
-    url: null,
   };
 }
 
@@ -285,69 +265,6 @@ test("softDeleteFeed hides feeds by default while preserving the row for history
   });
 });
 
-test("resetFeedsForSourceConnection deletes normalized items for every feed of the source", async () => {
-  await withTestDb(async (database) => {
-    const { user, source } = await createOwnedSource(
-      database,
-      "feed-reset-items@example.com",
-    );
-    const first = await createOrReviveFeed(
-      database,
-      feedInput(user.id, source.id, { externalId: "reset-1" }),
-    );
-    const second = await createOrReviveFeed(
-      database,
-      feedInput(user.id, source.id, { externalId: "reset-2" }),
-    );
-    await upsertItems(database, first.id, [
-      normalizedFeedItem("reset-1", "1"),
-    ]);
-    await upsertItems(database, second.id, [
-      normalizedFeedItem("reset-2", "2"),
-    ]);
-    setLastFetched(database, first.id, user.id, 1_700_086_400_000);
-
-    // The changed-account reset runs inside the caller's immediate
-    // transaction; feed reset and item deletion must commit atomically.
-    database.transaction((transaction) => {
-      resetFeedsForSourceConnection(transaction as Database, source.id);
-    }, { behavior: "immediate" });
-
-    for (const feed of [first, second]) {
-      assertEquals(
-        await listItemsForFeedInWindow(
-          database,
-          feed.id,
-          1_700_000_000_000,
-          1_700_086_400_000,
-        ),
-        [],
-      );
-      const reset = await findFeedById(database, feed.id, user.id);
-      assertExists(reset);
-      assertEquals(reset.enabled, false);
-      assertExists(reset.deletedAt);
-      assertEquals(reset.lastFetchedPeriodEndMs, null);
-    }
-
-    // A revived feed reuses its row id; the deleted items must not resurface.
-    const revived = await createOrReviveFeed(
-      database,
-      feedInput(user.id, source.id, { externalId: "reset-1" }),
-    );
-    assertEquals(revived.id, first.id);
-    assertEquals(
-      await listItemsForFeedInWindow(
-        database,
-        revived.id,
-        1_700_000_000_000,
-        1_700_086_400_000,
-      ),
-      [],
-    );
-  });
-});
-
 test("feed external id uniqueness is per source and subscribe is idempotent for active duplicates", async () => {
   await withTestDb(async (database) => {
     const { user, source: telegram } = await createOwnedSource(
@@ -482,6 +399,136 @@ test("createOrReviveFeed revives a soft-deleted feed instead of creating a dupli
     });
     assertEquals(allRows.length, 1);
     assertEquals(allRows[0].id, feed.id);
+  });
+});
+
+test("createOrReviveFeed caps active feeds per source at the shared limit", async () => {
+  await withTestDb(async (database) => {
+    const { user, source } = await createOwnedSource(
+      database,
+      "feed-cap@example.com",
+    );
+
+    const capped: PublicFeed[] = [];
+    for (let index = 1; index <= MAX_X_FEEDS; index += 1) {
+      capped.push(
+        await createOrReviveFeed(
+          database,
+          feedInput(user.id, source.id, {
+            externalId: `capped-${index}`,
+            name: `Capped ${index}`,
+          }),
+          { maxActiveFeeds: MAX_X_FEEDS },
+        ),
+      );
+    }
+    assertEquals(capped.length, MAX_X_FEEDS);
+    assertEquals(new Set(capped.map((feed) => feed.id)).size, MAX_X_FEEDS);
+
+    assertThrows(
+      () =>
+        createOrReviveFeed(
+          database,
+          feedInput(user.id, source.id, {
+            externalId: "capped-overflow",
+            name: "Overflow",
+          }),
+          { maxActiveFeeds: MAX_X_FEEDS },
+        ),
+      ConflictError,
+      `source has reached its limit of ${MAX_X_FEEDS} active feeds`,
+    );
+
+    // Requesting an already-active target at capacity stays idempotent.
+    const repeated = await createOrReviveFeed(
+      database,
+      feedInput(user.id, source.id, {
+        externalId: "capped-1",
+        name: "Renamed",
+      }),
+      { maxActiveFeeds: MAX_X_FEEDS },
+    );
+    assertEquals(repeated.id, capped[0].id);
+    assertEquals(repeated.name, "Capped 1");
+
+    // Callers without the cap remain uncapped.
+    const uncapped = await createOrReviveFeed(
+      database,
+      feedInput(user.id, source.id, {
+        externalId: "uncapped-overflow",
+        name: "Uncapped",
+      }),
+    );
+    assertEquals(
+      (await listFeedsForUser(database, user.id)).length,
+      MAX_X_FEEDS + 1,
+    );
+    assertEquals(uncapped.deletedAt, null);
+  });
+});
+
+test("createOrReviveFeed rejects reviving a soft-deleted feed at capacity", async () => {
+  await withTestDb(async (database) => {
+    const { user, source } = await createOwnedSource(
+      database,
+      "feed-cap-revive@example.com",
+    );
+
+    const capped: PublicFeed[] = [];
+    for (let index = 1; index <= MAX_X_FEEDS; index += 1) {
+      capped.push(
+        await createOrReviveFeed(
+          database,
+          feedInput(user.id, source.id, {
+            externalId: `capped-${index}`,
+            name: `Capped ${index}`,
+          }),
+          { maxActiveFeeds: MAX_X_FEEDS },
+        ),
+      );
+    }
+
+    // An uncapped caller adds one more active feed, then it is soft-deleted:
+    // the source sits exactly at capacity with a deleted row left to revive.
+    const overflow = await createOrReviveFeed(
+      database,
+      feedInput(user.id, source.id, {
+        externalId: "uncapped-extra",
+        name: "Uncapped extra",
+      }),
+    );
+    await softDeleteFeed(database, overflow.id, user.id);
+
+    assertThrows(
+      () =>
+        createOrReviveFeed(
+          database,
+          feedInput(user.id, source.id, {
+            externalId: overflow.externalId,
+            name: "Revive at capacity",
+          }),
+          { maxActiveFeeds: MAX_X_FEEDS },
+        ),
+      ConflictError,
+      `source has reached its limit of ${MAX_X_FEEDS} active feeds`,
+    );
+    const stillDeleted = await findFeedById(database, overflow.id, user.id);
+    assertExists(stillDeleted);
+    assert(stillDeleted.deletedAt !== null);
+
+    // Revival below capacity still succeeds when capped.
+    await softDeleteFeed(database, capped[0].id, user.id);
+    const revived = await createOrReviveFeed(
+      database,
+      feedInput(user.id, source.id, {
+        externalId: capped[0].externalId,
+        name: "Revived within limit",
+      }),
+      { maxActiveFeeds: MAX_X_FEEDS },
+    );
+    assertEquals(revived.id, capped[0].id);
+    assertEquals(revived.name, "Revived within limit");
+    assertEquals(revived.deletedAt, null);
   });
 });
 

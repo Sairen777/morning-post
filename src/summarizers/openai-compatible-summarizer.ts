@@ -71,7 +71,6 @@ interface SummarizerRequestOptions {
   requestTimeoutMs?: number;
   onAttempt?: SummarizeOptions["onAttempt"];
   onDiagnostic?: SummarizeOptions["onDiagnostic"];
-  beforeAttempt?: SummarizeOptions["beforeAttempt"];
   maxOutputTokens?: number;
   maxAttempts?: number;
   jsonOutput?: boolean;
@@ -248,7 +247,6 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       requestTimeoutMs: options.requestTimeoutMs,
       onAttempt: options.onAttempt,
       onDiagnostic: options.onDiagnostic,
-      beforeAttempt: options.beforeAttempt,
       maxOutputTokens: Math.min(
         options.maxOutputTokens ?? this.summaryMaxOutputTokens,
         this.summaryMaxOutputTokens,
@@ -287,7 +285,6 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         signal: options.signal,
         requestTimeoutMs: options.requestTimeoutMs,
         onAttempt: options.onAttempt,
-        beforeAttempt: options.beforeAttempt,
         maxOutputTokens: Math.min(
           options.maxOutputTokens ?? this.summaryBatchMaxOutputTokens,
           this.summaryBatchMaxOutputTokens,

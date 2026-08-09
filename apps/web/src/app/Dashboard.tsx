@@ -101,7 +101,6 @@ export default function Dashboard(props: DashboardProps) {
   const [sourceFeeds, setSourceFeeds] = createSignal<
     Record<string, PublicFeed[]>
   >({});
-  const sourceFeedStateVersions = new Map<string, number>();
   const [interests, setInterests] = createSignal<PublicInterestRule[]>([]);
   const [interestsLoading, setInterestsLoading] = createSignal(true);
   const [interestMutationId, setInterestMutationId] = createSignal<string | null>(
@@ -302,37 +301,12 @@ export default function Dashboard(props: DashboardProps) {
     }
   };
 
-  const clearSourceFeedState = (sourceId: string) => {
-    sourceFeedStateVersions.set(
-      sourceId,
-      (sourceFeedStateVersions.get(sourceId) ?? 0) + 1,
-    );
-    setAvailableFeeds((previous) => {
-      if (!Object.hasOwn(previous, sourceId)) return previous;
-      const next = { ...previous };
-      delete next[sourceId];
-      return next;
-    });
-    setSourceFeeds((previous) => {
-      if (!Object.hasOwn(previous, sourceId)) return previous;
-      const next = { ...previous };
-      delete next[sourceId];
-      return next;
-    });
-  };
-
   const refreshSourceFeedsIfLoaded = async (sourceId: string) => {
     const current = sourceFeeds();
     if (Object.prototype.hasOwnProperty.call(current, sourceId)) {
-      const stateVersion = sourceFeedStateVersions.get(sourceId) ?? 0;
       try {
         const result = await listFeedsForSource(sourceId);
-        if (
-          (sourceFeedStateVersions.get(sourceId) ?? 0) === stateVersion &&
-          Object.prototype.hasOwnProperty.call(sourceFeeds(), sourceId)
-        ) {
-          setSourceFeeds((prev) => ({ ...prev, [sourceId]: result }));
-        }
+        setSourceFeeds((prev) => ({ ...prev, [sourceId]: result }));
       } catch (err: unknown) {
         if (err instanceof ApiClientError && err.status === 401) {
           props.onAuthError();
@@ -379,9 +353,9 @@ export default function Dashboard(props: DashboardProps) {
     id: string,
   ): Promise<DisconnectSourceResponse> => {
     const result = await disconnectSource(id);
-    clearSourceFeedState(id);
     await refreshSources();
     await refreshFeeds();
+    await refreshSourceFeedsIfLoaded(id);
     return result;
   };
 
@@ -398,11 +372,7 @@ export default function Dashboard(props: DashboardProps) {
   const handleDiscoverFeeds = async (
     sourceId: string,
   ): Promise<AvailableFeed[]> => {
-    const stateVersion = sourceFeedStateVersions.get(sourceId) ?? 0;
     const result = await listAvailableFeeds(sourceId);
-    if ((sourceFeedStateVersions.get(sourceId) ?? 0) !== stateVersion) {
-      return [];
-    }
     setAvailableFeeds((prev) => ({ ...prev, [sourceId]: result }));
     return result;
   };
@@ -410,11 +380,7 @@ export default function Dashboard(props: DashboardProps) {
   const handleLoadSourceFeeds = async (
     sourceId: string,
   ): Promise<PublicFeed[]> => {
-    const stateVersion = sourceFeedStateVersions.get(sourceId) ?? 0;
     const result = await listFeedsForSource(sourceId);
-    if ((sourceFeedStateVersions.get(sourceId) ?? 0) !== stateVersion) {
-      return [];
-    }
     setSourceFeeds((prev) => ({ ...prev, [sourceId]: result }));
     return result;
   };
@@ -599,20 +565,14 @@ export default function Dashboard(props: DashboardProps) {
   };
 
   const handleXConnected = async () => {
-    const previousSourceId = sources().find((source) =>
-      source.connectorId === "X"
-    )?.id;
-    if (previousSourceId) clearSourceFeedState(previousSourceId);
     await refreshSources();
-    const currentSourceId = sources().find((source) =>
-      source.connectorId === "X"
-    )?.id;
-    if (currentSourceId && currentSourceId !== previousSourceId) {
-      clearSourceFeedState(currentSourceId);
-    }
     await refreshFeeds();
   };
 
+  const handleXTargetAdded = async (sourceId: string) => {
+    await refreshFeeds();
+    await refreshSourceFeedsIfLoaded(sourceId);
+  };
   const handleSectionChange = (
     section: AppSection,
     profileView: ProfileView = "preferences",
@@ -681,6 +641,7 @@ export default function Dashboard(props: DashboardProps) {
           onSubstackPublicationAdded={handleSubstackPublicationAdded}
           onSubstackSourceUpdated={handleSubstackSourceUpdated}
           onXConnected={handleXConnected}
+          onXTargetAdded={handleXTargetAdded}
           onDisconnectSource={handleDisconnectSource}
           onAuthError={props.onAuthError}
         />

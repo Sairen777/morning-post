@@ -6,10 +6,11 @@ database and media store. Authentication, ownership scoping, and credential
 encryption are deliberate security measures that protect the single-owner
 deployment posture while keeping future deployment options open.
 
-X posts, Lists, and X Chat group conversations can be collected through the
-TwexAPI HTTP provider: connection uses a TwexAPI API key, the X
-`auth_token`, and the complete X Cookie header, all stored envelope-encrypted.
-No browser automation or Chromium profile is involved.
+X posts, Lists, and X Chat conversations are collected from rendered `x.com`
+pages through a dedicated app-owned browser profile. The default deployment
+configuration uses installed stable Chrome; bundled Playwright Chromium is an
+opt-in channel. Morning Post does not use the X API or a third-party X content
+API.
 
 ## Setup
 
@@ -46,10 +47,11 @@ directly.
 
 ### Prerequisites
 - [Bun](https://bun.sh/) 1.3.14
-- [Node.js](https://nodejs.org/) 22.13+ (frontend and Playwright E2E toolchain)
+- [Node.js](https://nodejs.org/) 22.13+ (frontend and Playwright toolchain)
 - [SQLite](https://sqlite.org/) is built into Bun; no separate database service is required
 - [OpenSSL](https://www.openssl.org/) (for generating the credential master key)
-- Playwright Chromium for the browser E2E suite (`bun run web:e2e`); the X connector needs no browser
+- Installed stable [Google Chrome](https://www.google.com/chrome/) when using the `.env.example` default `X_BROWSER_CHANNEL=chrome`
+- Playwright Chromium (`bun run playwright:install`) only for `X_BROWSER_CHANNEL=chromium` or browser E2E tests
 
 ### Database
 
@@ -86,8 +88,9 @@ contains deployment credentials. The main settings are:
 | `MAX_REQUEST_BODY_BYTES` | Maximum JSON request body size | `1048576` (1 MiB) |
 | `ALLOW_REMOTE_SUMMARIZATION` | Allow non-loopback summarizer providers | `false` |
 | `CONNECTOR_TIMEOUT_MS` | Connector call timeout in milliseconds | `120000` |
-| `TWEXAPI_BASE_URL` | TwexAPI provider root used by the X connector; explicit server overrides take precedence, then this value, then `https://api.twexapi.io`; must be an absolute HTTPS URL without credentials, query, or fragment | `https://api.twexapi.io` |
-| `X_CACHE_COVERAGE_TOLERANCE_MS` | X cache edge tolerance: suppresses only small uncovered head/tail slivers of a requested window that touch a window edge and are no wider than this, and only when some coverage exists inside the window; fully uncovered windows and internal gaps always fetch; `0` disables suppression | `600000` (10 min) |
+| `X_BROWSER_PROFILE_ROOT` | Dedicated app-owned X browser profiles; restrict this account-equivalent path to the Morning Post process user | `.x-browser-profiles` |
+| `X_BROWSER_CHANNEL` | X browser binary: installed stable Chrome or bundled Playwright Chromium | `chrome` in `.env.example`; code fallback `chromium` when unset |
+| `X_BROWSER_LOGIN_TIMEOUT_MS` | Maximum time allowed for one headed X connection session | `900000` (15 min) |
 | `SUMMARIZER_TEXT_BYTES_PER_CHUNK` | Max text bytes per summarizer chunk | `120000` |
 | `SUMMARIZER_MAX_ITEMS_PER_CHUNK` | Max items per summarizer chunk | `50` |
 | `SUMMARIZER_MAX_IMAGE_BYTES` | Oversize images become `[IMAGE_OMITTED]` | `1000000` |
@@ -176,11 +179,12 @@ Vinxi at `127.0.0.1:5173`. Its Vite proxy forwards API calls, including
    bun install
    ```
 
-2. Install Playwright's Chromium browser binary for the browser E2E suite
-   (`bun run web:e2e`) if it is not already present:
+2. Install bundled Chromium only when using
+   `X_BROWSER_CHANNEL=chromium` or browser E2E tests. The default installed
+   Chrome channel does not require this download:
 
    ```sh
-   bunx playwright install chromium
+   bun run playwright:install
    ```
 
 3. Optionally set `DATABASE_PATH` in `.env.production.local`; otherwise the
@@ -269,6 +273,8 @@ check.
 | Command | What it does |
 | --- | --- |
 | `bun run test` | Full backend suite (`bun:test`) |
+| `bun run test:x:live` | Opt-in contract check against an already authenticated managed X profile and target |
+| `bun run playwright:install` | Install the pinned Chromium build used by Playwright |
 | `bun run db:cleanup` | Destructively delete application rows from the local SQLite database while preserving its schema and migration history |
 | `bun run db:reset` | Destructively delete the local SQLite file and its WAL/SHM companions, then reapply migrations |
 | `bun run web:test` | Frontend unit/component suite (Vitest) |
@@ -376,267 +382,116 @@ context window. See the comment in `openai-compatible-summarizer.ts` for options
 anonymously — their `message.sender` is the group's linked channel rather than a
 `User`. These show up with the channel title as the author name.
 
-## X Connection (TwexAPI)
+## X Browser Connection
 
-Morning Post collects posts from X Lists and messages from X Chat group
-conversations through the TwexAPI HTTP provider. There is no browser
-automation, Chromium profile, or installed Chrome: the connector speaks HTTPS
-to the Twex API and stores only encrypted credentials locally.
+Morning Post collects the authenticated owner's Following feed, selected public
+or private Lists, and selected X Chat conversations through rendered browser
+pages. Direct messages and group conversations use the same explicit target
+model; conversation IDs are treated as opaque X identifiers rather than being
+used to infer whether a conversation is a group.
 
-### Connection inputs
+**Upgrade from the retired API connector.** Migration `0007` disconnects the
+existing X source and soft-deletes its feed subscriptions because encrypted API
+credentials cannot become a browser profile safely. After migrating, connect X
+again and re-add the desired Following, List, and Chat targets through rendered
+browser validation. Previously captured items and downstream digest data remain
+intact; non-X sources and feeds are unchanged.
 
-**Connections → X** submits exactly
-`{ apiKey, authToken, cookie, pin?, listQuery? }` to
-`POST /connectors/x/session`:
+### Browser independence and app-owned profile
 
-- **TwexAPI key** (`apiKey`) — the API key issued by TwexAPI.
-- **X `auth_token`** (`authToken`) — the value of the X `auth_token` cookie,
-  kept separate from the cookie header; it identifies the account through
-  `GET /twitter/{auth_token}/user_info`.
-- **Complete Cookie header** (`cookie`) — the full X `Cookie` header value as
-  copied from X, required for XChat endpoints. It must contain a nonempty
-  `auth_token` pair equal to the separately provided `authToken` and a
-  nonempty `ct0` pair; duplicate `auth_token` or `ct0` pairs and control
-  characters are rejected without echoing either value.
-- **XChat PIN** (`pin`, optional) — the XChat identity PIN sent only with
-  DM-history requests; conversation discovery does not use it. When omitted,
-  DM history uses the default `1234`.
-- **List search query** (`listQuery`, optional) — the query used for list
-  discovery; a blank value derives from the authenticated X username.
+**Connections → X** always uses a dedicated persistent profile beneath
+`X_BROWSER_PROFILE_ROOT`, separate from every daily Safari, Firefox, Chrome,
+or other browser profile. With `X_BROWSER_CHANNEL=chrome`, Connect launches
+installed stable Chrome directly for manual authentication. After that process
+fully exits, Playwright reopens the same app-owned profile with installed
+Chrome for headed verification and headless discovery or collection. With
+`X_BROWSER_CHANNEL=chromium`, Playwright uses its bundled Chromium build for
+the complete headed and headless flow; install it with
+`bun run playwright:install`. Do not switch an existing profile between
+browser channels.
 
-The web form always supports connect and reconnect, renders every secret field
-as a password input, sends the exact request above, clears the secret fields
-on success, and retains the nonsecret list-search query. Secrets are
-envelope-encrypted (AES-256-GCM with owner-bound AAD) before they are stored;
-they are never returned by the API and never written to logs.
+The app-owned profile contains authenticated X cookies and local storage. Treat
+it as a credential artifact: run Morning Post as a dedicated user, restrict the
+profile root to that user, and include the directory in backup and destruction
+procedures. The profile root is ignored by Git. Disconnecting X commits the
+source disconnection before deleting the profile under its exclusive lease. An
+unmanaged installed-Chrome shutdown releases that lease only after the tracked
+child process actually exits. Shutdown uses bounded SIGTERM and SIGKILL waits;
+if exit cannot be confirmed, closing fails, retains the lease, and can be
+retried. A controlled Playwright session releases its lease only after its
+persistent context closes or its backing Browser disconnects. If filesystem
+cleanup fails, retrying disconnect retries the idempotent cleanup.
 
-### Endpoints and provider limitations
+### Connection and collection flow
 
-- User info: `GET /twitter/{auth_token}/user_info` (API key as bearer token).
-- List discovery is **search-based**: `POST /twitter/list/search` returns
-  lists matching `listQuery`. TwexAPI provides no owned-lists lookup, so
-  discovery reflects search results rather than the account's own lists.
-- List tweets: `POST /twitter/list/tweets/page` paginates posts for
-  `x:list:<numeric-id>` feeds.
-- XChat discovery is **group-only**: `POST /v3/twitter/conversations` receives
-  the full cookie and yields direct and group conversations, but only group
-  conversations become feeds (`x:chat:<conversation-id>`); direct chats are
-  excluded and can never be cataloged, so a crafted direct-DM target is
-  rejected at subscription time.
-- XChat history: `POST /v3/twitter/dm-history` receives the full cookie (never
-  the bare auth token) plus the PIN, and is fetched with `all: true` and
-  `count: 200`. At most one DM-history request is made per feed per connector
-  operation: an all-mode response that still claims more history is durably
-  persisted and surfaced as a resumable local error, so the next run resumes
-  once from the saved cursor via `before`. Per range, at most two DM-history
-  requests are ever made: if the resumed response is still incomplete, later
-  overlapping runs fail locally before any DM-history request, and the
-  retained progress intentionally blocks repurchasing until the operator
-  disconnects and reconnects X; the identity-less reconnect resets the X
-  cache, subscriptions, and progress. Messages may include disappearing
-  messages captured before they disappear.
-- No credentials are bundled with Morning Post and the application never
-  performs a live X login: the operator supplies their own TwexAPI key, X
-  auth token, and cookie. The X session material is forwarded to the
-  configured TwexAPI provider, so the provider is part of the trust boundary.
+With `X_BROWSER_CHANNEL=chrome`, Connect X opens a dedicated **headed**
+installed-Chrome window outside Playwright. Sign in to X directly in that
+window, complete 2FA or platform challenges, open or unlock X Chat if
+necessary, then fully quit Chrome before selecting Verify. Verify opens a
+Playwright-controlled headed installed-Chrome context against the same
+profile. With `X_BROWSER_CHANNEL=chromium`, Connect opens the controlled
+headed Chromium context directly. It can remain open through Verify; if it is
+fully closed first, Verify reopens the same profile. A failed reopen or
+transient inspection remains retryable and never deletes the profile.
+Morning Post never receives the X password. Verification accepts only
+account-specific authenticated UI and records only the app-owned profile
+identifier in the encrypted source credential. The web UI stores only the
+opaque active login-session ID in browser `sessionStorage`; switching
+Dashboard tabs or remounting the panel resumes status polling and Verify/Cancel
+controls.
 
-### Feed identity and pagination
+After connection, feed discovery and digest runs reuse the profile
+**headlessly with the selected browser channel**. The connector discovers
+Following, Lists, and accessible Chat conversations. Adding a canonical X
+target validates browser-rendered evidence and persists the feed in the same
+connector request; the generic feed endpoint cannot create X targets
+independently.
+A source can have at most 250 non-deleted X targets. The add/revive transaction
+rejects the 251st target before collection; re-adding an already active target
+remains idempotent.
 
-Discovery emits only `x:list:<positive-numeric-id>` and group-only
-`x:chat:<conversation-id>` feed identifiers. Group labels include the
-participant count and the conversation ID. List-tweet pagination continues
-until the inclusive requested lower bound is reached or the provider is
-exhausted. Every successful page
-is durably recorded before the next provider request, so a failed or
-interrupted run leaves the items and the next cursor behind and a retry
-resumes the range from the saved cursor instead of repurchasing page 1; a
-failed attempt never advances progress. Each page's cursor is appended to the
-range's durable bounded history (newest 500), so a repeated or cyclic cursor
-— including cycles across process or connector restarts — is detected in the
-same atomic write that saves the page and its items, which then terminally
-blocks the range (`repeated_cursor`); an incomplete page with no resume
-cursor saves the page and terminally blocks the range (`missing_cursor`).
-Terminally blocked progress fails locally before any provider request on
-later overlapping runs until the operator disconnects and reconnects X. Chat
-ranges make at most one
-DM-history request per connector operation: an incomplete all-mode response is
-persisted and then raised as a resumable local error, and the next operation
-resumes once with `before` from the saved cursor. A chat range is limited to
-two DM-history requests in total — after a second incomplete all-mode
-response, later overlapping runs fail locally before any DM-history request,
-and the retained progress intentionally blocks repurchasing until the operator
-disconnects and reconnects X; the identity-less reconnect resets the X cache,
-subscriptions, and progress.
 
-### Caching and account identity
+Subscribed targets use bounded virtual scrolling. Rendered DOM is extracted
+directly into normalized posts and chat messages; raw DOM is not persisted.
+Post engagement counts and visible chat reactions are retained as metadata.
+Platform IDs are globally deduplicated. Ordered overlap preserves duplicate
+ID-less messages when the rendered windows prove their multiplicity; ambiguous
+ID-less overlaps, missing timestamps, inaccessible targets, authentication
+loss, scroll failures, or unresolved safety limits fail collection instead of
+advancing the cursor across an uncertain partial window.
 
-Raw X posts and chat messages are persisted in SQLite (`x_content_cache_items`,
-migration `0002`) with inclusive coverage ranges per source and feed
-(`x_content_cache_ranges`). Every valid dated item returned by a successful
-provider page — paid data — is cached regardless of whether it falls inside
-the requested digest window, so a page fetched to cover one window never
-discards items outside it. Coverage rows record the exact inclusive requested
-periods (for example 13:00–19:00, both bounds inclusive) as a ledger distinct
-from item timestamps and from fetch progress: an item's date may lie anywhere
-in a fetched range, while coverage states only which requested periods were
-fully fetched. A successful empty fetch still establishes coverage, so only
-uncovered gaps call the Twex API. Reads are ordered stably by date then
-external ID.
+The headed connection window requires a desktop display. A remote/headless
+server needs an operator-provided remote desktop, VNC, or equivalent display
+path for initial connection. Scheduled collection itself is headless.
 
-Fetch progress for ranges whose coverage is not yet committed is persisted in
-`x_content_fetch_progress` (migrations `0005`, `0006`). Every successful
-provider page is durably recorded — items, the next cursor, a page count, and
-the page's cursor appended to a bounded history of the newest 500 cursors —
-before another provider request, and coverage is committed only when the
-whole range is complete; failed requests advance nothing. A successful page,
-complete or incomplete, commits before an abort racing the response is
-propagated, so cancellation can never discard fetched items, cursors, or
-coverage; the next iteration's pre-request check still blocks further HTTP. A
-retry therefore resumes the saved cursor instead of re-fetching pages, and a
-run whose window is already covered makes zero provider calls. The progress
-row is deleted when its range commits. Pending progress is resumed only when
-it intersects a required gap of the current window: pending ranges outside
-those gaps never force a provider call, and the required gaps are re-derived
-after each resumed range commits. An account-identity reset deletes pending
-progress along with the cached items and ranges.
+### Unsupported platform risk
 
-`X_CACHE_COVERAGE_TOLERANCE_MS` (default `600000`, 10 minutes; `0` disables)
-suppresses only small uncovered head/tail slivers of a requested window: a gap
-is skipped solely when it touches a window edge, is no wider than the
-tolerance, and real coverage exists inside the window; a wholly uncovered
-window and any internal gap are never suppressed. For example, with exact
-coverage 13:00–19:00 and a request for 12:50–19:10, both 10-minute edge
-slivers fall inside the tolerance, so the run makes zero provider calls and
-returns the cached messages. Suppressed gaps are not recorded as covered —
-stored ranges keep the exact inclusive requested periods — so the bounded risk
-is explicit: messages that fall only inside a tolerated edge sliver may be
-omitted by policy until a future request actually fetches that sliver. Safety
-limits are enforced against the durable page count before any further request:
-a chat range makes at most two DM-history requests in total, and any range can
-become terminally blocked. A repeated or cyclic list cursor is detected from
-the durable cursor history inside the atomic page write (`repeated_cursor`),
-an incomplete page without a resume cursor blocks with `missing_cursor`, and
-a DM-history response for a different conversation than the one requested is
-fail-closed: no foreign messages are cached and an empty blocked page is
-persisted with `mismatched_conversation`. Terminal blocks are written
-atomically with the page that exposed them and are never cleared by later
-normal pages; any later overlapping run whose required gaps include a blocked
-range fails locally before any provider request, so the retained progress
-intentionally blocks repurchasing until the operator disconnects and
-reconnects X; the identity-less reconnect resets the X cache, subscriptions,
-and progress.
-
-Every `sources.credential_revision` starts at 1 and increments on each
-credential replacement, reconnect, or disconnect (migration `0003`). Each
-decrypted credential snapshot binds its X content cache and ingestion handle
-to the captured revision. Fetch-planning reads — the missing-range and
-pending-progress lookups that decide whether the provider is called —
-preflight the source revision and the feed's active state (enabled, not
-soft-deleted) before any connector HTTP, so a stale or disabled feed cannot
-purchase paid pages; the raw cache read is source-revision-fenced only. Raw
-cache writes are atomically source-revision plus active-feed guarded: the
-per-page progress write and the final coverage commit recheck the revision
-and the feed's active state inside the same immediate transaction, so they
-write nothing once the source was disconnected, disabled, or reconnected in
-the meantime. Normalized ingestion remains feed-fenced: every ingestion mode
-carries the snapshot's `sourceCredentialRevision`, and the write transaction
-requires the source to still be connected and enabled at that revision and the
-feed still enabled and not soft-deleted before upserting items or advancing
-the watermark.
-The same guard carries through digest generation: every contributing X feed's
-revision (recorded at ingestion or acceptance) is re-asserted before item
-selection, immediately before and after every intelligence and summarizer
-await so no model-derived analysis, resolution, classification, or summary is
-persisted from a stale connection, immediately before the final story
-replacement commits, and once more before the digest is marked complete — a
-mismatch aborts the run. Beyond those boundary checks, a synchronous
-per-attempt assertion runs immediately before every outbound model HTTP
-request: each retry of a chat completion, semantic/member/split recovery
-retries, summarizer single/batch/vision and text-only-fallback calls, and
-every classification call. Revoked X content is therefore fenced before it is
-even sent to a model, not merely excluded from persisted output.
-
-Reconnect compares the source state captured before provider validation with
-the state inside the immediate commit; a concurrent disconnect or reconnect
-aborts with a fixed retry conflict. Reconnecting the same derived X user
-preserves the previously committed cache and feed subscriptions but still
-increments the revision and conservatively fences every older in-flight
-handle; a changed, legacy, disconnected, or undecryptable identity instead, in
-the same immediate transaction, deletes the source's raw X cache (items,
-coverage ranges, and pending fetch progress), deletes its normalized items
-(including those of
-soft-deleted feeds, whose rows a later revival would reuse), clears the
-discovery catalog, soft-deletes the source's X feeds, and only then stores the
-new encrypted credentials. Disconnect itself clears credentials, disables the
-source, soft-deletes active feeds, and revokes the catalog without deleting
-captured content; the identity-less reconnect after a disconnect takes the
-same full-reset path because no stored identity survives to be compared.
-
-The web Dashboard clears each source's discovered and loaded feed state on
-disconnect, and clears the X source's state both before and after a reconnect,
-so a preserved or recreated source id can never expose stale groups or lists:
-fresh discovery is required after any reconnect. Clearing bumps a per-source
-state version, and an in-flight loaded-feed refresh is applied only when its
-captured version still matches and the source's state was not cleared in the
-meantime — a late refresh resolving after a disconnect or reconnect cannot
-resurrect the cleared lists or groups.
-
-### Discovery catalog and subscription
-
-Successful X discovery (`GET /sources/:sourceId/available-feeds`) is
-revision-revalidated and then atomically replaces the source's whole discovery
-catalog in one immediate transaction: the catalog holds exactly the Lists and
-group chats the provider returned for that credential revision, stored in
-plaintext in `x_discovered_feeds` (migration `0004`, unique on
-`(source_id, credential_revision, external_id)` and cascade-deleted with the
-source). Subscription (`POST /sources/:sourceId/feeds`) makes no TwexAPI
-rediscovery call: in the same immediate transaction that locks the source row
-it accepts only a target with an exact current-revision catalog entry, uses
-the server-canonical catalog name and kind instead of any client-supplied
-metadata, and rejects malformed identifiers as validation errors and
-uncataloged targets — including direct-DM conversations, which discovery never
-returns — with a conflict instructing a fresh discovery. Discovery and
-subscription stay available for connected-but-disabled sources: `enabled`
-gates only digest inclusion and ingestion, not authorization. Active X feeds
-are capped at 250 per source; a subscription that would leave more than 250
-active (not soft-deleted) feeds is rejected inside the same transaction,
-mirroring the connector's per-batch limit.
-
-### Base URL
-
-The Twex API base URL resolves by explicit server override, then
-`TWEXAPI_BASE_URL`, then `https://api.twexapi.io`. The resolved value must be
-an absolute HTTPS URL without embedded credentials, query parameters, or
-fragments — anything else fails configuration visibly. Every request uses the
-API key as a bearer token and sets `redirect: "error"`, so an HTTP downgrade
-or a redirecting endpoint is rejected rather than followed; a non-loopback
-provider means X session material leaves the host.
-
-### Unsupported provider risk
-
-TwexAPI is an independent, unofficial X data provider, not an official X
-integration surface. It can change endpoints, response schema, or
-availability, and its terms may conflict with X's. Operators assume the
-account and policy risk of sharing session material with the provider.
+This is browser automation over rendered `x.com` pages, not the official X API
+and not a third-party X content API. X can change DOM structure, challenge the
+login, restrict the account, or block automation without notice. Morning Post
+does not spoof browser fingerprints or hide Playwright automation. Operators
+assume the account and policy risk.
 
 ### Retention
 
-Captured raw X posts and messages—including disappearing messages captured
-before they disappear—and their normalized item rows are retained until an
-account-identity reset removes those rows: disconnect preserves them, and a
-same-account reconnect preserves committed content and subscriptions while
-fencing older handles. Only a reconnect to a changed or unknown identity
-(legacy, undecryptable, or disconnected-then-reconnected) deletes the raw
-cache and normalized items, clears the discovery catalog, and soft-deletes the
-feeds before the new credentials are stored. The connection reset is not a
-general erasure operation: already materialized stories, summaries, feedback,
-digest artifacts, and other derived records remain governed by the
-application's existing retention behavior. Capture therefore overrides X
-disappearance after ingestion. Configurable cascading retention remains
-deferred; there is currently no retention environment variable or UI control.
+Captured X posts and messages—including disappearing messages captured before
+they disappear—are retained indefinitely with their normalized items and
+downstream analyses, stories, summaries, feedback, and digest artifacts.
+Capture therefore overrides X disappearance after ingestion. Disconnecting X
+deletes the authenticated browser profile but does not delete previously
+captured content. Configurable cascading retention remains deferred; there is
+currently no retention environment variable or UI control.
 
-### Contract tests
+### Opt-in live contract check
 
-The deterministic suite never contacts TwexAPI; X connector behavior is
-exercised with official-contract fixtures and mocked HTTP only, so
-`bun run test` runs without credentials or provider network access.
+The deterministic suite does not contact X. To check the current rendered-DOM
+contract against an already authenticated app-owned profile, set
+`X_BROWSER_LIVE_PROFILE_ID` to that profile's canonical UUID and
+`X_BROWSER_LIVE_TARGET_URL` to a Following, List, or Chat target, then run:
+
+```sh
+bun run test:x:live
+```
+
+The check is intentionally opt-in and does not read or print cookies, local
+storage, or passwords.

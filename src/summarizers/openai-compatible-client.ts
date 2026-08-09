@@ -79,14 +79,6 @@ export interface CompletionOptions {
   signal?: AbortSignal;
   requestTimeoutMs?: number;
   onAttempt?: ModelAttemptTelemetryCallback;
-  /**
-   * Synchronous pre-flight gate invoked on every attempt, immediately after
-   * the abort check and immediately before the deadline is set up and the
-   * request is dispatched. A throw here aborts the request without any
-   * outbound fetch (including transport and HTTP retries). Unlike onAttempt,
-   * exceptions are never swallowed: the throw propagates to the caller.
-   */
-  beforeAttempt?: () => void;
   maxOutputTokens?: number;
   maxAttempts?: number;
   jsonOutput?: boolean;
@@ -272,7 +264,6 @@ export class OpenAICompatibleChatClient {
     for (let attempt = 0; attempt < maximumAttempts; attempt++) {
       const attemptStartedAt = Date.now();
       options.signal?.throwIfAborted();
-      options.beforeAttempt?.();
 
       const deadline = createRequestDeadline(options);
       let response: Response | undefined;

@@ -19,12 +19,9 @@ import {
   createSource,
   deleteSourceCredentials,
   findSourceById,
-  findSourceCredentialStateByConnectorId,
-  getDecryptedCredentialSnapshot,
   getDecryptedCredentials,
   listSourcesForUser,
   updateSource,
-  upsertSourceCredentials,
 } from "../../src/repositories/source-repository.ts";
 import {
   ConflictError,
@@ -499,106 +496,6 @@ test("source repository decrypts Substack credentials only in the owner context"
       await getDecryptedCredentials(database, source.id, user.id, cipher),
       credentials,
     );
-  });
-});
-
-test("source credential revision starts at 1 and increments on reconnect, credential update, and disconnect only", async () => {
-  await withTestDb(async (database) => {
-    const cipher = generateCipher();
-    const user = await createUser(
-      database,
-      userInput("credential-revision@example.com"),
-    );
-    const created = await createSource(database, {
-      userId: user.id,
-      connectorId: ConnectorId.Telegram,
-      credentials: await encryptedTelegramCredentials(cipher, user.id),
-    });
-
-    const revision = () =>
-      findSourceCredentialStateByConnectorId(
-        database,
-        user.id,
-        ConnectorId.Telegram,
-      )?.credentialRevision;
-
-    // Fresh sources default to revision 1.
-    assertEquals(revision(), 1);
-
-    // Reconnect (upsert) increments the revision.
-    await upsertSourceCredentials(database, {
-      userId: user.id,
-      connectorId: ConnectorId.Telegram,
-      credentials: await encryptedTelegramCredentials(cipher, user.id),
-    });
-    assertEquals(revision(), 2);
-
-    // A generic credential replacement through updateSource increments too.
-    await updateSource(database, created.id, user.id, {
-      credentials: await encryptedTelegramCredentials(cipher, user.id),
-    });
-    assertEquals(revision(), 3);
-
-    // Disconnect increments the revision and revokes the connection.
-    await deleteSourceCredentials(database, created.id, user.id);
-    const disconnected = findSourceCredentialStateByConnectorId(
-      database,
-      user.id,
-      ConnectorId.Telegram,
-    );
-    assertEquals(disconnected?.credentialRevision, 4);
-    assertEquals(disconnected?.connected, false);
-
-    // Non-credential source updates never touch the revision.
-    const reconnected = await upsertSourceCredentials(database, {
-      userId: user.id,
-      connectorId: ConnectorId.Telegram,
-      credentials: await encryptedTelegramCredentials(cipher, user.id),
-    });
-    assertEquals(revision(), 5);
-    await updateSource(database, reconnected.id, user.id, { position: 7 });
-    await updateSource(database, reconnected.id, user.id, { enabled: false });
-    assertEquals(revision(), 5);
-  });
-});
-
-test("decrypted credential snapshot binds the exact revision to the credentials", async () => {
-  await withTestDb(async (database) => {
-    const cipher = generateCipher();
-    const user = await createUser(
-      database,
-      userInput("snapshot-revision@example.com"),
-    );
-    const source = await createSource(database, {
-      userId: user.id,
-      connectorId: ConnectorId.Telegram,
-      credentials: await encryptedTelegramCredentials(cipher, user.id),
-    });
-
-    let snapshot = await getDecryptedCredentialSnapshot(
-      database,
-      source.id,
-      user.id,
-      cipher,
-    );
-    assertEquals(snapshot.credentialRevision, 1);
-    assertEquals(snapshot.credentials, telegramCredentials);
-
-    // After a reconnect the snapshot pairs the new revision with the new
-    // credentials: a handle built from the old snapshot is stale.
-    await upsertSourceCredentials(database, {
-      userId: user.id,
-      connectorId: ConnectorId.Telegram,
-      credentials: await encryptedTelegramCredentials(cipher, user.id),
-    });
-    snapshot = await getDecryptedCredentialSnapshot(
-      database,
-      source.id,
-      user.id,
-      cipher,
-    );
-    assertEquals(snapshot.credentialRevision, 2);
-    assertEquals(snapshot.credentials, telegramCredentials);
   });
 });
 

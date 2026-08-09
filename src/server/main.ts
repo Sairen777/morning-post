@@ -2,6 +2,7 @@ import {
   type Config,
   getConfig,
   getSummarizerRuntimeConfig,
+  getXBrowserConfig,
   resolveAllowRemoteSummarization,
   resolveServerHostname,
 } from "../config.ts";
@@ -9,13 +10,15 @@ import {
   ConnectorFactory,
   type ConnectorFactoryLike,
 } from "../connectors/connector-factory.ts";
+import { XBrowserRuntime } from "../connectors/x/index.ts";
 import { CredentialCipher } from "../crypto/credential-cipher.ts";
 import { EnvMasterKeyProvider } from "../crypto/key-provider.ts";
 import {
   DefaultFeedDiscoveryFactory,
   type FeedDiscoveryFactory,
 } from "../services/feed-service.ts";
-import { XSessionService } from "../services/x-session-service.ts";
+import { XLoginSessionManager } from "../services/x-login-service.ts";
+import { XTargetService } from "../services/x-target-service.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
 import type { SummarizerService } from "../summarizers/summarizer.types.ts";
 import { database as defaultDatabase } from "../db/client.ts";
@@ -53,7 +56,9 @@ export interface ServerBootDependencies {
   scheduler?: Scheduler;
   serve?: ServerServeFunction;
   credentialCipher?: CredentialCipher;
-  xSessionService?: XSessionService;
+  xBrowserRuntime?: XBrowserRuntime;
+  xLoginSessionManager?: XLoginSessionManager;
+  xTargetService?: XTargetService;
   connectorFactory?: ConnectorFactoryLike;
   feedDiscoveryFactory?: FeedDiscoveryFactory;
   summarizer?: SummarizerService;
@@ -83,22 +88,41 @@ export async function bootServer(
   const log = dependencies.log ?? console.log;
   const credentialCipher = dependencies.credentialCipher ??
     new CredentialCipher(new EnvMasterKeyProvider());
-  const xSessionService = dependencies.xSessionService ??
-    new XSessionService({
+  const xBrowserConfig = getXBrowserConfig({
+    profileRoot: config.xBrowserProfileRoot,
+    loginTimeoutMs: config.xBrowserLoginTimeoutMs,
+    browserChannel: config.xBrowserChannel,
+  });
+  const xBrowserRuntime = dependencies.xBrowserRuntime ??
+    new XBrowserRuntime({
+      profileRoot: xBrowserConfig.profileRoot,
+      browserChannel: xBrowserConfig.browserChannel,
+    });
+  const xLoginSessionManager = dependencies.xLoginSessionManager ??
+    new XLoginSessionManager({
       database,
       credentialCipher,
-      baseUrl: config.twexApiBaseUrl,
+      browserRuntime: xBrowserRuntime,
+      loginTimeoutMs: xBrowserConfig.loginTimeoutMs,
+    });
+  const xTargetService = dependencies.xTargetService ??
+    new XTargetService({
+      database,
+      credentialCipher,
+      browserRuntime: xBrowserRuntime,
     });
   const connectorFactory = dependencies.connectorFactory ??
     new ConnectorFactory(database, {
       credentialCipher,
-      twexApiBaseUrl: config.twexApiBaseUrl,
-      cacheCoverageToleranceMs: config.cacheCoverageToleranceMs,
+      xBrowserRuntime,
     });
   const feedDiscoveryFactory = dependencies.feedDiscoveryFactory ??
-    new DefaultFeedDiscoveryFactory(database, credentialCipher, undefined, {
-      twexApiBaseUrl: config.twexApiBaseUrl,
-    });
+    new DefaultFeedDiscoveryFactory(
+      database,
+      credentialCipher,
+      undefined,
+      xBrowserRuntime,
+    );
   const progressReporter = createConsoleDigestProgressReporter(
     config.digestProgressLogging,
     log,
@@ -106,9 +130,13 @@ export async function bootServer(
   const shutdownController = new AbortController();
   const app = buildApp(database, {
     connectors: {
-      xSessionService,
+      xLoginSessionManager,
+      xTargetService,
       connectorTimeoutMs: config.connectorTimeoutMs,
       trustedProxyCount: config.trustedProxyCount,
+    },
+    sources: {
+      xBrowserRuntime,
     },
     feeds: {
       discoveryFactory: feedDiscoveryFactory,
@@ -174,6 +202,7 @@ export async function bootServer(
           scheduler.stop();
         }
       })(),
+      xLoginSessionManager.dispose(),
     ]);
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : []

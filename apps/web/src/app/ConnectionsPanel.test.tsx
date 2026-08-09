@@ -37,6 +37,7 @@ function renderConnections(
       onSubstackPublicationAdded={() => Promise.resolve()}
       onSubstackSourceUpdated={() => Promise.resolve()}
       onXConnected={() => Promise.resolve()}
+      onXTargetAdded={() => Promise.resolve()}
       onDisconnectSource={onDisconnectSource}
       onAuthError={onAuthError}
     />
@@ -73,8 +74,21 @@ describe("ConnectionsPanel disconnect", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Disconnect X" }));
 
     await waitFor(() => expect(onDisconnectSource).toHaveBeenCalledWith("source-x"));
-    const notice = await screen.findByText("X source disconnected.");
-    expect(notice).toHaveAttribute("role", "status");
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "X source disconnected.",
+    );
+  });
+
+  it("describes X sign-in with channel-neutral dedicated-browser guidance", () => {
+    renderConnections(() => Promise.resolve(disconnectResponse));
+
+    fireEvent.click(screen.getByRole("button", { name: /X.*Manage connection/ }));
+    expect(
+      screen.getByText(
+        "Sign in through Morning Post's dedicated browser profile, then discover or add safe X targets.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/dedicated Chrome profile/)).toBeNull();
   });
 
   it("routes a disconnect authentication error to auth recovery", async () => {

@@ -1,18 +1,17 @@
-export { XConnector } from "./x-connector.ts";
-export { TwexApiClient, TwexApiError } from "./twex-api-client.ts";
-export type { XApiClient, XContentPage } from "./twex-api-client.ts";
+export { XBrowserRuntime } from "./runtime.ts";
+export { MAX_X_FEEDS, XConnector } from "./x-connector.ts";
 export {
-  X_ORIGIN,
   formatXFeedExternalId,
+  formatXTargetUrl,
   parseXFeedExternalId,
+  parseXTargetUrl,
 } from "./targets.ts";
 export type {
-  TwexConversation,
-  TwexConversationType,
-  TwexList,
-  TwexUserInfo,
+  XBrowserChannel,
+  XBrowserRuntimeOptions,
   XConnectorRawData,
-  XCredentials,
+  XHeadedLoginHandle,
+  XLoginState,
   XRawChatMessage,
   XRawFeedData,
   XRawItem,
@@ -20,10 +19,4 @@ export type {
   XReaction,
   XTarget,
   XTargetKind,
-} from "./x.types.ts";
-export {
-  xRawChatMessageSchema,
-  xRawItemSchema,
-  xRawPostSchema,
-  xReactionSchema,
 } from "./x.types.ts";

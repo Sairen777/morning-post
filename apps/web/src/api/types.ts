@@ -276,17 +276,21 @@ export interface SubstackPublicationResponse {
   source: PublicSource;
   feed: PublicFeed;
 }
-export interface XSessionInput {
-  apiKey: string;
-  authToken: string;
-  cookie: string;
-  pin?: string;
-  listQuery?: string;
+export type XLoginStatus =
+  | "awaiting_login"
+  | "awaiting_chat_unlock"
+  | "complete"
+  | "error"
+  | "expired";
+
+export interface XLoginStatusResponse {
+  sessionId: string;
+  status: XLoginStatus;
+  expiresAtMs: number;
+  error?: string;
 }
 
-export interface XSessionResponse {
-  source: PublicSource;
-}
+export type XLoginStartResponse = XLoginStatusResponse;
 export type TelegramLoginStatus =
   | "pending"
   | "needs_2fa"

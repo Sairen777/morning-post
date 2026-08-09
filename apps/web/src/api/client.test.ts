@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   addSubstackPublication,
   ApiClientError,
+  cancelXLogin,
   connectSubstackSession,
-  connectXSession,
   createInterest,
   deleteDigest,
   deleteInterest,
@@ -11,15 +11,18 @@ import {
   getDigestRunDetail,
   getFeed,
   getSetupStatus,
+  getXLoginStatus,
   getTelegramLoginStatus,
   listDigestRuns,
   listFeedsForSource,
   listInterests,
   listSubstackPublications,
   loginUser,
+  addXTarget,
   setupOwner,
   regenerateTelegramLogin,
   startTelegramLogin,
+  startXLogin,
   subscribeFeed,
   submitStoryFeedback,
   submitTelegramTwoFactorAuthentication,
@@ -28,6 +31,7 @@ import {
   updateInterest,
   updateSource,
   updateFeed,
+  verifyXLogin,
 } from "../api/client";
 
 describe("ApiClientError", () => {
@@ -697,118 +701,103 @@ describe("X connector API", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("posts the exact API key, auth token, and full cookie to the session route", async () => {
+  it("uses the headed-login lifecycle endpoints and encodes the session id", async () => {
     const calls: Array<[string, RequestInit?]> = [];
+    const sessionId = "session/with space";
     globalThis.fetch = ((url: string, options?: RequestInit) => {
       calls.push([url, options]);
+      if (options?.method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
       return Promise.resolve(
         new Response(
           JSON.stringify({
-            source: {
-              id: "source-x",
-              connectorId: "X",
-              connected: true,
-            },
+            sessionId,
+            status: "awaiting_login",
+            expiresAtMs: 4_102_444_800_000,
           }),
           { status: 200 },
         ),
       );
     }) as typeof fetch;
 
-    const result = await connectXSession({
-      apiKey: "twex-key-123",
-      authToken: "auth-token-abc",
-      cookie: "auth_token=auth-token-abc; ct0=csrf-xyz; lang=en",
+    const started = await startXLogin();
+    const status = await getXLoginStatus(sessionId);
+    const verified = await verifyXLogin(sessionId);
+    const canceled = await cancelXLogin(sessionId);
+
+    expect(started.sessionId).toBe(sessionId);
+    expect(status.status).toBe("awaiting_login");
+    expect(verified.status).toBe("awaiting_login");
+    expect(canceled).toBeUndefined();
+    expect(calls.map(([path, options]) => ({
+      path,
+      method: options?.method ?? "GET",
+      body: options?.body,
+      credentials: options?.credentials,
+    }))).toEqual([
+      {
+        path: "/connectors/x/login",
+        method: "POST",
+        body: undefined,
+        credentials: "include",
+      },
+      {
+        path: "/connectors/x/login/session%2Fwith%20space",
+        method: "GET",
+        body: undefined,
+        credentials: "include",
+      },
+      {
+        path: "/connectors/x/login/session%2Fwith%20space/verify",
+        method: "POST",
+        body: undefined,
+        credentials: "include",
+      },
+      {
+        path: "/connectors/x/login/session%2Fwith%20space",
+        method: "DELETE",
+        body: undefined,
+        credentials: "include",
+      },
+    ]);
+  });
+
+  it("adds an X target through one evidence-bound connector request", async () => {
+    const calls: Array<[string, RequestInit?]> = [];
+    globalThis.fetch = ((url: string, options?: RequestInit) => {
+      calls.push([url, options]);
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "feed-x-chat",
+            sourceId: "source-x",
+            externalId: "x:chat:conversation_1",
+            name: "Project chat",
+            kind: "discussion",
+          }),
+          { status: 201 },
+        ),
+      );
+    }) as typeof fetch;
+
+    const feed = await addXTarget({
+      sourceId: "source-x",
+      url: "https://x.com/i/chat/conversation_1",
     });
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0][0]).toBe("/connectors/x/session");
-    expect(calls[0][1]?.method).toBe("POST");
+    expect(calls.map(([path, options]) => [path, options?.method])).toEqual([
+      ["/connectors/x/targets", "POST"],
+    ]);
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      sourceId: "source-x",
+      url: "https://x.com/i/chat/conversation_1",
+    });
     expect(calls[0][1]?.credentials).toBe("include");
     expect(calls[0][1]?.headers).toEqual({
       "content-type": "application/json",
     });
-    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
-      apiKey: "twex-key-123",
-      authToken: "auth-token-abc",
-      cookie: "auth_token=auth-token-abc; ct0=csrf-xyz; lang=en",
-    });
-    expect(result.source.id).toBe("source-x");
-  });
-
-  it("keeps credentials in separate fields and includes optional PIN and list query only when given", async () => {
-    const calls: Array<[string, RequestInit?]> = [];
-    globalThis.fetch = ((url: string, options?: RequestInit) => {
-      calls.push([url, options]);
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            source: { id: "source-x", connectorId: "X", connected: true },
-          }),
-          { status: 200 },
-        ),
-      );
-    }) as typeof fetch;
-
-    await connectXSession({
-      apiKey: "key",
-      authToken: "token",
-      cookie: "auth_token=token; ct0=csrf",
-    });
-    await connectXSession({
-      apiKey: "key",
-      authToken: "token",
-      cookie: "auth_token=token; ct0=csrf",
-      pin: "1234",
-      listQuery: "machine learning",
-    });
-
-    expect(calls.map(([path]) => path)).toEqual([
-      "/connectors/x/session",
-      "/connectors/x/session",
-    ]);
-    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
-      apiKey: "key",
-      authToken: "token",
-      cookie: "auth_token=token; ct0=csrf",
-    });
-    expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
-      apiKey: "key",
-      authToken: "token",
-      cookie: "auth_token=token; ct0=csrf",
-      pin: "1234",
-      listQuery: "machine learning",
-    });
-    // The cookie travels only in the JSON body; it never becomes a Cookie header.
-    for (const [, options] of calls) {
-      expect(
-        (options?.headers as Record<string, string> | undefined)?.Cookie,
-      ).toBeUndefined();
-    }
-  });
-
-  it("surfaces session rejection as an ApiClientError with the API status", async () => {
-    globalThis.fetch = (() =>
-      Promise.resolve(
-        new Response(
-          JSON.stringify({
-            error: { code: "TWEX_SESSION_FAILED", message: "Bad credentials" },
-          }),
-          { status: 422 },
-        ),
-      )) as typeof fetch;
-
-    await expect(
-      connectXSession({
-        apiKey: "key",
-        authToken: "token",
-        cookie: "auth_token=token; ct0=csrf",
-      }),
-    ).rejects.toMatchObject({
-      status: 422,
-      code: "TWEX_SESSION_FAILED",
-      message: "Bad credentials",
-    });
+    expect(feed.id).toBe("feed-x-chat");
   });
 });
 
