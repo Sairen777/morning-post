@@ -7,10 +7,11 @@ encryption are deliberate security measures that protect the single-owner
 deployment posture while keeping future deployment options open.
 
 X posts, Lists, and X Chat conversations are collected from rendered `x.com`
-pages through a dedicated app-owned browser profile. The default deployment
-configuration uses installed stable Chrome; bundled Playwright Chromium is an
-opt-in channel. Morning Post does not use the X API or a third-party X content
-API.
+pages through a dedicated app-owned browser profile. The browser channel is
+installed stable Chrome by default — including when `X_BROWSER_CHANNEL` is
+omitted — and bundled Playwright Chromium is available only as an explicit
+`X_BROWSER_CHANNEL=chromium` test or diagnostic selection. Morning Post does
+not use the X API or a third-party X content API.
 
 ## Setup
 
@@ -50,8 +51,8 @@ directly.
 - [Node.js](https://nodejs.org/) 22.13+ (frontend and Playwright toolchain)
 - [SQLite](https://sqlite.org/) is built into Bun; no separate database service is required
 - [OpenSSL](https://www.openssl.org/) (for generating the credential master key)
-- Installed stable [Google Chrome](https://www.google.com/chrome/) when using the `.env.example` default `X_BROWSER_CHANNEL=chrome`
-- Playwright Chromium (`bun run playwright:install`) only for `X_BROWSER_CHANNEL=chromium` or browser E2E tests
+- Installed stable [Google Chrome](https://www.google.com/chrome/) — the default X browser channel, also when `X_BROWSER_CHANNEL` is unset
+- Playwright Chromium (`bun run playwright:install`) for the ordinary hermetic X DOM regression suite, browser E2E tests, or an explicit `X_BROWSER_CHANNEL=chromium` selection
 
 ### Database
 
@@ -89,7 +90,7 @@ contains deployment credentials. The main settings are:
 | `ALLOW_REMOTE_SUMMARIZATION` | Allow non-loopback summarizer providers | `false` |
 | `CONNECTOR_TIMEOUT_MS` | Connector call timeout in milliseconds | `120000` |
 | `X_BROWSER_PROFILE_ROOT` | Dedicated app-owned X browser profiles; restrict this account-equivalent path to the Morning Post process user | `.x-browser-profiles` |
-| `X_BROWSER_CHANNEL` | X browser binary: installed stable Chrome or bundled Playwright Chromium | `chrome` in `.env.example`; code fallback `chromium` when unset |
+| `X_BROWSER_CHANNEL` | X browser binary: installed stable Chrome (default) or bundled Playwright Chromium (explicit test/diagnostic selection) | `chrome` — also when unset |
 | `X_BROWSER_LOGIN_TIMEOUT_MS` | Maximum time allowed for one headed X connection session | `900000` (15 min) |
 | `SUMMARIZER_TEXT_BYTES_PER_CHUNK` | Max text bytes per summarizer chunk | `120000` |
 | `SUMMARIZER_MAX_ITEMS_PER_CHUNK` | Max items per summarizer chunk | `50` |
@@ -179,9 +180,10 @@ Vinxi at `127.0.0.1:5173`. Its Vite proxy forwards API calls, including
    bun install
    ```
 
-2. Install bundled Chromium only when using
-   `X_BROWSER_CHANNEL=chromium` or browser E2E tests. The default installed
-   Chrome channel does not require this download:
+2. Install bundled Chromium for the ordinary hermetic X DOM regression suite,
+   browser E2E tests, or an explicit `X_BROWSER_CHANNEL=chromium` selection.
+   The default installed Chrome runtime — used even when
+   `X_BROWSER_CHANNEL` is unset — does not require this download:
 
    ```sh
    bun run playwright:install
@@ -386,9 +388,11 @@ anonymously — their `message.sender` is the group's linked channel rather than
 
 Morning Post collects the authenticated owner's Following feed, selected public
 or private Lists, and selected X Chat conversations through rendered browser
-pages. Direct messages and group conversations use the same explicit target
-model; conversation IDs are treated as opaque X identifiers rather than being
-used to infer whether a conversation is a group.
+pages. Direct and group conversations use the same explicit target model:
+discovery consumes only rendered canonical `/i/chat/<opaque-id>` links. A
+visible or accessible title is used when present; otherwise the deterministic
+fallback names the opaque conversation without classifying it as direct or
+group.
 
 **Upgrade from the retired API connector.** Migration `0007` disconnects the
 existing X source and soft-deletes its feed subscriptions because encrypted API
@@ -401,14 +405,17 @@ intact; non-X sources and feeds are unchanged.
 
 **Connections → X** always uses a dedicated persistent profile beneath
 `X_BROWSER_PROFILE_ROOT`, separate from every daily Safari, Firefox, Chrome,
-or other browser profile. With `X_BROWSER_CHANNEL=chrome`, Connect launches
-installed stable Chrome directly for manual authentication. After that process
-fully exits, Playwright reopens the same app-owned profile with installed
-Chrome for headed verification and headless discovery or collection. With
-`X_BROWSER_CHANNEL=chromium`, Playwright uses its bundled Chromium build for
-the complete headed and headless flow; install it with
-`bun run playwright:install`. Do not switch an existing profile between
-browser channels.
+or other browser profile — including the operator's daily Chrome profile.
+Installed stable Chrome is the default channel, also when `X_BROWSER_CHANNEL`
+is unset. Connect launches installed stable Chrome directly for manual
+authentication. After that process fully exits, Playwright reopens the same
+app-owned profile with installed stable Chrome for headed verification and
+headless discovery or collection. Headless scheduled collection therefore
+runs on installed stable Chrome with the same dedicated persistent profile —
+never a disposable or random profile. An explicit `X_BROWSER_CHANNEL=chromium`
+selection uses Playwright's bundled Chromium build for the complete headed and
+headless flow; install it with `bun run playwright:install`. Do not switch an
+existing profile between browser channels.
 
 The app-owned profile contains authenticated X cookies and local storage. Treat
 it as a credential artifact: run Morning Post as a dedicated user, restrict the
@@ -424,8 +431,8 @@ cleanup fails, retrying disconnect retries the idempotent cleanup.
 
 ### Connection and collection flow
 
-With `X_BROWSER_CHANNEL=chrome`, Connect X opens a dedicated **headed**
-installed-Chrome window outside Playwright. Sign in to X directly in that
+With `X_BROWSER_CHANNEL=chrome` (the default), Connect X opens a dedicated
+**headed** installed-Chrome window outside Playwright. Sign in to X directly in that
 window, complete 2FA or platform challenges, open or unlock X Chat if
 necessary, then fully quit Chrome before selecting Verify. Verify opens a
 Playwright-controlled headed installed-Chrome context against the same
@@ -441,8 +448,13 @@ Dashboard tabs or remounting the panel resumes status polling and Verify/Cancel
 controls.
 
 After connection, feed discovery and digest runs reuse the profile
-**headlessly with the selected browser channel**. The connector discovers
-Following, Lists, and accessible Chat conversations. Adding a canonical X
+**headlessly with installed stable Chrome (the default channel) and the same
+dedicated app-owned persistent profile**. The connector discovers Following,
+Lists, and accessible Chat conversations from rendered canonical
+`/i/chat/<opaque-id>` links and any visible or accessible titles; results
+deduplicate by canonical ID and a rendered name is preferred over the
+deterministic fallback, while invalid, control, or cross-origin links are
+ignored. Adding a canonical X
 target validates browser-rendered evidence and persists the feed in the same
 connector request; the generic feed endpoint cannot create X targets
 independently.
@@ -451,14 +463,26 @@ rejects the 251st target before collection; re-adding an already active target
 remains idempotent.
 
 
-Subscribed targets use bounded virtual scrolling. Rendered DOM is extracted
-directly into normalized posts and chat messages; raw DOM is not persisted.
-Post engagement counts and visible chat reactions are retained as metadata.
-Platform IDs are globally deduplicated. Ordered overlap preserves duplicate
-ID-less messages when the rendered windows prove their multiplicity; ambiguous
-ID-less overlaps, missing timestamps, inaccessible targets, authentication
-loss, scroll failures, or unresolved safety limits fail collection instead of
-advancing the cursor across an uncertain partial window.
+Subscribed targets use bounded, deterministic virtual scrolling: instant
+half-viewport DOM increments (no mouse or keyboard simulation), a 1000 ms
+settle after productive movement, and a deterministic 1500/2500/4000 ms
+no-progress backoff (capped) for consecutive windows without new accepted
+identities. There is no randomized timing, no simulated human interaction, and
+no stealth or concealment. Collection stops at a proven non-moving boundary,
+after a repeated settled no-new streak that included movement
+(`no_progress`), at the bounded safety caps, or when the requested window is
+fully covered — and no wait follows a condition- or item-limit terminal
+result. Discovery and collection treat `no_progress` as incomplete and fail
+rather than returning partial results. Rendered DOM is extracted directly into
+normalized posts and chat messages; raw DOM is not persisted. Post engagement
+counts and visible chat reactions are retained as metadata. Platform IDs are
+globally deduplicated. Ordered overlap preserves duplicate ID-less messages
+when the rendered windows prove their multiplicity; ambiguous ID-less
+overlaps, missing timestamps, inaccessible targets, authentication loss,
+loading stalls, scroll failures, or unresolved safety limits fail collection
+instead of advancing the cursor across an uncertain partial window — an
+incomplete window never advances the cursor, protecting captured history from
+gaps.
 
 The headed connection window requires a desktop display. A remote/headless
 server needs an operator-provided remote desktop, VNC, or equivalent display
@@ -467,10 +491,12 @@ path for initial connection. Scheduled collection itself is headless.
 ### Unsupported platform risk
 
 This is browser automation over rendered `x.com` pages, not the official X API
-and not a third-party X content API. X can change DOM structure, challenge the
-login, restrict the account, or block automation without notice. Morning Post
-does not spoof browser fingerprints or hide Playwright automation. Operators
-assume the account and policy risk.
+and not a third-party X content API. Browser automation is not supported by X:
+X can change DOM structure, challenge the login, restrict the account, or
+block automation without notice. Morning Post does not spoof browser
+fingerprints, hide Playwright automation, or simulate human behavior —
+collection pacing is deterministic. Operators assume the account and policy
+risk.
 
 ### Retention
 

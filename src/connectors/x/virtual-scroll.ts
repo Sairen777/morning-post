@@ -5,8 +5,10 @@ import { abortableDelay, throwIfAborted } from "./abort.ts";
 const MAX_SCROLL_ROUNDS = 72;
 const MAX_NO_PROGRESS_ROUNDS = 4;
 const MAX_COLLECTED_ITEMS = 5_000;
-const SCROLL_SETTLE_MS = 750;
-const SCROLL_ACTION_TIMEOUT_MS = 5_000;
+const PRODUCTIVE_WAIT_MS = 1_000;
+const NO_NEW_WINDOW_WAIT_MS: readonly number[] = [1_500, 2_500, 4_000];
+const MAX_NO_NEW_WAIT_INDEX = NO_NEW_WINDOW_WAIT_MS.length - 1;
+const EDGE_EVALUATE_TIMEOUT_MS = 5_000;
 
 export interface XVirtualScrollOptions<T> {
   itemSelector: string;
@@ -24,8 +26,14 @@ export interface XVirtualScrollOptions<T> {
 export type XVirtualScrollStopReason =
   | "condition"
   | "boundary"
+  | "no_progress"
   | "max_rounds"
   | "max_items";
+
+export type XVirtualScrollWait = (
+  milliseconds: number,
+  signal?: AbortSignal,
+) => Promise<void>;
 
 export interface XVirtualScrollResult<T> {
   items: T[];
@@ -37,6 +45,7 @@ export async function collectVirtualizedItems<T>(
   page: Page,
   options: XVirtualScrollOptions<T>,
   signal?: AbortSignal,
+  wait: XVirtualScrollWait = abortableDelay,
 ): Promise<XVirtualScrollResult<T>> {
   const maxRounds = boundedPositiveInteger(options.maxRounds, MAX_SCROLL_ROUNDS, 1, MAX_SCROLL_ROUNDS);
   const maxNoProgressRounds = boundedPositiveInteger(
@@ -50,7 +59,11 @@ export async function collectVirtualizedItems<T>(
   const seen = new Set<string>();
   const collected: T[] = [];
   let previousWindowIdentities: string[] = [];
+  let hasAdvanced = false;
   let movedIntoCurrentWindow = false;
+  let consecutiveNoNewWindows = 0;
+  let sawMovementInNoNewStreak = false;
+  let noNewStreakStartedBeforeAdvance = false;
   let boundaryStallRounds = 0;
 
   for (let round = 0; round < maxRounds; round += 1) {
@@ -122,13 +135,59 @@ export async function collectVirtualizedItems<T>(
       return { items: collected, stopReason: "max_items" };
     }
 
+    if (added === 0) {
+      if (consecutiveNoNewWindows === 0 && !hasAdvanced) {
+        noNewStreakStartedBeforeAdvance = true;
+      }
+      consecutiveNoNewWindows += 1;
+      if (hasAdvanced) {
+        sawMovementInNoNewStreak ||= movedIntoCurrentWindow;
+      }
+    } else {
+      consecutiveNoNewWindows = 0;
+      sawMovementInNoNewStreak = false;
+      noNewStreakStartedBeforeAdvance = false;
+      boundaryStallRounds = 0;
+    }
+    const settledNoNewWindows = noNewStreakStartedBeforeAdvance
+      ? consecutiveNoNewWindows - 1
+      : consecutiveNoNewWindows;
+    if (
+      hasAdvanced &&
+      settledNoNewWindows >= maxNoProgressRounds &&
+      sawMovementInNoNewStreak
+    ) {
+      if (
+        movedIntoCurrentWindow ||
+        boundaryStallRounds + 1 < maxNoProgressRounds
+      ) {
+        return { items: collected, stopReason: "no_progress" };
+      }
+      // The most recent windows stopped moving and one more probe would
+      // prove a boundary: issue that pending probe before concluding. A
+      // non-moving probe proves the boundary; a moving one still fails
+      // closed as no_progress because the rendered window was never
+      // proven complete, so consumers must discard the collection.
+      const moved = await advanceVirtualScroller(
+        page,
+        options.itemSelector,
+        direction,
+        signal,
+      );
+      return {
+        items: collected,
+        stopReason: moved ? "no_progress" : "boundary",
+      };
+    }
+
+    const isFinalRound = round + 1 >= maxRounds;
     const moved = await advanceVirtualScroller(
       page,
       options.itemSelector,
       direction,
       signal,
     );
-    await abortableDelay(SCROLL_SETTLE_MS, signal);
+    hasAdvanced = true;
     movedIntoCurrentWindow = moved;
     boundaryStallRounds = added === 0 && !moved
       ? boundaryStallRounds + 1
@@ -136,6 +195,17 @@ export async function collectVirtualizedItems<T>(
     if (boundaryStallRounds >= maxNoProgressRounds) {
       return { items: collected, stopReason: "boundary" };
     }
+    if (isFinalRound) {
+      break;
+    }
+    await wait(
+      added > 0
+        ? PRODUCTIVE_WAIT_MS
+        : NO_NEW_WINDOW_WAIT_MS[
+          Math.min(consecutiveNoNewWindows - 1, MAX_NO_NEW_WAIT_INDEX)
+        ],
+      signal,
+    );
   }
   return { items: collected, stopReason: "max_rounds" };
 }
@@ -181,7 +251,10 @@ async function advanceVirtualScroller(
   const sign = direction === "up" ? -1 : 1;
   if (count > 0) {
     const edgeItem = items.nth(direction === "up" ? 0 : count - 1);
-    await edgeItem.scrollIntoViewIfNeeded({ timeout: SCROLL_ACTION_TIMEOUT_MS });
+    // No scrollIntoViewIfNeeded here: virtualized windows re-render on
+    // scroll and can detach the edge element while Playwright is still
+    // acting on it. The synchronous ancestor walk below both locates the
+    // scroller and advances it in one atomic evaluation.
     const moved = await edgeItem.evaluate((element, scrollSign) => {
       let ancestor = element.parentElement;
       while (ancestor) {
@@ -205,7 +278,7 @@ async function advanceVirtualScroller(
         behavior: "instant",
       });
       return Math.abs(window.scrollY - before) > 1;
-    }, sign);
+    }, sign, { timeout: EDGE_EVALUATE_TIMEOUT_MS });
     throwIfAborted(signal);
     return moved;
   }

@@ -1,7 +1,9 @@
 import { test } from "bun:test";
+import type { XBrowserChannel } from "../src/connectors/x/x.types.ts";
 import { assertEquals, assertThrows } from "./assertions.ts";
 import {
   getConfig,
+  getXBrowserConfig,
   getSummarizerBudgetConfig,
   getSummarizerRuntimeConfig,
   resolveAllowRemoteSummarization,
@@ -101,7 +103,7 @@ test("config defaults cover runtime boundaries", () => {
   assertEquals(config.connectorTimeoutMs, 120_000);
   assertEquals(config.xBrowserProfileRoot, ".x-browser-profiles");
   assertEquals(config.xBrowserLoginTimeoutMs, 900_000);
-  assertEquals(config.xBrowserChannel, "chromium");
+  assertEquals(config.xBrowserChannel, "chrome");
   assertEquals(config.summarizerTextBytesPerChunk, 120_000);
   assertEquals(config.summarizerMaxItemsPerChunk, 50);
   assertEquals(config.summarizerMaxImageBytes, 1_000_000);
@@ -363,7 +365,7 @@ test("constructor values take precedence over environment", () => {
     assertEquals(config.allowRemoteSummarization, false);
     assertEquals(config.xBrowserProfileRoot, "./constructor-x-profiles");
     assertEquals(config.xBrowserLoginTimeoutMs, 54_321);
-    assertEquals(config.xBrowserChannel, "chromium");
+    assertEquals(config.xBrowserChannel, "chromium"); // constructor wins over env chrome
     assertEquals(resolveAppSecurityOptions({ maxRequestBodyBytes: 300 }), {
       allowedOrigins: ["https://env.example"],
       maxRequestBodyBytes: 300,
@@ -421,6 +423,31 @@ test("invalid X browser channels fail with the setting name", () => {
     process.env["X_BROWSER_CHANNEL"] = "stable";
     assertThrows(
       () => getConfig(),
+      Error,
+      "Invalid X_BROWSER_CHANNEL",
+    );
+  });
+});
+
+test("X browser channel precedence is constructor, then environment, then chrome default", () => {
+  withClearedEnvironment(["X_BROWSER_CHANNEL"], () => {
+    assertEquals(getXBrowserConfig().browserChannel, "chrome");
+    assertEquals(getConfig().xBrowserChannel, "chrome");
+
+    process.env["X_BROWSER_CHANNEL"] = "chromium";
+    assertEquals(getXBrowserConfig().browserChannel, "chromium");
+    assertEquals(getConfig().xBrowserChannel, "chromium");
+
+    assertEquals(
+      getXBrowserConfig({ browserChannel: "chrome" }).browserChannel,
+      "chrome",
+    );
+    assertEquals(
+      getConfig({ xBrowserChannel: "chrome" }).xBrowserChannel,
+      "chrome",
+    );
+    assertThrows(
+      () => getXBrowserConfig({ browserChannel: "stable" as XBrowserChannel }),
       Error,
       "Invalid X_BROWSER_CHANNEL",
     );

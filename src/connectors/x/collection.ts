@@ -231,7 +231,7 @@ function assertRenderedTimestamps(
   }
 }
 
-async function requireCompleteCollection(
+export async function requireCompleteCollection(
   page: Page,
   _target: XTarget,
   stopReason: XVirtualScrollStopReason,

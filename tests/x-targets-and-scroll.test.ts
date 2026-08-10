@@ -211,8 +211,23 @@ function fakePage(movements: readonly boolean[]): FakePage {
     advancementCount: () => advancementCount,
   };
 }
+interface WaitSpy {
+  waits: number[];
+  wait: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+}
 
-test("virtual scrolling advances by half a viewport with instant behavior after a 750 ms settle", async () => {
+function recordingWait(): WaitSpy {
+  const waits: number[] = [];
+  return {
+    waits,
+    wait: async (milliseconds: number) => {
+      waits.push(milliseconds);
+    },
+  };
+}
+
+
+test("virtual scrolling advances by half a viewport with instant behavior and deterministic pacing", async () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const scrollCalls: ScrollToOptions[] = [];
   let scrollY = 0;
@@ -236,18 +251,32 @@ test("virtual scrolling advances by half a viewport with instant behavior after 
       evaluate: <T>(callback: (sign: number) => T, sign: number) =>
         Promise.resolve(callback(sign)),
     } as unknown as Page;
-    const startedAt = performance.now();
+    const waits = recordingWait();
+    const windows = [
+      ["first"],
+      ["first", "second"],
+      ["first", "second", "third"],
+    ];
+    let round = 0;
 
     const result = await collectVirtualizedItems(page, {
       itemSelector: "[data-item]",
-      extractRound: () => Promise.resolve([]),
+      extractRound: () =>
+        Promise.resolve(windows[Math.min(round++, windows.length - 1)]),
       identityOf: (item: string) => item,
-      maxRounds: 1,
-    });
+      maxRounds: 3,
+    }, undefined, waits.wait);
 
-    assertEquals(result, { items: [], stopReason: "max_rounds" });
-    assertEquals(scrollCalls, [{ top: 400, behavior: "instant" }]);
-    assertStrictEquals(performance.now() - startedAt >= 700, true);
+    assertEquals(result, {
+      items: ["first", "second", "third"],
+      stopReason: "max_rounds",
+    });
+    assertEquals(scrollCalls, [
+      { top: 400, behavior: "instant" },
+      { top: 400, behavior: "instant" },
+      { top: 400, behavior: "instant" },
+    ]);
+    assertEquals(waits.waits, [1000, 1000]);
   } finally {
     if (originalWindow) {
       Object.defineProperty(globalThis, "window", originalWindow);
@@ -257,8 +286,31 @@ test("virtual scrolling advances by half a viewport with instant behavior after 
   }
 });
 
+test("virtual scrolling resets pacing after a productive window follows no progress", async () => {
+  const fake = fakePage([true, true, true, true]);
+  const waits = recordingWait();
+  const windows = [["first"], [], ["first", "second"], ["first", "second", "third"]];
+  let round = 0;
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () =>
+      Promise.resolve(windows[Math.min(round++, windows.length - 1)]),
+    identityOf: (item) => item,
+    maxRounds: 4,
+  }, undefined, waits.wait);
+
+  assertEquals(result, {
+    items: ["first", "second", "third"],
+    stopReason: "max_rounds",
+  });
+  assertEquals(waits.waits, [1000, 1500, 1000]);
+});
+
+
 test("virtual scrolling reports a reached condition even when the item cap is reached in that round", async () => {
   const fake = fakePage([]);
+  const waits = recordingWait();
 
   const result = await collectVirtualizedItems(fake.page, {
     itemSelector: "[data-item]",
@@ -267,14 +319,17 @@ test("virtual scrolling reports a reached condition even when the item cap is re
     maxItems: 1,
     maxRounds: 1,
     shouldStop: () => true,
-  });
+  }, undefined, waits.wait);
 
   assertEquals(result, { items: ["first"], stopReason: "condition" });
   assertStrictEquals(fake.advancementCount(), 0);
+  assertEquals(waits.waits, []);
 });
+
 
 test("virtual scrolling reports max_items when an item cap truncates collection", async () => {
   const fake = fakePage([]);
+  const waits = recordingWait();
 
   const result = await collectVirtualizedItems(fake.page, {
     itemSelector: "[data-item]",
@@ -282,14 +337,16 @@ test("virtual scrolling reports max_items when an item cap truncates collection"
     identityOf: (item) => item,
     maxItems: 1,
     shouldStop: () => false,
-  });
+  }, undefined, waits.wait);
 
   assertEquals(result, { items: ["first"], stopReason: "max_items" });
   assertStrictEquals(fake.advancementCount(), 0);
+  assertEquals(waits.waits, []);
 });
 
 test("virtual scrolling reports a reached boundary on the final allowed round", async () => {
   const fake = fakePage([false]);
+  const waits = recordingWait();
 
   const result = await collectVirtualizedItems(fake.page, {
     itemSelector: "[data-item]",
@@ -297,11 +354,13 @@ test("virtual scrolling reports a reached boundary on the final allowed round", 
     identityOf: (item: string) => item,
     maxRounds: 1,
     maxNoProgressRounds: 1,
-  });
+  }, undefined, waits.wait);
 
   assertEquals(result, { items: [], stopReason: "boundary" });
   assertStrictEquals(fake.advancementCount(), 1);
+  assertEquals(waits.waits, []);
 });
+
 
 test("virtual scrolling propagates rendered-edge failures instead of inferring a boundary", async () => {
   let windowFallbackCount = 0;
@@ -309,9 +368,7 @@ test("virtual scrolling propagates rendered-edge failures instead of inferring a
     locator: () => ({
       count: () => Promise.resolve(1),
       nth: () => ({
-        scrollIntoViewIfNeeded: () =>
-          Promise.reject(new Error("rendered edge detached")),
-        evaluate: () => Promise.resolve(false),
+        evaluate: () => Promise.reject(new Error("rendered edge detached")),
       }),
     }),
     evaluate: () => {
@@ -337,21 +394,174 @@ test("virtual scrolling propagates rendered-edge failures instead of inferring a
 
 test("virtual scrolling reports max_rounds when movement prevents a boundary result", async () => {
   const fake = fakePage([true]);
+  const waits = recordingWait();
 
   const result = await collectVirtualizedItems(fake.page, {
     itemSelector: "[data-item]",
     extractRound: () => Promise.resolve([]),
     identityOf: (item: string) => item,
     maxRounds: 1,
-    maxNoProgressRounds: 1,
-  });
+    maxNoProgressRounds: 4,
+  }, undefined, waits.wait);
 
   assertEquals(result, { items: [], stopReason: "max_rounds" });
   assertStrictEquals(fake.advancementCount(), 1);
+  assertEquals(waits.waits, []);
+});
+
+test("virtual scrolling reports no_progress after settled moved windows add nothing", async () => {
+  const fake = fakePage([true, true]);
+  const waits = recordingWait();
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve([]),
+    identityOf: (item: string) => item,
+    maxRounds: 3,
+    maxNoProgressRounds: 2,
+  }, undefined, waits.wait);
+
+  assertEquals(result, { items: [], stopReason: "no_progress" });
+  assertStrictEquals(fake.advancementCount(), 2);
+  assertEquals(waits.waits, [1500, 2500]);
+});
+
+test("virtual scrolling does not fail before a first moved window can load content", async () => {
+  const fake = fakePage([true, true]);
+  const waits = recordingWait();
+  const windows = [[], ["loaded"]];
+  let round = 0;
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () =>
+      Promise.resolve(windows[Math.min(round++, windows.length - 1)]),
+    identityOf: (item: string) => item,
+    maxRounds: 2,
+    maxNoProgressRounds: 1,
+  }, undefined, waits.wait);
+
+  assertEquals(result, { items: ["loaded"], stopReason: "max_rounds" });
+  assertStrictEquals(fake.advancementCount(), 2);
+  assertEquals(waits.waits, [1500]);
+});
+
+
+
+test("virtual scrolling reports boundary only after a non-moving edge is proven", async () => {
+  const fake = fakePage([false, false, false, false]);
+  const waits = recordingWait();
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve([]),
+    identityOf: (item: string) => item,
+    maxRounds: 4,
+    maxNoProgressRounds: 4,
+  }, undefined, waits.wait);
+
+  assertEquals(result, { items: [], stopReason: "boundary" });
+  assertStrictEquals(fake.advancementCount(), 4);
+  assertEquals(waits.waits, [1500, 2500, 4000]);
+});
+
+test("virtual scrolling backs off no-new pacing through the 4000 ms cap", async () => {
+  const fake = fakePage([true, true, true, true]);
+  const waits = recordingWait();
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve([]),
+    identityOf: (item: string) => item,
+    maxRounds: 5,
+    maxNoProgressRounds: 4,
+  }, undefined, waits.wait);
+
+  assertEquals(result, { items: [], stopReason: "no_progress" });
+  assertStrictEquals(fake.advancementCount(), 4);
+  assertEquals(waits.waits, [1500, 2500, 4000, 4000]);
+});
+
+test("virtual scrolling defers no_progress to a pending probe that proves a boundary", async () => {
+  const fake = fakePage([true, false, false, false, false]);
+  const waits = recordingWait();
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve([]),
+    identityOf: (item: string) => item,
+    maxRounds: 6,
+    maxNoProgressRounds: 4,
+  }, undefined, waits.wait);
+
+  assertEquals(result, { items: [], stopReason: "boundary" });
+  assertStrictEquals(fake.advancementCount(), 5);
+  assertEquals(waits.waits, [1500, 2500, 4000, 4000]);
+});
+
+test("virtual scrolling fails closed as no_progress without a wait when the deferred probe moves", async () => {
+  const fake = fakePage([true, false, false, false, true]);
+  const waits = recordingWait();
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve([]),
+    identityOf: (item: string) => item,
+    maxRounds: 6,
+    maxNoProgressRounds: 4,
+  }, undefined, waits.wait);
+
+  assertEquals(result, { items: [], stopReason: "no_progress" });
+  assertStrictEquals(fake.advancementCount(), 5);
+  assertEquals(waits.waits, [1500, 2500, 4000, 4000]);
+});
+
+test("virtual scrolling fails mixed no-new stalls as no_progress", async () => {
+  const fake = fakePage([true, false, true, false, true]);
+  const waits = recordingWait();
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve([]),
+    identityOf: (item: string) => item,
+    maxRounds: 5,
+    maxNoProgressRounds: 4,
+  }, undefined, waits.wait);
+
+  assertEquals(result, { items: [], stopReason: "no_progress" });
+  assertStrictEquals(fake.advancementCount(), 4);
+  assertEquals(waits.waits, [1500, 2500, 4000, 4000]);
+});
+
+test("virtual scrolling propagates aborts from the injected settle wait", async () => {
+  const fake = fakePage([true]);
+  const controller = new AbortController();
+  let waitStarted = 0;
+  const wait = (_milliseconds: number, signal?: AbortSignal) => {
+    const { promise, reject } = Promise.withResolvers<void>();
+    signal?.addEventListener(
+      "abort",
+      () => reject(new Error("settle aborted")),
+      { once: true },
+    );
+    waitStarted += 1;
+    controller.abort();
+    return promise;
+  };
+  const collection = collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve([]),
+    identityOf: (item: string) => item,
+    maxRounds: 2,
+  }, controller.signal, wait);
+
+  await assertRejects(() => collection, Error, "settle aborted");
+  assertStrictEquals(waitStarted, 1);
 });
 
 test("overlap-aware upward scrolling preserves identical messages entering the window", async () => {
   const fake = fakePage([true, true]);
+  const waits = recordingWait();
   const windows = [["same"], ["same", "same"]];
   let round = 0;
 
@@ -363,17 +573,19 @@ test("overlap-aware upward scrolling preserves identical messages entering the w
       Promise.resolve(windows[Math.min(round++, windows.length - 1)]),
     identityOf: (item) => item,
     maxRounds: 2,
-  });
+  }, undefined, waits.wait);
 
   assertEquals(result, {
     items: ["same", "same"],
     stopReason: "max_rounds",
   });
   assertStrictEquals(fake.advancementCount(), 2);
+  assertEquals(waits.waits, [1000]);
 });
 
 test("overlap-aware scrolling rejects an indistinguishable moved fixed-size window", async () => {
   const fake = fakePage([true, true]);
+  const waits = recordingWait();
   let round = 0;
   const windows = [["same", "same"], ["same", "same"]];
 
@@ -387,14 +599,16 @@ test("overlap-aware scrolling rejects an indistinguishable moved fixed-size wind
           Promise.resolve(windows[Math.min(round++, windows.length - 1)]),
         identityOf: (item) => item,
         maxRounds: 2,
-      }),
+      }, undefined, waits.wait),
     Error,
     "could not reconcile a moved window",
   );
+  assertEquals(waits.waits, [1000]);
 });
 
 test("overlap-aware scrolling still globally deduplicates stable item IDs", async () => {
   const fake = fakePage([true, true]);
+  const waits = recordingWait();
   let round = 0;
   const windows = [
     [{ id: "one" }, { id: "two" }],
@@ -410,16 +624,18 @@ test("overlap-aware scrolling still globally deduplicates stable item IDs", asyn
       Promise.resolve(windows[Math.min(round++, windows.length - 1)]),
     identityOf: (item) => item.id,
     maxRounds: 2,
-  });
+  }, undefined, waits.wait);
 
   assertEquals(result, {
     items: [{ id: "one" }, { id: "two" }, { id: "three" }],
     stopReason: "max_rounds",
   });
+  assertEquals(waits.waits, [1000]);
 });
 
 test("overlap-aware scrolling rejects multiple unstable overlap candidates", async () => {
   const fake = fakePage([true, true]);
+  const waits = recordingWait();
   let round = 0;
   const windows = [
     ["A", "B", "A", "C"],
@@ -436,8 +652,9 @@ test("overlap-aware scrolling rejects multiple unstable overlap candidates", asy
           Promise.resolve(windows[Math.min(round++, windows.length - 1)]),
         identityOf: (item) => item,
         maxRounds: 2,
-      }),
+      }, undefined, waits.wait),
     Error,
     "could not reconcile a moved window",
   );
+  assertEquals(waits.waits, [1000]);
 });

@@ -1,6 +1,10 @@
 import { test } from "bun:test";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright";
 
+import type { XChromeProcess } from "../src/connectors/x/chrome-process.ts";
 import type {
   XBrowserSessions,
   XOwnedBrowserSession,
@@ -10,10 +14,16 @@ import { throwIfAborted } from "../src/connectors/x/abort.ts";
 import {
   HeadedLoginHandle,
   UnmanagedLoginHandle,
+  XBrowserRuntime,
   XVerificationRecoveryError,
 } from "../src/connectors/x/runtime.ts";
-import type { XLoginState } from "../src/connectors/x/x.types.ts";
-import { assertEquals, assertRejects, assertStrictEquals } from "./assertions.ts";
+import type { XBrowserChannel, XLoginState } from "../src/connectors/x/x.types.ts";
+import {
+  assertEquals,
+  assertRejects,
+  assertStrictEquals,
+  assertThrows,
+} from "./assertions.ts";
 
 const PROFILE_ID = "123e4567-e89b-42d3-a456-426614174000";
 
@@ -472,4 +482,71 @@ test("managed headed login close is idempotent and failed closes stay retryable"
     Error,
     "X headed login session is closed",
   );
+});
+
+test("an invalid explicit runtime channel fails visibly", () => {
+  assertThrows(
+    () =>
+      new XBrowserRuntime({
+        profileRoot: "/tmp/morning-post-invalid-channel",
+        browserChannel: "stable" as XBrowserChannel,
+      }),
+    Error,
+    'X browser channel must be "chromium" or "chrome"',
+  );
+});
+
+test("an omitted runtime channel takes the unmanaged installed-Chrome login path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "morning-post-runtime-"));
+  const chromeExecutable =
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const launches: Array<{ executable: string; argv: readonly string[] }> = [];
+  let terminateCalls = 0;
+  const chromeProcessLauncher = async (
+    executable: string,
+    argv: readonly string[],
+  ): Promise<XChromeProcess> => {
+    launches.push({ executable, argv });
+    let running = true;
+    const exited = Promise.withResolvers<void>();
+    return {
+      get running() {
+        return running;
+      },
+      exited: exited.promise,
+      async terminate() {
+        terminateCalls += 1;
+        running = false;
+        exited.resolve();
+      },
+    };
+  };
+  try {
+    const runtime = new XBrowserRuntime({
+      profileRoot: root,
+      chromeExecutable,
+      chromeProcessLauncher,
+    });
+    const handle = await runtime.startHeadedLogin(PROFILE_ID);
+
+    // The default channel is installed Chrome, so login launches the
+    // app-owned profile in an unmanaged Chrome process instead of opening a
+    // Playwright-headed context.
+    assertEquals(launches.length, 1);
+    assertStrictEquals(launches[0].executable, chromeExecutable);
+    assertEquals(launches[0].argv, [
+      `--user-data-dir=${await realpath(join(root, PROFILE_ID))}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "https://x.com/home",
+    ]);
+    // The unmanaged handle never touches Playwright or X: a running Chrome
+    // verifies without any inspection or additional launch.
+    assertStrictEquals(await handle.verify(), "awaiting_login");
+    assertEquals(launches.length, 1);
+    await handle.close();
+    assertStrictEquals(terminateCalls, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

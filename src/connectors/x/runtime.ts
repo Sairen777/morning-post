@@ -48,7 +48,11 @@ export class XBrowserRuntime {
     ) {
       throw new Error(`X profile lease timeout must be between 1 and ${MAX_LEASE_TIMEOUT_MS} milliseconds`);
     }
-    this.browserChannel = options.browserChannel ?? "chromium";
+    const browserChannel = options.browserChannel ?? "chrome";
+    if (browserChannel !== "chromium" && browserChannel !== "chrome") {
+      throw new Error('X browser channel must be "chromium" or "chrome"');
+    }
+    this.browserChannel = browserChannel;
     this.sessions = new XBrowserSessions(
       options.profileRoot,
       leaseTimeoutMs,

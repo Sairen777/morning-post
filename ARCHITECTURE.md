@@ -101,6 +101,45 @@ rather than deriving host details through `node:os`. Bun otherwise exposes the
 ordinary process environment and Node-compatible system APIs; isolation and
 filesystem access are controlled by the operating-system account and deployment.
 
+**X browser connector.** X is the only browser-automated connector. It drives
+rendered `x.com` pages in a dedicated app-owned persistent profile beneath
+`X_BROWSER_PROFILE_ROOT` and never touches an operator's daily browser profile.
+The browser channel defaults to installed stable Chrome even when
+`X_BROWSER_CHANNEL` is unset. With that default, connection verification is
+headed and feed discovery and scheduled collection are headless, all using
+installed stable Chrome (`channel: "chrome"`) with the same dedicated
+persistent profile. An explicit constructor or environment `chromium`
+selection remains supported only as an intentional test/diagnostic path and
+uses bundled Chromium throughout. Neither path uses a disposable or random
+profile, and an existing profile must not switch channels.
+
+Chat discovery consumes only rendered canonical `/i/chat/<opaque-id>` links:
+invalid, control, and cross-origin links are ignored, visible or accessible
+titles are whitespace-cleaned when present, results deduplicate by canonical
+ID, and a rendered name is preferred over the deterministic opaque-ID
+fallback. The opaque
+conversation identifier never classifies a conversation as direct or group
+without explicit rendered evidence. Discovery and collection use bounded
+deterministic scrolling: instant half-viewport DOM increments (no mouse or
+keyboard simulation), a 1000 ms settle after productive movement, a
+deterministic 1500/2500/4000 ms no-progress backoff (capped) for consecutive
+windows without new accepted identities, and bounded safety caps on rounds and
+items; no wait follows a condition- or item-limit terminal result. There is no
+randomized timing, simulated human interaction, stealth, or concealment. A
+repeated settled no-new streak that included scrolling movement stops as
+`no_progress`; `boundary` is reserved for a proven
+non-moving edge. Discovery and collection treat `no_progress` as incomplete
+and fail rather than returning partial results.
+
+Partial-window collection is fail-closed: ambiguous or incomplete windows,
+missing timestamps, inaccessible targets, authentication loss, loading stalls,
+scroll failures, and safety caps fail the run instead of advancing
+`lastFetchedPeriodEndMs` across an uncertain window. The fetch cursor and
+captured history therefore stay intact when a render is partial; a later run
+re-ingests the same window from the unchanged cursor. Browser automation over
+rendered X pages is not supported by X, and it does not reduce X platform,
+authentication-challenge, or account-restriction risk.
+
 ### 2. Summarizer
 
 Accepts `NormalizedItem[]`, a `SummaryRuleset`
@@ -294,11 +333,14 @@ credential storage or exposure of that profile can therefore mean full account
 takeover.
 
 The X profile is an application-owned credential artifact, never a daily
-browser profile. Run Morning Post under a dedicated operating-system identity,
-keep `X_BROWSER_PROFILE_ROOT` owned by and accessible only to that identity,
-and protect or destroy profile backups with the same rigor as database
-credential backups. Browser automation does not reduce X platform,
-authentication-challenge, or account-restriction risk.
+browser profile and never a disposable or random profile: headed connection
+verification and headless scheduled collection share the same persistent
+profile. Run Morning Post under a dedicated operating-system identity, keep
+`X_BROWSER_PROFILE_ROOT` owned by and accessible only to that identity, and
+protect or destroy profile backups with the same rigor as database credential
+backups. Browser automation does not reduce X platform,
+authentication-challenge, or account-restriction risk, and it is not supported
+by X.
 
 **No zero-knowledge option here.** Morning Post runs scheduled digests while the
 user is offline, so the server must decrypt and use a credential without the
