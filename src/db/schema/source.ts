@@ -34,6 +34,17 @@ export const sources = sqliteTable("sources",
     .$type<RelevanceFilterOverride>()
     .notNull()
     .default("inherit"),
+  /**
+   * Source-scoped exploration window: a freshly connected source is include-all
+   * (mutes still apply) until enough distinct whole-story `not_relevant`
+   * feedback graduates it to ordinary inherited personalization.
+   */
+  relevanceWarmup: integer("relevance_warmup", { mode: "boolean" }).notNull()
+    .default(false),
+  /** Internal count backing warmup graduation; never exposed publicly. */
+  relevanceWarmupNegativeFeedbackCount: integer(
+    "relevance_warmup_negative_feedback_count",
+  ).notNull().default(0),
   createdAt: integer("created_at", { mode: "number" }).notNull(),
   updatedAt: integer("updated_at", { mode: "number" }).notNull(),
 },
@@ -54,6 +65,10 @@ export const sources = sqliteTable("sources",
   check(
     "sources_relevance_filter_mode_check",
     sql`${table.relevanceFilterMode} in ('inherit', 'personalized', 'include_all')`,
+  ),
+  check(
+    "sources_relevance_warmup_negative_feedback_count_check",
+    sql`${table.relevanceWarmupNegativeFeedbackCount} >= 0`,
   ),
 ],);
 

@@ -15,6 +15,10 @@ export interface SummaryPoint {
   sourceUrl: string | null;
   channel?: string;
   date?: string;
+  /** Visible author of the point's primary indexed X Chat source; absent for non-X points, X posts, and unattributed X chat rows. */
+  author?: string;
+  /** Trusted sender/viewer discriminator; never inferred from the visible label. */
+  authorKind?: "sender" | "viewer";
 }
 
 export interface AggregateSummaryContent {

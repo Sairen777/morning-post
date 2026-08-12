@@ -35,7 +35,8 @@ import {
   CURRENT_STORY_SUMMARY_VERSION,
   THOROUGH_STORY_SUMMARY_VERSION,
 } from "../../src/services/story-digest-service.ts";
-import { fingerprintStoryAnalysisMember, fingerprintStoryItem, groupStoryAnalysisUnits, partitionStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
+import { fingerprintStoryAnalysisMember, fingerprintStoryItem, groupStoryAnalysisUnits, OpenAICompatibleStoryIntelligenceService, partitionStoryAnalysisUnits } from "../../src/services/story-intelligence-service.ts";
+import { DEFAULT_SYSTEM_PROMPT } from "../../src/summarizers/prompts.ts";
 import type {
   AnalyzedStoryItem,
   PersistedStoryCandidate,
@@ -112,6 +113,84 @@ test("story digest markdown renders every source link and no legacy groups", () 
   assertStringIncludes(markdown, "## Shared story");
   assertStringIncludes(markdown, "https://a.example/report");
   assertStringIncludes(markdown, "https://b.example/report");
+});
+
+test("digest markdown renders escaped point authors in every point section", () => {
+  const view: DigestView = {
+    digest: digest("stories"),
+    stories: [{
+      id: "00000000-0000-4000-8000-000000000011",
+      digestId: "00000000-0000-4000-8000-000000000001",
+      storyId: "00000000-0000-4000-8000-000000000012",
+      storyVersion: 1,
+      profileVersion: 1,
+      summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+      generatedAt: 1,
+      title: "Attributed story",
+      topics: [],
+      entities: [],
+      points: [{
+        text: "Story point",
+        sourceUrl: null,
+        author: "@sto\u202Ery*[x]",
+      }],
+      relevanceScore: 90,
+      matchedInterestRuleIds: [],
+      sources: [],
+    }],
+    sections: [],
+    groups: [{
+      sourceId: "00000000-0000-4000-8000-000000000013",
+      connectorId: ConnectorId.X,
+      sections: [
+        {
+          sourceId: "00000000-0000-4000-8000-000000000013",
+          connectorId: ConnectorId.X,
+          feedId: "00000000-0000-4000-8000-000000000014",
+          feedName: "Chat",
+          feedRemoved: false,
+          content: {
+            kind: "aggregate",
+            points: [{
+              text: "Aggregate point",
+              sourceUrl: null,
+              author: "Group_Admin",
+            }],
+          },
+        },
+        {
+          sourceId: "00000000-0000-4000-8000-000000000013",
+          connectorId: ConnectorId.X,
+          feedId: "00000000-0000-4000-8000-000000000015",
+          feedName: "Articles",
+          feedRemoved: false,
+          content: {
+            kind: "articles",
+            articles: [{
+              sourceExternalId: "article-1",
+              title: "Article",
+              sourceUrl: null,
+              publishedAt: 1,
+              contentAccess: "full",
+              points: [{
+                text: "Article point",
+                sourceUrl: null,
+                author: "<viewer>",
+                authorKind: "viewer",
+              }],
+            }],
+          },
+        },
+      ],
+    }],
+    paidPosts: [],
+    failureReason: null,
+  };
+
+  const markdown = renderDigestMarkdown(view);
+  assertStringIncludes(markdown, "- **@story\\*\\[x\\]:** Story point");
+  assertStringIncludes(markdown, "- **Group\\_Admin:** Aggregate point");
+  assertStringIncludes(markdown, "- **&lt;viewer&gt;:** `SELF` Article point");
 });
 
 test("empty story mode is distinguishable from historical legacy mode", () => {
@@ -1745,5 +1824,177 @@ test("same-source feed summary modes isolate thorough stories and key cache reus
       ),
       true,
     );
+  });
+});
+
+test("legacy default system prompt is normalized away so an empty profile classifies without a model", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, {
+      name: "Legacy Profile Owner",
+      email: "legacy-default-prompt@example.com",
+      passwordHash: "$argon2id$fake",
+      systemPrompt: DEFAULT_SYSTEM_PROMPT,
+      defaultLanguage: "en",
+      relevanceThreshold: 60,
+      storyDetailLevel: "balanced",
+    });
+    const cipher = new CredentialCipher(
+      new EnvMasterKeyProvider(new Uint8Array(32).fill(3)),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.RSS,
+      credentials: await cipher.encrypt("{}", {
+        userId: user.id,
+        connectorId: ConnectorId.RSS,
+      }),
+    });
+    // Explicit source override wins over the fresh-source warmup window so the
+    // story takes the personalized classification path.
+    await updateSource(database, source.id, user.id, {
+      relevanceFilterMode: "personalized",
+    });
+    const feed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: source.id,
+      externalId: "legacy-feed",
+      name: "Legacy",
+      kind: "news",
+    });
+    await upsertItems(database, feed.id, [{
+      connectorId: ConnectorId.RSS,
+      feedExternalId: feed.externalId,
+      externalId: "legacy-one",
+      date: 100,
+      title: "Legacy one",
+      text: "Accessible report",
+      author: null,
+      url: "https://legacy.example/one",
+    }], 101);
+    const row = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 200,
+      status: "pending",
+    });
+
+    // Fixture analysis/resolution; real classification engine whose model
+    // client must never run. With no active interest rules and the legacy
+    // prompt normalized away, the real fast path includes everything by
+    // default; any leaked preference signal would hit the throwing client.
+    const fixture = new FixtureIntelligence();
+    const realIntelligence = new OpenAICompatibleStoryIntelligenceService({
+      client: {
+        complete: async () => {
+          throw new Error("model must not run");
+        },
+      },
+    });
+    const intelligence: StoryIntelligenceService = {
+      analyze: (items, options) => fixture.analyze(items, options),
+      resolve: (items, recentStories, options) =>
+        fixture.resolve(items, recentStories),
+      classify: (stories, rules, threshold, options) =>
+        realIntelligence.classify(stories, rules, threshold, options),
+    };
+    const summarizer: SummarizerService = {
+      summarize: async () => [{ text: "Combined development", sourceUrl: null }],
+    };
+
+    const result = await assembleStoryDigest(
+      database,
+      row.id,
+      user,
+      [feed],
+      0,
+      200,
+      { intelligence, summarizer, analyzerVersion: "legacy-normalization-v1" },
+    );
+    assertEquals(result.hadSummaryFailure, false);
+    assertEquals(result.stories.length, 1);
+  });
+});
+
+test("story summary versions are v2 so legacy cached points regenerate", () => {
+  assertEquals(HEADLINE_STORY_SUMMARY_VERSION, "story-summary-headlines-v2");
+  assertEquals(CURRENT_STORY_SUMMARY_VERSION, "story-summary-balanced-v2");
+  assertEquals(THOROUGH_STORY_SUMMARY_VERSION, "story-summary-thorough-v2");
+});
+
+test("digest assembly persists X chat authors through the story summary", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(database, {
+      name: "Author Owner",
+      email: "story-author@example.com",
+      passwordHash: "$argon2id$fake",
+      defaultLanguage: "en",
+      systemPrompt: "",
+      relevanceThreshold: 0,
+      storyDetailLevel: "balanced",
+    });
+    const cipher = new CredentialCipher(
+      new EnvMasterKeyProvider(new Uint8Array(32).fill(9)),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.X,
+      credentials: await cipher.encrypt("{}", {
+        userId: user.id,
+        connectorId: ConnectorId.X,
+      }),
+    });
+    const feed = await createOrReviveFeed(database, {
+      userId: user.id,
+      sourceId: source.id,
+      externalId: "author-feed",
+      name: "Chat",
+      kind: "discussion",
+    });
+    await upsertItems(database, feed.id, [{
+      connectorId: ConnectorId.X,
+      feedExternalId: feed.externalId,
+      externalId: "chat-one",
+      date: 100,
+      title: null,
+      text: "A chat development.",
+      author: "@alice",
+      url: null,
+      meta: { messageKind: "chat" },
+    }], 101);
+    const row = await upsertDigestForPeriod(database, {
+      userId: user.id,
+      periodStartMs: 0,
+      periodEndMs: 200,
+      status: "pending",
+    });
+    const intelligence = new FixtureIntelligence();
+    const summarizer: SummarizerService = {
+      summarize: async () => [{
+        text: "Chat development",
+        sourceUrl: null,
+        author: "@alice",
+      }],
+    };
+
+    const result = await assembleStoryDigest(
+      database,
+      row.id,
+      user,
+      [feed],
+      0,
+      200,
+      { intelligence, summarizer, analyzerVersion: "author-v1" },
+    );
+    assertEquals(result.hadSummaryFailure, false);
+    assertEquals(result.stories.length, 1);
+    assertEquals(result.stories[0]!.summaryVersion, CURRENT_STORY_SUMMARY_VERSION);
+    assertEquals(result.stories[0]!.points, [{
+      text: "Chat development",
+      sourceUrl: null,
+      author: "@alice",
+    }]);
+
+    const view = await buildDigestViewById(database, user.id, row.id);
+    assertEquals(view.stories[0]!.points[0]!.author, "@alice");
   });
 });

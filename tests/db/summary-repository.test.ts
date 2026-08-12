@@ -126,6 +126,95 @@ test("summary repository round-trips aggregate content", async () => {
   });
 });
 
+test("summary repository round-trips points with an X chat author", async () => {
+  await withTestDb(async (database) => {
+    const { feed } = await createFeed(
+      database,
+      "summary-author@example.com",
+    );
+    const authoredContent = {
+      kind: "aggregate" as const,
+      points: [{
+        text: "Chat development",
+        sourceUrl: null,
+        author: "@alice",
+        authorKind: "viewer" as const,
+      }],
+    };
+    const summary = await upsertSummaryForPeriod(database, {
+      feedId: feed.id,
+      periodStartMs,
+      periodEndMs,
+      content: authoredContent,
+      feedNameSnapshot: feed.name,
+    });
+
+    assertEquals(summary.content, authoredContent);
+    assertEquals(
+      (
+        await findSummaryForFeedPeriod(
+          database,
+          feed.id,
+          periodStartMs,
+          periodEndMs,
+        )
+      )?.content,
+      authoredContent,
+    );
+  });
+});
+
+test("summary point schema stays backward compatible with legacy points", () => {
+  const legacy = summaryPointSchema.parse({
+    text: "old",
+    sourceUrl: null,
+    channel: "channel",
+    date: "1 Jan 2026, 10:00",
+  });
+  assertEquals(legacy.author, undefined);
+  assertEquals(
+    summaryPointSchema.parse({ text: "plain", sourceUrl: null }).author,
+    undefined,
+  );
+});
+
+test("summary point schema rejects empty authors", () => {
+  assertThrows(
+    () => summaryPointSchema.parse({ text: "x", sourceUrl: null, author: "" }),
+    z.ZodError,
+  );
+  assertThrows(
+    () =>
+      summaryPointSchema.parse({
+        text: "x",
+        sourceUrl: null,
+        author: null,
+      }),
+    z.ZodError,
+  );
+  assertThrows(
+    () =>
+      summaryPointSchema.parse({
+        text: "x",
+        sourceUrl: null,
+        author: "   ",
+      }),
+    z.ZodError,
+  );
+});
+
+test("summary point schema rejects an author discriminator without an author", () => {
+  assertThrows(
+    () =>
+      summaryPointSchema.parse({
+        text: "x",
+        sourceUrl: null,
+        authorKind: "viewer",
+      }),
+    z.ZodError,
+  );
+});
+
 test("summary repository round-trips article content", async () => {
   await withTestDb(async (database) => {
     const { feed } = await createFeed(database, "summary-articles@example.com");

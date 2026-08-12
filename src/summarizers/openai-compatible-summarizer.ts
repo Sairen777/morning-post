@@ -88,6 +88,12 @@ interface ResolvedSummarizeOptions extends SummarizerRequestOptions {
   summaryMode: "aggregate" | "article";
 }
 
+const BIDI_CONTROL_PATTERN = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
+
+function normalizePointAuthor(value: string): string {
+  return value.replace(BIDI_CONTROL_PATTERN, "").trim();
+}
+
 function partitionItems(
   items: NormalizedItem[],
   maxItems: number,
@@ -680,15 +686,30 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         pointIndex++
       ) {
         const point = chunkResults[chunkIndex][pointIndex];
+        const authorKind = point.authorKind === "sender" ||
+            point.authorKind === "viewer"
+          ? point.authorKind
+          : null;
+        const normalizedAuthor = typeof point.author === "string"
+          ? normalizePointAuthor(point.author)
+          : "";
+        const author = authorKind !== null && normalizedAuthor !== ""
+          ? normalizedAuthor
+          : null;
         mergeItems.push({
-          connectorId: ConnectorId.Telegram,
+          // Authored X chat points keep an X/chat marker so parsePoints can
+          // re-derive the author from the synthetic merge item.
+          connectorId: author ? ConnectorId.X : ConnectorId.Telegram,
           feedExternalId: point.channel ?? `merge-chunk-${chunkIndex}`,
           externalId: `merge-${chunkIndex}-${pointIndex}`,
           date: point.date ? new Date(point.date).getTime() : Date.now(),
           title: null,
           text: point.text,
-          author: null,
+          author,
           url: point.sourceUrl,
+          ...(author
+            ? { meta: { messageKind: "chat", authorKind } }
+            : {}),
         });
       }
     }
@@ -784,8 +805,31 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
     const provenancePoint = points.find((point) =>
       point.channel || point.date || point.sourceUrl
     ) ?? points[0];
+    const pointAuthors = points.map((point) => {
+      const author = typeof point.author === "string"
+        ? normalizePointAuthor(point.author)
+        : "";
+      const authorKind = point.authorKind === "sender" ||
+          point.authorKind === "viewer"
+        ? point.authorKind
+        : null;
+      return author !== "" && authorKind !== null
+        ? { author, authorKind }
+        : null;
+    });
+    const firstAuthor = pointAuthors[0] ?? null;
+    const author = firstAuthor !== null &&
+        pointAuthors.every((candidate) =>
+          candidate?.author === firstAuthor.author &&
+          candidate.authorKind === firstAuthor.authorKind
+        )
+      ? firstAuthor.author
+      : null;
+    const authorKind = author === null ? null : firstAuthor!.authorKind;
     return {
-      connectorId: ConnectorId.Telegram,
+      // An authored provenance point keeps an X/chat marker so parsePoints can
+      // re-derive the author from the synthetic collapsed merge item.
+      connectorId: author ? ConnectorId.X : ConnectorId.Telegram,
       feedExternalId: provenancePoint.channel ??
         `merge-level-${mergeLevel}`,
       externalId: `merge-level-${mergeLevel}-batch-${batchIndex}`,
@@ -794,8 +838,11 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
         : Date.now(),
       title: null,
       text: points.map((point) => point.text).join("\n"),
-      author: null,
+      author,
       url: provenancePoint.sourceUrl ?? null,
+      ...(author
+        ? { meta: { messageKind: "chat", authorKind } }
+        : {}),
     };
   }
 
@@ -983,6 +1030,19 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
       const item = Number.isFinite(index) && index >= 0
         ? indexedItems[index]
         : undefined;
+      const authorKind = item?.meta?.authorKind === "sender" ||
+          item?.meta?.authorKind === "viewer"
+        ? item.meta.authorKind
+        : undefined;
+      const normalizedAuthor = typeof item?.author === "string"
+        ? normalizePointAuthor(item.author)
+        : "";
+      const author = authorKind !== undefined &&
+          item?.connectorId === ConnectorId.X &&
+          item.meta?.messageKind === "chat" &&
+          normalizedAuthor !== ""
+        ? normalizedAuthor
+        : undefined;
       return {
         text: point.t,
         sourceUrl: item?.url ?? null,
@@ -997,6 +1057,7 @@ export class OpenAICompatibleSummarizerService implements SummarizerService {
             hour12: false,
           }),
         }),
+        ...(author !== undefined && { author, authorKind }),
       };
     });
   }

@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { z } from "zod";
 import type { Database } from "../db/client.ts";
 import { digests } from "../db/schema/digest.ts";
 import { interestRules, type InterestRuleRow } from "../db/schema/interest-rule.ts";
@@ -14,6 +15,24 @@ import { users } from "../db/schema/user.ts";
 import type { InterestRuleDisposition } from "../personalization/personalization.types.ts";
 import { personalizationLabelsSchema } from "../personalization/personalization-label.ts";
 
+/**
+ * Extracts unique valid source IDs from a delivered story's persisted sources
+ * snapshot. Invalid legacy entries are omitted instead of making the whole
+ * story unreadable, mirroring personalizationLabelsSchema semantics.
+ */
+const storySourceIdsSchema = z.array(z.object({
+  sourceId: z.string().uuid(),
+})).transform((sources) => {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const source of sources) {
+    if (seen.has(source.sourceId)) continue;
+    seen.add(source.sourceId);
+    unique.push(source.sourceId);
+  }
+  return unique;
+});
+
 export interface DeliveredStoryForFeedback {
   digestStoryId: string;
   digestId: string;
@@ -21,6 +40,8 @@ export interface DeliveredStoryForFeedback {
   storyVersion: number;
   topics: string[];
   entities: string[];
+  /** Unique source IDs from the delivered story's persisted sources snapshot. */
+  sourceIds: string[];
 }
 
 export interface PublicStoryFeedback {
@@ -131,6 +152,7 @@ export function lockOwnedDeliveredStory(
       storyVersion: digestStories.storyVersion,
       topics: digestStories.topics,
       entities: digestStories.entities,
+      sources: digestStories.sources,
     })
     .from(digestStories)
     .innerJoin(digests, eq(digestStories.digestId, digests.id))
@@ -145,6 +167,7 @@ export function lockOwnedDeliveredStory(
     ...row,
     topics: personalizationLabelsSchema.parse(row.topics),
     entities: personalizationLabelsSchema.parse(row.entities),
+    sourceIds: storySourceIdsSchema.parse(row.sources),
   };
 }
 

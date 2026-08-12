@@ -5,6 +5,7 @@ import type {
   DigestStory,
   DigestView,
   PublicDigest,
+  SummaryPoint,
   StoryFeedbackInput,
   StoryFeedbackStoryAction,
   StoryFeedbackTarget,
@@ -16,6 +17,8 @@ import StatusBadge from "./StatusBadge";
 import FormatTime from "./FormatTime";
 import ServiceIcon from "./ServiceIcon";
 import { formatDuration } from "./duration";
+
+const BIDI_CONTROL_PATTERN = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
 
 function safeHttpUrl(value: string | null): string | undefined {
   if (!value) {
@@ -29,6 +32,28 @@ function safeHttpUrl(value: string | null): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function visiblePointAuthor(point: Pick<SummaryPoint, "author">): string | undefined {
+  const author = point.author?.replace(BIDI_CONTROL_PATTERN, "").trim();
+  return author || undefined;
+}
+
+function PointAuthor(props: { point: Pick<SummaryPoint, "author" | "authorKind"> }) {
+  const author = () => visiblePointAuthor(props.point);
+  return (
+    <Show when={author()}>
+      {(label) => (
+        <>
+          <bdi class="point-author">{label()}:</bdi>
+          <Show when={props.point.authorKind === "viewer"}>
+            {" "}
+            <span class="point-viewer-marker" aria-label="sent by you">SELF</span>
+          </Show>{" "}
+        </>
+      )}
+    </Show>
+  );
 }
 
 function connectorLabel(connectorId: string): string {
@@ -110,6 +135,7 @@ function DigestSectionView(props: { section: DigestSection }) {
                 <For each={aggregate().points}>
                   {(point) => (
                     <li>
+                      <PointAuthor point={point} />
                       {point.text}
                       <Show when={point.sourceUrl}>
                         {" "}
@@ -170,7 +196,12 @@ function DigestSectionView(props: { section: DigestSection }) {
                     >
                       <ul class="bullet-list article-points">
                         <For each={article.points}>
-                          {(point) => <li>{point.text}</li>}
+                          {(point) => (
+                            <li>
+                              <PointAuthor point={point} />
+                              {point.text}
+                            </li>
+                          )}
                         </For>
                       </ul>
                     </Show>
@@ -355,6 +386,7 @@ function StoryCard(props: StoryCardProps) {
           <For each={props.story.points}>
             {(point) => (
               <li>
+                <PointAuthor point={point} />
                 {point.text}
                 <Show when={safeHttpUrl(point.sourceUrl)}>
                   {(sourceUrl) => (

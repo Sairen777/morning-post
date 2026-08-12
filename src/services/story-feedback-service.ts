@@ -14,6 +14,7 @@ import {
   saveStoryFeedbackIdempotently,
   type PublicStoryFeedback,
 } from "../repositories/story-feedback-repository.ts";
+import { applySourceWarmupNegativeFeedback } from "../repositories/source-repository.ts";
 import {
   listActiveInterestRules,
   type PublicInterestRule,
@@ -161,6 +162,15 @@ export async function submitStoryFeedback(
     });
     const feedback = saved.feedback;
     let rulesChanged = false;
+    let sourceGraduated = false;
+    if (saved.inserted && input.action === "not_relevant") {
+      sourceGraduated = applySourceWarmupNegativeFeedback(
+        tx,
+        input.userId,
+        delivered.sourceIds,
+        now,
+      );
+    }
     if (
       saved.inserted &&
       (input.action === "relevant" || input.action === "not_relevant")
@@ -203,7 +213,9 @@ export async function submitStoryFeedback(
       });
     }
 
-    if (rulesChanged) bumpInterestProfileVersion(tx, input.userId, now);
+    if (rulesChanged || sourceGraduated) {
+      bumpInterestProfileVersion(tx, input.userId, now);
+    }
 
     return {
       feedback,

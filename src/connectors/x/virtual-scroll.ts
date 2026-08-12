@@ -21,6 +21,22 @@ export interface XVirtualScrollOptions<T> {
   maxItems?: number;
   mergeOverlappingWindows?: boolean;
   identityIsStable?: (item: T) => boolean;
+  /**
+   * Optional exact scroller element. When supplied, every advance moves
+   * this element directly (measured by its own scrollTop) instead of
+   * walking rendered items for a nearer scrollable ancestor, and the
+   * boundary proof comes from its real top/bottom. An absent, ambiguous,
+   * or unusable configured scroller fails closed instead of certifying a
+   * partial boundary.
+   */
+  scrollerSelector?: string;
+  /**
+   * When true (requires scrollerSelector), each explicit-mode advance first
+   * dispatches a deterministic wheel-intent signal on the exact scroller
+   * so an app that re-pins programmatic scrolls (X Chat's DM list) treats
+   * the movement as user-initiated and leaves it in place.
+   */
+  dispatchWheelIntent?: boolean;
 }
 
 export type XVirtualScrollStopReason =
@@ -40,6 +56,11 @@ export interface XVirtualScrollResult<T> {
   stopReason: XVirtualScrollStopReason;
 }
 
+interface XVirtualScrollAdvance {
+  moved: boolean;
+  atEdgeIntent: boolean;
+}
+
 
 export async function collectVirtualizedItems<T>(
   page: Page,
@@ -47,6 +68,11 @@ export async function collectVirtualizedItems<T>(
   signal?: AbortSignal,
   wait: XVirtualScrollWait = abortableDelay,
 ): Promise<XVirtualScrollResult<T>> {
+  if (options.dispatchWheelIntent === true && options.scrollerSelector === undefined) {
+    throw new Error(
+      "X virtual scroll wheel intent requires an explicit scrollerSelector; refusing to scroll an implicit scroller",
+    );
+  }
   const maxRounds = boundedPositiveInteger(options.maxRounds, MAX_SCROLL_ROUNDS, 1, MAX_SCROLL_ROUNDS);
   const maxNoProgressRounds = boundedPositiveInteger(
     options.maxNoProgressRounds,
@@ -65,6 +91,7 @@ export async function collectVirtualizedItems<T>(
   let sawMovementInNoNewStreak = false;
   let noNewStreakStartedBeforeAdvance = false;
   let boundaryStallRounds = 0;
+  let atEdgeIntentSettled = false;
 
   for (let round = 0; round < maxRounds; round += 1) {
     throwIfAborted(signal);
@@ -148,6 +175,7 @@ export async function collectVirtualizedItems<T>(
       sawMovementInNoNewStreak = false;
       noNewStreakStartedBeforeAdvance = false;
       boundaryStallRounds = 0;
+      atEdgeIntentSettled = false;
     }
     const settledNoNewWindows = noNewStreakStartedBeforeAdvance
       ? consecutiveNoNewWindows - 1
@@ -157,39 +185,82 @@ export async function collectVirtualizedItems<T>(
       settledNoNewWindows >= maxNoProgressRounds &&
       sawMovementInNoNewStreak
     ) {
-      if (
-        movedIntoCurrentWindow ||
-        boundaryStallRounds + 1 < maxNoProgressRounds
-      ) {
-        return { items: collected, stopReason: "no_progress" };
-      }
-      // The most recent windows stopped moving and one more probe would
-      // prove a boundary: issue that pending probe before concluding. A
-      // non-moving probe proves the boundary; a moving one still fails
-      // closed as no_progress because the rendered window was never
-      // proven complete, so consumers must discard the collection.
-      const moved = await advanceVirtualScroller(
+      // The current round already extracted and settled the moved window.
+      // A non-moving probe proves the boundary only after any first wheel
+      // intent dispatched at that edge has received one waited extraction.
+      const advance = await advanceVirtualScroller(
         page,
         options.itemSelector,
         direction,
         signal,
+        options.scrollerSelector,
+        options.dispatchWheelIntent === true,
       );
-      return {
-        items: collected,
-        stopReason: moved ? "no_progress" : "boundary",
-      };
+      if (!advance.moved) {
+        if (advance.atEdgeIntent && !atEdgeIntentSettled) {
+          atEdgeIntentSettled = true;
+          movedIntoCurrentWindow = false;
+          boundaryStallRounds = 0;
+          if (round + 1 >= maxRounds) break;
+          await wait(NO_NEW_WINDOW_WAIT_MS[MAX_NO_NEW_WAIT_INDEX], signal);
+          continue;
+        }
+        return { items: collected, stopReason: "boundary" };
+      }
+      atEdgeIntentSettled = false;
+      // The deciding probe moved. In explicit mode such a move can be an
+      // async top-reflow offset being corrected back to the real edge:
+      // verify the configured scroller's real directional edge before
+      // failing closed. A mid-list or pinned scroller is not at its real
+      // edge and still fails closed as no_progress.
+      if (
+        options.scrollerSelector === undefined ||
+        !(await explicitScrollerAtRealEdge(
+          page,
+          options.scrollerSelector,
+          direction,
+          signal,
+        ))
+      ) {
+        return { items: collected, stopReason: "no_progress" };
+      }
+      // The probe itself reached the real edge, so the edge window was
+      // never extracted: record the moved state and settle so the next
+      // round extracts that window. Its deciding probe then proves the
+      // boundary if it does not move; new rows reset to progress; renewed
+      // non-edge movement still fails closed as no_progress.
+      movedIntoCurrentWindow = true;
+      hasAdvanced = true;
+      boundaryStallRounds = 0;
+      if (round + 1 >= maxRounds) {
+        break;
+      }
+      await wait(NO_NEW_WINDOW_WAIT_MS[MAX_NO_NEW_WAIT_INDEX], signal);
+      continue;
     }
 
     const isFinalRound = round + 1 >= maxRounds;
-    const moved = await advanceVirtualScroller(
+    const advance = await advanceVirtualScroller(
       page,
       options.itemSelector,
       direction,
       signal,
+      options.scrollerSelector,
+      options.dispatchWheelIntent === true,
     );
     hasAdvanced = true;
-    movedIntoCurrentWindow = moved;
-    boundaryStallRounds = added === 0 && !moved
+    const needsEdgeIntentSettlement = !advance.moved &&
+      advance.atEdgeIntent &&
+      !atEdgeIntentSettled;
+    if (advance.moved) {
+      atEdgeIntentSettled = false;
+    } else if (needsEdgeIntentSettlement) {
+      atEdgeIntentSettled = true;
+    }
+    movedIntoCurrentWindow = advance.moved;
+    boundaryStallRounds = needsEdgeIntentSettlement
+      ? 0
+      : added === 0 && !advance.moved
       ? boundaryStallRounds + 1
       : 0;
     if (boundaryStallRounds >= maxNoProgressRounds) {
@@ -244,11 +315,136 @@ async function advanceVirtualScroller(
   itemSelector: string,
   direction: "down" | "up",
   signal?: AbortSignal,
-): Promise<boolean> {
+  scrollerSelector?: string,
+  dispatchWheelIntent = false,
+): Promise<XVirtualScrollAdvance> {
   throwIfAborted(signal);
+  const sign = direction === "up" ? -1 : 1;
+  if (scrollerSelector !== undefined) {
+    const scroller = page.locator(scrollerSelector);
+    const scrollerCount = await scroller.count();
+    if (scrollerCount === 0) {
+      throw new Error(
+        `X virtual scroll scroller selector "${scrollerSelector}" matched no element; refusing to certify a partial boundary`,
+      );
+    }
+    if (scrollerCount !== 1) {
+      throw new Error(
+        `X virtual scroll scroller selector "${scrollerSelector}" matched ${scrollerCount} elements; expected exactly one`,
+      );
+    }
+    const items = page.locator(itemSelector);
+    const itemCount = await items.count();
+    const edgeIndex = direction === "up" ? 0 : Math.max(0, itemCount - 1);
+    const moved = await scroller.evaluate((element, config) => {
+      if (!(element instanceof HTMLElement)) {
+        throw new Error(
+          "X virtual scroll scroller selector matched a non-HTMLElement; refusing to scroll it",
+        );
+      }
+      const before = element.scrollTop;
+      const range = element.scrollHeight - element.clientHeight;
+      const style = getComputedStyle(element);
+      const overflowScrolls = /auto|scroll/.test(style.overflowY);
+      // An element whose content overflows but that cannot itself scroll
+      // (hidden, clip, or visible overflow) can never reach or prove a
+      // boundary: the overflowing rows are unreachable, so the
+      // configuration is unusable and must fail closed rather than treat
+      // the clipped content as a full-fit boundary.
+      if (range > 2 && !overflowScrolls) {
+        throw new Error(
+          `X virtual scroll scroller selector matched an unusable scroller: content overflows but computed overflowY is "${style.overflowY}", not auto/scroll; refusing to certify a partial boundary`,
+        );
+      }
+      // Fail closed before any boundary claim: the configured element must
+      // contain the rendered items. An unrelated element must never
+      // certify completeness, even when it is itself at a real edge.
+      if (config.hasItems) {
+        const edge = document.querySelectorAll(config.itemSelector)[config.edgeIndex];
+        if (!(edge instanceof Element) || !element.contains(edge)) {
+          throw new Error(
+            "X virtual scroll scroller selector matched an element that does not contain the rendered items; refusing to certify a partial boundary",
+          );
+        }
+        // A positive-range auto/scroll configured element owns the rows:
+        // explicit mode moves it directly, so nearer nested scrollable
+        // decoys are intentionally overridden. Only when the configured
+        // element itself cannot scroll (range <= 2) does a nested element
+        // with real scrollable overflow prove that it, not the configured
+        // element, actually scrolls the items; certifying a full-fit
+        // boundary then would silently drop the rest of the conversation,
+        // so the configuration must fail closed.
+        if (!(range > 2 && overflowScrolls)) {
+          let ancestor = edge.parentElement;
+          while (ancestor && ancestor !== element) {
+            const ancestorStyle = getComputedStyle(ancestor);
+            if (
+              ancestor.scrollHeight > ancestor.clientHeight + 2 &&
+              /auto|scroll/.test(ancestorStyle.overflowY)
+            ) {
+              throw new Error(
+                "X virtual scroll scroller selector matched an element with no scrollable overflow while a nested element actually scrolls the items; refusing to certify a partial boundary",
+              );
+            }
+            ancestor = ancestor.parentElement;
+          }
+        }
+      }
+      const step = config.sign * Math.max(element.clientHeight * 0.5, 240);
+      const atEdgeBeforeIntent = range > 2 && overflowScrolls
+        ? config.sign < 0
+          ? before <= 1
+          : range - before <= 1
+        : true;
+      if (config.dispatchWheelIntent) {
+        // Dispatch intent even at the real edge. X may fetch and prepend an
+        // older Chat page only after an upward wheel reaches that edge; a
+        // no-movement probe that omits the event would certify the currently
+        // loaded segment as the conversation boundary too early.
+        element.dispatchEvent(new WheelEvent("wheel", {
+          deltaY: step,
+          bubbles: true,
+          cancelable: true,
+        }));
+      }
+      // A synchronous edge handler may have prepended content and adjusted
+      // scroll anchoring, so measure the owner again after wheel intent.
+      const currentRange = element.scrollHeight - element.clientHeight;
+      if (currentRange > 2 && overflowScrolls) {
+        const beforeScroll = element.scrollTop;
+        // At the validated owner's own real top/bottom no movement is
+        // possible. The caller settles a first at-edge intent through one
+        // more waited extraction before accepting a repeated edge as proof.
+        if (config.sign < 0 ? beforeScroll <= 1 : currentRange - beforeScroll <= 1) {
+          return {
+            moved: false,
+            atEdgeIntent: config.dispatchWheelIntent && atEdgeBeforeIntent,
+          };
+        }
+        element.scrollBy({ top: step, behavior: "instant" });
+        return {
+          moved: Math.abs(element.scrollTop - beforeScroll) > 1,
+          atEdgeIntent: false,
+        };
+      }
+      // Range <= 2 with a validated owner: only a genuine full-fit
+      // boundary is acceptable after a first edge intent has settled.
+      return {
+        moved: false,
+        atEdgeIntent: config.dispatchWheelIntent && atEdgeBeforeIntent,
+      };
+    }, {
+      sign,
+      itemSelector,
+      edgeIndex,
+      hasItems: itemCount > 0,
+      dispatchWheelIntent,
+    }, { timeout: EDGE_EVALUATE_TIMEOUT_MS });
+    throwIfAborted(signal);
+    return moved;
+  }
   const items = page.locator(itemSelector);
   const count = await items.count();
-  const sign = direction === "up" ? -1 : 1;
   if (count > 0) {
     const edgeItem = items.nth(direction === "up" ? 0 : count - 1);
     // No scrollIntoViewIfNeeded here: virtualized windows re-render on
@@ -280,7 +476,7 @@ async function advanceVirtualScroller(
       return Math.abs(window.scrollY - before) > 1;
     }, sign, { timeout: EDGE_EVALUATE_TIMEOUT_MS });
     throwIfAborted(signal);
-    return moved;
+    return { moved, atEdgeIntent: false };
   }
   const moved = await page.evaluate((scrollSign) => {
     const before = window.scrollY;
@@ -291,7 +487,37 @@ async function advanceVirtualScroller(
     return Math.abs(window.scrollY - before) > 1;
   }, sign);
   throwIfAborted(signal);
-  return moved;
+  return { moved, atEdgeIntent: false };
+}
+
+// Explicit-mode edge verification for a deciding probe that moved: an
+// async top reflow can drift scrollTop away from the real edge, and a
+// move that lands on the configured scroller's real directional edge is
+// that drift being corrected, not renewed content movement. Returns false
+// (fail closed) unless exactly one HTMLElement matched and it sits at the
+// real directional edge.
+async function explicitScrollerAtRealEdge(
+  page: Page,
+  scrollerSelector: string,
+  direction: "down" | "up",
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const scroller = page.locator(scrollerSelector);
+  const scrollerCount = await scroller.count();
+  if (scrollerCount !== 1) {
+    return false;
+  }
+  const atEdge = await scroller.evaluate((element, scrollDirection) => {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+    const range = element.scrollHeight - element.clientHeight;
+    return scrollDirection === "up"
+      ? element.scrollTop <= 1
+      : range - element.scrollTop <= 1;
+  }, direction, { timeout: EDGE_EVALUATE_TIMEOUT_MS });
+  throwIfAborted(signal);
+  return atEdge;
 }
 
 function boundedPositiveInteger(

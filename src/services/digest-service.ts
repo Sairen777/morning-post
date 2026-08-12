@@ -374,6 +374,21 @@ function escapeMarkdownPlainText(value: string): string {
     .replace(/[\\`*_[\]{}()#+\-.!|]/g, "\\$&");
 }
 
+const BIDI_CONTROL_PATTERN = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
+
+type AttributedMarkdownPoint = {
+  text: string;
+  author?: string;
+  authorKind?: "sender" | "viewer";
+};
+
+function renderMarkdownPoint(point: AttributedMarkdownPoint): string {
+  const author = point.author?.replace(BIDI_CONTROL_PATTERN, "").trim();
+  if (!author) return `- ${point.text}`;
+  const viewerMarker = point.authorKind === "viewer" ? " `SELF`" : "";
+  return `- **${escapeMarkdownPlainText(author)}:**${viewerMarker} ${point.text}`;
+}
+
 export function renderDigestMarkdown(view: DigestView): string {
   const lines = [
     `# Digest ${formatDigestMoment(view.digest.periodStartMs)} \u2192 ${
@@ -388,7 +403,7 @@ export function renderDigestMarkdown(view: DigestView): string {
 
   for (const story of view.stories) {
     lines.push(`## ${escapeMarkdownTitle(story.title)}`, "");
-    for (const point of story.points) lines.push(`- ${point.text}`);
+    for (const point of story.points) lines.push(renderMarkdownPoint(point));
     if (story.points.length === 0) lines.push("- Nothing to report.");
     lines.push("", "### Sources");
     for (const source of story.sources) {
@@ -411,7 +426,7 @@ export function renderDigestMarkdown(view: DigestView): string {
           lines.push("- Nothing to report.");
         } else {
           for (const point of section.content.points) {
-            lines.push(`- ${point.text}`);
+            lines.push(renderMarkdownPoint(point));
           }
         }
       } else if (section.content.articles.length === 0) {
@@ -434,7 +449,7 @@ export function renderDigestMarkdown(view: DigestView): string {
             lines.push("- Nothing to report.");
           } else {
             for (const point of article.points) {
-              lines.push(`- ${point.text}`);
+              lines.push(renderMarkdownPoint(point));
             }
           }
         }

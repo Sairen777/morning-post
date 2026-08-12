@@ -478,6 +478,126 @@ test("parsePoints — attaches metadata from indexedItems", async () => {
   restore();
 });
 
+test("parsePoints — attaches a trimmed author only with trusted X Chat metadata", async () => {
+  const restore = stubFetch({
+    choices: [{ message: { content: '[{"t":"chat bullet","i":0}]' } }],
+  });
+  const svc = createTestSummarizer();
+  const results = await svc.summarize(
+    [item({
+      connectorId: ConnectorId.X,
+      externalId: "chat-1",
+      author: "  @ali\u202Ece  ",
+      meta: { messageKind: "chat", authorKind: "sender" },
+    })],
+    buildNewsPrompt(),
+  );
+  assertEquals(results[0].author, "@alice");
+  assertEquals(results[0].authorKind, "sender");
+  restore();
+});
+
+test("parsePoints — rejects missing or invalid author discriminators", async () => {
+  const restore = stubFetch({
+    choices: [{
+      message: {
+        content:
+          '[{"t":"missing kind","i":0},{"t":"invalid kind","i":1},{"t":"viewer","i":2}]',
+      },
+    }],
+  });
+  const svc = createTestSummarizer();
+  const results = await svc.summarize(
+    [
+      item({
+        connectorId: ConnectorId.X,
+        externalId: "chat-missing-kind",
+        author: "You",
+        meta: { messageKind: "chat" },
+      }),
+      item({
+        connectorId: ConnectorId.X,
+        externalId: "chat-invalid-kind",
+        author: "You",
+        meta: { messageKind: "chat", authorKind: "invalid" },
+      }),
+      item({
+        connectorId: ConnectorId.X,
+        externalId: "chat-viewer",
+        author: "You",
+        meta: { messageKind: "chat", authorKind: "viewer" },
+      }),
+    ],
+    buildNewsPrompt(),
+  );
+  assertEquals(results[0].author, undefined);
+  assertEquals(results[1].author, undefined);
+  assertEquals(results[2].author, "You");
+  assertEquals(results[2].authorKind, "viewer");
+  restore();
+});
+
+test("parsePoints — omits author for X posts and non-X items", async () => {
+  const restore = stubFetch({
+    choices: [{
+      message: {
+        content: '[{"t":"post bullet","i":0},{"t":"group bullet","i":1}]',
+      },
+    }],
+  });
+  const svc = createTestSummarizer();
+  const results = await svc.summarize(
+    [
+      item({
+        connectorId: ConnectorId.X,
+        externalId: "post-1",
+        author: "@alice",
+        meta: { messageKind: "post" },
+      }),
+      item({
+        externalId: "group-1",
+        author: "Channel Admin",
+        meta: { isGroup: true },
+      }),
+    ],
+    buildNewsPrompt(),
+  );
+  assertEquals(results[0].author, undefined);
+  assertEquals(results[1].author, undefined);
+  restore();
+});
+
+test("parsePoints — omits author for X chat rows without an attributed sender", async () => {
+  const restore = stubFetch({
+    choices: [{
+      message: {
+        content: '[{"t":"unattributed","i":0},{"t":"blank","i":1}]',
+      },
+    }],
+  });
+  const svc = createTestSummarizer();
+  const results = await svc.summarize(
+    [
+      item({
+        connectorId: ConnectorId.X,
+        externalId: "chat-1",
+        author: null,
+        meta: { messageKind: "chat" },
+      }),
+      item({
+        connectorId: ConnectorId.X,
+        externalId: "chat-2",
+        author: "   ",
+        meta: { messageKind: "chat" },
+      }),
+    ],
+    buildNewsPrompt(),
+  );
+  assertEquals(results[0].author, undefined);
+  assertEquals(results[1].author, undefined);
+  restore();
+});
+
 test("parsePoints — strips markdown code fences from response", async () => {
   const restore = stubFetch({
     choices: [
@@ -515,6 +635,32 @@ test("parsePoints — missing source index maps to null sourceUrl", async () => 
   assertEquals(results[0].text, "discussion summary without index");
   assertEquals(results[0].sourceUrl, null);
   restore();
+});
+
+test("summarizeBatch — carries X chat author through batch parsing", async () => {
+  const { restore } = captureFetchSequence([{
+    status: 200,
+    body: modelResponse(JSON.stringify([
+      { story_id: "story-a", points: [{ t: "alpha chat summary", i: 0 }] },
+    ])),
+  }]);
+  try {
+    const svc = createTestSummarizer();
+    const results = await svc.summarizeBatch(
+      [batchStory("story-a", "Alpha raw", {
+        connectorId: ConnectorId.X,
+        externalId: "chat-a",
+        author: "@alice",
+        meta: { messageKind: "chat", authorKind: "sender" },
+      })],
+      buildNewsPrompt(),
+    );
+    assertEquals(results[0].error, undefined);
+    assertEquals(results[0].points?.[0].text, "alpha chat summary");
+    assertEquals(results[0].points?.[0].author, "@alice");
+  } finally {
+    restore();
+  }
 });
 
 // --- summarizeBatch ---
@@ -1436,6 +1582,182 @@ test("summarize — chunks items and merges when maxItemsPerChunk is exceeded", 
     assertEquals(results.length, 2);
     assertEquals(results[0].text, "final X");
     assertEquals(results[1].text, "final Y");
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — preserves X chat author through chunk merge", async () => {
+  // 3 X chat items, maxItemsPerChunk=2 → chunk 1 gets items 0,1; chunk 2 gets
+  // item 2. The final merge returns a point referencing merge item 1, the
+  // synthetic carry-over of chunk 2's authored point.
+  const { restore } = captureFetchSequence([
+    { status: 200, body: modelResponse('[{"t":"chunk one","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"chunk two","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"merged chat","i":1}]') },
+  ]);
+  try {
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 2,
+    });
+    const results = await svc.summarize(
+      [
+        item({
+          connectorId: ConnectorId.X,
+          externalId: "chat-1",
+          author: "@alice",
+          meta: { messageKind: "chat", authorKind: "sender" },
+        }),
+        item({
+          connectorId: ConnectorId.X,
+          externalId: "chat-2",
+          author: "@bob",
+          meta: { messageKind: "chat", authorKind: "sender" },
+        }),
+        item({
+          connectorId: ConnectorId.X,
+          externalId: "chat-3",
+          author: "@carol",
+          meta: { messageKind: "chat", authorKind: "sender" },
+        }),
+      ],
+      buildNewsPrompt(),
+    );
+    assertEquals(results.length, 1);
+    assertEquals(results[0].text, "merged chat");
+    assertEquals(results[0].author, "@carol");
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — preserves X chat author through hierarchical merge collapse", async () => {
+  // 5 single-item chunks force multiple merge levels (5 items → 3 batches →
+  // 3 collapsed items → 2 batches → 2 collapsed items → final batch), so
+  // collapseMergePoints must carry the provenance author forward.
+  const responses = [];
+  for (let chunk = 0; chunk < 5; chunk++) {
+    responses.push({
+      status: 200,
+      body: modelResponse(`[{"t":"chunk ${chunk}","i":0}]`),
+    });
+  }
+  // Level 0: batches of [0,1], [2,3], [4] — each collapses to its first point.
+  responses.push(
+    { status: 200, body: modelResponse('[{"t":"level0","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"level0","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"level0","i":0}]') },
+  );
+  // Level 1: batches of [0,1], [2] — collapse to their first points.
+  responses.push(
+    { status: 200, body: modelResponse('[{"t":"level1","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"level1","i":0}]') },
+  );
+  // Level 2: final batch of [0,1] — point references the second collapsed item.
+  responses.push({ status: 200, body: modelResponse('[{"t":"final merged","i":1}]') });
+  const { callCount, restore } = stubFetchSequence(responses);
+  try {
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 1,
+    });
+    const results = await svc.summarize(
+      ["@alice", "@bob", "@carol", "@dave", "@erin"].map((author, index) =>
+        item({
+          connectorId: ConnectorId.X,
+          externalId: `chat-${index + 1}`,
+          author,
+          meta: { messageKind: "chat", authorKind: "sender" },
+        })
+      ),
+      buildNewsPrompt(),
+    );
+    assertEquals(callCount(), 11, "expected 5 chunk + 6 merge calls");
+    assertEquals(results.length, 1);
+    assertEquals(results[0].text, "final merged");
+    // Level 1 batch [2] collapses chunk 4's authored point; the final point
+    // references that second collapsed item.
+    assertEquals(results[0].author, "@erin");
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — omits attribution when a collapsed merge mixes X chat authors", async () => {
+  const { callCount, restore } = stubFetchSequence([
+    { status: 200, body: modelResponse('[{"t":"chunk a","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"chunk b","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"chunk c","i":0}]') },
+    {
+      status: 200,
+      body: modelResponse(
+        '[{"t":"development a","i":0},{"t":"development b","i":1}]',
+      ),
+    },
+    { status: 200, body: modelResponse('[{"t":"development c","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"combined development","i":0}]') },
+  ]);
+  try {
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 1,
+    });
+    const results = await svc.summarize(
+      ["@alice", "@bob", "@carol"].map((author, index) =>
+        item({
+          connectorId: ConnectorId.X,
+          externalId: `chat-${index + 1}`,
+          author,
+          meta: { messageKind: "chat", authorKind: "sender" },
+        })
+      ),
+      buildNewsPrompt(),
+    );
+
+    assertEquals(callCount(), 6, "expected 3 chunk + 3 merge calls");
+    assertEquals(results[0].text, "combined development");
+    assertEquals(results[0].author, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test("summarize — omits attribution when identical visible names mix sender and viewer", async () => {
+  const { callCount, restore } = stubFetchSequence([
+    { status: 200, body: modelResponse('[{"t":"sender chunk","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"viewer chunk","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"third chunk","i":0}]') },
+    {
+      status: 200,
+      body: modelResponse(
+        '[{"t":"sender development","i":0},{"t":"viewer development","i":1}]',
+      ),
+    },
+    { status: 200, body: modelResponse('[{"t":"third development","i":0}]') },
+    { status: 200, body: modelResponse('[{"t":"combined development","i":0}]') },
+  ]);
+  try {
+    const svc = createTestSummarizer({
+      retryBaseDelayMs: 0,
+      maxItemsPerChunk: 1,
+    });
+    const results = await svc.summarize(
+      ["sender", "viewer", "sender"].map((authorKind, index) =>
+        item({
+          connectorId: ConnectorId.X,
+          externalId: `chat-you-${index + 1}`,
+          author: "You",
+          meta: { messageKind: "chat", authorKind },
+        })
+      ),
+      buildNewsPrompt(),
+    );
+
+    assertEquals(callCount(), 6, "expected 3 chunk + 3 merge calls");
+    assertEquals(results[0].text, "combined development");
+    assertEquals(results[0].author, undefined);
+    assertEquals(results[0].authorKind, undefined);
   } finally {
     restore();
   }

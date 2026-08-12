@@ -7,7 +7,6 @@ import {
 } from "../repositories/user-repository.ts";
 import { ConflictError } from "../server/errors.ts";
 import { validate } from "../server/validate.ts";
-import { DEFAULT_SYSTEM_PROMPT } from "../summarizers/prompts.ts";
 
 export const OWNER_EMAIL = "owner@morning-post.invalid";
 
@@ -38,7 +37,8 @@ export async function setupOwner(
       name,
       email: OWNER_EMAIL,
       passwordHash: null,
-      systemPrompt: DEFAULT_SYSTEM_PROMPT,
+      // Empty interest prompt: no preference signal until the user writes one.
+      systemPrompt: "",
     });
   }, { behavior: "immediate" });
 }

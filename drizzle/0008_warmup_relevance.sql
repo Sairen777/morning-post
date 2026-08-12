@@ -1,0 +1,2 @@
+ALTER TABLE `sources` ADD `relevance_warmup` integer DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE `sources` ADD `relevance_warmup_negative_feedback_count` integer DEFAULT 0 NOT NULL CONSTRAINT "sources_relevance_warmup_negative_feedback_count_check" CHECK (`relevance_warmup_negative_feedback_count` >= 0);

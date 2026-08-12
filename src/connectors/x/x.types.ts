@@ -52,6 +52,8 @@ export interface XRawPost extends XRawItemBase {
 export interface XRawChatMessage extends XRawItemBase {
   kind: "chat_message";
   reactions: XReaction[];
+  /** Trusted geometry-derived discriminator for the viewer's own messages. */
+  viewerAuthored?: true;
 }
 
 export type XRawItem = XRawPost | XRawChatMessage;

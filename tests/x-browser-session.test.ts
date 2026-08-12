@@ -1,11 +1,12 @@
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Browser } from "playwright";
+import type { Browser, Page, Response } from "playwright";
 import { test } from "bun:test";
 
 import {
   xBrowserLaunchOptions,
+  navigateXTarget,
   XBrowserSessions,
 } from "../src/connectors/x/browser-session.ts";
 import { assertEquals, assertRejects, assertStrictEquals } from "./assertions.ts";
@@ -79,6 +80,56 @@ test("X browser launch options preserve the selected browser and native credenti
     viewport: { width: 1280, height: 900 },
   });
 });
+
+test("X target navigation retries transient server responses before succeeding", async () => {
+  const targetUrl = "https://x.com/i/chat/team-room";
+  const calls: Array<{ url: string; waitUntil: string | undefined }> = [];
+  const statuses = [520, 200];
+  const page = {
+    goto: async (
+      url: string,
+      options: { waitUntil?: string },
+    ) => {
+      calls.push({ url, waitUntil: options.waitUntil });
+      if (url === "about:blank") return null;
+      const status = statuses.shift()!;
+      return { status: () => status } as Response;
+    },
+    url: () => targetUrl,
+  } as unknown as Page;
+
+  await navigateXTarget(page, {
+    kind: "chat",
+    conversationId: "team-room",
+  });
+
+  assertEquals(calls, [
+    { url: targetUrl, waitUntil: "domcontentloaded" },
+    { url: "about:blank", waitUntil: "domcontentloaded" },
+    { url: targetUrl, waitUntil: "domcontentloaded" },
+  ]);
+});
+
+test("X target navigation surfaces the final HTTP failure after bounded retries", async () => {
+  const targetUrl = "https://x.com/i/lists/123";
+  let targetAttempts = 0;
+  const page = {
+    goto: async (url: string) => {
+      if (url === "about:blank") return null;
+      targetAttempts += 1;
+      return { status: () => 520 } as Response;
+    },
+    url: () => targetUrl,
+  } as unknown as Page;
+
+  await assertRejects(
+    () => navigateXTarget(page, { kind: "list", listId: "123" }),
+    Error,
+    "X navigation returned HTTP 520",
+  );
+  assertEquals(targetAttempts, 3);
+});
+
 
 test("unmanaged Chrome suppresses first-run prompts for its dedicated profile", async () => {
   const root = await mkdtemp(join(tmpdir(), "morning-post-x-unmanaged-"));

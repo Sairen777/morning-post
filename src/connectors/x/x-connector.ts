@@ -162,6 +162,9 @@ function normalizeItem(feedExternalId: string, item: XRawItem): NormalizedItem {
       url: item.url,
       meta: {
         messageKind: "chat",
+        ...(item.author !== null
+          ? { authorKind: item.viewerAuthored === true ? "viewer" : "sender" }
+          : {}),
         reactions: item.reactions,
         reactionCount,
         reactedByViewer: item.reactions.some((reaction) => reaction.reactedByViewer),

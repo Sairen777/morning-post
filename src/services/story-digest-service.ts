@@ -5,7 +5,7 @@ import { getSummarizerBudgetConfig } from "../config.ts";
 import type { PublicFeed } from "../repositories/feed-repository.ts";
 import { listActiveInterestRules } from "../repositories/interest-rule-repository.ts";
 import { listItemsForFeedsInWindow } from "../repositories/item-repository.ts";
-import { listSourcesForUser, type PublicSource } from "../repositories/source-repository.ts";
+import { listSourcesForUser } from "../repositories/source-repository.ts";
 import type { User } from "../repositories/user-repository.ts";
 import {
   findLatestDeliveredStoryVersions,
@@ -33,7 +33,9 @@ import {
   buildHeadlineStorySummaryPrompt,
   buildStorySummaryPrompt,
   buildThoroughStorySummaryPrompt,
+  normalizeInterestPrompt,
 } from "../summarizers/prompts.ts";
+import { resolveEffectiveRelevanceFilterMode } from "../personalization/relevance-filter-policy.ts";
 import { OpenAICompatibleSummarizerService } from "../summarizers/openai-compatible-summarizer.ts";
 import { serializeBatchSummaryInput, type BatchSummaryInput, type SummarizerService, type SummaryPoint, type SummaryRuleset } from "../summarizers/summarizer.types.ts";
 import {
@@ -53,9 +55,11 @@ import {
 } from "./digest-progress.ts";
 import type { ModelAttemptTelemetry } from "../summarizers/openai-compatible-client.ts";
 
-export const HEADLINE_STORY_SUMMARY_VERSION = "story-summary-headlines-v1";
-export const CURRENT_STORY_SUMMARY_VERSION = "story-summary-balanced-v1";
-export const THOROUGH_STORY_SUMMARY_VERSION = "story-summary-thorough-v1";
+// v2: SummaryPoint gained an optional author; older cached points without it
+// must regenerate so X chat points carry speaker identity end to end.
+export const HEADLINE_STORY_SUMMARY_VERSION = "story-summary-headlines-v2";
+export const CURRENT_STORY_SUMMARY_VERSION = "story-summary-balanced-v2";
+export const THOROUGH_STORY_SUMMARY_VERSION = "story-summary-thorough-v2";
 type StoryDetailPolicy = {
   singleMaxOutputTokens: number;
   batchMaxOutputTokens: number;
@@ -86,12 +90,6 @@ export interface StoryDigestResult {
   stories: StoredDigestStory[];
   hadSummaryFailure: boolean;
   summaryFailureReason: unknown | null;
-}
-
-function effectiveMode(feed: PublicFeed, source: PublicSource, user: User) {
-  if (feed.relevanceFilterMode !== "inherit") return feed.relevanceFilterMode;
-  if (source.relevanceFilterMode !== "inherit") return source.relevanceFilterMode;
-  return user.defaultRelevanceFilterMode;
 }
 
 async function boundedMap<T, R>(
@@ -375,7 +373,13 @@ export async function assembleStoryDigest(
   for (const story of persisted) {
     const hasIncludeAll = story.candidate.developments.some((development) => development.items.some((item) => {
       const feed = feedById.get(item.feedId)!;
-      return effectiveMode(feed, sourceById.get(feed.sourceId)!, user) === "include_all";
+      const source = sourceById.get(feed.sourceId)!;
+      return resolveEffectiveRelevanceFilterMode(
+        user.defaultRelevanceFilterMode,
+        source.relevanceFilterMode,
+        feed.relevanceFilterMode,
+        source.relevanceWarmup,
+      ) === "include_all";
     }));
     (hasIncludeAll ? includeAll : personalized).push(story);
   }
@@ -387,7 +391,7 @@ export async function assembleStoryDigest(
     status: "started",
   });
   const decisions: StoryRelevanceDecision[] = [
-    ...(personalized.length ? await intelligence.classify(personalized, rules, user.relevanceThreshold, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, preferencePrompt: user.systemPrompt, onAttempt: onAttempt("classification") }) : []),
+    ...(personalized.length ? await intelligence.classify(personalized, rules, user.relevanceThreshold, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, preferencePrompt: normalizeInterestPrompt(user.systemPrompt), onAttempt: onAttempt("classification") }) : []),
     ...(includeAll.length ? await intelligence.classify(includeAll, rules.filter((rule) => rule.disposition === "mute"), 0, { signal: dependencies.signal, requestTimeoutMs: dependencies.timeoutMs, onAttempt: onAttempt("classification") }) : []),
   ];
   if (runId) reportDigestProgress(progress, {

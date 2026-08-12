@@ -80,6 +80,29 @@ async function createFeed(
   return { userId: user.id, feed };
 }
 
+async function createXListFeed(
+  database: Database,
+  email: string,
+): Promise<{ userId: string; feed: PublicFeed }> {
+  const user = await createUser(database, userInput(email));
+  const source = await createSource(database, {
+    userId: user.id,
+    connectorId: ConnectorId.X,
+    credentials: await credentialCipher().encrypt(
+      JSON.stringify({ profileId: user.id }),
+      { userId: user.id, connectorId: ConnectorId.X },
+    ),
+  });
+  const feed = await createOrReviveFeed(database, {
+    userId: user.id,
+    sourceId: source.id,
+    externalId: "x:list:123456789",
+    name: "X List",
+    kind: "news",
+  });
+  return { userId: user.id, feed };
+}
+
 function normalizedItem(
   overrides: Partial<NormalizedItem> = {},
 ): NormalizedItem {
@@ -249,6 +272,93 @@ test("ingestFeed upserts edited items across overlapping windows", async () => {
     assertEquals(items.length, 1);
     assertEquals(items[0].payload.text, "After");
     assertEquals(items[0].fetchedAt, 2);
+  });
+});
+
+test("ingestFeed stores X list posts idempotently in shared item storage", async () => {
+  await withTestDb(async (database) => {
+    const { userId, feed } = await createXListFeed(
+      database,
+      "x-list-ingest@example.com",
+    );
+    const connector = new FakeConnector([
+      {
+        "x:list:123456789": [normalizedItem({
+          connectorId: ConnectorId.X,
+          feedExternalId: "x:list:123456789",
+          externalId: "post:1",
+          date: 1_700_000_000_000,
+          text: "First draft",
+          author: "@alice",
+          url: "https://x.com/alice/status/1",
+          meta: {
+            messageKind: "post",
+            metrics: { replies: 0, reposts: 0, likes: 1, views: 10 },
+          },
+        })],
+      },
+      {
+        "x:list:123456789": [normalizedItem({
+          connectorId: ConnectorId.X,
+          feedExternalId: "x:list:123456789",
+          externalId: "post:1",
+          date: 1_700_000_000_500,
+          text: "Edited draft",
+          author: "@alice",
+          url: "https://x.com/alice/status/1",
+          meta: {
+            messageKind: "post",
+            metrics: { replies: 2, reposts: 3, likes: 4, views: 50 },
+          },
+        })],
+      },
+    ]);
+
+    const first = await ingestFeed(database, userId, feed, connector, {
+      window: { from: 0, to: 2_000_000_000_000 },
+      fetchedAt: 1,
+    });
+    const second = await ingestFeed(database, userId, feed, connector, {
+      window: { from: 0, to: 2_000_000_000_000 },
+      fetchedAt: 2,
+    });
+
+    assertEquals(first.itemCount, 1);
+    assertEquals(second.itemCount, 1);
+    assertEquals(connector.calls, [
+      {
+        from: 0,
+        to: 2_000_000_000_000,
+        feedExternalIds: ["x:list:123456789"],
+      },
+      {
+        from: 0,
+        to: 2_000_000_000_000,
+        feedExternalIds: ["x:list:123456789"],
+      },
+    ]);
+
+    const items = await listItemsForFeedInWindow(
+      database,
+      feed.id,
+      0,
+      2_000_000_000_000,
+    );
+    assertEquals(items.length, 1);
+    assertEquals(items[0].externalId, "post:1");
+    assertEquals(items[0].date, 1_700_000_000_500);
+    assertEquals(items[0].payload.connectorId, ConnectorId.X);
+    assertEquals(items[0].payload.feedExternalId, "x:list:123456789");
+    assertEquals(items[0].payload.text, "Edited draft");
+    assertEquals(items[0].payload.author, "@alice");
+    assertEquals(items[0].payload.url, "https://x.com/alice/status/1");
+    assertEquals(items[0].payload.meta, {
+      messageKind: "post",
+      metrics: { replies: 2, reposts: 3, likes: 4, views: 50 },
+    });
+    assertEquals(items[0].fetchedAt, 2);
+    const updatedFeed = await findFeedById(database, feed.id, userId);
+    assertEquals(updatedFeed?.lastFetchedPeriodEndMs, 2_000_000_000_000);
   });
 });
 

@@ -411,6 +411,7 @@ describe("SourcesPanel", () => {
     showPaidPostTitles: false,
     connected: true,
     relevanceFilterMode: "inherit",
+    relevanceWarmup: false,
     createdAt: 0,
     updatedAt: 0,
   } as const;

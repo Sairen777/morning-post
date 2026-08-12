@@ -1,8 +1,11 @@
 import { test } from "bun:test";
+import { ConnectorId } from "../../src/constants.ts";
 import { and, eq } from "drizzle-orm";
 import { assertEquals, assertRejects } from "../assertions.ts";
 import { withTestDb } from "../../src/db/testing.ts";
 import { interestRules } from "../../src/db/schema/interest-rule.ts";
+import { sources } from "../../src/db/schema/source.ts";
+import { digestStories } from "../../src/db/schema/story.ts";
 import { storyFeedback } from "../../src/db/schema/story-feedback.ts";
 import { users } from "../../src/db/schema/user.ts";
 import { NotFoundError, ValidationError } from "../../src/server/errors.ts";
@@ -175,6 +178,308 @@ test("feedback exposes and infers only valid delivered labels", async () => {
       "not present",
     );
     assertEquals((await database.select().from(storyFeedback)).length, 1);
+  });
+});
+
+async function sourceWarmupState(
+  database: Parameters<typeof submitStoryFeedback>[0],
+  sourceId: string,
+) {
+  const [row] = await database
+    .select({
+      relevanceWarmup: sources.relevanceWarmup,
+      relevanceWarmupNegativeFeedbackCount:
+        sources.relevanceWarmupNegativeFeedbackCount,
+    })
+    .from(sources)
+    .where(eq(sources.id, sourceId));
+  return row!;
+}
+
+test("first whole-story not_relevant counts a warmup source once and replays are idempotent", async () => {
+  await withTestDb(async (database) => {
+    const sourceId = crypto.randomUUID();
+    const fixture = await createStoryFeedbackFixture(
+      database,
+      "feedback-service-warmup-first@example.com",
+      { sources: [{ id: sourceId }] },
+    );
+    const initialVersion = await profileVersion(database, fixture.user.id);
+    const input = {
+      userId: fixture.user.id,
+      storyId: fixture.story.id,
+      digestStoryId: fixture.digestStory.id,
+      action: "not_relevant" as const,
+    };
+
+    const first = await submitStoryFeedback(database, input);
+    assertEquals(await sourceWarmupState(database, sourceId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 1,
+    });
+    assertEquals(
+      await profileVersion(database, fixture.user.id),
+      initialVersion + 1,
+    );
+
+    const replay = await submitStoryFeedback(database, input);
+    assertEquals(replay.feedback, first.feedback);
+    assertEquals(await sourceWarmupState(database, sourceId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 1,
+    });
+    assertEquals(
+      await profileVersion(database, fixture.user.id),
+      initialVersion + 1,
+    );
+    assertEquals(
+      (await database.select().from(storyFeedback).where(
+        eq(storyFeedback.userId, fixture.user.id),
+      )).length,
+      1,
+    );
+  });
+});
+
+test("second distinct not_relevant graduates the source and bumps the profile version at most once", async () => {
+  await withTestDb(async (database) => {
+    const sourceId = crypto.randomUUID();
+    const fixture = await createStoryFeedbackFixture(
+      database,
+      "feedback-service-warmup-graduation@example.com",
+      { sources: [{ id: sourceId }] },
+    );
+    const initialVersion = await profileVersion(database, fixture.user.id);
+
+    await submitStoryFeedback(database, {
+      userId: fixture.user.id,
+      storyId: fixture.story.id,
+      digestStoryId: fixture.digestStory.id,
+      action: "not_relevant",
+    });
+    assertEquals(await sourceWarmupState(database, sourceId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 1,
+    });
+    const afterFirst = await profileVersion(database, fixture.user.id);
+
+    // A new story version is a distinct durable feedback identity and brings
+    // a new topic so inference and graduation both change state this time.
+    const upgraded = await replaceDigestStories(
+      database,
+      fixture.user.id,
+      fixture.digest.id,
+      [{
+        content: {
+          storyId: fixture.story.id,
+          storyVersion: fixture.story.version + 1,
+          title: fixture.story.title,
+          topics: ["Climate", "Finance"],
+          entities: fixture.story.entities,
+          points: [],
+          sources: [{
+            itemId: crypto.randomUUID(),
+            connectorId: ConnectorId.RSS,
+            sourceId,
+            feedId: crypto.randomUUID(),
+            feedName: "Fixture feed",
+            title: null,
+            url: null,
+            publishedAt: 300,
+          }],
+          relevanceScore: 80,
+          matchedInterestRuleIds: [],
+        },
+        profileVersion: fixture.user.interestProfileVersion,
+        summaryVersion: CURRENT_STORY_SUMMARY_VERSION,
+        generatedAt: 400,
+      }],
+    );
+
+    await submitStoryFeedback(database, {
+      userId: fixture.user.id,
+      storyId: fixture.story.id,
+      digestStoryId: upgraded[0].id,
+      action: "not_relevant",
+    });
+    assertEquals(await sourceWarmupState(database, sourceId), {
+      relevanceWarmup: false,
+      relevanceWarmupNegativeFeedbackCount: 2,
+    });
+    // Inferred-rule change and graduation together still bump exactly once.
+    assertEquals(
+      await profileVersion(database, fixture.user.id),
+      afterFirst + 1,
+    );
+    assertEquals(
+      await profileVersion(database, fixture.user.id),
+      initialVersion + 2,
+    );
+
+    // The graduated source ignores further negatives.
+    await submitStoryFeedback(database, {
+      userId: fixture.user.id,
+      storyId: fixture.story.id,
+      digestStoryId: upgraded[0].id,
+      action: "not_relevant",
+    });
+    assertEquals(await sourceWarmupState(database, sourceId), {
+      relevanceWarmup: false,
+      relevanceWarmupNegativeFeedbackCount: 2,
+    });
+  });
+});
+
+test("only whole-story not_relevant counts toward source warmup", async () => {
+  await withTestDb(async (database) => {
+    const sourceId = crypto.randomUUID();
+    const fixture = await createStoryFeedbackFixture(
+      database,
+      "feedback-service-warmup-unrelated@example.com",
+      { sources: [{ id: sourceId }] },
+    );
+    const base = {
+      userId: fixture.user.id,
+      storyId: fixture.story.id,
+      digestStoryId: fixture.digestStory.id,
+    };
+
+    for (const action of ["relevant", "already_known", "too_repetitive"] as const) {
+      await submitStoryFeedback(database, { ...base, action });
+    }
+    await submitStoryFeedback(database, {
+      ...base,
+      action: "follow_topic",
+      target: { kind: "topic", label: "Climate" },
+    });
+    assertEquals(await sourceWarmupState(database, sourceId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 0,
+    });
+  });
+});
+
+test("multi-source stories count each unique contributing source exactly once", async () => {
+  await withTestDb(async (database) => {
+    const firstSourceId = crypto.randomUUID();
+    const secondSourceId = crypto.randomUUID();
+    const fixture = await createStoryFeedbackFixture(
+      database,
+      "feedback-service-warmup-multi@example.com",
+      { sources: [{ id: firstSourceId }, { id: secondSourceId }] },
+    );
+    // A duplicate snapshot entry must not double-count the source.
+    const [snapshot] = await database.select({ sources: digestStories.sources })
+      .from(digestStories)
+      .where(eq(digestStories.id, fixture.digestStory.id));
+    await database.update(digestStories)
+      .set({ sources: [...snapshot!.sources, snapshot!.sources[0]] })
+      .where(eq(digestStories.id, fixture.digestStory.id))
+      .run();
+
+    await submitStoryFeedback(database, {
+      userId: fixture.user.id,
+      storyId: fixture.story.id,
+      digestStoryId: fixture.digestStory.id,
+      action: "not_relevant",
+    });
+    assertEquals(await sourceWarmupState(database, firstSourceId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 1,
+    });
+    assertEquals(await sourceWarmupState(database, secondSourceId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 1,
+    });
+  });
+});
+
+test("source warmup feedback is scoped to owned active sources", async () => {
+  await withTestDb(async (database) => {
+    const ownedSourceId = crypto.randomUUID();
+    const foreignSourceId = crypto.randomUUID();
+    const graduatedSourceId = crypto.randomUUID();
+    const fixture = await createStoryFeedbackFixture(
+      database,
+      "feedback-service-warmup-ownership@example.com",
+      {
+        sources: [
+          { id: ownedSourceId },
+          { id: graduatedSourceId, relevanceWarmup: false, warmupNegativeFeedbackCount: 2 },
+        ],
+      },
+    );
+    const stranger = await createStoryFeedbackFixture(
+      database,
+      "feedback-service-warmup-stranger@example.com",
+      { sources: [{ id: foreignSourceId }] },
+    );
+    await database.update(digestStories)
+      .set({
+        sources: [{
+          itemId: crypto.randomUUID(),
+          connectorId: ConnectorId.RSS,
+          sourceId: ownedSourceId,
+          feedId: crypto.randomUUID(),
+          feedName: "Fixture feed",
+          title: null,
+          url: null,
+          publishedAt: 300,
+        }, {
+          itemId: crypto.randomUUID(),
+          connectorId: ConnectorId.RSS,
+          sourceId: foreignSourceId,
+          feedId: crypto.randomUUID(),
+          feedName: "Fixture feed",
+          title: null,
+          url: null,
+          publishedAt: 300,
+        }, {
+          itemId: crypto.randomUUID(),
+          connectorId: ConnectorId.RSS,
+          sourceId: graduatedSourceId,
+          feedId: crypto.randomUUID(),
+          feedName: "Fixture feed",
+          title: null,
+          url: null,
+          publishedAt: 300,
+        }, {
+          itemId: crypto.randomUUID(),
+          connectorId: ConnectorId.RSS,
+          sourceId: crypto.randomUUID(),
+          feedId: crypto.randomUUID(),
+          feedName: "Fixture feed",
+          title: null,
+          url: null,
+          publishedAt: 300,
+        }],
+      })
+      .where(eq(digestStories.id, fixture.digestStory.id))
+      .run();
+
+    await submitStoryFeedback(database, {
+      userId: fixture.user.id,
+      storyId: fixture.story.id,
+      digestStoryId: fixture.digestStory.id,
+      action: "not_relevant",
+    });
+    assertEquals(await sourceWarmupState(database, ownedSourceId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 1,
+    });
+    // Foreign and unknown sources are never touched.
+    assertEquals(await sourceWarmupState(database, foreignSourceId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 0,
+    });
+    assertEquals(await sourceWarmupState(database, graduatedSourceId), {
+      relevanceWarmup: false,
+      relevanceWarmupNegativeFeedbackCount: 2,
+    });
+    assertEquals(
+      await profileVersion(database, stranger.user.id),
+      stranger.user.interestProfileVersion,
+    );
   });
 });
 

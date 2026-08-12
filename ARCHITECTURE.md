@@ -119,26 +119,73 @@ titles are whitespace-cleaned when present, results deduplicate by canonical
 ID, and a rendered name is preferred over the deterministic opaque-ID
 fallback. The opaque
 conversation identifier never classifies a conversation as direct or group
-without explicit rendered evidence. Discovery and collection use bounded
-deterministic scrolling: instant half-viewport DOM increments (no mouse or
-keyboard simulation), a 1000 ms settle after productive movement, a
-deterministic 1500/2500/4000 ms no-progress backoff (capped) for consecutive
-windows without new accepted identities, and bounded safety caps on rounds and
-items; no wait follows a condition- or item-limit terminal result. There is no
-randomized timing, simulated human interaction, stealth, or concealment. A
-repeated settled no-new streak that included scrolling movement stops as
-`no_progress`; `boundary` is reserved for a proven
-non-moving edge. Discovery and collection treat `no_progress` as incomplete
-and fail rather than returning partial results.
+without explicit rendered evidence. Discovery and collection use bounded,
+deterministic scrolling against the configured owning container. Each instant
+half-viewport step changes that container's scroll position and, for Chat,
+dispatches a deterministic DOM `WheelEvent` intent signal on the same element;
+there is no pointer movement, keyboard input, randomized timing, human-like
+pacing, stealth, or concealment. Productive movement settles for 1000 ms;
+consecutive windows without new accepted identities use a capped deterministic
+1500/2500/4000 ms backoff; and no wait follows a condition- or item-limit
+terminal result. The configured scroller must own the candidate rows and
+expose supported overflow with a positive range, so nested or sibling decoys
+cannot prove its edge. A deciding movement that reaches the exact edge settles
+and re-extracts to tolerate asynchronous top prepend/reflow. Renewed non-edge
+movement remains `no_progress`; only a proven non-moving edge is `boundary`.
+Discovery and collection treat `no_progress` as incomplete and fail instead of
+returning partial results.
 
-Partial-window collection is fail-closed: ambiguous or incomplete windows,
-missing timestamps, inaccessible targets, authentication loss, loading stalls,
-scroll failures, and safety caps fail the run instead of advancing
-`lastFetchedPeriodEndMs` across an uncertain window. The fetch cursor and
-captured history therefore stay intact when a render is partial; a later run
-re-ingests the same window from the unchanged cursor. Browser automation over
-rendered X pages is not supported by X, and it does not reduce X platform,
-authentication-challenge, or account-restriction risk.
+Encrypted Chat extraction is stateful across virtual-scroll rounds: message
+rows are keyed by stable `message-<UUID>` identifiers, so the extractor retains
+and reconciles state by UUID rather than DOM position, and visual top order is
+authoritative. When the explicit Chat scroller exists, an accepted row or day
+label must belong to that exact element and intersect its viewport expanded by
+a fixed 0.5-viewport overscan on each side. The overscan matches consecutive
+half-viewport advances while excluding accumulated history and other panels.
+Body text comes only from the row's matching `message-text-<UUID>` span.
+Bodyless rich content has three strict structural representations: a
+same-origin canonical status anchor becomes `[Shared post] <url>`, a
+non-profile image becomes `[Image]`, and a visible unlinked large leaf span
+containing 1–16 emoji-only graphemes becomes `[Emoji]`. Candidates must be
+owned by the exact row and cannot come from avatars, profile links, nested
+rows, foreign bodies, previews, timestamps, reactions, or controls. Unknown
+rich structures remain empty and fail closed.
+
+Encrypted messages expose no machine timestamp. A row-owned visible time,
+including one on a rich row, is converted to a minute-granularity epoch inside
+Chromium's local calendar rather than the Bun process timezone. Rendered day
+labels (`Today`, `Yesterday`, weekday, English month/day[/year]) provide day
+context. Sticky copies deduplicate by calendar day, distinct labels order by
+visual position, overlapping rounds may backfill retained records, and every
+replacement recomputes bounds from the complete retained visual order. Only a
+proven top boundary can resolve a leading group: the earliest rendered day or
+finite-row anchor, matching rendered day context, and exactly one strict
+midnight descent must jointly prove the prior/current-day split. Its day marker
+is moved into calendar order rather than duplicated. Missing or contradictory
+evidence leaves the group unresolved.
+
+An undated row carries conservative bounds from its nearest visibly ordered
+finite predecessor (`lower`) and successor (`upper`, extended through the end
+of that successor's displayed minute). A wholly outside row is skipped; when
+both finite bounds are wholly within the requested window, normalization uses
+`lower` as a conservative ordering surrogate without claiming an exact send
+time. One-sided or window-straddling bounds fail as ambiguous. Extraction also
+fails when a rendered message has an empty or unrepresentable body, when an
+empty round follows a nonempty round, or when date/order evidence contradicts
+itself. Zero results require a dedicated structural empty state outside the
+message rows and composer, or proof that every collected row is outside the
+requested range. A condition stop requires every rendered row to have a finite
+date or a conservative upper bound before the window; a possibly intersecting
+undated row is never ignored.
+
+Partial-window collection is fail-closed: inaccessible targets,
+authentication loss, loading stalls, scroll failures, safety caps, and every
+other ambiguous or incomplete window fail the run instead of advancing
+`lastFetchedPeriodEndMs`. The fetch cursor and captured history therefore stay
+intact when a render is partial; a later run re-ingests the same window from
+the unchanged cursor. Browser automation over rendered X pages is unsupported
+by X and does not reduce platform, authentication-challenge, or
+account-restriction risk.
 
 ### 2. Summarizer
 
@@ -707,8 +754,9 @@ plans:
   multi-host scaling requires it.
 - **Automatic feed theme classification.** Per-feed `customPrompt` handles
   manual steering; LLM-inferred theming is deferred.
-- **X Chat integration.** No implementation work is active; scope and timeline
-  are undetermined, and it is not a current roadmap priority.
+- **X Chat integration.** Rendered Chat discovery, collection, and encrypted
+  extraction are implemented; remaining X roadmap scope is retention and
+  resilience, not collector implementation.
 
 ### 14. Runtime network boundary
 

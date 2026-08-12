@@ -3,6 +3,7 @@ import { assertEquals, assertThrows } from "../assertions.ts"
 import { sql } from "drizzle-orm";
 import type { Database } from "../../src/db/sqlite.ts";
 import { withTestDb } from "../../src/db/testing.ts";
+import { createUser } from "../../src/repositories/user-repository.ts";
 
 function indexExists(
   database: Database,
@@ -120,6 +121,15 @@ test("database schema rejects invalid persisted states", async () => {
     assertEquals(
       await constraintExists(
         database,
+        "sources",
+        "sources_relevance_warmup_negative_feedback_count_check",
+      ),
+      true,
+      "sources_relevance_warmup_negative_feedback_count_check should exist on sources",
+    );
+    assertEquals(
+      await constraintExists(
+        database,
         "digest_runs",
         "digest_runs_status_check",
       ),
@@ -163,6 +173,23 @@ test("database schema rejects invalid connector id", async () => {
       () =>
         database.run(sql`insert into sources (user_id, connector_id, credentials, enabled, created_at, updated_at)
           values ('00000000-0000-0000-0000-000000000001', 'unknown', null, true, ${now}, ${now})`),
+    );
+  });
+});
+
+test("database schema rejects negative warmup negative feedback counts", async () => {
+  await withTestDb(async (database) => {
+    const now = Date.now();
+    const user = createUser(database, {
+      name: "Constraint Owner",
+      email: `constraint-${now}@example.com`,
+      passwordHash: "$argon2id$fakehash",
+      systemPrompt: "",
+    });
+    assertThrows(
+      () =>
+        database.run(sql`insert into sources (user_id, connector_id, credentials, enabled, relevance_warmup, relevance_warmup_negative_feedback_count, created_at, updated_at)
+          values (${user.id}, 'Telegram', null, false, true, -1, ${now}, ${now})`),
     );
   });
 });

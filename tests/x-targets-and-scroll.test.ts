@@ -410,7 +410,7 @@ test("virtual scrolling reports max_rounds when movement prevents a boundary res
 });
 
 test("virtual scrolling reports no_progress after settled moved windows add nothing", async () => {
-  const fake = fakePage([true, true]);
+  const fake = fakePage([true, true, true]);
   const waits = recordingWait();
 
   const result = await collectVirtualizedItems(fake.page, {
@@ -421,8 +421,10 @@ test("virtual scrolling reports no_progress after settled moved windows add noth
     maxNoProgressRounds: 2,
   }, undefined, waits.wait);
 
+  // The deciding probe at the threshold still moves: the window is being
+  // re-pinned mid-list, so the collection fails closed as no_progress.
   assertEquals(result, { items: [], stopReason: "no_progress" });
-  assertStrictEquals(fake.advancementCount(), 2);
+  assertStrictEquals(fake.advancementCount(), 3);
   assertEquals(waits.waits, [1500, 2500]);
 });
 
@@ -466,7 +468,7 @@ test("virtual scrolling reports boundary only after a non-moving edge is proven"
 });
 
 test("virtual scrolling backs off no-new pacing through the 4000 ms cap", async () => {
-  const fake = fakePage([true, true, true, true]);
+  const fake = fakePage([true, true, true, true, true]);
   const waits = recordingWait();
 
   const result = await collectVirtualizedItems(fake.page, {
@@ -477,8 +479,10 @@ test("virtual scrolling backs off no-new pacing through the 4000 ms cap", async 
     maxNoProgressRounds: 4,
   }, undefined, waits.wait);
 
+  // The deciding probe at the threshold round still moves, so the
+  // collection fails closed as no_progress on the fifth advance.
   assertEquals(result, { items: [], stopReason: "no_progress" });
-  assertStrictEquals(fake.advancementCount(), 4);
+  assertStrictEquals(fake.advancementCount(), 5);
   assertEquals(waits.waits, [1500, 2500, 4000, 4000]);
 });
 
@@ -528,9 +532,68 @@ test("virtual scrolling fails mixed no-new stalls as no_progress", async () => {
     maxNoProgressRounds: 4,
   }, undefined, waits.wait);
 
+  // Renewed movement at the deciding probe never proves a boundary: the
+  // threshold round's probe still moves, so the collection fails closed
+  // as no_progress.
   assertEquals(result, { items: [], stopReason: "no_progress" });
-  assertStrictEquals(fake.advancementCount(), 4);
+  assertStrictEquals(fake.advancementCount(), 5);
   assertEquals(waits.waits, [1500, 2500, 4000, 4000]);
+});
+
+test("virtual scrolling proves a boundary when the deciding probe verifies the reflow-corrected edge", async () => {
+  const fake = fakePage([true, true, true, true, false]);
+  const waits = recordingWait();
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve(["a", "b"]),
+    identityOf: (item: string) => item,
+    maxRounds: 5,
+    maxNoProgressRounds: 4,
+  }, undefined, waits.wait);
+
+  // An async same-ID shift can drift scrollTop away from the real edge
+  // (the fourth advance moves the scroller back to 0); the threshold
+  // round then re-verifies the edge with its deciding probe. The probe
+  // does not move, so the boundary is proven.
+  assertEquals(result, { items: ["a", "b"], stopReason: "boundary" });
+  assertStrictEquals(fake.advancementCount(), 5);
+  assertEquals(waits.waits, [1000, 1500, 2500, 4000]);
+});
+
+test("virtual scrolling still fails closed as no_progress when the deciding probe moves", async () => {
+  const fake = fakePage([true, true, true, true, true]);
+  const waits = recordingWait();
+
+  const result = await collectVirtualizedItems(fake.page, {
+    itemSelector: "[data-item]",
+    extractRound: () => Promise.resolve(["a", "b"]),
+    identityOf: (item: string) => item,
+    maxRounds: 5,
+    maxNoProgressRounds: 4,
+  }, undefined, waits.wait);
+
+  // The deciding probe itself moves (renewed movement or a fresh reflow
+  // drift): the window is still changing without adding anything new, so
+  // the collection fails closed as no_progress instead of certifying a
+  // boundary.
+  assertEquals(result, { items: ["a", "b"], stopReason: "no_progress" });
+  assertStrictEquals(fake.advancementCount(), 5);
+  assertEquals(waits.waits, [1000, 1500, 2500, 4000]);
+});
+
+test("virtual scrolling rejects wheel intent without an explicit scroller selector", async () => {
+  const fake = fakePage([]);
+  await assertRejects(
+    () => collectVirtualizedItems(fake.page, {
+      itemSelector: "[data-item]",
+      extractRound: () => Promise.resolve([]),
+      identityOf: (item: string) => item,
+      dispatchWheelIntent: true,
+    }),
+    Error,
+    "requires an explicit scrollerSelector",
+  );
 });
 
 test("virtual scrolling propagates aborts from the injected settle wait", async () => {

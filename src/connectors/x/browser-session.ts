@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium, errors } from "playwright";
 import type { Browser, BrowserContext, Page } from "playwright";
 
 import { abortableDelay, abortReason, throwIfAborted } from "./abort.ts";
@@ -21,6 +21,8 @@ const BROWSER_LAUNCH_TIMEOUT_MS = 30_000;
 const NAVIGATION_TIMEOUT_MS = 25_000;
 const DOM_ACTION_TIMEOUT_MS = 8_000;
 const TIMELINE_SWITCH_SETTLE_MS = 750;
+const NAVIGATION_ATTEMPTS = 3;
+const NAVIGATION_RETRY_DELAY_MS = 2_000;
 
 export function xBrowserLaunchOptions(
   headless: boolean,
@@ -363,11 +365,44 @@ export async function selectFollowingTimeline(page: Page, signal?: AbortSignal):
 }
 
 async function navigateKnownXUrl(page: Page, url: string, signal?: AbortSignal): Promise<void> {
-  throwIfAborted(signal);
-  await page.goto(url, {
-    waitUntil: "domcontentloaded",
-    timeout: NAVIGATION_TIMEOUT_MS,
-  });
-  throwIfAborted(signal);
-  assertXOrigin(page.url());
+  for (let attempt = 1; attempt <= NAVIGATION_ATTEMPTS; attempt += 1) {
+    throwIfAborted(signal);
+    try {
+      const response = await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: NAVIGATION_TIMEOUT_MS,
+      });
+      throwIfAborted(signal);
+      assertXOrigin(page.url());
+      if (response && response.status() >= 500) {
+        throw new XNavigationResponseError(response.status());
+      }
+      return;
+    } catch (error) {
+      if (signal?.aborted) throw abortReason(signal);
+      if (
+        attempt >= NAVIGATION_ATTEMPTS ||
+        !isRetryableNavigationError(error)
+      ) {
+        throw error;
+      }
+      await page.goto("about:blank", {
+        waitUntil: "domcontentloaded",
+        timeout: DOM_ACTION_TIMEOUT_MS,
+      }).catch(() => undefined);
+      await abortableDelay(NAVIGATION_RETRY_DELAY_MS, signal);
+    }
+  }
+}
+
+class XNavigationResponseError extends Error {
+  constructor(readonly status: number) {
+    super(`X navigation returned HTTP ${status}`);
+    this.name = "XNavigationResponseError";
+  }
+}
+
+function isRetryableNavigationError(error: unknown): boolean {
+  return error instanceof errors.TimeoutError ||
+    error instanceof XNavigationResponseError;
 }

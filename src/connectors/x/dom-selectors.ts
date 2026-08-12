@@ -22,11 +22,25 @@ export const X_DOM = Object.freeze({
   listLink: 'a[href^="/i/lists/"], a[href^="https://x.com/i/lists/"]',
   conversationLink: 'a[href^="/i/chat/"], a[href^="https://x.com/i/chat/"]',
   pageHeading: 'main h1, main h2, [role="main"] [role="heading"]',
+  chatMessageRow: '[data-testid^="message-"]:not([data-testid^="message-text-"])',
+  // Dedicated structural empty-state evidence for conversations: product
+  // empty-state testid plus semantic status/live regions. Exact-phrase and
+  // row/composer exclusions happen in collection validation, never against
+  // flattened page text.
+  chatEmptyState: [
+    'main [data-testid="EmptyState"]',
+    'main [role="status"]',
+    'main [aria-live="polite"]',
+  ].join(", "),
   chatMessage: [
     'main [data-testid="messageEntry"]',
     'main [data-message-id]',
     'main [data-event-id]',
+    '[data-testid^="message-"]:not([data-testid^="message-text-"])',
   ].join(", "),
+  chatMessageScroller: '[data-testid="dm-message-scroller"]',
+  chatMessageBody: '[data-testid^="message-text-"]',
+  chatMessageBodyText: '[data-testid^="message-text-"] span[dir="auto"]',
   chatMessageText: [
     '[data-testid="messageText"]',
     '[data-testid="tweetText"]',

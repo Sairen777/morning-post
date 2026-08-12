@@ -10,6 +10,7 @@ import {
   type EncryptedBlob,
 } from "../crypto/credential-cipher.ts";
 import type { Database } from "../db/client.ts";
+import { SOURCE_RELEVANCE_WARMUP_NEGATIVE_THRESHOLD } from "../personalization/relevance-filter-policy.ts";
 import { feeds } from "../db/schema/feed.ts";
 import { sources } from "../db/schema/source.ts";
 import { users } from "../db/schema/user.ts";
@@ -35,6 +36,7 @@ const publicSourceRowSchema = z.object({
   enabled: z.boolean(),
   showPaidPostTitles: z.boolean(),
   relevanceFilterMode: z.enum(["inherit", "personalized", "include_all"]),
+  relevanceWarmup: z.boolean(),
   connected: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
@@ -82,6 +84,7 @@ function selectableColumns() {
     enabled: sources.enabled,
     showPaidPostTitles: sources.showPaidPostTitles,
     relevanceFilterMode: sources.relevanceFilterMode,
+    relevanceWarmup: sources.relevanceWarmup,
     credentials: sources.credentials,
     createdAt: sources.createdAt,
     updatedAt: sources.updatedAt,
@@ -135,6 +138,8 @@ export function createSource(
         position: input.position ?? null,
         enabled: input.enabled ?? true,
         relevanceFilterMode: input.relevanceFilterMode ?? "inherit",
+        relevanceWarmup: true,
+        relevanceWarmupNegativeFeedbackCount: 0,
         createdAt: now,
         updatedAt: now,
       })
@@ -209,11 +214,14 @@ export function upsertSourceCredentials(
       connectorId: input.connectorId,
       credentials,
       enabled: true,
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 0,
       createdAt: now,
       updatedAt: now,
     })
     .onConflictDoUpdate({
       target: [sources.userId, sources.connectorId],
+      // Reconnect preserves the existing warmup state and negative count.
       set: {
         credentials,
         enabled: true,
@@ -406,4 +414,48 @@ export async function getDecryptedCredentials(
     throw new ValidationError("invalid source credential shape");
   }
   return credentialResult.data as ConnectorCredentials;
+}
+
+/**
+ * Records one whole-story negative relevance signal for each owned source that
+ * is still in relevance warmup. Each source is counted at most once per call;
+ * a source whose post-increment count reaches
+ * SOURCE_RELEVANCE_WARMUP_NEGATIVE_THRESHOLD graduates (warmup disabled) in the
+ * same statement. Foreign, already-graduated, and duplicate source IDs are
+ * ignored. Returns true when at least one source graduated.
+ */
+export function applySourceWarmupNegativeFeedback(
+  database: Database,
+  userId: string,
+  sourceIds: string[],
+  now: number,
+): boolean {
+  let graduated = false;
+  const seen = new Set<string>();
+  for (const sourceId of sourceIds) {
+    if (!sourceId || seen.has(sourceId)) continue;
+    seen.add(sourceId);
+    const updated = database
+      .update(sources)
+      .set({
+        relevanceWarmupNegativeFeedbackCount:
+          sql`${sources.relevanceWarmupNegativeFeedbackCount} + 1`,
+        relevanceWarmup: sql`case when ${sources.relevanceWarmupNegativeFeedbackCount} + 1 >= ${SOURCE_RELEVANCE_WARMUP_NEGATIVE_THRESHOLD} then false else ${sources.relevanceWarmup} end`,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(sources.id, sourceId),
+        eq(sources.userId, userId),
+        eq(sources.relevanceWarmup, true),
+      ))
+      .returning({
+        id: sources.id,
+        relevanceWarmup: sources.relevanceWarmup,
+      })
+      .get();
+    if (updated && updated.relevanceWarmup === false) {
+      graduated = true;
+    }
+  }
+  return graduated;
 }

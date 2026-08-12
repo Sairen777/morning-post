@@ -200,6 +200,125 @@ describe("DigestViewContent story rendering", () => {
       .toBeVisible();
   });
 
+  it("renders the point author immediately before story point text", () => {
+    const firstStory = storyView.stories?.[0];
+    if (!firstStory) throw new Error("Expected story fixture");
+    renderDigest({
+      ...storyView,
+      stories: [{
+        ...firstStory,
+        points: [
+          { text: "Chat development.", sourceUrl: null, author: "@alice" },
+          { text: "Plain development", sourceUrl: null },
+        ],
+      }],
+    });
+
+    // The story is rendered once per source group, so the label repeats.
+    const authorLabels = screen.getAllByText("@alice:");
+    expect(authorLabels.length).toBeGreaterThan(0);
+    for (const authorLabel of authorLabels) {
+      expect(authorLabel).toHaveClass("point-author");
+      expect(authorLabel).toBeVisible();
+      expect(
+        authorLabel.closest("li")?.textContent?.startsWith(
+          "@alice: Chat development.",
+        ),
+      ).toBe(true);
+    }
+    // Points without an author keep rendering their text directly.
+    expect(screen.getAllByText("Plain development").length).toBeGreaterThan(0);
+  });
+
+  it("visibly distinguishes the viewer from a sender named You", () => {
+    const firstStory = storyView.stories?.[0];
+    if (!firstStory) throw new Error("Expected story fixture");
+    renderDigest({
+      ...storyView,
+      stories: [{
+        ...firstStory,
+        points: [
+          {
+            text: "Sender point.",
+            sourceUrl: null,
+            author: "You (you)",
+            authorKind: "sender",
+          },
+          {
+            text: "Viewer point.",
+            sourceUrl: null,
+            author: "You",
+            authorKind: "viewer",
+          },
+          {
+            text: "Bidi point.",
+            sourceUrl: null,
+            author: "Al\u202Eice",
+            authorKind: "sender",
+          },
+        ],
+      }],
+    });
+
+    const senderPoint = screen.getAllByText("Sender point.")[0].closest("li");
+    const viewerPoint = screen.getAllByText("Viewer point.")[0].closest("li");
+    const bidiPoint = screen.getAllByText("Bidi point.")[0].closest("li");
+    if (!senderPoint || !viewerPoint || !bidiPoint) {
+      throw new Error("Expected rendered points");
+    }
+    expect(within(senderPoint).queryByText("SELF")).toBeNull();
+    const viewerMarker = within(viewerPoint).getByText("SELF");
+    expect(viewerMarker).toHaveClass("point-viewer-marker");
+    expect(viewerMarker).toHaveAccessibleName("sent by you");
+    expect(senderPoint.textContent?.startsWith("You (you): Sender point.")).toBe(
+      true,
+    );
+    expect(viewerPoint.textContent?.startsWith("You: SELF Viewer point.")).toBe(
+      true,
+    );
+    expect(within(bidiPoint).getByText("Alice:")).toBeVisible();
+  });
+
+  it("renders the point author in historical aggregate sections too", () => {
+    renderDigest({
+      ...legacyView,
+      sections: [{
+        ...legacyView.sections[0],
+        content: {
+          kind: "aggregate",
+          points: [{
+            text: "Old chat point.",
+            sourceUrl: null,
+            author: "@bob",
+          }],
+        },
+      }],
+      groups: [{
+        ...legacyView.groups[0],
+        sections: [{
+          ...legacyView.groups[0].sections[0],
+          content: {
+            kind: "aggregate",
+            points: [{
+              text: "Old chat point.",
+              sourceUrl: null,
+              author: "@bob",
+            }],
+          },
+        }],
+      }],
+    });
+
+    const authorLabel = screen.getByText("@bob:");
+    expect(authorLabel).toHaveClass("point-author");
+    expect(authorLabel).toBeVisible();
+    expect(
+      authorLabel.closest("li")?.textContent?.startsWith(
+        "@bob: Old chat point.",
+      ),
+    ).toBe(true);
+  });
+
   it("keeps historical group rendering when contentMode and stories are absent", () => {
     renderDigest(legacyView);
 

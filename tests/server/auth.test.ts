@@ -113,6 +113,7 @@ test("POST /auth/setup creates the reserved owner without a password", async () 
     assertEquals(owner.id, json.id);
     assertEquals(owner.email, OWNER_EMAIL);
     assertEquals(owner.passwordHash, null);
+    assertEquals(owner.systemPrompt, "");
   });
 });
 

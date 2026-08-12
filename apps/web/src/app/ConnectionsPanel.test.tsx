@@ -13,6 +13,7 @@ const connectedXSource: PublicSource = {
   enabled: true,
   showPaidPostTitles: false,
   relevanceFilterMode: "inherit",
+  relevanceWarmup: false,
   connected: true,
   createdAt: 1,
   updatedAt: 1,

@@ -214,6 +214,8 @@ describe("updateSource", () => {
               position: null,
               enabled: true,
               showPaidPostTitles: true,
+              relevanceFilterMode: "inherit",
+              relevanceWarmup: false,
               connected: true,
               createdAt: 0,
               updatedAt: 0,

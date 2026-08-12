@@ -65,6 +65,7 @@ test("POST /connectors/substack/session validates and returns a secret-free sour
             enabled: true,
             connected: true,
             relevanceFilterMode: "inherit",
+            relevanceWarmup: false,
             createdAt: now,
             updatedAt: now,
           } satisfies PublicSource,
@@ -180,6 +181,7 @@ test("Substack session route cancels its deadline before a synchronous credentia
       enabled: true,
       connected: true,
       relevanceFilterMode: "inherit",
+      relevanceWarmup: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -249,6 +251,7 @@ test("Substack session route blocks a late credential commit after the deadline 
       enabled: true,
       connected: true,
       relevanceFilterMode: "inherit",
+      relevanceWarmup: false,
       createdAt: now,
       updatedAt: now,
     };

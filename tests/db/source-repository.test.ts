@@ -16,12 +16,14 @@ import {
   type CreateUserInput,
 } from "../../src/repositories/user-repository.ts";
 import {
+  applySourceWarmupNegativeFeedback,
   createSource,
   deleteSourceCredentials,
   findSourceById,
   getDecryptedCredentials,
   listSourcesForUser,
   updateSource,
+  upsertSourceCredentials,
 } from "../../src/repositories/source-repository.ts";
 import {
   ConflictError,
@@ -515,5 +517,214 @@ test("source relevance changes increment the profile version only when changed",
     assertEquals((await findUserById(database, user.id))?.interestProfileVersion, 2);
     await updateSource(database, source.id, user.id, { relevanceFilterMode: "include_all" });
     assertEquals((await findUserById(database, user.id))?.interestProfileVersion, 2);
+  });
+});
+
+test("applySourceWarmupNegativeFeedback counts owned warmup sources once and graduates at the threshold", async () => {
+  await withTestDb(async (database) => {
+    const user = await createUser(
+      database,
+      userInput("warmup-feedback@example.com"),
+    );
+    const stranger = await createUser(
+      database,
+      userInput("warmup-feedback-stranger@example.com"),
+    );
+    const warmupId = crypto.randomUUID();
+    const graduatedId = crypto.randomUUID();
+    const foreignId = crypto.randomUUID();
+
+    async function insertWarmupSource(
+      id: string,
+      userId: string,
+      connectorId: ConnectorId,
+      relevanceWarmup: boolean,
+      count: number,
+    ) {
+      await database.insert(sources).values({
+        id,
+        userId,
+        connectorId,
+        credentials: { v: 1, wrappedDataKey: "x", iv: "x", ciphertext: "x" },
+        enabled: true,
+        relevanceFilterMode: "inherit",
+        relevanceWarmup,
+        relevanceWarmupNegativeFeedbackCount: count,
+        createdAt: 1,
+        updatedAt: 1,
+      }).run();
+    }
+    async function warmupState(id: string) {
+      const [row] = await database
+        .select({
+          relevanceWarmup: sources.relevanceWarmup,
+          relevanceWarmupNegativeFeedbackCount:
+            sources.relevanceWarmupNegativeFeedbackCount,
+        })
+        .from(sources)
+        .where(eq(sources.id, id));
+      return row!;
+    }
+
+    await insertWarmupSource(warmupId, user.id, ConnectorId.RSS, true, 0);
+    await insertWarmupSource(graduatedId, user.id, ConnectorId.X, false, 2);
+    await insertWarmupSource(foreignId, stranger.id, ConnectorId.RSS, true, 0);
+
+    // First signal: only the owned warmup source counts, duplicates and
+    // foreign/graduated/unknown IDs are ignored, and nothing graduates.
+    assertEquals(
+      applySourceWarmupNegativeFeedback(database, user.id, [
+        warmupId,
+        warmupId,
+        foreignId,
+        graduatedId,
+        crypto.randomUUID(),
+      ], 2),
+      false,
+    );
+    assertEquals(await warmupState(warmupId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 1,
+    });
+    assertEquals(await warmupState(foreignId), {
+      relevanceWarmup: true,
+      relevanceWarmupNegativeFeedbackCount: 0,
+    });
+    assertEquals(await warmupState(graduatedId), {
+      relevanceWarmup: false,
+      relevanceWarmupNegativeFeedbackCount: 2,
+    });
+
+    // Second signal reaches the threshold: the same statement graduates.
+    assertEquals(
+      applySourceWarmupNegativeFeedback(database, user.id, [warmupId], 3),
+      true,
+    );
+    assertEquals(await warmupState(warmupId), {
+      relevanceWarmup: false,
+      relevanceWarmupNegativeFeedbackCount: 2,
+    });
+
+    // Graduated sources ignore further signals.
+    assertEquals(
+      applySourceWarmupNegativeFeedback(database, user.id, [warmupId], 4),
+      false,
+    );
+    assertEquals(await warmupState(warmupId), {
+      relevanceWarmup: false,
+      relevanceWarmupNegativeFeedbackCount: 2,
+    });
+  });
+});
+
+test("first-time sources start in relevance warmup with a zero negative feedback count", async () => {
+  await withTestDb(async (database) => {
+    const cipher = generateCipher();
+    const user = await createUser(
+      database,
+      userInput("warmup-create@example.com"),
+    );
+    const source = await createSource(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedTelegramCredentials(cipher, user.id),
+    });
+
+    assertEquals(source.relevanceWarmup, true);
+    assert(
+      !("relevanceWarmupNegativeFeedbackCount" in source),
+      "internal negative feedback count must never appear in the public shape",
+    );
+
+    const rows = await database
+      .select({
+        relevanceWarmup: sources.relevanceWarmup,
+        relevanceWarmupNegativeFeedbackCount:
+          sources.relevanceWarmupNegativeFeedbackCount,
+      })
+      .from(sources)
+      .where(eq(sources.id, source.id))
+      .limit(1);
+    assertExists(rows[0]);
+    assertEquals(rows[0].relevanceWarmup, true);
+    assertEquals(rows[0].relevanceWarmupNegativeFeedbackCount, 0);
+
+    assertEquals(
+      (await findSourceById(database, source.id, user.id))?.relevanceWarmup,
+      true,
+    );
+  });
+});
+
+test("reconnecting a source preserves its warmup state and negative feedback count", async () => {
+  await withTestDb(async (database) => {
+    const cipher = generateCipher();
+    const user = await createUser(
+      database,
+      userInput("warmup-reconnect@example.com"),
+    );
+    const first = await upsertSourceCredentials(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedTelegramCredentials(cipher, user.id),
+    });
+    assertEquals(first.relevanceWarmup, true);
+
+    // Simulate a source that already graduated before disconnecting.
+    await database.update(sources).set({
+      relevanceWarmup: false,
+      relevanceWarmupNegativeFeedbackCount: 2,
+    }).where(eq(sources.id, first.id)).run();
+
+    const reconnected = await upsertSourceCredentials(database, {
+      userId: user.id,
+      connectorId: ConnectorId.Telegram,
+      credentials: await encryptedTelegramCredentials(cipher, user.id),
+    });
+    assertEquals(reconnected.relevanceWarmup, false);
+    assertEquals(reconnected.connected, true);
+
+    const rows = await database
+      .select({
+        relevanceWarmup: sources.relevanceWarmup,
+        relevanceWarmupNegativeFeedbackCount:
+          sources.relevanceWarmupNegativeFeedbackCount,
+      })
+      .from(sources)
+      .where(eq(sources.id, first.id))
+      .limit(1);
+    assertExists(rows[0]);
+    assertEquals(rows[0].relevanceWarmup, false);
+    assertEquals(rows[0].relevanceWarmupNegativeFeedbackCount, 2);
+  });
+});
+
+test("sources written without warmup values default to the graduated personalized state", async () => {
+  await withTestDb(async (database) => {
+    const cipher = generateCipher();
+    const user = await createUser(
+      database,
+      userInput("warmup-default@example.com"),
+    );
+    const now = Date.now();
+    const row = database.insert(sources).values({
+      userId: user.id,
+      connectorId: ConnectorId.RSS,
+      credentials: await encryptedTelegramCredentials(
+        cipher,
+        user.id,
+        ConnectorId.RSS,
+      ),
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    }).returning({
+      relevanceWarmup: sources.relevanceWarmup,
+      relevanceWarmupNegativeFeedbackCount:
+        sources.relevanceWarmupNegativeFeedbackCount,
+    }).get();
+    assertExists(row);
+    assertEquals(row.relevanceWarmup, false);
+    assertEquals(row.relevanceWarmupNegativeFeedbackCount, 0);
   });
 });

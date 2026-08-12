@@ -5,6 +5,8 @@ import { withTestDb } from "../../src/db/testing.ts";
 import type { Database } from "../../src/db/client.ts";
 import type { ServerEnvironment } from "../../src/server/app.ts";
 import type { Hono } from "hono";
+import { findOwner, updateUser } from "../../src/repositories/user-repository.ts";
+import { DEFAULT_SYSTEM_PROMPT } from "../../src/summarizers/prompts.ts";
 
 const PASSWORD = "analytical-engine-1843";
 
@@ -276,5 +278,25 @@ test("PATCH /auth/me updates summaryPrompt and invalidates generated stories", a
     });
     assertEquals(oversized.status, 422);
     await oversized.body?.cancel();
+  });
+});
+
+test("only the exact legacy default is projected as an empty interest prompt", async () => {
+  await withTestDb(async (database: Database) => {
+    const { app, cookie } = await authenticatedApp(database);
+    const owner = await findOwner(database);
+    assert(owner);
+    await updateUser(database, owner.id, { systemPrompt: DEFAULT_SYSTEM_PROMPT });
+
+    const response = await app.request("/auth/me", { headers: { cookie } });
+    assertEquals(response.status, 200);
+    const json = await response.json();
+    assertEquals(json.systemPrompt, "");
+
+    const customized = `\n${DEFAULT_SYSTEM_PROMPT}`;
+    const updated = await patchProfile(app, cookie, { systemPrompt: customized });
+    assertEquals(updated.status, 200);
+    const updatedJson = await updated.json();
+    assertEquals(updatedJson.systemPrompt, customized);
   });
 });

@@ -160,7 +160,7 @@ housekeeping schedules with in-process overlap protection.
 | `bun run dev:cli` | Run the pipeline once (fetch → summarize) with file watching |
 | `bun run dev:api` | Start the watched API server on loopback `127.0.0.1:3000` by default |
 | `bun run start` | Start the API server without watch mode |
-| `bun run test` | Run the 507-test backend suite with `bun:test` |
+| `bun run test` | Run the backend suite with `bun:test` |
 | `bun run typecheck` | Type-check the backend and web workspace |
 | `bun run db:generate` | Generate a Drizzle migration |
 | `bun run db:migrate` | Apply pending migrations |
@@ -463,26 +463,73 @@ rejects the 251st target before collection; re-adding an already active target
 remains idempotent.
 
 
-Subscribed targets use bounded, deterministic virtual scrolling: instant
-half-viewport DOM increments (no mouse or keyboard simulation), a 1000 ms
-settle after productive movement, and a deterministic 1500/2500/4000 ms
-no-progress backoff (capped) for consecutive windows without new accepted
-identities. There is no randomized timing, no simulated human interaction, and
-no stealth or concealment. Collection stops at a proven non-moving boundary,
-after a repeated settled no-new streak that included movement
-(`no_progress`), at the bounded safety caps, or when the requested window is
-fully covered — and no wait follows a condition- or item-limit terminal
-result. Discovery and collection treat `no_progress` as incomplete and fail
-rather than returning partial results. Rendered DOM is extracted directly into
-normalized posts and chat messages; raw DOM is not persisted. Post engagement
-counts and visible chat reactions are retained as metadata. Platform IDs are
-globally deduplicated. Ordered overlap preserves duplicate ID-less messages
-when the rendered windows prove their multiplicity; ambiguous ID-less
-overlaps, missing timestamps, inaccessible targets, authentication loss,
-loading stalls, scroll failures, or unresolved safety limits fail collection
-instead of advancing the cursor across an uncertain partial window — an
-incomplete window never advances the cursor, protecting captured history from
-gaps.
+Subscribed targets use bounded, deterministic virtual scrolling against the
+configured owning scroll container. Each instant half-viewport step changes
+that container's scroll position and, for Chat, dispatches a deterministic DOM
+`WheelEvent` intent signal on the same element; it never moves the pointer,
+sends keyboard input, randomizes timing, or imitates human pacing. Productive
+movement settles for 1000 ms, while consecutive windows without new accepted
+identities use a capped deterministic 1500/2500/4000 ms backoff. A configured
+scroller must own the candidate rows and expose a supported positive scroll
+range; nested or sibling decoys cannot certify its edge. A deciding probe that
+itself reaches the exact edge settles and re-extracts so asynchronous top
+prepend/reflow can surface, but renewed movement away from an edge remains
+`no_progress`. Collection stops at a proven non-moving boundary, at the bounded
+safety caps, or when the requested window is fully covered; no wait follows a
+condition- or item-limit terminal result. Discovery and collection treat
+`no_progress` as incomplete and fail rather than returning partial results.
+Rendered DOM is extracted directly into normalized posts and chat messages;
+raw DOM is not persisted. Post engagement counts and visible chat reactions
+are retained as metadata. Platform IDs are globally deduplicated. Ordered
+overlap preserves duplicate ID-less messages when the rendered windows prove
+their multiplicity; ambiguous ID-less overlaps, missing timestamps,
+inaccessible targets, authentication loss, loading stalls, scroll failures, or
+unresolved safety limits fail collection instead of advancing the cursor
+across an uncertain partial window. An incomplete window never advances the
+cursor, protecting captured history from gaps.
+
+Modern encrypted Chat conversations are extracted from virtualized rows keyed
+by stable `message-<UUID>` identifiers, so the round extractor retains message
+state across scroll rounds and reconciles by UUID rather than DOM position —
+rendered DOM order is unreliable, so visual top order is authoritative. When
+the explicit Chat scroller exists, only rows and day labels owned by that exact
+element and intersecting its viewport plus a fixed 0.5-viewport overscan on
+each side enter a round. This matches the half-viewport advance while excluding
+offscreen accumulated history and other panels. Body text is read only from
+the row's matching `message-text-<UUID>` span. Bodyless rich rows are
+represented only by strict row-owned evidence: a canonical same-origin status
+anchor becomes `[Shared post] <url>`, a non-profile image becomes `[Image]`,
+and a visible unlinked large leaf span containing 1–16 emoji-only graphemes
+becomes `[Emoji]`. Avatar, profile-link, nested-row, foreign-body, preview,
+timestamp, reaction, and control evidence is excluded; unknown structures
+remain unrepresentable and fail closed.
+
+Encrypted messages expose no machine-readable timestamp. A row-owned visible
+time — including one on a rich row — becomes a minute-granularity epoch inside
+Chromium's local calendar, never in the Bun process timezone. Rendered day
+labels (`Today`, `Yesterday`, weekday, English month/day[/year]) provide the
+calendar context. Sticky copies deduplicate by calendar day; multiple distinct
+labels order by visual position. Overlapping rounds may backfill a retained
+record, and every replacement recomputes bounds from the complete retained
+visual order. Only a proven top scroll boundary may resolve a leading group:
+an earliest rendered day or finite-row anchor, matching rendered day context,
+and exactly one strict midnight time descent must jointly prove the prior-day
+and current-day split. The corresponding day marker is moved into calendar
+order rather than duplicated; missing or contradictory evidence leaves the
+rows unresolved.
+
+Undated rows carry conservative bounds from their nearest visibly ordered
+finite neighbors. A row wholly outside the requested window is skipped. When
+both finite bounds are wholly inside the window, normalization uses the lower
+bound as a conservative ordering surrogate without claiming an exact send
+time. One-sided or window-straddling bounds remain ambiguous and fail. Chat
+extraction also fails when a rendered message has an empty or unrepresentable
+body, when an empty round follows a nonempty round, or when date/order evidence
+contradicts itself. Zero results require either a dedicated structural empty
+state outside message rows and the composer or proof that every collected row
+is outside the requested range. A condition boundary requires every rendered
+message to have a finite date or a conservative upper bound preceding the
+window start; a possibly intersecting undated row is never ignored.
 
 The headed connection window requires a desktop display. A remote/headless
 server needs an operator-provided remote desktop, VNC, or equivalent display

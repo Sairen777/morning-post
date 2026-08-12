@@ -20,6 +20,7 @@ import {
 import { createRateLimitMiddleware } from "../middleware/rate-limit.ts";
 import { AuthError } from "../errors.ts";
 import { validate } from "../validate.ts";
+import { normalizeInterestPrompt } from "../../summarizers/prompts.ts";
 import type { StoryDetailLevel } from "../../story-detail-level.ts";
 
 export interface PublicUser {
@@ -44,7 +45,7 @@ export function toPublicUser(user: User): PublicUser {
   return {
     id: user.id,
     name: user.name,
-    systemPrompt: user.systemPrompt,
+    systemPrompt: normalizeInterestPrompt(user.systemPrompt),
     summaryPrompt: user.summaryPrompt,
     defaultLanguage: user.defaultLanguage,
     defaultRelevanceFilterMode: user.defaultRelevanceFilterMode,

@@ -15,6 +15,7 @@ const TO = 1_700_000_010_000;
 const PROFILE_ID = "123e4567-e89b-42d3-a456-426614174000";
 const CHAT_FEED_ID = "x:chat:team-chat";
 const POSTS_FEED_ID = "x:following";
+const LIST_FEED_ID = "x:list:123456789";
 
 function chatMessage(
   externalId: string,
@@ -139,6 +140,7 @@ test("XConnector normalizes chat reactions and post metrics within an inclusive 
         url: "https://x.com/i/chat/team-chat",
         meta: {
           messageKind: "chat",
+          authorKind: "sender",
           reactions,
           reactionCount: 5,
           reactedByViewer: true,
@@ -155,6 +157,7 @@ test("XConnector normalizes chat reactions and post metrics within an inclusive 
         url: "https://x.com/i/chat/team-chat",
         meta: {
           messageKind: "chat",
+          authorKind: "sender",
           reactions: [],
           reactionCount: 0,
           reactedByViewer: false,
@@ -196,4 +199,85 @@ test("XConnector normalizes chat reactions and post metrics within an inclusive 
       },
     ],
   });
+});
+
+test("XConnector normalizes an x:list feed as posts, preserving date, author, URL, and metrics", async () => {
+  const rawData: XConnectorRawData = {
+    [LIST_FEED_ID]: {
+      feed: { externalId: LIST_FEED_ID, name: "Design Picks", kind: "news" },
+      target: { kind: "list", listId: "123456789" },
+      items: [
+        post("list-post-before", FROM - 1),
+        post("list-post-in-window", FROM, {
+          replyCount: 1,
+          repostCount: 2,
+          likeCount: 3,
+          viewCount: 4,
+        }),
+        post("list-post-after", TO + 1),
+      ],
+    },
+  };
+  const connector = new RawDataXConnector(rawData);
+
+  const result = await connector.getNormalizedData(FROM, TO, [LIST_FEED_ID]);
+
+  assertEquals(connector.calls, [{
+    from: FROM,
+    to: TO,
+    feedExternalIds: [LIST_FEED_ID],
+    signal: undefined,
+  }]);
+  assertEquals(result, {
+    [LIST_FEED_ID]: [
+      {
+        connectorId: ConnectorId.X,
+        feedExternalId: LIST_FEED_ID,
+        externalId: "list-post-in-window",
+        date: FROM,
+        title: null,
+        text: "post list-post-in-window",
+        author: "Post Author",
+        url: "https://x.com/post-author/status/list-post-in-window",
+        meta: {
+          messageKind: "post",
+          metrics: {
+            replies: 1,
+            reposts: 2,
+            likes: 3,
+            views: 4,
+          },
+        },
+      },
+    ],
+  });
+});
+
+test("XConnector distinguishes the viewer from a sender whose visible name is You", async () => {
+  const sender = { ...chatMessage("sender-you", FROM), author: "You" };
+  const viewer = {
+    ...chatMessage("viewer-you", FROM + 1),
+    author: "You",
+    viewerAuthored: true as const,
+  };
+  const connector = new RawDataXConnector({
+    [CHAT_FEED_ID]: {
+      feed: { externalId: CHAT_FEED_ID, name: "Team Chat", kind: "discussion" },
+      target: { kind: "chat", conversationId: "team-chat" },
+      items: [sender, viewer],
+    },
+  });
+
+  const result = await connector.getNormalizedData(FROM, TO, [CHAT_FEED_ID]);
+
+  assertEquals(
+    result[CHAT_FEED_ID].map((message) => ({
+      author: message.author,
+      authorKind: message.meta?.authorKind,
+    })),
+    [
+      { author: "You", authorKind: "sender" },
+      { author: "You", authorKind: "viewer" },
+    ],
+  );
 });

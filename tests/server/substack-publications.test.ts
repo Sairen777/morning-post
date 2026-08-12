@@ -68,6 +68,7 @@ test("POST /connectors/substack/publications creates a canonical publication fee
           enabled: true,
           connected: true,
           relevanceFilterMode: "inherit",
+          relevanceWarmup: false,
           createdAt: now,
           updatedAt: now,
         };
@@ -131,6 +132,7 @@ test("Substack publication route cancels its deadline before a synchronous feed 
       enabled: true,
       connected: true,
       relevanceFilterMode: "inherit",
+      relevanceWarmup: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -213,6 +215,7 @@ test("Substack publication route blocks a late feed commit after the deadline wi
       enabled: true,
       connected: true,
       relevanceFilterMode: "inherit",
+      relevanceWarmup: false,
       createdAt: now,
       updatedAt: now,
     };

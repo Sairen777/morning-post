@@ -18,6 +18,17 @@ export const DEFAULT_SYSTEM_PROMPT =
   "developments that genuinely matter, written plainly and without hype. Skip " +
   "routine noise and lead with what the reader most needs to know.";
 
+/**
+ * Normalizes a user's stored interest prompt into a preference signal for
+ * relevance classification. The exact legacy `DEFAULT_SYSTEM_PROMPT` carries
+ * no user preferences — new setups persist an empty prompt instead — so it is
+ * normalized to empty, letting the empty-profile fast path include by default.
+ * Any edited prompt passes through unchanged.
+ */
+export function normalizeInterestPrompt(prompt: string): string {
+  return prompt === DEFAULT_SYSTEM_PROMPT ? "" : prompt;
+}
+
 const INDEX_INSTRUCTION =
   `Each message starts with [N] where N is its index number. Return a JSON array only — no markdown, no extra text. Each element must have exactly two fields: "t" (the summary bullet as a plain string) and "i" (the integer N of the primary source message). If a bullet covers multiple posts, use the index of the first/primary one.`;
 

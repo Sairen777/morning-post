@@ -12,7 +12,15 @@ export const summaryPointSchema = z.object({
   sourceUrl: z.string().nullable(),
   channel: z.string().optional(),
   date: z.string().optional(),
-}).strict();
+  author: z.string().trim().min(1).optional(),
+  authorKind: z.enum(["sender", "viewer"]).optional(),
+}).strict().refine(
+  (point) => point.authorKind === undefined || point.author !== undefined,
+  {
+    message: "authorKind requires author",
+    path: ["authorKind"],
+  },
+);
 
 const aggregateSummaryContentSchema = z.object({
   kind: z.literal("aggregate"),

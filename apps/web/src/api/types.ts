@@ -34,6 +34,7 @@ export interface PublicSource {
   enabled: boolean;
   showPaidPostTitles: boolean;
   relevanceFilterMode: RelevanceFilterOverride;
+  relevanceWarmup: boolean;
   connected: boolean;
   createdAt: number;
   updatedAt: number;
@@ -114,6 +115,10 @@ export interface SummaryPoint {
   sourceUrl: string | null;
   channel?: string;
   date?: string;
+  /** Visible author of the point's primary indexed X Chat source; absent for non-X points. */
+  author?: string;
+  /** Trusted sender/viewer discriminator; viewer points receive a separate trusted `SELF` marker. */
+  authorKind?: "sender" | "viewer";
 }
 
 export interface AggregateSummaryContent {

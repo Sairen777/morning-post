@@ -225,6 +225,33 @@ test("GET /sources returns only the caller sources ordered by position then crea
   });
 });
 
+test("GET /sources exposes relevanceWarmup but never the internal negative feedback count", async () => {
+  await withTestDb(async (database: Database) => {
+    const credentialCipher = buildCredentialCipher();
+    const app = buildApp(database);
+    const { user, cookie } = await registerAndLogin(app);
+    await createEncryptedSource(
+      database,
+      credentialCipher,
+      user.id,
+      ConnectorId.Telegram,
+    );
+
+    const response = await app.request("/sources", { headers: { cookie } });
+    assertEquals(response.status, 200);
+    const json = await response.json();
+
+    assertEquals(json.length, 1);
+    assertEquals(json[0].relevanceWarmup, true);
+    assertEquals(
+      "relevanceWarmupNegativeFeedbackCount" in json[0],
+      false,
+      "internal warmup feedback count must not be exposed",
+    );
+    assertEquals("credentials" in json[0], false);
+  });
+});
+
 test("PATCH /sources/:id updates position and enabled", async () => {
   await withTestDb(async (database: Database) => {
     const credentialCipher = buildCredentialCipher();

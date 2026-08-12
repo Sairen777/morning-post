@@ -11,10 +11,11 @@ import { createStoryFeedbackFixture } from "../story-feedback-fixture.ts";
 
 test("feedback repository scopes delivered stories and persists the delivered version idempotently", async () => {
   await withTestDb(async (database) => {
+    const sourceId = crypto.randomUUID();
     const fixture = await createStoryFeedbackFixture(
       database,
       "feedback-repository@example.com",
-      { storyVersion: 9 },
+      { storyVersion: 9, sources: [{ id: sourceId }, { id: sourceId }] },
     );
     const stranger = await createStoryFeedbackFixture(
       database,
@@ -37,6 +38,7 @@ test("feedback repository scopes delivered stories and persists the delivered ve
       fixture.story.id,
     );
     assertEquals(delivered?.storyVersion, 9);
+    assertEquals(delivered?.sourceIds, [sourceId]);
 
     const input = {
       userId: fixture.user.id,
