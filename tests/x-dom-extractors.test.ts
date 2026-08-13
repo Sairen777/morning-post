@@ -226,6 +226,7 @@ const UUID_H = "88888888-8888-4888-8888-888888888888";
 const UUID_I = "99999999-9999-4999-9999-999999999999";
 const UUID_J = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const UUID_K = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const UUID_L = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 function modernChatRow(
   uuid: string,
@@ -1779,6 +1780,9 @@ test("modern Chat rows bind to their own message-text UUID against nested decoys
           <span style="display:block;color:gray;">11:59 PM</span>
         </div>
         <a href="https://x.com/preview"><time datetime="2026-01-02T03:04:05.000Z"></time><span>10:03 PM</span></a>
+        <button><span>7:45 AM</span></button>
+        <a><span>6:30 AM</span></a>
+        <div style="opacity:0;"><span>5:15 AM</span></div>
       </div>`,
       `<div data-testid="message-${UUID_B}" style="position:absolute;top:100px;left:0;width:420px;">
         <div data-testid="message-text-${UUID_B}">
@@ -2069,13 +2073,12 @@ test("modern rich Chat rows fall back to placeholders only from row-owned struct
     // image. B is a shared-post row: the same-origin status anchor yields
     // the canonical queryless placeholder even with query/hash. C's only
     // image lives inside an external status-lookalike anchor: never a
-    // shared post, so the image rule applies. D's anchors only resemble
-    // status links (external origin, non-numeric id, extra segment,
-    // i/web shape) and their preview text must never become body. E's
-    // avatar image sits inside a same-origin profile link and stays empty.
-    // F owns a profile avatar plus a bare photo: the photo yields
-    // "[Image]". G is an unknown link card with no image or status anchor
-    // and stays empty.
+    // shared post, so the image rule applies. D's anchors resemble status
+    // or navigation links but lack card geometry and stay empty. E's
+    // profile-card image and plain profile anchor stay excluded. F owns a
+    // profile avatar plus a bare photo and yields "[Image]". G is a visible
+    // block-sized HTTP(S) link card with structural children and yields the
+    // content-free "[Link]" placeholder.
     await page.setContent(chatScroller([
       chatSeparator(0, "Today"),
       `<div data-testid="message-${UUID_A}" style="position:absolute;top:40px;left:0;width:420px;">
@@ -2106,10 +2109,12 @@ test("modern rich Chat rows fall back to placeholders only from row-owned struct
         <img src="https://example.com/photo.png" alt="Photo">
       </div>`,
       `<div data-testid="message-${UUID_G}" style="position:absolute;top:400px;left:0;width:420px;">
-        <a href="https://example.com/article"><span dir="auto">Article preview text</span></a>
+        <a href="https://example.com/article" style="display:block;width:260px;height:72px;">
+          <div>Article preview title</div>
+          <div>Article preview description</div>
+        </a>
       </div>`,
     ].join("\n")));
-
     // A's visible "10:00 AM" time, resolved against the page's calendar.
     const [today1000] = await pageLocalEpochs(page, [
       { kind: "offset", dayOffset: 0, hours: 10, minutes: 0 },
@@ -2160,7 +2165,7 @@ test("modern rich Chat rows fall back to placeholders only from row-owned struct
       {
         platformId: UUID_G,
         date: null,
-        text: "",
+        text: "[Link]",
         author: null,
         reactions: [],
       },
@@ -2173,7 +2178,7 @@ test("modern rich Chat rows fall back to placeholders only from row-owned struct
   }
 }, 15_000);
 
-test("large emoji-only Chat bubbles use a placeholder without accepting UI or preview glyphs", async () => {
+test("structurally owned emoji-only Chat bubbles use a placeholder without accepting UI or preview glyphs", async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
@@ -2207,11 +2212,22 @@ test("large emoji-only Chat bubbles use a placeholder without accepting UI or pr
       `<div data-testid="message-${UUID_H}" style="position:absolute;top:530px;left:0;width:420px;">
         <button data-testid="reaction"><span style="font-size:64px;line-height:64px;">👍</span></button>
       </div>`,
+      `<div data-testid="message-${UUID_K}" style="position:absolute;top:565px;left:0;width:420px;">
+        <button><img src="https://example.com/control.png" alt="Control"></button>
+        <div data-testid="reaction"><a href="/alice/status/123"><span>Reaction preview</span></a></div>
+      </div>`,
       `<div data-testid="message-${UUID_I}" style="position:absolute;top:600px;left:0;width:420px;">
         <span style="font-size:64px;line-height:64px;">Launch 🚀</span>
       </div>`,
+      `<div data-testid="message-${UUID_L}" style="position:absolute;top:635px;left:0;width:420px;">
+        <div style="opacity:0;">
+          <a href="/alice/status/123"><span>Hidden preview</span></a>
+          <img src="https://example.com/hidden.png" alt="Hidden">
+        </div>
+      </div>`,
       `<div data-testid="message-${UUID_J}" style="position:absolute;top:670px;left:0;width:420px;">
-        <span style="font-size:16px;line-height:20px;">🔥</span>
+        <span aria-hidden="true" style="font-size:18px;line-height:20px;">🔥</span>
+        <div style="opacity:0;"><span style="font-size:18px;line-height:20px;">🔥</span></div>
       </div>`,
       `<div data-testid="message-${UUID_0}" style="position:absolute;top:740px;left:0;width:420px;">
         <span style="font-size:64px;line-height:64px;">${"😀".repeat(17)}</span>
@@ -2230,11 +2246,64 @@ test("large emoji-only Chat bubbles use a placeholder without accepting UI or pr
         { platformId: UUID_F, text: "" },
         { platformId: UUID_G, text: "" },
         { platformId: UUID_H, text: "" },
+        { platformId: UUID_K, text: "" },
         { platformId: UUID_I, text: "" },
+        { platformId: UUID_L, text: "" },
         { platformId: UUID_J, text: "" },
         { platformId: UUID_0, text: "" },
       ],
     );
+  } finally {
+    await browser.close();
+  }
+}, 15_000);
+
+test("production-shaped 18px emoji row at the collection edge uses its row-owned time", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(chatScroller([
+      chatSeparator(0, "Today"),
+      modernChatRow(UUID_A, 40, "Before emoji", "10:00 AM", "Alice"),
+      `<div data-testid="message-${UUID_B}" style="position:absolute;top:100px;left:0;width:420px;height:32px;">
+        <div data-testid="message-avatar-${UUID_B}" style="position:absolute;top:0;left:0;width:32px;height:32px;">
+          <a href="/alice"><img alt="Alice profile" style="width:32px;height:32px;" /></a>
+        </div>
+        <span style="display:inline-block;margin-left:48px;font-size:18px;line-height:24px;">🔥</span>
+        <div style="position:absolute;right:0;bottom:0;">10:01 AM</div>
+        <div style="position:absolute;left:68px;bottom:0;">
+          <a><span style="font-size:18px;line-height:20px;">🔥</span></a>
+        </div>
+      </div>`,
+    ].join("\n")));
+    const [today1000, today1001] = await pageLocalEpochs(page, [
+      { kind: "offset", dayOffset: 0, hours: 10, minutes: 0 },
+      { kind: "offset", dayOffset: 0, hours: 10, minutes: 1 },
+    ]);
+
+    const extract = createChatMessageExtractor(page);
+    const round = await extract();
+    const emojiRow = round.find((row) => row.platformId === UUID_B)!;
+    assertEquals(emojiRow.text, "[Emoji]");
+    assertEquals(emojiRow.date, today1001);
+    assertEquals(extract.boundsOf(emojiRow), {
+      lower: today1000,
+      upper: null,
+    });
+
+    // Without the row-owned clock this last row has only a one-sided lower
+    // bound and normalization fails closed at the requested period edge.
+    const normalized = normalizeCollectedChatMessages(
+      round,
+      { kind: "chat", conversationId: "fixture" },
+      today1001,
+      today1001 + 59_999,
+      (item) => extract.boundsOf(item),
+    );
+    assertEquals(normalized.length, 1);
+    assertEquals(normalized[0]!.externalId, UUID_B);
+    assertEquals(normalized[0]!.text, "[Emoji]");
+    assertEquals(normalized[0]!.date, today1001);
   } finally {
     await browser.close();
   }
@@ -2551,6 +2620,13 @@ test("rich Chat placeholders come only from entry-owned evidence against nested 
         <div data-testid="message-DECOY" style="position:absolute;top:0;left:0;">
           <a href="/carol/status/777"><span dir="auto">Nested row shared post</span></a>
           <img src="https://example.com/nested.png" alt="Nested photo">
+          <button data-testid="reaction" data-emoji="🔥" aria-label="9 reactions 🔥"></button>
+        </div>
+        <div data-testid="message-66666666-6666-4666-8666-666666666666" style="position:absolute;top:4px;left:4px;">
+          <div data-testid="message-text-66666666-6666-4666-8666-666666666666">
+            <span dir="auto">Nested UUID body</span>
+            <span>7:00 AM</span>
+          </div>
         </div>
       </div>`,
       `<div data-testid="message-${UUID_B}" style="position:absolute;top:100px;left:0;width:420px;">

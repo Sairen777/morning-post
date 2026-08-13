@@ -191,6 +191,10 @@ const X_STATUS_ANCHOR = /^\/([A-Za-z0-9_]{1,15})\/status\/([1-9]\d{0,31})$/;
 // Same-origin single-segment profile links (avatars): exactly /<handle>.
 const X_PROFILE_LINK = /^\/[A-Za-z0-9_]{1,15}$/;
 const X_BIDI_CONTROL = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
+// Link-card rows can carry arbitrary non-status anchors and no body/media
+// marker. Their content remains unavailable, but the visible card itself is
+// representable without ingesting its preview prose.
+const X_LINK_CARD_TEXT = "[Link]";
 // One to sixteen rendered emoji graphemes. This is intentionally stricter
 // than the reaction parser: it certifies only an emoji-only message bubble,
 // never arbitrary prose that happens to contain an emoji.
@@ -254,6 +258,7 @@ const X_CHAT_EXTRACT_KEYS = Object.freeze({
   monthDay: X_MONTH_DAY,
   weekdays: X_WEEKDAYS,
   monthIndexByName: X_MONTH_INDEX_BY_NAME,
+  linkCardText: X_LINK_CARD_TEXT,
 });
 
 const dayKeyOf = (day: ChatLocalDay): string => `${day.year}-${day.month}-${day.day}`;
@@ -1482,10 +1487,23 @@ async function extractChatRows(page: Page): Promise<ExtractedChatRound> {
       }
       return null;
     };
+    const owningMessageRowOf = (candidate: Element): Element | null => {
+      let current: Element | null = candidate;
+      while (current !== null) {
+        if (current.matches(selectors.row) || current.matches(selectors.messageRowLike)) {
+          return current;
+        }
+        current = current.parentElement;
+      }
+      return null;
+    };
     const reactionsOf = (entry: Element) => {
       const byEmoji = new Map<string, { count: number; reactedByViewer: boolean }>();
       for (const reaction of entry.querySelectorAll(selectors.reaction)) {
         if (!(reaction instanceof HTMLElement) || reaction.getClientRects().length === 0) continue;
+        // Reactions belong only to their nearest message row, regardless
+        // of whether a nested preview uses the modern or legacy row shape.
+        if (owningMessageRowOf(reaction) !== entry) continue;
         const label = reaction.getAttribute("aria-label") ?? "";
         const rawReaction = reaction.getAttribute("data-emoji") ??
           reaction.getAttribute("data-reaction") ?? `${label} ${textOf(reaction)}`;
@@ -1502,30 +1520,262 @@ async function extractChatRows(page: Page): Promise<ExtractedChatRound> {
       }
       return Array.from(byEmoji, ([emoji, value]) => ({ emoji, ...value }));
     };
-    // Rich rows (shared posts, image messages, and X's large emoji-only
-    // bubbles) render no span[dir="auto"] body. Fall back only to
-    // structurally owned evidence: a same-origin
-    // /<handle>/status/<numeric-id> anchor (query/hash stripped) yields the
-    // canonical shared-post placeholder; an owned image outside a
-    // same-origin single-segment profile link yields "[Image]"; and a
-    // visible, non-interactive leaf span containing only 1–16 emoji
-    // graphemes at X's large-bubble scale yields "[Emoji]". A candidate
-    // counts as owned only when its nearest modern message row is the
-    // current entry itself, it does not sit inside a foreign message-text
+    // Rich rows (shared posts, image messages, and emoji-only bubbles)
+    // render no span[dir="auto"] body. Fall back only to structurally owned
+    // evidence: a same-origin /<handle>/status/<numeric-id> anchor
+    // (query/hash stripped) yields the canonical shared-post placeholder; an
+    // owned image outside a same-origin single-segment profile link yields
+    // "[Image]"; and one visible, non-interactive leaf span containing only
+    // 1–16 emoji graphemes yields "[Emoji]". Emoji ownership comes from the
+    // exact modern row, passive semantics, and geometry inside that row—not
+    // font size, which X varies across real message renderings. A candidate
+    // counts as owned only when its nearest modern or legacy message row is
+    // the current entry itself, it does not sit inside a foreign message-text
     // container, and it is not inside any message-avatar subtree: nested
     // foreign rows, decoy bodies, linked previews, controls, reactions, and
     // avatar artifacts are never used, so unknown rich structures still
     // fail closed with empty text.
     const ownedByEntry = (entry: Element, body: Element | null, candidate: Element): boolean => {
-      if (candidate.closest(selectors.row) !== entry) return false;
+      if (owningMessageRowOf(candidate) !== entry) return false;
       const container = candidate.closest(selectors.body);
       if (container !== null && container !== body) return false;
       if (candidate.closest(selectors.avatar) !== null) return false;
       return true;
     };
+    const isPassiveOwnedEvidence = (
+      entry: Element,
+      body: Element | null,
+      candidate: HTMLElement,
+    ): boolean => {
+      if (!ownedByEntry(entry, body, candidate) || candidate.getClientRects().length === 0) {
+        return false;
+      }
+      const entryRect = entry.getBoundingClientRect();
+      const candidateRect = candidate.getBoundingClientRect();
+      if (
+        candidateRect.width <= 0 ||
+        candidateRect.height <= 0 ||
+        candidateRect.right <= entryRect.left ||
+        candidateRect.left >= entryRect.right ||
+        candidateRect.bottom <= entryRect.top ||
+        candidateRect.top >= entryRect.bottom
+      ) {
+        return false;
+      }
+      if (
+        candidate.closest(
+          'a, button, [role="button"], input, select, textarea, time[datetime], [contenteditable="true"], [aria-hidden="true"], [hidden]',
+        ) !== null ||
+        candidate.closest(selectors.reaction) !== null
+      ) {
+        return false;
+      }
+      // A passive leaf cannot be certified when it or any wrapper is
+      // interactive, hidden, or a reaction surface.
+      const foreignBody = candidate.closest(selectors.body);
+      if (foreignBody !== null && foreignBody !== body) return false;
+      let current: HTMLElement | null = candidate;
+      while (current !== null) {
+        const currentStyle = getComputedStyle(current);
+        if (
+          currentStyle.visibility === "hidden" ||
+          currentStyle.visibility === "collapse" ||
+          Number(currentStyle.opacity) === 0 ||
+          current.hidden ||
+          current.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        current = current.parentElement;
+      }
+      return true;
+    };
+    const isVisibleOwnedRichEvidence = (
+      entry: Element,
+      body: Element | null,
+      candidate: HTMLElement,
+    ): boolean => {
+      if (!ownedByEntry(entry, body, candidate) || candidate.getClientRects().length === 0) {
+        return false;
+      }
+      if (
+        candidate.closest(
+          'button, [role="button"], input, select, textarea, [contenteditable="true"], [aria-hidden="true"], [hidden]',
+        ) !== null ||
+        candidate.closest(selectors.reaction) !== null
+      ) {
+        return false;
+      }
+      const entryRect = entry.getBoundingClientRect();
+      const rect = candidate.getBoundingClientRect();
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        rect.right <= entryRect.left ||
+        rect.left >= entryRect.right ||
+        rect.bottom <= entryRect.top ||
+        rect.top >= entryRect.bottom
+      ) {
+        return false;
+      }
+      let current: HTMLElement | null = candidate;
+      while (current !== null) {
+        const style = getComputedStyle(current);
+        if (
+          style.visibility === "hidden" ||
+          style.visibility === "collapse" ||
+          Number(style.opacity) === 0 ||
+          current.hidden ||
+          current.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        current = current.parentElement;
+      }
+      return true;
+    };
+    // Rich rows have no message-text container, but X still renders their
+    // clock as a passive row-owned descendant. Accept only an exact visible
+    // clock token from this row; links, structured datetimes, reactions,
+    // avatars, foreign bodies, and nested message artifacts stay ineligible.
+    // This makes a body-less row independently dateable instead of relying
+    // on neighbors whose interval may straddle the requested period.
+    const rowOwnedVisibleTimeOf = (
+      entry: HTMLElement,
+      body: Element | null,
+    ): { hours: number; minutes: number } | null => {
+      const candidates: Array<{ top: number; order: number; hours: number; minutes: number }> = [];
+      const descendants = Array.from(entry.querySelectorAll("*"));
+      for (let index = 0; index < descendants.length; index += 1) {
+        const element = descendants[index];
+        if (!(element instanceof HTMLElement)) continue;
+        if (!isPassiveOwnedEvidence(entry, body, element)) continue;
+        // A passive non-datetime <time> may wrap its clock in presentation
+        // spans. Other wrappers stay ineligible so flattened control or card
+        // text can never become the row timestamp.
+        const passiveTimeWrapper = element.tagName === "TIME" &&
+          element.getAttribute("datetime") === null &&
+          Array.from(element.querySelectorAll("*")).every((candidate) =>
+            candidate instanceof HTMLElement &&
+            isPassiveOwnedEvidence(entry, body, candidate)
+          );
+        if (element.childElementCount !== 0 && !passiveTimeWrapper) continue;
+        const text = collapse(element.innerText);
+        const timeMatch = selectors.visibleTime.exec(text);
+        if (timeMatch !== null) {
+          let hours = Number(timeMatch[1]);
+          const minutes = Number(timeMatch[2]);
+          if (timeMatch[3]!.toUpperCase() === "PM" && hours < 12) hours += 12;
+          if (timeMatch[3]!.toUpperCase() === "AM" && hours === 12) hours = 0;
+          candidates.push({ top: element.getBoundingClientRect().top, order: index, hours, minutes });
+          continue;
+        }
+        if (element.tagName === "TIME" && element.getAttribute("datetime") === null) {
+          const bareMatch = selectors.bareTime.exec(text);
+          if (bareMatch !== null) {
+            candidates.push({
+              top: element.getBoundingClientRect().top,
+              order: index,
+              hours: Number(bareMatch[1]),
+              minutes: Number(bareMatch[2]),
+            });
+          }
+        }
+      }
+      if (candidates.length === 0) return null;
+      candidates.sort((left, right) => left.top - right.top || left.order - right.order);
+      const last = candidates[candidates.length - 1]!;
+      return { hours: last.hours, minutes: last.minutes };
+    };
+    const passiveEmojiOf = (
+      entry: Element,
+      body: Element | null,
+    ): HTMLElement | null => {
+      const entryRect = entry.getBoundingClientRect();
+      let match: HTMLElement | null = null;
+      for (const candidate of entry.querySelectorAll("span")) {
+        if (!(candidate instanceof HTMLElement)) continue;
+        if (!isPassiveOwnedEvidence(entry, body, candidate)) continue;
+        if (candidate.childElementCount !== 0) continue;
+        const rect = candidate.getBoundingClientRect();
+        if (
+          rect.width <= 0 ||
+          rect.height <= 0 ||
+          rect.right <= entryRect.left ||
+          rect.left >= entryRect.right ||
+          rect.bottom <= entryRect.top ||
+          rect.top >= entryRect.bottom
+        ) {
+          continue;
+        }
+        if (!selectors.emojiOnly.test(textOf(candidate))) continue;
+        if (candidate.closest("time") !== null) continue;
+        // More than one independent passive emoji leaf is ambiguous: it may
+        // be decoration around an unsupported control rather than one body.
+        if (match !== null) return null;
+        match = candidate;
+      }
+      return match;
+    };
+    const linkCardAnchorOf = (
+      entry: Element,
+      body: Element | null,
+    ): HTMLElement | null => {
+      let match: HTMLElement | null = null;
+      for (const anchor of entry.querySelectorAll("a[href]")) {
+        if (!(anchor instanceof HTMLElement) || !isVisibleOwnedRichEvidence(entry, body, anchor)) continue;
+        const href = anchor.getAttribute("href");
+        if (href === null) continue;
+        let candidate: URL;
+        try {
+          candidate = new URL(href, "https://x.com");
+        } catch {
+          continue;
+        }
+        if (candidate.protocol !== "http:" && candidate.protocol !== "https:") continue;
+        if (candidate.origin === "https://x.com" && selectors.profileLink.test(candidate.pathname)) {
+          continue;
+        }
+        if (candidate.origin === "https://x.com" && selectors.statusAnchor.test(candidate.pathname)) {
+          continue;
+        }
+        const rect = anchor.getBoundingClientRect();
+        // X renders a card as a substantial block with multiple visible
+        // structural children. Plain navigation/profile anchors and linked
+        // emoji leaves stay below this threshold and are not message bodies.
+        const visibleChildren = Array.from(anchor.children).filter((child) =>
+          child instanceof HTMLElement && child.getClientRects().length > 0
+        );
+        if (visibleChildren.length === 0 || rect.width < 120 || rect.height < 40) continue;
+        if (match !== null) return null;
+        match = anchor;
+      }
+      return match;
+    };
+    const ownedImageOf = (
+      entry: Element,
+      body: Element | null,
+    ): HTMLElement | null => {
+      for (const image of entry.querySelectorAll("img")) {
+        if (!(image instanceof HTMLElement) || !isVisibleOwnedRichEvidence(entry, body, image)) continue;
+        const anchor = image.closest("a[href]");
+        if (anchor === null) return image;
+        const href = anchor.getAttribute("href");
+        if (href === null) return image;
+        try {
+          const candidate = new URL(href, "https://x.com");
+          if (candidate.origin !== "https://x.com" || !selectors.profileLink.test(candidate.pathname)) {
+            return image;
+          }
+        } catch {
+          return image;
+        }
+      }
+      return null;
+    };
     const richBodyOf = (entry: Element, body: Element | null): string => {
       for (const anchor of entry.querySelectorAll("a[href]")) {
-        if (!ownedByEntry(entry, body, anchor)) continue;
+        if (!(anchor instanceof HTMLElement) || !isVisibleOwnedRichEvidence(entry, body, anchor)) continue;
         const href = anchor.getAttribute("href");
         if (!href) continue;
         try {
@@ -1539,53 +1789,18 @@ async function extractChatRows(page: Page): Promise<ExtractedChatRound> {
           // Malformed hrefs rendered by extensions never become placeholders.
         }
       }
-      for (const image of entry.querySelectorAll("img")) {
-        if (!ownedByEntry(entry, body, image)) continue;
-        const anchor = image.closest("a[href]");
-        if (anchor === null) return "[Image]";
-        const href = anchor.getAttribute("href");
-        if (href === null) return "[Image]";
-        try {
-          const candidate = new URL(href, "https://x.com");
-          if (candidate.origin !== "https://x.com" || !selectors.profileLink.test(candidate.pathname)) {
-            return "[Image]";
-          }
-        } catch {
-          return "[Image]";
-        }
-      }
-      for (const candidate of entry.querySelectorAll("span")) {
-        if (!(candidate instanceof HTMLElement) || !ownedByEntry(entry, body, candidate)) continue;
-        if (candidate.childElementCount !== 0 || candidate.getClientRects().length === 0) continue;
-        if (
-          candidate.closest(
-            'a[href], button, [role="button"], input, select, textarea, time, [contenteditable="true"]',
-          ) !== null ||
-          candidate.closest(selectors.reaction) !== null
-        ) {
-          continue;
-        }
-        const style = getComputedStyle(candidate);
-        if (
-          style.visibility === "hidden" ||
-          style.visibility === "collapse" ||
-          Number(style.opacity) === 0 ||
-          Number.parseFloat(style.fontSize) < 32
-        ) {
-          continue;
-        }
-        const value = textOf(candidate);
-        if (selectors.emojiOnly.test(value)) return "[Emoji]";
-      }
+      if (ownedImageOf(entry, body) !== null) return "[Image]";
+      if (passiveEmojiOf(entry, body) !== null) return "[Emoji]";
+      if (linkCardAnchorOf(entry, body) !== null) return selectors.linkCardText;
       return "";
     };
     // Rich rows without a body decide their side from the same structurally
     // owned content geometry that yields placeholders: the first owned
-    // status anchor, image, or large emoji-only span is the bubble's
-    // geometry. Rows with nothing owned stay unknown.
+    // status anchor, image, or unambiguous passive emoji-only span is the
+    // bubble's geometry. Rows with nothing owned stay unknown.
     const richGeometryOf = (entry: Element, body: Element | null): Element | null => {
       for (const anchor of entry.querySelectorAll("a[href]")) {
-        if (!ownedByEntry(entry, body, anchor) || anchor.getClientRects().length === 0) continue;
+        if (!(anchor instanceof HTMLElement) || !isVisibleOwnedRichEvidence(entry, body, anchor)) continue;
         const href = anchor.getAttribute("href");
         if (href === null) continue;
         try {
@@ -1596,33 +1811,11 @@ async function extractChatRows(page: Page): Promise<ExtractedChatRound> {
           // Malformed hrefs never become bubble geometry.
         }
       }
-      for (const image of entry.querySelectorAll("img")) {
-        if (!ownedByEntry(entry, body, image) || image.getClientRects().length === 0) continue;
-        return image;
-      }
-      for (const candidate of entry.querySelectorAll("span")) {
-        if (!(candidate instanceof HTMLElement) || !ownedByEntry(entry, body, candidate)) continue;
-        if (candidate.childElementCount !== 0 || candidate.getClientRects().length === 0) continue;
-        if (
-          candidate.closest(
-            'a[href], button, [role="button"], input, select, textarea, time, [contenteditable="true"]',
-          ) !== null ||
-          candidate.closest(selectors.reaction) !== null
-        ) {
-          continue;
-        }
-        const style = getComputedStyle(candidate);
-        if (
-          style.visibility === "hidden" ||
-          style.visibility === "collapse" ||
-          Number(style.opacity) === 0 ||
-          Number.parseFloat(style.fontSize) < 32
-        ) {
-          continue;
-        }
-        if (selectors.emojiOnly.test(textOf(candidate))) return candidate;
-      }
-      return null;
+      const image = ownedImageOf(entry, body);
+      if (image !== null) return image;
+      const emoji = passiveEmojiOf(entry, body);
+      if (emoji !== null) return emoji;
+      return linkCardAnchorOf(entry, body);
     };
     // Exact avatar handle extraction stays inside this row's avatar
     // subtree: only a same-origin single-segment profile link inside an
@@ -1631,10 +1824,12 @@ async function extractChatRows(page: Page): Promise<ExtractedChatRound> {
     // profile links never leak authors.
     const avatarHandleOf = (entry: Element): string | null => {
       for (const avatar of entry.querySelectorAll(selectors.avatar)) {
-        // The avatar element itself matches the modern row selector, so its
-        // owning row is the nearest row-shaped ancestor; a nested foreign
-        // row's avatar never belongs to this entry.
-        const owner = avatar.parentElement === null ? null : avatar.parentElement.closest(selectors.row);
+        // Start at the avatar's parent because the avatar itself matches the
+        // broad modern-row selector. A nested modern or legacy row between
+        // the avatar and this entry keeps the avatar foreign.
+        const owner = avatar.parentElement === null
+          ? null
+          : owningMessageRowOf(avatar.parentElement);
         if (owner !== entry) continue;
         for (const anchor of avatar.querySelectorAll("a[href]")) {
           const href = anchor.getAttribute("href");
@@ -1770,6 +1965,16 @@ async function extractChatRows(page: Page): Promise<ExtractedChatRound> {
       const testId = entry.getAttribute("data-testid") ?? "";
       const modernMatch = selectors.modernRow.exec(testId);
       const top = rect.top;
+      // A row nested inside any modern or legacy row-shaped message
+      // artifact is a preview, not an independent message. Only top-level
+      // rows in the owning scroller participate in extraction.
+      let rowAncestor = entry.parentElement;
+      while (rowAncestor !== null) {
+        if (rowAncestor.matches(selectors.row) || rowAncestor.matches(selectors.messageRowLike)) {
+          return null;
+        }
+        rowAncestor = rowAncestor.parentElement;
+      }
       if (modernMatch === null) {
         // Other message-* test IDs are modern-DOM artifacts (bodies, avatars,
         // actions), never legacy rows.
@@ -1804,9 +2009,6 @@ async function extractChatRows(page: Page): Promise<ExtractedChatRound> {
         const parts = spans
           .map((span) => textOf(span))
           .filter(Boolean);
-        // Body text comes only from span[dir="auto"] whose nearest
-        // message-text container is this row's; the container also holds
-        // the visible time, so there is no container text fallback.
         text = parts.join(" ");
       }
       // Without exact body text, rich rows fall back to structural
@@ -1818,7 +2020,7 @@ async function extractChatRows(page: Page): Promise<ExtractedChatRound> {
         kind: "modern",
         platformId: uuid,
         date: parseModernRowDate(entry),
-        time: body instanceof HTMLElement ? visibleTimeOf(body) : null,
+        time: body instanceof HTMLElement ? visibleTimeOf(body) : rowOwnedVisibleTimeOf(entry, body),
         text,
         // The visible author resolves below, after the round's visual sort,
         // from exact row-owned evidence, sticky incoming labels, and
